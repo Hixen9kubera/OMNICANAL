@@ -21,10 +21,14 @@ Notas de traducción (MySQL → Postgres/kubera):
 """
 from __future__ import annotations
 
+import logging
+from datetime import datetime, timezone
 from typing import Any
 
-from services import channel_read
+from services import channel_read, embarques
 from services import supabase_db as sdb
+
+log = logging.getLogger("omnicanal.costing_read")
 
 CANAL = "mercado_libre"
 
@@ -105,7 +109,8 @@ def listado(page: int, per_page: int, search: str | None, contenedor: str | None
             orden: str, skus_lista: list[str],
             sin_costo: bool = False,
             revisado: str | None = None,
-            solo_publicados_ml: bool = False) -> tuple[list[dict], int]:
+            solo_publicados_ml: bool = False,
+            embarque: str | None = None) -> tuple[list[dict], int]:
     """
     (rows, total) con las MISMAS columnas/alias que el SELECT MySQL del router.
 
@@ -122,6 +127,11 @@ def listado(page: int, per_page: int, search: str | None, contenedor: str | None
 
     `sin_costo=True` deja solo los que NO tienen fila de costo — el filtro para
     trabajar el hueco.
+
+    `embarque` es la clave de `services.embarques` (`n:80`, `c:MRKU3436938`) o
+    `sin`. Va AL FINAL y con default: comparar_lecturas_costing.py y
+    suite_caos_sandbox.py llaman por posición. Clave desconocida → 0 filas.
+    Cada fila gana `embarques` (ver `_embarques_de_filas`).
     """
     where, params = [], []
     if search:
@@ -137,6 +147,12 @@ def listado(page: int, per_page: int, search: str | None, contenedor: str | None
         # Filtrar por contenedor implica tener fila de costo: el contenedor vive ahí.
         where.append("v.contenedor = %s")
         params.append(contenedor)
+    if embarque:
+        filtro = _filtro_embarque(embarque)
+        if filtro is None:
+            return [], 0
+        where.append(filtro[0])
+        params += filtro[1]
     if sin_costo:
         where.append("v.sku is null")
     # Marca de revisión (0032). `movido` son los que se tocaron DESPUÉS de
@@ -172,7 +188,166 @@ def listado(page: int, per_page: int, search: str | None, contenedor: str | None
             left join costing.costos_finales f on f.sku = p.sku and f.canal = %s
             {where_sql} order by {orden_sql} limit %s offset %s""",
         tuple([CANAL] + params + [per_page, offset]))
+    _embarques_de_filas(rows)
     return rows, int(total)
+
+
+# ── Embarques (contenedores desde packing lists + costos) ───────────────────
+# La agrupación vive en services.embarques; aquí solo lo que toca el listado.
+#
+# Sin EXISTS correlacionado dentro de un OR: en producción uno así agotó el
+# statement_timeout. Un embarque filtra con `p.sku in (select …)` (subplan
+# hasheado, sin correlación, porque va dentro del OR de sus dos fuentes).
+# «Sin contenedor» SIEMPRE va unido con AND, nunca dentro de un OR: ahí el
+# `not exists` correlacionado se vuelve anti-join (medido el 25-sep a volumen de
+# prod: ~85-145 ms). No usar `not in`: Postgres solo lo hashea mientras la tabla
+# quepa en work_mem (~111k renglones de packing_ubicaciones) y pasado eso cae a
+# un subplan lineal que agota el statement_timeout.
+_SIN_CONTENEDOR = (
+    "coalesce(v.contenedor, '') = '' and not exists "
+    "(select 1 from costing.packing_ubicaciones u where u.sku = p.sku)")
+_EN_PACKING = ("p.sku in (select u.sku from costing.packing_ubicaciones u "
+               "where u.ferraforme_sha256 = any(%s::text[]))")
+
+
+def _filtro_embarque(clave: str) -> tuple[str, list] | None:
+    """(fragmento WHERE, params) del embarque, o None si la clave no existe."""
+    if clave == "sin":
+        return _SIN_CONTENEDOR, []
+    grupo = embarques.agrupacion().por_clave.get(clave)
+    if grupo is None:
+        return None
+    partes, params = [], []
+    if grupo["valores_costos"]:
+        partes.append("v.contenedor = any(%s::text[])")
+        params.append(list(grupo["valores_costos"]))
+    if grupo["shas"]:
+        partes.append(_EN_PACKING)
+        params.append(list(grupo["shas"]))
+    if not partes:
+        return "false", []
+    return "(" + " or ".join(partes) + ")", params
+
+
+def _embarques_de_filas(rows: list[dict]) -> None:
+    """
+    Pega a cada fila `embarques: [{clave, etiqueta, fuente}]` — fuente
+    `costos` | `packing` | `ambos`. UNA consulta por página a
+    packing_ubicaciones (`sku = any`), nada por fila.
+
+    Es decoración: si el packing no se puede leer, las filas van con
+    `embarques: None` (el panel pinta el `contenedor` crudo, como en MySQL) en
+    vez de tumbar el listado entero.
+    """
+    if not rows:
+        return
+    try:
+        ag = embarques.agrupacion()
+        skus = [str(r["sku"]) for r in rows if r.get("sku")]
+        packing = sdb.fetch_all(
+            """select distinct u.sku::text as sku, u.ferraforme_sha256 as sha
+                 from costing.packing_ubicaciones u
+                where u.sku = any(%s::citext[])""", (skus,)) if skus else []
+    except Exception as exc:  # noqa: BLE001 — decoración, no debe tumbar la tabla
+        log.warning("embarques por fila no disponibles: %s", exc)
+        for r in rows:
+            r["embarques"] = None
+        return
+    shas_por_sku: dict[str, list[str]] = {}
+    for f in packing:
+        shas_por_sku.setdefault(str(f["sku"]).lower(), []).append(f["sha"])
+    posicion = {g["clave"]: i for i, g in enumerate(ag.grupos)}
+    for r in rows:
+        fuentes: dict[str, set[str]] = {}
+        clave = ag.por_valor.get(r.get("contenedor") or "")
+        if clave:
+            fuentes.setdefault(clave, set()).add("costos")
+        for sha in shas_por_sku.get(str(r.get("sku") or "").lower(), []):
+            clave = ag.por_sha.get(sha)
+            if clave:
+                fuentes.setdefault(clave, set()).add("packing")
+        r["embarques"] = [
+            {"clave": k, "etiqueta": ag.por_clave[k]["etiqueta"],
+             "fuente": "ambos" if len(f) == 2 else next(iter(f))}
+            for k, f in sorted(fuentes.items(), key=lambda kv: posicion.get(kv[0], 0))]
+
+
+def conteos_embarques(grupos: list[dict]) -> dict[str, dict[str, int]]:
+    """
+    ``{clave: {n, sin_costo}}`` de TODOS los grupos más `sin`, en UNA consulta.
+
+    `n` = SKUs DISTINTOS de core.products que caen en el grupo por cualquiera
+    de las dos fuentes (el listado nace de core.products: los SKUs del packing
+    que no existen ahí no se cuentan). `sin_costo` = cuántos de ellos no tienen
+    fila en costos_validados. Un SKU en dos contenedores cuenta en los dos: los
+    conteos por opción no suman el total, y es correcto.
+
+    `count(*)` ya son SKUs distintos: `miembros` es un UNION (sin repetidos por
+    (clave, sku), con la igualdad de citext) y products/costos_validados tienen
+    sku único. `count(distinct p.sku)` daba lo mismo pero obligaba a ordenar
+    por citext (~540 ms contra ~285 ms a volumen de prod).
+    """
+    cl_c, val_c, cl_p, sha_p = [], [], [], []
+    for g in grupos:
+        for v in g["valores_costos"]:
+            cl_c.append(g["clave"])
+            val_c.append(v)
+        for s in g["shas"]:
+            cl_p.append(g["clave"])
+            sha_p.append(s)
+    filas = sdb.fetch_all(
+        f"""with g_costos as (
+                select * from unnest(%s::text[], %s::text[]) as t(clave, valor)
+            ), g_packing as (
+                select * from unnest(%s::text[], %s::text[]) as t(clave, sha)
+            ), miembros as (
+                select g.clave, v.sku
+                  from g_costos g
+                  join costing.costos_validados v on v.contenedor = g.valor
+                union
+                select g.clave, u.sku
+                  from g_packing g
+                  join costing.packing_ubicaciones u on u.ferraforme_sha256 = g.sha
+            )
+            select m.clave, count(*) as n,
+                   count(*) filter (where v.sku is null) as sin_costo
+              from miembros m
+              join core.products p on p.sku = m.sku
+              left join costing.costos_validados v on v.sku = p.sku
+             group by m.clave
+            union all
+            select 'sin' as clave, count(*) as n,
+                   count(*) filter (where v.sku is null) as sin_costo
+              from core.products p
+              left join costing.costos_validados v on v.sku = p.sku
+             where {_SIN_CONTENEDOR}""",
+        (cl_c, val_c, cl_p, sha_p))
+    return {f["clave"]: {"n": int(f["n"] or 0), "sin_costo": int(f["sin_costo"] or 0)}
+            for f in filas}
+
+
+def embarques_con_conteos() -> dict[str, Any]:
+    """
+    Cuerpo de `GET /api/crear/costos/_embarques`. Siempre rehace la agrupación
+    (y con eso refresca la caché de 30 s del listado). Los grupos con n = 0
+    (todos sus SKUs fuera de core.products) no se devuelven.
+    """
+    ag = embarques.agrupacion(forzar=True)
+    conteos = conteos_embarques(ag.grupos)
+    salida = []
+    for g in ag.grupos:
+        c = conteos.get(g["clave"]) or {"n": 0, "sin_costo": 0}
+        if c["n"] <= 0:
+            continue
+        salida.append({"clave": g["clave"], "etiqueta": g["etiqueta"],
+                       "numero": g["numero"], "codigos": g["codigos"],
+                       "n": c["n"], "sin_costo": c["sin_costo"],
+                       "fuentes": g["fuentes"]})
+    sin = conteos.get("sin") or {"n": 0, "sin_costo": 0}
+    return {"embarques": salida,
+            "sin_contenedor": {"clave": "sin", "n": sin["n"],
+                               "sin_costo": sin["sin_costo"]},
+            "generado_en": datetime.now(timezone.utc).isoformat()}
 
 
 # ── Lotes para la vista Crear Productos (paso 0, 12-ago-2026) ───────────────

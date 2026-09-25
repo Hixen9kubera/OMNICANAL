@@ -661,6 +661,28 @@ def costos_contenedores():
     return {"contenedores": [{"contenedor": r["contenedor"], "n": int(r["n"])} for r in rows]}
 
 
+@router.get("/costos/_embarques")
+def costos_embarques():
+    """
+    Contenedores del filtro de Costos armados como EMBARQUES: los packing lists
+    (costing.packing_*) más `costos_validados.contenedor`, juntos por el número
+    de contenedor de Kubera. Ver services/embarques.py.
+
+    Definido ANTES de /costos/{sku} para que no lo capture la ruta con
+    parámetro. Sin kubera no hay respuesta honesta: MySQL no tiene los packing
+    lists, así que 503 y el panel cae a `/costos/_contenedores`.
+    """
+    if not settings.supabase_read_costing:
+        raise HTTPException(
+            status_code=503,
+            detail="Los embarques necesitan la lectura desde kubera "
+                   "(SUPABASE_READ_COSTING): MySQL no tiene los packing lists.",
+        )
+    datos = costing_read.embarques_con_conteos()
+    lecturas_fuente.anotar("costing", "kubera")
+    return datos
+
+
 @router.get("/costos/{sku:path}")
 async def costos_detalle(sku: str):
     """
@@ -918,6 +940,9 @@ def costos_listado(
     per_page: int = Query(PER_PAGE_DEFAULT, ge=1, le=PER_PAGE_MAX),
     search: str | None = Query(None),
     contenedor: str | None = Query(None),
+    embarque: str | None = Query(
+        None, description="Clave de embarque de /costos/_embarques (n:80, "
+                          "c:MRKU3436938) o 'sin' = sin contenedor"),
     orden: str = Query("reciente"),
     skus: str | None = Query(None, description="Lista de SKUs/términos separados por coma: filtra y busca a la vez"),
     sin_costo: bool = Query(False, description="Solo los productos que AÚN no tienen fila de costo"),
@@ -944,7 +969,7 @@ def costos_listado(
     if settings.supabase_read_costing:
         rows, total = costing_read.listado(
             page, per_page, search, contenedor, orden, skus_lista, sin_costo,
-            revisado, solo_publicados_ml)
+            revisado, solo_publicados_ml, embarque=embarque)
         lecturas_fuente.anotar("costing", "kubera")
 
     # La marca de revisión (0032) solo existe en kubera: MySQL `costos_validados`
@@ -967,6 +992,16 @@ def costos_listado(
             detail="El filtro de publicados en Mercado Libre necesita la "
                    "lectura desde kubera (SUPABASE_READ_COSTING): "
                    "channel.listings no existe en MySQL.",
+        )
+
+    # Los embarques salen de los packing lists (kubera). MySQL no los tiene:
+    # filtrar ahí devolvería la lista completa como si el filtro se hubiera
+    # aplicado. Falla CERRADO, igual que `revisado`.
+    if rows is None and embarque:
+        raise HTTPException(
+            status_code=503,
+            detail="El filtro de embarque necesita la lectura desde kubera "
+                   "(SUPABASE_READ_COSTING): MySQL no tiene los packing lists.",
         )
 
     if rows is None:
@@ -1037,6 +1072,9 @@ def costos_listado(
             # pinta distinto en vez de deshabilitar el botón por mentira.
             "publicado_ml": (bool(r["publicado_ml"])
                              if r.get("publicado_ml") is not None else None),
+            # Embarques del SKU (packing + costos), solo desde kubera. En el
+            # fallback MySQL van en null y el panel pinta `contenedor` crudo.
+            "embarques": r.get("embarques"),
         })
     total_pages = max(1, (total + per_page - 1) // per_page)
     return {

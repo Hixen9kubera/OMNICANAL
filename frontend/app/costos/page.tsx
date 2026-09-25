@@ -32,10 +32,26 @@ import {
   TARIFA_CBM,
   TIPO_CAMBIO_DEFAULT,
 } from "@/components/resolver/comunes";
-import { listarCostos, contenedoresCosto, costoBulk, costoPreview } from "@/lib/api";
+import { listarCostos, contenedoresCosto, embarquesCosto, costoBulk, costoPreview } from "@/lib/api";
+import type { CostoFila, EmbarquesResp } from "@/lib/api";
 import type { CostoRow, ContenedorInfo, Paginacion, CostoBulkResp, CostoCalculo } from "@/lib/types";
 
 const PER_PAGE = 50;
+
+/**
+ * Filtro de contenedor. Lleva su TIPO consigo porque hay dos contratos:
+ *
+ *   "embarque"   — clave de `_embarques` (costos + packing lists, kubera).
+ *   "contenedor" — texto exacto de `costos_validados.contenedor`, la lista de
+ *                  siempre, para cuando `_embarques` no responde.
+ *
+ * Así el listado manda el parámetro que corresponde a lo que se ELIGIÓ, no al
+ * modo en que esté la pantalla en ese momento. `etiqueta` guarda lo que se
+ * leía al elegirlo, para poder nombrarlo si al recargar las opciones el grupo
+ * ya no aparece.
+ */
+type FiltroContenedor = { tipo: "embarque" | "contenedor"; valor: string; etiqueta: string };
+type OpcionContenedor = { valor: string; etiqueta: string; texto: string };
 /** Viñeta bajo el rótulo de una columna: la operación que produce ese número. */
 const NOTA_TH =
   "mt-0.5 text-[9px] font-normal normal-case tracking-normal text-slate-400";
@@ -175,7 +191,7 @@ export default function CostosPage() {
   const [soloPublicadosMl, setSoloPublicadosMl] = useState(false);
   // SKU cuya CAJA MASTER se está capturando (null = panel cerrado).
   const [cajaMaster, setCajaMaster] = useState<string | null>(null);
-  const [rows, setRows] = useState<CostoRow[]>([]);
+  const [rows, setRows] = useState<CostoFila[]>([]);
   const [pag, setPag] = useState<Paginacion>({
     page: 1, per_page: PER_PAGE, total: 0, total_pages: 1, tiene_anterior: false, tiene_siguiente: false,
   });
@@ -184,9 +200,16 @@ export default function CostosPage() {
   const [busqueda, setBusqueda] = useState("");
   const [skusInput, setSkusInput] = useState("");
   const [skusFiltro, setSkusFiltro] = useState("");
-  const [contenedor, setContenedor] = useState("");
+  const [filtroCont, setFiltroCont] = useState<FiltroContenedor | null>(null);
   const [orden, setOrden] = useState("reciente");
   const [cargando, setCargando] = useState(true);
+  // La última carga del listado falló (la tabla se vacía y lo dice).
+  const [errorListado, setErrorListado] = useState(false);
+  // Opciones del filtro de contenedor. `embarques` (costos + packing lists)
+  // manda en cuanto responde; `contenedores` es la lista vieja, que solo se
+  // pide si `_embarques` falla (503 con la lectura en MySQL, 404 con un
+  // backend anterior).
+  const [embarques, setEmbarques] = useState<EmbarquesResp | null>(null);
   const [contenedores, setContenedores] = useState<ContenedorInfo[]>([]);
   // Evita el flash de "Sin resultados" antes de que llegue la primera respuesta.
   const primeraCarga = useRef(true);
@@ -244,9 +267,93 @@ export default function CostosPage() {
 
   const topRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    contenedoresCosto().then((r) => setContenedores(r.contenedores)).catch(() => {});
+  // Opciones del filtro de contenedor. Se vuelven a pedir después de todo lo
+  // que mueve sus conteos —Recargar, Regenerar y guardar, y las dos ventanas
+  // de packing list—: un SKU recién costeado deja de contar como «sin costo»
+  // y un contenedor recién capturado puede crear un grupo.
+  //
+  // Una recarga que FALLA con embarques ya cargados deja los que había: caer
+  // a la lista vieja a media sesión dejaría el filtro elegido apuntando a una
+  // clave que ese contrato no entiende. `seqOpciones` descarta las respuestas
+  // que llegan después de una recarga más nueva.
+  const seqOpciones = useRef(0);
+  const hayEmbarques = useRef(false);
+  const cargarOpciones = useCallback(() => {
+    const seq = ++seqOpciones.current;
+    embarquesCosto()
+      .then((r) => {
+        if (seq !== seqOpciones.current) return;
+        hayEmbarques.current = true;
+        setEmbarques(r);
+      })
+      .catch(() => {
+        if (seq !== seqOpciones.current || hayEmbarques.current) return;
+        contenedoresCosto()
+          .then((r) => { if (seq === seqOpciones.current) setContenedores(r.contenedores); })
+          .catch(() => {});
+      });
   }, []);
+
+  useEffect(() => { cargarOpciones(); }, [cargarOpciones]);
+
+  const tipoOpciones: FiltroContenedor["tipo"] = embarques ? "embarque" : "contenedor";
+  const opcionesCont = useMemo<OpcionContenedor[]>(() => {
+    if (embarques) {
+      const sin = embarques.sin_contenedor;
+      return [
+        { valor: sin.clave || "sin", etiqueta: "Sin contenedor", texto: `Sin contenedor (${sin.n})` },
+        ...embarques.embarques.map((e) => ({
+          valor: e.clave,
+          etiqueta: e.etiqueta,
+          texto: `${e.etiqueta} (${e.n}${e.sin_costo > 0 ? ` · ${e.sin_costo} sin costo` : ""})`,
+        })),
+      ];
+    }
+    return contenedores.map((c) => ({
+      valor: c.contenedor, etiqueta: c.contenedor, texto: `${c.contenedor} (${c.n})`,
+    }));
+  }, [embarques, contenedores]);
+  // El filtro elegido ya no está entre las opciones (el grupo se quedó sin SKUs
+  // o cambió de clave al recargar, o se eligió en la lista vieja antes de que
+  // `_embarques` respondiera). Se sigue pintando con su nombre en vez de dejar
+  // que el <select> enseñe «Todos los contenedores» sobre una tabla filtrada.
+  const filtroHuerfano =
+    filtroCont != null &&
+    (filtroCont.tipo !== tipoOpciones || !opcionesCont.some((o) => o.valor === filtroCont.valor));
+
+  /**
+   * Cambia el filtro de contenedor Y LIMPIA LA SELECCIÓN.
+   *
+   * Es el único filtro que la limpia, y a propósito. Con los SKUs «sin costo»
+   * que ahora traen los packing lists, «seleccionar todos» en un contenedor,
+   * pasar a otro y «Regenerar y guardar» escribía también las filas del
+   * primero, que ya no se ven.
+   *
+   * Lo tecleado NO se borra: `ediciones` solo se usa para filas seleccionadas,
+   * así que sin selección no se guarda nada, y si la fila se vuelve a marcar
+   * `toggle` recupera la captura (igual que al desmarcar una fila a mano).
+   *
+   * También vacía `rows` y enciende `cargando`: mientras llega el filtro
+   * nuevo, «Seleccionar todos» marcaba las 50 filas del anterior.
+   */
+  function cambiarContenedor(valor: string) {
+    // null → null no cambia `cargar` y nadie apagaría `cargando`.
+    if (!valor && !filtroCont) return;
+    const op = opcionesCont.find((o) => o.valor === valor);
+    setFiltroCont(valor ? { tipo: tipoOpciones, valor, etiqueta: op?.etiqueta ?? valor } : null);
+    setPage(1);
+    setSeleccion(new Set());
+    setRows([]);
+    setCargando(true);
+  }
+
+  // Si al recargar las opciones el embarque elegido ya no aparece (p. ej.
+  // «BEAU6268641» ganó su « - 97» y pasó de `c:` a `n:97`), el listado de esa
+  // clave vuelve vacío: lo seleccionado ya no estaría a la vista.
+  const huerfanoEmbarque = filtroHuerfano && filtroCont?.tipo === "embarque";
+  useEffect(() => {
+    if (huerfanoEmbarque) setSeleccion(new Set());
+  }, [huerfanoEmbarque, rows]);
 
   useEffect(() => {
     const t = setTimeout(() => { setBusqueda(busquedaInput.trim()); setPage(1); }, 350);
@@ -258,22 +365,41 @@ export default function CostosPage() {
     return () => clearTimeout(t);
   }, [skusInput]);
 
+  // `seqListado` descarta las respuestas que no son de la carga MÁS NUEVA: las
+  // llamadas a mano (Recargar, tras guardar) no se abortan, y el `finally` de
+  // una abortada apagaba `cargando` con la nueva todavía en vuelo, dejando ver
+  // y seleccionar filas del filtro anterior como si fueran del nuevo.
+  const seqListado = useRef(0);
   const cargar = useCallback(() => {
     const ctrl = new AbortController();
+    const seq = ++seqListado.current;
     setCargando(true);
     listarCostos(
       {
         page, perPage: PER_PAGE, search: busqueda || undefined,
-        skus: skusFiltro || undefined, contenedor: contenedor || undefined, orden,
+        skus: skusFiltro || undefined,
+        embarque: filtroCont?.tipo === "embarque" ? filtroCont.valor : undefined,
+        contenedor: filtroCont?.tipo === "contenedor" ? filtroCont.valor : undefined,
+        orden,
         soloPublicadosMl: soloPublicadosMl || undefined,
       },
       ctrl.signal,
     )
-      .then((r) => { setRows(r.items); setPag(r.paginacion); primeraCarga.current = false; })
-      .catch((exc) => { if (exc?.name !== "AbortError") primeraCarga.current = false; })
-      .finally(() => setCargando(false));
+      .then((r) => {
+        if (seq !== seqListado.current) return;
+        setRows(r.items); setPag(r.paginacion); setErrorListado(false); primeraCarga.current = false;
+      })
+      .catch((exc) => {
+        if (exc?.name === "AbortError" || seq !== seqListado.current) return;
+        primeraCarga.current = false;
+        // Sin esto la tabla se quedaba con las filas del filtro ANTERIOR bajo la
+        // etiqueta del nuevo, listas para «seleccionar todos + Regenerar».
+        setRows([]);
+        setErrorListado(true);
+      })
+      .finally(() => { if (seq === seqListado.current) setCargando(false); });
     return () => ctrl.abort();
-  }, [page, busqueda, skusFiltro, contenedor, orden, soloPublicadosMl]);
+  }, [page, busqueda, skusFiltro, filtroCont, orden, soloPublicadosMl]);
 
   useEffect(() => cargar(), [cargar]);
 
@@ -296,6 +422,8 @@ export default function CostosPage() {
   const skusPagina = useMemo(() => rows.map((r) => r.sku), [rows]);
   const todosSel = skusPagina.length > 0 && skusPagina.every((k) => seleccion.has(k));
   function toggleTodos() {
+    // Con una carga en vuelo `rows` puede ser del filtro anterior.
+    if (cargando) return;
     setSeleccion((prev) => {
       const next = new Set(prev);
       if (todosSel) skusPagina.forEach((k) => next.delete(k));
@@ -353,7 +481,8 @@ export default function CostosPage() {
    * Abre "Validar costo de PUBLICADOS EN ML" con lo que esté seleccionado.
    *
    * NO se pre-filtra aquí a propósito. La selección sobrevive al cambio de
-   * página y de filtros, y `rows` solo tiene las 50 visibles: filtrar con eso
+   * página y de filtros (salvo el de contenedor, que la limpia: ver
+   * `cambiarContenedor`), y `rows` solo tiene las 50 visibles: filtrar con eso
    * dejaría fuera SKUs seleccionados en otra página sin decir nada. El modal
    * pregunta al backend cuáles están publicados y ENSEÑA los que quedan fuera
    * con su motivo antes de arrancar.
@@ -417,6 +546,7 @@ export default function CostosPage() {
       setSeleccion(new Set());
       setEdiciones({});
       cargar();
+      cargarOpciones();
     } catch {
       setBulkResult({ ok: false, total: seleccion.size, exitosos: 0, resultados: [] });
     } finally {
@@ -454,7 +584,10 @@ export default function CostosPage() {
             </div>
             <div className="text-right">
               <div className="text-4xl font-black tabular-nums">{new Intl.NumberFormat("es-MX").format(pag.total)}</div>
-              <div className="text-xs font-semibold uppercase tracking-wide opacity-80">SKUs con costo</div>
+              {/* El listado nace de core.products, no de costos_validados: el
+                  total cuenta también los SKUs que todavía NO tienen costo.
+                  Decía «SKUs con costo», y no era cierto. */}
+              <div className="text-xs font-semibold uppercase tracking-wide opacity-80">SKUs en la lista · con y sin costo</div>
               {/* Dos caminos al mismo destino, en direcciones opuestas:
                   · Resolver  → packing-list-primero (cargas el xlsx)
                   · Validar   → SKU-primero (partes de lo seleccionado)
@@ -526,11 +659,22 @@ export default function CostosPage() {
             </div>
             <div className="relative">
               <Container size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-              <select value={contenedor} onChange={(e) => { setContenedor(e.target.value); setPage(1); }}
-                className="w-56 appearance-none rounded-lg border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm text-slate-700 outline-none focus:ring-2" style={{ outlineColor: ACENTO }}>
+              {/* Con `_embarques` cada opción es un EMBARQUE: junta el código
+                  de costos y el del packing list bajo el número de contenedor
+                  de Kubera. El conteo es de SKUs distintos del catálogo (con y
+                  sin costo); un SKU puede estar en dos, así que no suman el
+                  total. */}
+              <select value={filtroCont?.valor ?? ""} onChange={(e) => cambiarContenedor(e.target.value)}
+                aria-label="Filtrar por contenedor"
+                className="w-72 appearance-none rounded-lg border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm text-slate-700 outline-none focus:ring-2" style={{ outlineColor: ACENTO }}>
                 <option value="">Todos los contenedores</option>
-                {contenedores.map((c) => (
-                  <option key={c.contenedor} value={c.contenedor}>{c.contenedor} ({c.n})</option>
+                {filtroHuerfano && filtroCont && (
+                  <option value={filtroCont.valor}>
+                    {filtroCont.etiqueta}{filtroCont.tipo === "embarque" ? " — ya no aparece" : ""}
+                  </option>
+                )}
+                {opcionesCont.map((o) => (
+                  <option key={o.valor} value={o.valor}>{o.texto}</option>
                 ))}
               </select>
             </div>
@@ -556,9 +700,12 @@ export default function CostosPage() {
               <option value="sku_desc">SKU Z→A</option>
               <option value="costo_desc">Costo ↓</option>
               <option value="costo_asc">Costo ↑</option>
+              {/* Ordena por `costos_validados.contenedor` crudo, no por la
+                  etiqueta de embarque de la columna; lo que solo está en el
+                  packing list (contenedor vacío) cae al final. */}
               <option value="contenedor">Contenedor</option>
             </select>
-            <button onClick={() => cargar()} title="Recargar"
+            <button onClick={() => { cargar(); cargarOpciones(); }} title="Recargar"
               className="flex items-center justify-center rounded-lg border border-slate-200 bg-white p-2 text-slate-500 hover:bg-slate-50">
               <RotateCw size={16} className={cargando ? "animate-spin" : ""} />
             </button>
@@ -597,7 +744,7 @@ export default function CostosPage() {
             <thead>
               <tr className="border-b border-slate-200 bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500">
                 <th className="w-12 px-4 py-3">
-                  <input type="checkbox" aria-label="Seleccionar todos" checked={todosSel} onChange={toggleTodos} className="h-4 w-4 cursor-pointer accent-indigo-600" />
+                  <input type="checkbox" aria-label="Seleccionar todos" checked={todosSel} onChange={toggleTodos} disabled={cargando} className="h-4 w-4 cursor-pointer accent-indigo-600 disabled:cursor-not-allowed disabled:opacity-50" />
                 </th>
                 <th className="px-4 py-3 font-semibold">SKU / Producto</th>
                 <th className="px-3 py-3 font-semibold">Contenedor</th>
@@ -632,7 +779,11 @@ export default function CostosPage() {
                   </tr>
                 ))
               ) : rows.length === 0 ? (
-                <tr><td colSpan={9} className="px-4 py-16 text-center text-slate-400">Sin resultados.</td></tr>
+                errorListado ? (
+                  <tr><td colSpan={9} role="alert" className="px-4 py-16 text-center text-rose-600">No se pudo cargar el listado. Aprieta Recargar para reintentar.</td></tr>
+                ) : (
+                  <tr><td colSpan={9} className="px-4 py-16 text-center text-slate-400">Sin resultados.</td></tr>
+                )
               ) : (
                 rows.map((r) => {
                   const sel = seleccion.has(r.sku);
@@ -682,7 +833,7 @@ export default function CostosPage() {
                         </div>
                         {r.nombre && <div className="line-clamp-1 max-w-[240px] text-xs text-slate-600">{r.nombre}</div>}
                       </td>
-                      <td className="px-3 py-3 text-xs text-slate-500">{r.contenedor ?? "—"}</td>
+                      <td className="px-3 py-3 text-xs text-slate-500"><CeldaContenedor fila={r} /></td>
                       {/* Dimensiones — editable al seleccionar */}
                       <td className="px-3 py-3 text-xs text-slate-600">
                         {sel && ed ? (
@@ -865,7 +1016,12 @@ export default function CostosPage() {
       )}
 
       {resolverAbierto && (
-        <ResolverCostosModal onCerrar={() => setResolverAbierto(false)} />
+        <ResolverCostosModal
+          // Lo que se resuelve aquí escribe contenedor y costo: los conteos
+          // del filtro (y sus «sin costo») cambian al cerrar, y la tabla se
+          // recarga con ellos para que el select y las filas no se contradigan.
+          onCerrar={() => { setResolverAbierto(false); cargar(); cargarOpciones(); }}
+        />
       )}
 
       {publicadosAbierto && (
@@ -881,9 +1037,10 @@ export default function CostosPage() {
             setSeleccion(new Set());
             setEdiciones({});
           }}
-          // Guardar solo REFRESCA la tabla de atrás; la ventana se queda viva
-          // para poder corregir los que no entraron.
-          onGuardado={() => cargar()}
+          // Guardar solo REFRESCA la tabla de atrás (y los conteos del filtro
+          // de contenedor); la ventana se queda viva para poder corregir los
+          // que no entraron.
+          onGuardado={() => { cargar(); cargarOpciones(); }}
         />
       )}
 
@@ -1034,6 +1191,60 @@ function Desglose({ calc, pendiente }: { calc: CostoCalculo | null | undefined; 
           <AlertTriangle size={11} /> comisión de respaldo: sin categoría de ML
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Columna Contenedor.
+ *
+ * Con `embarques` (lectura desde kubera) pinta los embarques del SKU con la
+ * MISMA etiqueta que el filtro de arriba, para que lo que se lee en la fila
+ * sea lo que se elige ahí. Los que solo trae el packing list llevan «PL»:
+ * costos todavía no tiene ese contenedor, que es justo lo que falta capturar.
+ *
+ * `embarques: null` es el fallback de MySQL (ahí no hay packing lists): se
+ * pinta el `contenedor` crudo, como siempre. Una lista vacía con `contenedor`
+ * lleno puede pasar durante los 30 s que dura la caché de la agrupación
+ * después de capturar uno nuevo; también se pinta el crudo en vez de un hueco.
+ * Por la misma caché la fila puede traer SOLO embarques del packing con un
+ * `contenedor` que la agrupación aún no conoce: entonces se pinta el crudo
+ * arriba y no va la «PL» (afirmaría que costos no lo tiene sin saberlo).
+ */
+function CeldaContenedor({ fila }: { fila: CostoFila }) {
+  const embs = fila.embarques;
+  if (!embs || embs.length === 0) return <>{fila.contenedor || "—"}</>;
+  const costosSinAgrupar = !!fila.contenedor && embs.every((e) => e.fuente === "packing");
+  return (
+    <div className="flex flex-col gap-0.5">
+      {costosSinAgrupar && (
+        <div title={`En costos: «${fila.contenedor}»`} className="max-w-[190px] truncate whitespace-nowrap">
+          {fila.contenedor}
+        </div>
+      )}
+      {embs.map((e) => (
+        <div
+          key={e.clave}
+          title={
+            e.fuente !== "packing" && fila.contenedor
+              ? `${e.etiqueta} — en costos: «${fila.contenedor}»`
+              : e.etiqueta
+          }
+          className="flex items-center gap-1 whitespace-nowrap"
+        >
+          <span className="max-w-[190px] truncate">{e.etiqueta}</span>
+          {e.fuente === "packing" && !costosSinAgrupar && (
+            <span
+              title="Solo en el packing list: costos no tiene este contenedor"
+              className="rounded bg-sky-100 px-1 py-0.5 text-[9px] font-bold uppercase tracking-wide text-sky-700"
+            >
+              {/* El `title` no lo ve el teclado ni lo lee un lector de pantalla. */}
+              <span aria-hidden="true">PL</span>
+              <span className="sr-only">Solo en el packing list: costos no tiene este contenedor</span>
+            </span>
+          )}
+        </div>
+      ))}
     </div>
   );
 }

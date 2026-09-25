@@ -1001,6 +1001,30 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.574.0 — Costos: el filtro de contenedores lee los packing lists, no solo la columna vieja
+
+El filtro «Todos los contenedores» de /costos listaba solo `distinct costos_validados.contenedor`:
+103 valores, ninguno nuevo desde junio (esa columna casi no tiene escritor). Ahora cada opción es un
+**embarque** armado con las dos fuentes (`services/embarques.py`):
+
+- **Packing lists en Supabase** (`costing.packing_ubicaciones` + `packing_archivos`): los SKUs de cada
+  Ferraforme y su número de contenedor («contenedor 80») del nombre del archivo.
+- **`costos_validados.contenedor`**, con su sufijo « - N».
+- Se juntan por el número de contenedor de Kubera: «256059868 - 1» (guía, en costos) y «TRHU6215242
+  contenedor 1» (Ferraforme) son la misma opción `1 · TRHU6215242 · 256059868`. Los códigos se sacan AL LEER
+  del nombre del archivo con dígito verificador ISO 6346 (el `contenedor_base` guardado trae errores como
+  LISTAEMPAQUE o PHPCU…); no hubo migración ni se corrigió nada guardado.
+- Aparecen los SKUs **sin costo** del packing (p. ej. el contenedor 50: 508 SKUs, 498 sin costo) y la opción
+  **«Sin contenedor»** (SKUs sin contenedor en costos ni en ningún packing list). Cada opción dice cuántos
+  SKUs tiene y cuántos no tienen costo; el orden es del contenedor más nuevo al más viejo.
+- La columna de contenedor muestra los embarques de cada fila; «PL» marca lo que solo afirma el packing list.
+- La lista se vuelve a pedir tras Recargar, el guardado en lote, «Validar publicados» y el Resolver. Cambiar
+  de contenedor limpia la selección (antes quedaban marcadas filas que ya no se veían).
+- API: nuevo `GET /api/crear/costos/_embarques`; `GET /api/crear/costos?embarque=n:80|c:…|sin`. Sin
+  `SUPABASE_READ_COSTING` responde 503 y el panel cae al filtro viejo (`_contenedores` y `contenedor`, intactos).
+- Probado en el sandbox con la metadata de packing de producción (20,301 renglones): 104 opciones,
+  «Sin contenedor» 3,746; el total de cada filtro cuadra con el de su opción.
+
 ### v0.573.0 — Checklist con la 0058 ya aplicada: lo que encontró la auditoría, corregido
 
 La 0058 quedó aplicada en producción el 24-sep (Eduardo). Se verificó con SELECT:

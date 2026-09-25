@@ -25,6 +25,7 @@ import type {
   CostoGuardarResp,
   CostoOverrides,
   CostoPreviewResp,
+  CostoRow,
   CostosListResp,
   DetalleProducto,
   FilaPublicado,
@@ -331,7 +332,14 @@ export interface ListarCostosParams {
   page?: number;
   perPage?: number;
   search?: string;
+  /** Legado: texto EXACTO de `costos_validados.contenedor` (lista de `_contenedores`). */
   contenedor?: string;
+  /**
+   * Clave de embarque de `_embarques` ("n:80", "c:BEAU6268641", "sin" = sin
+   * contenedor). Si se manda, NO se manda `contenedor`: son dos filtros
+   * distintos y el backend no los combina.
+   */
+  embarque?: string;
   orden?: string;
   skus?: string; // "Filtrar SKUs": lista separada por comas, filtra y busca a la vez
   /** Solo SKUs con publicación viva en Mercado Libre (`situacion in active/paused`). */
@@ -342,22 +350,84 @@ export interface ListarCostosParams {
   revisado?: "si" | "no" | "movido";
 }
 
-export function listarCostos(p: ListarCostosParams, signal?: AbortSignal): Promise<CostosListResp> {
+/**
+ * Un contenedor de la fila, ya agrupado en EMBARQUE. `fuente` dice de dónde
+ * sale: "costos" (`costos_validados.contenedor`), "packing" (solo el packing
+ * list lo trae; costos no tiene ese contenedor) o "ambos".
+ */
+export interface EmbarqueFila {
+  clave: string;
+  etiqueta: string;
+  fuente: "costos" | "packing" | "ambos";
+}
+
+/**
+ * Fila del listado de Costos tal como la manda el backend. `embarques` solo
+ * existe leyendo de kubera: en el fallback de MySQL llega `null` (no hay
+ * packing lists ahí) y la columna vuelve a pintar el `contenedor` crudo.
+ */
+export interface CostoFila extends CostoRow {
+  embarques?: EmbarqueFila[] | null;
+}
+
+export interface CostosListaResp extends Omit<CostosListResp, "items"> {
+  items: CostoFila[];
+}
+
+export function listarCostos(p: ListarCostosParams, signal?: AbortSignal): Promise<CostosListaResp> {
   const q = new URLSearchParams();
   q.set("page", String(p.page ?? 1));
   q.set("per_page", String(p.perPage ?? 50));
   if (p.search) q.set("search", p.search);
-  if (p.contenedor) q.set("contenedor", p.contenedor);
+  if (p.embarque) q.set("embarque", p.embarque);
+  else if (p.contenedor) q.set("contenedor", p.contenedor);
   if (p.orden) q.set("orden", p.orden);
   if (p.skus) q.set("skus", p.skus);
   if (p.soloPublicadosMl) q.set("solo_publicados_ml", "true");
   if (p.sinCosto) q.set("sin_costo", "true");
   if (p.revisado) q.set("revisado", p.revisado);
-  return getJSON<CostosListResp>(`/api/crear/costos?${q.toString()}`, signal);
+  return getJSON<CostosListaResp>(`/api/crear/costos?${q.toString()}`, signal);
 }
 
 export function contenedoresCosto(signal?: AbortSignal): Promise<{ contenedores: ContenedorInfo[] }> {
   return getJSON<{ contenedores: ContenedorInfo[] }>("/api/crear/costos/_contenedores", signal);
+}
+
+/**
+ * Un EMBARQUE del filtro de contenedores: junta lo que costos y los packing
+ * lists llaman distinto (costos usa el código del original —guía, BL,
+ * SZLS…—, el packing el ISO del Ferraforme) bajo el número de contenedor de
+ * Kubera cuando lo hay.
+ *
+ * `n` = SKUs DISTINTOS del catálogo que caen en el grupo por cualquiera de las
+ * dos fuentes; `sin_costo` = cuántos de ellos no tienen fila de costo. Un SKU
+ * puede estar en dos embarques, así que los `n` no suman el total.
+ */
+export interface EmbarqueInfo {
+  clave: string;
+  etiqueta: string;
+  numero: number | null;
+  codigos: string[];
+  n: number;
+  sin_costo: number;
+  fuentes: ("costos" | "packing")[];
+}
+
+export interface EmbarquesResp {
+  embarques: EmbarqueInfo[];
+  /** SKUs sin contenedor en costos y fuera de todo packing list (clave "sin"). */
+  sin_contenedor: { clave: string; n: number; sin_costo: number };
+  generado_en: string;
+}
+
+/**
+ * Opciones del filtro de contenedores agrupadas en embarques. Solo existe
+ * leyendo de kubera: con la lectura en MySQL responde 503 (MySQL no tiene
+ * packing lists), y un backend anterior a este endpoint da 404. En los dos
+ * casos la pantalla cae a `contenedoresCosto()`.
+ */
+export function embarquesCosto(signal?: AbortSignal): Promise<EmbarquesResp> {
+  return getJSON<EmbarquesResp>("/api/crear/costos/_embarques", signal);
 }
 
 // Fuerza el refresco del índice de catálogo + drafts de Woo (al abrir la app).
