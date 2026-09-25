@@ -69,6 +69,11 @@ TABLAS: list[tuple[str, str | None]] = [
     ("core.channels", None),
     ("core.canonical_fields", None),
     ("core.accounts", None),
+    # OJO: el `truncate core.products cascade` VACÍA también las tablas que solo
+    # viven en el sandbox y la referencian, como costing.sku_contenedor (0060):
+    # después de re-clonar, volver a correr
+    # `ubicar_skus_contenedor.py --aplicar` (no se puede copiar de producción,
+    # allá la tabla todavía no existe).
     ("core.products", None),
     ("channel.categories", None),
     ("channel.product_category", None),

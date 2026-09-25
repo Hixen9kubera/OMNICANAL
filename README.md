@@ -1001,6 +1001,25 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.575.0 — Cada SKU con su contenedor: tabla `costing.sku_contenedor` (0060) y su cargador (solo sandbox)
+
+`costos_validados.contenedor` guarda UNA N por SKU y casi no tiene escritor; ≥78 SKUs llegaron en dos contenedores.
+La 0060 crea `costing.sku_contenedor` (sku, numero, nivel A/B, fuentes, multi, evidencia jsonb, origen), con PK
+(sku, numero), FK a core.products SIN cascade, RLS y grant en la misma migración. **Aplicada solo en el sandbox.**
+
+- `services/ubicar_contenedores.py` (lógica pura) y `scripts/ubicar_skus_contenedor.py` (extracción en solo lectura de
+  kubera en REPEATABLE READ + Odoo con un cliente que solo permite leer). Tres familias independientes: Ferraforme
+  (Alma), el linaje de Brandon (`costos_validados.contenedor` + caja compartida) y el campo `container_numbers` de Odoo
+  con número. La OC recibida solo apoya (su N casi siempre se infirió). **A** = Ferraforme alineado o dos familias que
+  coinciden; **B** = una familia fuerte, sin los «refutados» (Odoo solo, contradicho por el Ferraforme de esa N).
+  No se cargan conflictos, provisionales «NNNN-NNNN», padres de Woo ni SKUs fuera del catálogo.
+- `--aplicar` solo acepta el sandbox (`--acepto-destino yvootpbz`; producción bloqueada en el código), reemplaza solo
+  las filas de su origen `carga_*` y aborta si la carga nueva cae más del 10 %. `--excel` arma el libro para Brandon
+  (conflictos, refutados, provisionales por homologar, errores de lote en Odoo, contenedores sin documento).
+- Carga del 25-sep en el sandbox: 12,553 filas, 12,475 SKUs en 98 contenedores (A 10,988 SKUs, B 1,516; 78 multi).
+  Análisis previo con muestra validada contra documentos: A ≈99.9 %, A+B sin refutados ≈99.4–99.8 %.
+- `clonar_a_sandbox.py`: aviso de que re-clonar core.products vacía esta tabla (volver a correr la carga).
+
 ### v0.574.0 — Costos: el filtro de contenedores lee los packing lists, no solo la columna vieja
 
 El filtro «Todos los contenedores» de /costos listaba solo `distinct costos_validados.contenedor`:
