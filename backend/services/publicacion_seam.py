@@ -73,6 +73,7 @@ from config import settings
 from core import actor
 from services import channel_mirror
 from services import supabase_db as sdb
+from services.sku_provisional import exigir_sku_real
 
 log = logging.getLogger("omnicanal.publicacion_seam")
 
@@ -83,7 +84,15 @@ def activo() -> bool:
 
 def _escribir(canal: str, cuenta: str, sku: str, listing_id: str | None,
               url: str | None, status: str | None, product_type: str | None) -> None:
-    """BLOQUEANTE. Solo se llama desde un hilo (ver `registrar`)."""
+    """BLOQUEANTE. Solo se llama desde un hilo (ver `registrar`).
+
+    Un identificador provisional (``5070-0020``) no se registra: el ``insert``
+    de identidad de abajo lo reviviría en ``core.products`` (candado del
+    25-sep, ver ``services/sku_provisional``). Va antes de cualquier SQL; la
+    :class:`SkuProvisional` la atrapa ``_trabajo`` y queda en el log y en
+    ``ops.migration_issues`` — publicar con ese SKU es algo que alguien tiene
+    que corregir en el canal."""
+    exigir_sku_real(sku)
     cuenta_id = channel_mirror._cuenta_uuid(canal, cuenta)
     if not cuenta_id:
         channel_mirror._registrar_issue(

@@ -34,6 +34,7 @@ from config import settings
 from services import (alertas, core_read, costing_mirror, costing_read,
                       costing_write, db, lecturas_fuente, meli)
 from services import supabase_db as sdb
+from services.sku_provisional import es_provisional, exigir_sku_real
 
 log = logging.getLogger("uvicorn.error")
 
@@ -423,7 +424,12 @@ def _log_costo(sku: str, accion: str, origen: str, detalle: dict[str, Any]) -> N
 
 def _guardar_finales(sku: str, base: dict[str, Any], pricing: dict[str, Any],
                      cat_id: str) -> dict[str, Any]:
-    """UPSERT en costos_finales con el costo base + el pricing calculado."""
+    """UPSERT en costos_finales con el costo base + el pricing calculado.
+
+    Un identificador provisional se rechaza AQUÍ, antes de elegir camino: con el
+    corte F6 apagado MySQL es la primaria y lo escribiría sin preguntar (el
+    candado de ``costing_mirror`` solo cuida kubera)."""
+    exigir_sku_real(sku)
     fila = {
         "sku": sku,
         "costo_producto": base.get("costo_producto"),
@@ -461,6 +467,8 @@ def _guardar_finales(sku: str, base: dict[str, Any], pricing: dict[str, Any],
 
 
 def _guardar_validados(sku: str, base: dict[str, Any]) -> None:
+    # Provisional: ni kubera ni MySQL (ver `_guardar_finales`).
+    exigir_sku_real(sku)
     # El UPSERT de kubera ya rechaza la fila bloqueada; esto evita el viaje y
     # deja rastro de que se intento.
     if base.get("_bloqueado"):
@@ -758,7 +766,14 @@ def asegurar_finales(sku: str, cat_id: str = "",
       · Si ya está → lo devuelve tal cual (sin recalcular).
       · Si no → lo calcula desde costos_validados + categoría ML, lo persiste y logea.
     Devuelve el dict con precio_base/precio_sugerido/costo_* o None si no se pudo.
+
+    Un identificador provisional da None sin calcular nada: ya no se guarda, y
+    este camino corre dentro del flujo Crear, que no debe tronar por eso.
     """
+    if es_provisional(sku):
+        log.warning("asegurar_finales(%s): identificador provisional, ya no se "
+                    "guarda", sku)
+        return None
     # PASO 0 (12-ago-2026): esta consulta DECIDE si se recalcula el precio, así
     # que sale del registro vivo. Preguntándoselo al espejo congelado, un
     # "no tiene precio" falso dispara recálculos que pisan lo bueno — y un
@@ -810,7 +825,13 @@ def recalcular(sku: str, overrides: dict[str, Any] | None = None,
     PERSISTE en costos_validados + costos_finales, dejando log. Devuelve la fila
     guardada (costos_finales) o None. Si auto_cbm, el costo_cbm se deriva de las
     dims (× tarifa) salvo que venga explícito en overrides.
+
+    Un identificador provisional lanza ``SkuProvisional`` de entrada, antes de
+    leer costos o consultar la comisión a ML: no hay nada que calcular para algo
+    que ya no se guarda. Los endpoints de Costos lo filtran antes; esto cubre a
+    cualquier otro llamador.
     """
+    exigir_sku_real(sku)
     calc = computar(sku, overrides, incluir_envio, margen, cuenta, auto_cbm)
     if not calc:
         # `computar` devuelve None por DOS motivos distintos y no dan lo mismo:

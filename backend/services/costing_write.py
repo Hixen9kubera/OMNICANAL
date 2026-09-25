@@ -32,6 +32,7 @@ from typing import Any, Callable
 from config import settings
 from core import actor
 from services import costing_mirror, supabase_db as sdb
+from services.sku_provisional import SkuProvisional, exigir_sku_real
 
 log = logging.getLogger("omnicanal.costing_write")
 
@@ -84,11 +85,37 @@ def _encolar_kubera(funcion: str, tabla_mysql: str, tabla_kubera: str, sku: str,
 
 def _escribir(funcion: str, tabla_mysql: str, tabla_kubera: str, sku: str,
               payload: dict[str, Any], primaria: Callable[[], None],
-              escribir_mysql: Callable[[], None]) -> None:
+              escribir_mysql: Callable[[], None], *,
+              exigir_real: bool = True) -> None:
     """Orden del corte: kubera primero (síncrona); MySQL como espejo en hilo.
-    Si kubera falla: MySQL aguanta el negocio + evento encolado."""
+    Si kubera falla: MySQL aguanta el negocio + evento encolado.
+
+    Un identificador PROVISIONAL no es kubera caída: ``costing_mirror`` lo
+    rechaza (:class:`SkuProvisional`) antes de escribir y aquí se deja pasar
+    tal cual hacia quien llamó — sin MySQL de respaldo, sin cola y sin espejo
+    inverso. Tratarlo como caída lo reviviría dos veces: en MySQL de inmediato
+    y en kubera en el siguiente reproceso de ``espejo_kubera_log``.
+
+    La guarda va ANTES de ``primaria()``, no solo dentro de ella: ``primaria``
+    abre el cursor de kubera antes de llegar a ``_asegurar_identidad``, y si
+    kubera está caída el pool truena primero — el provisional se iba por el
+    ``except Exception`` genérico (MySQL de respaldo + cola) como si fuera un
+    SKU cualquiera. Aquí la cubren todos los que escriben por ``_escribir``,
+    también los scripts que llaman a ``guardar_*`` directo.
+
+    ``exigir_real=False`` SOLO para la bitácora (``registrar_log``): un renglón
+    de ``ops.process_log`` que mencione un provisional no le da de alta a nadie
+    en el catálogo. Por omisión va encendido: quien agregue un escritor nuevo
+    queda cubierto sin acordarse."""
     try:
+        if exigir_real:
+            exigir_sku_real(sku)
         primaria()
+    except SkuProvisional:
+        log.warning("escritura %s(%s) rechazada: identificador provisional, ya "
+                    "no se guarda (ni en kubera, ni en MySQL, ni en la cola)",
+                    tabla_kubera, sku)
+        raise
     except Exception as exc:  # noqa: BLE001
         log.warning("escritura primaria kubera %s(%s) falló — MySQL aguanta y el "
                     "evento se encola: %s", tabla_kubera, sku, exc)
@@ -290,4 +317,4 @@ def registrar_log(sku: str, accion: str, origen: str, detalle: dict[str, Any],
     _escribir("registrar_log", "costos_logs", "ops.process_log", sku,
               {"proceso": "costos", "origen": origen or "backend", "sku": sku,
                "accion": accion, "estado": "ok", "detalle": detalle},
-              _primaria, escribir_mysql)
+              _primaria, escribir_mysql, exigir_real=False)

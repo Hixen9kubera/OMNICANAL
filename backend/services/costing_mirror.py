@@ -30,6 +30,9 @@ from typing import Any, Callable
 from config import settings
 from core import actor
 from services import supabase_db as sdb
+# `SkuProvisional` se re-exporta: quien llama a los upserts la atrapa desde aquí.
+from services.sku_provisional import (SkuProvisional, es_provisional,  # noqa: F401
+                                      exigir_sku_real)
 
 log = logging.getLogger("omnicanal.costing_mirror")
 
@@ -84,7 +87,17 @@ def _atribuir(cur, accion: str, origen: str) -> None:
 def _asegurar_identidad(cur, sku: str) -> None:
     """Identidad primero: si el SKU aún no existe en el maestro (producto recién
     creado), el espejo lo registra — es el primer paso del diseño final en el
-    que el backend escribe la identidad al crear. No pisa filas existentes."""
+    que el backend escribe la identidad al crear. No pisa filas existentes.
+
+    CANDADO DE PROVISIONALES (25-sep-2026, Eduardo): un identificador del app
+    viejo (``5070-0020``, ``0759-0057-PURPLE``) NO se da de alta. Se borraron de
+    ``core.products`` y ``costing.costos_validados`` y este ``insert`` era la
+    puerta por la que volvían: cualquier recálculo, reproceso de la cola o
+    espejo de una pestaña abierta desde antes los recreaba en silencio. Lanza
+    :class:`SkuProvisional` ANTES de tocar la base. Igual que el candado de
+    costo validado: vive aquí y no en quien llama — la invariante no se delega.
+    """
+    exigir_sku_real(sku)
     cur.execute(
         """insert into core.products (sku, status, source)
            values (%s, 'draft', 'backend-dualwrite')
@@ -117,7 +130,12 @@ def upsert_validados(cur, sku: str, fila: dict[str, Any]) -> None:
 
     Para liberar un SKU basta poner ``revisado_at = null``; no hay estado oculto.
     El INSERT no se bloquea (una fila que no existe no tiene nada que proteger).
+
+    Un identificador PROVISIONAL no llega al SQL: :class:`SkuProvisional` (ver
+    ``_asegurar_identidad``). La guarda se repite aquí porque hay quien llama a
+    este upsert sin pasar antes por la identidad.
     """
+    exigir_sku_real(sku)
     cur.execute(
         """insert into costing.costos_validados
              (sku, largo, alto, ancho, peso, costo_producto, costo_cbm, costo_total,
@@ -143,11 +161,24 @@ def upsert_validados(cur, sku: str, fila: dict[str, Any]) -> None:
     )
 
 
+def _provisional_fuera(sku: str, tabla: str) -> bool:
+    """El espejo F3 (MySQL manda) no da de alta un provisional. Tampoco lo
+    anota en ops.migration_issues: no es un desfase entre bases que alguien
+    tenga que conciliar, es un identificador que ya no se guarda."""
+    if not es_provisional(sku):
+        return False
+    log.warning("espejo %s(%s) omitido: identificador provisional, ya no se "
+                "guarda", tabla, sku)
+    return True
+
+
 def espejar_validados(sku: str, fila: dict[str, Any], accion: str = "auto",
                       origen: str = "backend") -> None:
     """Espeja el upsert de costos_validados (best-effort: un fallo jamás rompe
     la operación de negocio)."""
     if not activo():
+        return
+    if _provisional_fuera(sku, "costos_validados"):
         return
     try:
         with sdb.get_cursor() as cur:
@@ -162,7 +193,9 @@ def espejar_validados(sku: str, fila: dict[str, Any], accion: str = "auto",
 def upsert_finales(cur, sku: str, fila: dict[str, Any]) -> None:
     """Upsert de costing.costos_finales a nivel cursor (compartido igual que
     upsert_validados). Las dimensiones NO viajan (en el modelo v4 viven solo
-    en costos_validados); se agrega formula_ver."""
+    en costos_validados); se agrega formula_ver. Un provisional no llega al SQL
+    (:class:`SkuProvisional`, ver ``_asegurar_identidad``)."""
+    exigir_sku_real(sku)
     cur.execute(
         """insert into costing.costos_finales
                      (sku, canal, costo_producto, costo_cbm, costo_unitario, costo_comision,
@@ -209,6 +242,8 @@ def espejar_finales(sku: str, fila: dict[str, Any], accion: str = "auto",
     """Espeja el upsert de costos_finales (best-effort: un fallo jamás rompe
     la operación de negocio)."""
     if not activo():
+        return
+    if _provisional_fuera(sku, "costos_finales"):
         return
     try:
         with sdb.get_cursor() as cur:

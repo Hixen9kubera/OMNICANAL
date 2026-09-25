@@ -42,8 +42,13 @@ from typing import Any, Callable
 
 from config import settings
 from core import actor
+from services.sku_provisional import SkuProvisional, exigir_sku_real
 
 log = logging.getLogger("omnicanal.kubera_mirror")
+
+# Lo que `reprocesar_errores` le agrega a `error_texto` al CERRAR sin aplicar un
+# evento de identificador provisional. Buscable con LIKE '%descartado:%'.
+_NOTA_DESCARTE_PROVISIONAL = " · descartado: identificador provisional (no se aplicó)"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CENSO escritor → tablas (entregable 1 de la misión; alimenta /migracion)
@@ -651,6 +656,11 @@ def _up_core_product(cur, p: dict[str, Any]) -> None:
         # (revisión de Eduardo, 05-ago).
         if cur.rowcount or p.get("solo_por_wc_id"):
             return
+    # Aquí sí NACE una fila: un identificador provisional no entra (candado del
+    # 25-sep, ver services/sku_provisional.py). El UPDATE por wc_id de arriba no
+    # da de alta a nadie y se deja pasar. En vivo lo absorbe `_persistir_error`
+    # (no se encola) y en el reproceso se cierra como descartado.
+    exigir_sku_real(p.get("sku"))
     cur.execute(
         """insert into core.products (sku, name, wc_id, status, source)
            values (%s,%s,%s,%s,%s)
@@ -839,7 +849,17 @@ def _ultimo_recurso(origen_py: str, funcion: str, tabla_kubera: str,
 def _persistir_error(origen_py: str, funcion: str, tabla_mysql: str,
                      tabla_kubera: str, operacion: str, clave: str | None,
                      exc: Exception, payload: dict[str, Any]) -> None:
-    """El error se guarda en MySQL (LOCAL): sobrevive aunque kubera esté caída."""
+    """El error se guarda en MySQL (LOCAL): sobrevive aunque kubera esté caída.
+
+    Menos un caso: :class:`SkuProvisional`. Esa escritura se rechazó a
+    propósito (identificador del app viejo, ya no se guarda) y no se cura
+    reintentando; encolarla la dejaría "pendiente" para siempre y, peor, a un
+    botón de distancia de revivir en kubera lo que se borró. Tampoco es una
+    alerta de Slack: kubera está bien. Solo el log."""
+    if isinstance(exc, SkuProvisional):
+        log.warning("espejo kubera %s(%s): NO se encola — %s",
+                    tabla_kubera, clave, exc)
+        return
     try:
         if not _asegurar_tabla_log():
             # EL AGUJERO QUE TENIA LA RED (visto el 20-ago probando la cache de
@@ -898,6 +918,15 @@ def reprocesar_errores(max_items: int = 500) -> dict[str, Any]:
     errores típicos (TooManyConnections) fallaron ANTES de escribir nada.
     Payloads ilegibles (p. ej. truncados a _MAX_PAYLOAD_JSON) se saltan y se
     reportan para revisión manual.
+
+    PROVISIONALES (25-sep): un evento encolado ANTES del candado puede traer un
+    identificador del app viejo. ``costing_mirror`` lo rechaza sin escribir
+    (:class:`SkuProvisional`), y aquí eso NO cuenta como fallo: un fallo se
+    queda pendiente y se reintenta en cada reproceso, para siempre. El evento
+    se CIERRA (``resuelto=1``, igual que "Resolver grupo"), con
+    ``_NOTA_DESCARTE_PROVISIONAL`` al final de ``error_texto`` para que la cola
+    distinga "descartado" de "aplicado", y se reporta en
+    ``descartados_provisionales`` con sus SKUs.
     """
     if not disponible():
         return {"ok": False, "motivo": "KUBERA_DB_URL no configurada."}
@@ -912,6 +941,7 @@ def reprocesar_errores(max_items: int = 500) -> dict[str, Any]:
     )
     aplicados = ilegibles = fallidos = 0
     detalle_fallos: list[str] = []
+    provisionales: list[str] = []
     for f in filas:
         upsert = _UPSERTS.get(f["tabla_destino"] or "")
         try:
@@ -941,6 +971,23 @@ def reprocesar_errores(max_items: int = 500) -> dict[str, Any]:
                 (f["id"],),
             )
             aplicados += 1
+        except SkuProvisional as exc:
+            provisionales.append(exc.sku)
+            log.warning("reproceso id %s descartado: %s", f["id"], exc)
+            try:
+                # Cerrado sí, pero NO igual que uno aplicado: sin la nota, en la
+                # tabla un descarte y una escritura real son la misma fila
+                # (resuelto=1 + resuelto_ts) y una auditoría de la cola no los
+                # puede separar. `error_tipo` se deja con la falla ORIGINAL
+                # (agrupa "Resolver grupo"); la nota va al final del texto.
+                db.execute(
+                    "UPDATE espejo_kubera_log SET resuelto=1, resuelto_ts=UTC_TIMESTAMP(), "
+                    "error_texto=CONCAT(COALESCE(error_texto, ''), %s) WHERE id=%s",
+                    (_NOTA_DESCARTE_PROVISIONAL, f["id"]))
+            except Exception as exc2:  # noqa: BLE001
+                # Queda pendiente y el próximo reproceso lo vuelve a descartar:
+                # el candado no lo deja escribir, así que no hay daño, solo ruido.
+                log.warning("no se pudo cerrar el evento %s: %s", f["id"], exc2)
         except Exception as exc:  # noqa: BLE001
             fallidos += 1
             if len(detalle_fallos) < 5:
@@ -948,7 +995,9 @@ def reprocesar_errores(max_items: int = 500) -> dict[str, Any]:
                     f"id {f['id']}: {type(exc).__name__}: {str(exc)[:120]}")
     return {"ok": True, "pendientes_leidos": len(filas), "aplicados": aplicados,
             "ilegibles": ilegibles, "fallidos": fallidos,
-            "detalle_fallos": detalle_fallos}
+            "detalle_fallos": detalle_fallos,
+            "descartados_provisionales": len(provisionales),
+            "skus_provisionales": provisionales[:50]}
 
 
 def backfill_product_media(max_items: int = 1000) -> dict[str, Any]:

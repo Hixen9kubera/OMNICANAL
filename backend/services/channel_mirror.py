@@ -30,8 +30,13 @@ from typing import Any, Callable
 from config import settings
 from core import actor
 from services import supabase_db as sdb
+from services.sku_provisional import es_provisional
 
 log = logging.getLogger("omnicanal.channel_mirror")
+
+# Provisionales ya anotados en ops.migration_issues por ESTE proceso: el sync
+# pasa cada 15 min y sin esto cada pasada repetiría el mismo issue.
+_provisionales_avisados: set[str] = set()
 
 # cuenta legacy -> uuid de core.accounts (cache de proceso; 4 filas, estable)
 _cuentas: dict[str, str] | None = None
@@ -76,6 +81,26 @@ def _registrar_issue(sku, motivo: str) -> None:
         pass
 
 
+def _provisional_fuera(sku: str, via: str) -> bool:
+    """CANDADO DE PROVISIONALES (25-sep-2026, ver ``services/sku_provisional``):
+    el sync y el DROP no le dan identidad en ``core.products`` a un
+    identificador del app viejo (``5070-0020``). Borrados esos, este ``insert``
+    los revivía en la siguiente pasada — y con ellos su fila de canal.
+
+    La fila se SALTA, no se esconde: si una publicación de verdad trae un
+    provisional como SKU de vendedor, eso se corrige en el canal, y para eso
+    alguien tiene que verlo. Una vez por proceso a ``ops.migration_issues``."""
+    if not es_provisional(sku):
+        return False
+    if sku not in _provisionales_avisados:
+        _provisionales_avisados.add(sku)
+        log.warning("espejo %s: %s omitido — identificador provisional, ya no "
+                    "se guarda", via, sku)
+        _registrar_issue(sku, f"{via}: identificador provisional, no se espeja "
+                              f"(corregir el SKU en el canal)")
+    return True
+
+
 def escribir_tanda(cur, rows: list[dict[str, Any]]) -> None:
     """Upserts de una tanda a nivel cursor (identidad + solo-si-cambió por
     fila). Lo comparten el espejo F3 y la primaria del CORTE F6 — es el mismo
@@ -85,6 +110,8 @@ def escribir_tanda(cur, rows: list[dict[str, Any]]) -> None:
                 sku = str(r.get("sku") or "").strip()
                 if not sku or len(sku) > 100 or any(ch.isspace() for ch in sku):
                     continue  # inválidos conocidos: ya inventariados en el Excel
+                if _provisional_fuera(sku, "sync"):
+                    continue
                 canal = r.get("canal") or ""
                 cuenta_id = _cuenta_uuid(canal, r.get("cuenta") or "")
                 if not cuenta_id:
@@ -357,6 +384,8 @@ def sincronizar_drop(limite: int = 0) -> dict[str, Any]:
         sku = str(r["sku"] or "").strip()
         if not sku or len(sku) > 100 or any(ch.isspace() for ch in sku):
             continue  # mismos inválidos que descarta el espejo del sync
+        if _provisional_fuera(sku, "drop_watch"):
+            continue
         filas.append((sku, cuenta_id, "general", int(r["stock_woo"])))
     if not filas:
         return {"ok": True, "leidas": len(crudas), "escritas": 0, "cambiadas": 0}

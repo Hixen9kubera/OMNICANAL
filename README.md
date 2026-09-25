@@ -1001,6 +1001,20 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.577.0 — Candado: los identificadores provisionales «NNNN-NNNN» ya no se pueden re-crear
+
+Eduardo decidió borrar de Costos los 6,252 identificadores provisionales (`5070-0020`, `0759-0057-PURPLE`…): no son
+SKUs de Kubera. El borrado va por acta aparte; este cambio evita que vuelvan.
+
+- `services/sku_provisional.py`: la regla única (`^\d{3,5}-\d{3,5}(?:-.+)?$`) y `SkuProvisional`.
+- La invariante vive en la escritura más baja: `costing_mirror._asegurar_identidad`, `upsert_validados` y
+  `upsert_finales` rechazan antes de cualquier SQL. Un rechazo NO es una caída de kubera: no va a la cola
+  `espejo_kubera_log`, no cae a MySQL y el reproceso cierra los eventos viejos con una nota de descarte.
+- Costos: `/costos/{sku}/recalcular` responde 422 y `/costos/bulk` salta cada provisional y guarda el resto.
+- El ETL diario (`etl_core_products_v2.py`, 06:15 UTC) ya no los inserta en core.products; tampoco el espejo de canales,
+  el seam de publicación ni el espejo de Woo.
+- 27 pruebas nuevas; cada guarda tiene su contraprueba.
+
 ### v0.576.0 — Las pantallas leen el contenedor de `costing.sku_contenedor` (flag `LEER_SKU_CONTENEDOR`)
 
 Con el flag encendido, la tabla de la 0060 es la fuente PREFERIDA del contenedor de un SKU y lo de hoy queda de

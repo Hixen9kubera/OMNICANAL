@@ -47,6 +47,16 @@ import psycopg2.extras
 import pymysql
 
 ROOT = Path(__file__).resolve().parent.parent.parent
+
+# El predicado de provisionales es UNO para toda la app (services/sku_provisional,
+# stdlib pura: el build de este cron solo instala pymysql y psycopg2). La ruta es
+# `parent.parent` —la carpeta backend/— y NO `ROOT / "backend"`: en Railway el
+# servicio tiene la raíz en backend/ (el startCommand es `python scripts/...`),
+# ahí ROOT es `/` y `/backend` no existe. Mismo patrón que cargar_arbol_ml.py,
+# que corre en esta misma cadena.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from services.sku_provisional import es_provisional  # noqa: E402
+
 FASE = "core-etl-v2"
 BATCH = 1000
 CAMPOS = ("name", "wc_id", "wc_parent_id", "odoo_id", "status", "has_variations", "source")
@@ -57,6 +67,20 @@ CAMPOS = ("name", "wc_id", "wc_parent_id", "odoo_id", "status", "has_variations"
 # lo recalcula como la lista de tablas MySQL donde aparece el SKU: contra el
 # 'panel_crear' del seam SIEMPRE difiere. Solo estos campos entran a seam_gap.
 CAMPOS_SEAM = ("name", "wc_id", "status")
+
+# CANDADO DE PROVISIONALES (25-sep-2026, Eduardo): los identificadores del app
+# viejo (`5070-0020`, `0759-0057-PURPLE`) se BORRAN de core.products y de
+# costing.costos_validados, y este ETL era la otra puerta por la que volvían:
+# da de alta cualquier SKU de sus fuentes, y cada alta además cuenta como
+# seam_gap y rompe la racha de /migracion. Un provisional se CUENTA y no entra.
+#
+# En estas fuentes (tablas de kubera) los provisionales son justo las filas que
+# borra el script del 25-sep: se cuentan pero NO se anotan en
+# ops.migration_issues — mientras el borrado no corra serían ~6,252 issues de
+# golpe, y después no queda ninguno. Los que traigan Woo, Odoo (ahí la gente
+# teclea códigos a mano) o un canal sí se anotan: alguien los tiene que
+# corregir en su origen.
+FUENTES_PURGADAS = frozenset({"costos_validados", "costos_finales", "categorias_ml"})
 
 # ── Anti-cuelgue (lección del backfill de pedidos: NADA corre para siempre) ──
 # 1) Timeout de socket GLOBAL: cubre xmlrpc (Odoo no tiene timeout por default
@@ -256,8 +280,16 @@ def main() -> None:
     PRECEDENCIA = {"woocommerce": 0, "productos": 1, "costos_validados": 2,
                    "categorias_ml": 3, "odoo": 4, "costos_finales": 5}
 
+    provisionales: set[str] = set()      # distintos, para el acta
+
     def resolver(raw_sku) -> tuple[str | None, str | None]:
-        """(canónico_cargable, motivo_no_cargable)."""
+        """(canónico_cargable, motivo_no_cargable).
+
+        Excepción: con motivo ``provisional`` el primer valor trae el canónico
+        al que resolvió (para el issue), y NO es cargable. Se mira el CANÓNICO,
+        no el crudo: un provisional con alias curado a un SKU real sí entra, y
+        un SKU que el id_map manda a un provisional no. Tampoco se aprende un
+        alias hacia un provisional."""
         if raw_sku is None or not str(raw_sku).strip():
             return None, "placeholder"
         original = str(raw_sku)
@@ -265,6 +297,8 @@ def main() -> None:
         via_map = id_map.get(original) or id_map_ci.get(original.lower())
         mec = normalizar_mecanico(original)
         if via_map and not re.search(r"\s", via_map):
+            if es_provisional(via_map):
+                return via_map, "provisional"
             return via_map, None
         if mec is None:
             return None, "placeholder"
@@ -275,12 +309,32 @@ def main() -> None:
             return None, "whitespace"
         via_map2 = id_map.get(mec) or id_map_ci.get(mec.lower())
         canon = via_map2 if (via_map2 and not re.search(r"\s", via_map2)) else mec
+        if es_provisional(canon):
+            return canon, "provisional"
         if canon != original:
             aliases_nuevos.setdefault(original, canon)
         return canon, None
 
+    def anotar_provisional(raw_sku, canon: str, fuente: str) -> None:
+        """Un provisional que NO entra: se cuenta siempre; el issue solo si la
+        fuente no es una de las tablas que purga el borrado (FUENTES_PURGADAS).
+        Deduplicado contra todo el historial, como los demás motivos."""
+        tally_issues["provisional"] += 1
+        provisionales.add(canon)
+        if fuente in FUENTES_PURGADAS:
+            return
+        clave_issue = (str(raw_sku)[:100], "provisional")
+        if clave_issue not in issues_abiertas:
+            issues_abiertas.add(clave_issue)
+            issues_nuevas.append((fuente, clave_issue[0], "provisional",
+                                  json.dumps({"sku_original": str(raw_sku),
+                                              "canonico": canon}, default=str)))
+
     def incorporar(raw_sku, fuente: str, **campos) -> None:
         canon, motivo = resolver(raw_sku)
+        if motivo == "provisional":
+            anotar_provisional(raw_sku, canon, fuente)
+            return
         if motivo:
             tally_issues[motivo] += 1
             clave_issue = (str(raw_sku)[:100] if raw_sku else None, motivo)
@@ -363,6 +417,11 @@ def main() -> None:
     # marketplace_only: publicado en canal sin existir en ninguna fuente maestra
     for sku_canal in skus_canal:
         canon, motivo = resolver(sku_canal)
+        if motivo == "provisional":
+            # Publicado con un provisional como SKU de vendedor: no nace en el
+            # maestro (candado del 25-sep); se anota para corregirlo en el canal.
+            anotar_provisional(sku_canal, canon, "channel.listings")
+            continue
         if motivo or canon.lower() in por_clave:
             continue
         por_clave[canon.lower()] = {
@@ -464,6 +523,9 @@ def main() -> None:
         "plan": {"insertar": len(inserts), "actualizar": len(updates),
                   "sin_cambio": sin_cambio, "solo_en_core_no_se_tocan": solo_en_core},
         "aliases_nuevos": len(aliases_nuevos),
+        # Candado del 25-sep: distintos que NO entraron (el tally cuenta por fuente).
+        "provisionales_omitidos": len(provisionales),
+        "muestra_provisionales": sorted(provisionales)[:10],
         "issues": {"nuevas": len(issues_nuevas), "por_motivo": dict(tally_issues)},
         "muestra_inserts": [{"sku": f["sku"], "status": f["status"], "source": f["source"]}
                              for f in inserts[:15]],
@@ -544,6 +606,7 @@ def main() -> None:
                                     "updates_fuera_de_seam": len(updates) - len(updates_seam),
                                     "issues_nuevas": len(issues_escribibles),
                                     "nombre_no_coincide_informativo": tally_issues.get("nombre_no_coincide", 0),
+                                    "provisionales_omitidos": len(provisionales),
                                     "aliases_nuevos": len(aliases_nuevos)}, default=str),
                   json.dumps({}), resultado))
     pg.commit()

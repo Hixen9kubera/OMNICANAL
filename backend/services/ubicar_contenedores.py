@@ -72,6 +72,7 @@ from typing import Any, Iterable
 from urllib.parse import urlsplit
 
 from services import embarques as emb
+from services import sku_provisional as _sku_prov
 
 # ── Constantes ────────────────────────────────────────────────────────────────
 
@@ -83,9 +84,10 @@ FUENTES_BD = ("ferraforme", "costos", "odoo_campo", "odoo_oc")
 MOTIVOS = ("conflicto", "refutado", "debil", "provisional", "padre_woo",
            "fuera_de_catalogo", "sin_evidencia")
 
-# 6,252 en prod (25-sep). Mismo patrón que el análisis: 3 a 5 dígitos por lado
-# y un sufijo opcional («0031-0001», «4814-0001-A»).
-RE_PROVISIONAL = re.compile(r"^\d{3,5}-\d{3,5}(-.+)?$")
+# 6,252 en prod (25-sep). El patrón es UNO solo para toda la app y vive en
+# `services/sku_provisional.py` (lo comparten el análisis y el escritor de
+# costos); el nombre se conserva aquí para quien ya lo importaba.
+RE_PROVISIONAL = _sku_prov.RE_PROVISIONAL
 
 # Un Ferraforme «existe» para refutar cuando trae al menos tantos SKUs (el
 # umbral del análisis: por debajo es un índice parcial, no el documento).
@@ -145,7 +147,7 @@ def clave(sku: Any) -> str:
 
 
 def es_provisional(sku: Any) -> bool:
-    return bool(RE_PROVISIONAL.match(clave(sku)))
+    return _sku_prov.es_provisional(clave(sku))
 
 
 def _id_odoo(valor: Any) -> Any:

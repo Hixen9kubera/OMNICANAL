@@ -42,6 +42,7 @@ from models.schemas import Paginacion, Producto, RespuestaProductos
 from services import (alertas, bitacora_read, categorias_write, core_write, costing_read,
                       costing_write, costos, creacion, crear_producto, db, kubera_mirror,
                       lecturas_fuente, woocommerce)
+from services import sku_provisional
 
 log = logging.getLogger("omnicanal.routers.crear")
 router = APIRouter(prefix="/api/crear", tags=["crear"])
@@ -881,7 +882,13 @@ async def costos_recalcular(sku: str, req: RecalcularCostos):
     Recálculo MANUAL: aplica los overrides, deriva CBM de las dims, recalcula precio
     con la comisión ML, PERSISTE en costos_validados + costos_finales, deja log y
     (opcional) sincroniza a WooCommerce (precios + costo + peso/dimensiones).
+
+    Un identificador provisional (``5070-0020``) se rechaza de entrada con 422:
+    se borraron del catálogo y una pestaña abierta desde antes todavía los puede
+    mandar. Ni se calcula ni se toca Woo.
     """
+    if sku_provisional.es_provisional(sku):
+        raise HTTPException(422, f"{sku}: {sku_provisional.MENSAJE}")
     fila = await run_in_threadpool(
         costos.recalcular, sku, req._overrides(),
         req.incluir_envio, req.margen, costos.DEFAULT_ACCOUNT, req.auto_cbm)
@@ -1111,9 +1118,17 @@ async def costos_bulk(req: BulkCostos):
     """
     Regenera el costo/precio de VARIOS SKUs (con las medidas y costo que llegan por
     fila). Reconstruye CBM→costo→precios, persiste en DB + log, y (opcional) Woo.
+
+    Los identificadores provisionales se SALTAN uno por uno con su aviso y el
+    resto del lote se guarda: la selección sale de la pantalla, y una pestaña
+    abierta antes del borrado del 25-sep todavía los trae.
     """
     resultados = []
     for it in req.items:
+        if sku_provisional.es_provisional(it.sku):
+            resultados.append({"sku": it.sku, "ok": False, "provisional": True,
+                               "error": sku_provisional.MENSAJE})
+            continue
         overrides = {k: v for k, v in it.model_dump(exclude={"sku"}).items() if v is not None}
         # comisión global del bulk si la fila no trae una propia
         if "pct_comision" not in overrides and req.pct_comision is not None:

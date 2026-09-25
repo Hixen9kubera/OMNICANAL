@@ -30,6 +30,8 @@ import requests
 
 from config import settings
 from services import db
+# Re-exportado: `comp.es_provisional` (ver el bloque junto a `candidatos`).
+from services.sku_provisional import es_provisional  # noqa: F401
 
 log = logging.getLogger("omnicanal.packing.comparador")
 
@@ -73,31 +75,16 @@ def buscar_contenedor(codigo: str) -> list[dict[str, Any]]:
         return []
 
 
-# El sufijo opcional es la variante que el app viejo le pegaba al provisional:
-# `0759-0057-PURPLE`, `2791-0015-L`, `1330-0083-WHITE-A+A`. Sin él se colaban 16
-# filas — VERIFICADO: ninguna de esas existe en WooCommerce, igual que los
-# provisionales pelones. Un SKU de Kubera siempre empieza con letras
-# (`BAÑ-0486-EST`, `ROP-AZL-GRICLA-GRIOBS-S`), así que el ancla `^\d` no lo toca.
-_RE_PROVISIONAL = re.compile(r"^\d{3,5}-\d{3,5}(?:-.+)?$")
-
-
-def es_provisional(sku: str) -> bool:
-    """
-    ``True`` si el "SKU" es en realidad un identificador provisional del app
-    viejo (``5279-0001`` = últimos 4 del contenedor + consecutivo), no un SKU de
-    Kubera (``SUBCAT-####-ATRIBUTO``).
-
-    MEDIDO en producción: de las 15,429 filas de ``costos_validados``, **6,237
-    son provisionales**, y es todo-o-nada por contenedor — los cuatro más
-    grandes (MRKU3085279, FFAU4457148, MRKU2054020, EITU9309801 = 5,213 filas)
-    están 100% provisionales.
-
-    Importa porque un provisional no existe en WooCommerce: no tiene nombre ni
-    foto, así que el empate por texto y por imagen se quedan sin insumo. Y si
-    aun así se empatara, ``guardar()`` escribiría el costo sobre el
-    identificador provisional en vez del SKU real, en silencio.
-    """
-    return bool(_RE_PROVISIONAL.match((sku or "").strip()))
+# El patrón y el predicado viven en `services/sku_provisional.py` desde el
+# 25-sep: los comparten este análisis, el ubicador de contenedores y —lo que
+# importa— el escritor de costos (`costing_mirror`), que ya no da de alta un
+# provisional. Se re-exporta con el mismo nombre: `comp.es_provisional` sigue
+# siendo la llamada de packing_publicados y packing_resolver.
+#
+# Por qué importa aquí: un provisional no existe en WooCommerce —no tiene nombre
+# ni foto—, así que el empate por texto y por imagen se quedan sin insumo. Y si
+# aun así se empatara, ``guardar()`` escribiría el costo sobre el identificador
+# provisional en vez del SKU real, en silencio. (El import va arriba.)
 
 
 def candidatos(contenedor: str) -> list[dict[str, Any]]:
