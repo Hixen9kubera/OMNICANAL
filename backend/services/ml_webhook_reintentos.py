@@ -189,12 +189,18 @@ async def reprocesar(limite: int = _LOTE) -> dict[str, Any]:
     """Una pasada del reprocesador. Nunca lanza."""
     from services import meli, pedidos_ml
 
-    r: dict[str, Any] = {"estado": "ok", "filas": 0, "ordenes": 0, "ok": 0,
+    from services.reintentos_freno import FRENO_ML, avisar_agotado
+
+    r: dict[str, Any] = {"estado": "ok", "filas": 0, "ordenes": 0, "ok": 0, "creados": 0,
                          "reintentar": 0, "agotados": 0, "no_orden": 0, "error": None}
     try:
         if not settings.pedidos_wc_enabled:
             # Sin pedidos, cada fila gastaría un intento sin que nada falle.
             r.update(estado="omitido", error="PEDIDOS_WC_ENABLED apagado")
+            return _cerrar(r)
+        detenido = await asyncio.to_thread(FRENO_ML.detenido)
+        if detenido:
+            r.update(estado="frenado", error=detenido.get("motivo"))
             return _cerrar(r)
         filas = await asyncio.to_thread(_pendientes, limite)
         r["filas"] = len(filas)
@@ -232,12 +238,23 @@ async def reprocesar(limite: int = _LOTE) -> dict[str, Any]:
                 tope_id = max(int(ev.get("id") or 0) for ev in eventos) + 1
                 await asyncio.to_thread(resolver_previos, f"/orders/{oid}", tope_id)
                 log.info("ML reintento de la orden %s → %s", oid, texto)
+                if rp.get("accion") == "creado":
+                    r["creados"] += 1
+                    if await asyncio.to_thread(FRENO_ML.anotar_creado, oid):
+                        # Llegó al límite de pedidos creados por hora: se para
+                        # AQUÍ, y las demás órdenes esperan a una persona.
+                        r.update(estado="frenado", error="límite de pedidos creados por hora")
+                        break
             else:
                 texto = f"pedido WC falló: {rp.get('motivo')}"
+                agotado = False
                 for ev in eventos:
                     m = await asyncio.to_thread(marcar_fallo, ev.get("id"), texto,
                                                 int(ev.get("intentos") or 0))
+                    agotado |= bool(m.get("agotado"))
                     r["agotados" if m.get("agotado") else "reintentar"] += 1
+                if agotado:
+                    await asyncio.to_thread(avisar_agotado, "ml", oid, texto, tope())
     except Exception as exc:  # noqa: BLE001 — nunca lanza
         log.exception("ml_webhook_reintentos.reprocesar falló")
         r.update(estado="error", error=f"{type(exc).__name__}: {str(exc)[:200]}")

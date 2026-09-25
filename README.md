@@ -1001,6 +1001,38 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.572.0 — El freno de los reintentos: si crean demasiados pedidos se detienen solos y no se reanudan sin una persona
+
+Condición de Eduardo para encender los reintentos de ML y TikTok (25-sep): que
+no puedan quedarse haciendo algo mal ni generar un error destructivo. Los
+reintentos ya eran idempotentes (candado de kubera, búsqueda en Woo, candado de
+huella), pero eso protege de lo conocido. El freno acota el daño de un defecto
+que nadie conoce, sin depender de que la idempotencia sea perfecta.
+
+- **El freno** (`services/reintentos_freno.py`), uno por canal: cuenta los
+  pedidos CREADOS por el reintento (las actualizaciones no). Al llegar al límite
+  en una hora (`ML_WEBHOOK_REINTENTOS_MAX_CREADOS_HORA` /
+  `TIKTOK_WEBHOOK_REINTENTOS_MAX_CREADOS_HORA`, 20 por omisión; la peor caída
+  real dejó 13 ventas sin pedido en 3 h), el reintento se DETIENE en ese mismo
+  punto. Avisa una vez a Slack y los avisos quedan pendientes en /flujo.
+- **La detención se guarda en `ops.process_log`**: un deploy o un reinicio NO
+  la quitan. Solo se quita con `POST /api/webhooks/reintentos/liberar?canal=ml|tiktok`
+  (con llave), después de revisar que no haya duplicados en Woo. Si el freno no
+  puede leer su estado, **falla cerrado**: esa pasada no reintenta nada. Si la
+  bitácora no acepta la detención, se detiene igual en memoria.
+- **Aviso a Slack** cuando una venta agota sus reintentos (antes solo quedaba en
+  /flujo, que la olvida a las 24 h).
+- `GET /api/webhooks/reintentos` (con llave): si cada uno está encendido, su
+  última pasada y su freno.
+
+Lo que ya tenían y se mantiene: tope de intentos (ML 10, TikTok 6), ventana de
+48 h, una pasada por orden, candado de los sondeos y primera pasada 5 min después
+de arrancar (no coincide con el relevo de un deploy). En la primera pasada no
+había nada pendiente.
+
+Pruebas: 35 unitarias y sandbox 24/24. El freno crea 2 y se detiene, avisa una
+vez, un reinicio no lo quita, detenido no toca nada y liberado sigue.
+
 ### v0.571.0 — Una venta de ML cuyo pedido falla queda pendiente y se reintenta sola; /flujo cuenta solo lo que pide atención
 
 A pedido de Eduardo (25-sep), tras la caída de DNS de Hostinger del 24-sep

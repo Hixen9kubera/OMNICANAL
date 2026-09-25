@@ -36,6 +36,7 @@ os.environ.update({
     "SYNC_ENABLED": "false",          # sin refresco de ítems: no hay ML de verdad
     "PEDIDOS_WC_ENABLED": "true",
     "ML_WEBHOOK_REINTENTOS_TOPE": "10",
+    "ML_WEBHOOK_REINTENTOS_MAX_CREADOS_HORA": "2",   # el freno, chico para verlo actuar
 })
 
 from config import settings  # noqa: E402
@@ -103,6 +104,7 @@ _venta_ok = {"ok": True, "wc_order_id": 424242, "accion": "creado", "estado_wc":
 _venta_falla = {"ok": False, "motivo": "error al crear pedido: [Errno -2] Name or service not known"}
 
 print(f"Sandbox {_ref[:8]}… · ML y Woo simulados · env={settings.app_env}\n")
+_INICIO = sdb.fetch_one("select now() t")["t"]
 limpiar()
 antes = kpi()
 try:
@@ -200,8 +202,41 @@ try:
           str(d))
     texto, estado = flujo._salud_webhooks(kpi())
     print(f"     /flujo diría: «{texto}» → {estado}")
+
+    print("\n7. El FRENO: límite de pedidos creados por hora (aquí 2), guardado en la bitácora")
+    from services import alertas
+    from services import reintentos_freno as fr
+    avisos = mock.patch.object(alertas, "avisar").start()
+    fr.FRENO_ML.liberar()                                  # arranque limpio
+    limpiar()                                              # sin pendientes de las secciones previas
+    evs = [insertar("mercado_libre", "orders_v2", f"/orders/99900000000009{n}", 20 + n,
+                    intentos=1, espera_s=-60) for n in range(4)]
+    sinc.reset_mock()
+    sinc.side_effect = lambda oid, **k: {"ok": True, "wc_order_id": 777, "accion": "creado",
+                                         "estado_wc": "processing"}
+    r7 = asyncio.run(mr.reprocesar())
+    check("crea 2 y se detiene ahí", sinc.await_count == 2 and r7["estado"] == "frenado"
+          and r7["creados"] == 2, str(r7))
+    check("las otras 2 ventas siguen pendientes, a la vista",
+          sum(1 for e in evs if not fila(e)["procesado"]) == 2)
+    check("avisa a Slack una sola vez", avisos.call_count == 1,
+          (avisos.call_args.args[1][:80] if avisos.called else "sin aviso"))
+    reinicio = fr.Freno("ml", "ml_webhook_reintentos_max_creados_hora")
+    check("un REINICIO no lo quita: la bitácora dice detenido", reinicio.detenido() is not None)
+    sinc.reset_mock()
+    r7b = asyncio.run(mr.reprocesar())
+    check("mientras está detenido no toca nada", sinc.await_count == 0 and r7b["estado"] == "frenado")
+    fr.FRENO_ML.liberar()
+    check("liberado: la bitácora ya no lo detiene", reinicio.detenido() is None)
+    sinc.side_effect = lambda oid, **k: {"ok": True, "wc_order_id": 777, "accion": "actualizado",
+                                         "estado_wc": "processing"}
+    r7c = asyncio.run(mr.reprocesar())
+    check("liberado, sigue con las pendientes (las actualizaciones no cuentan)",
+          r7c["estado"] == "ok" and all(fila(e)["procesado"] for e in evs), str(r7c))
 finally:
     mock.patch.stopall()
+    sdb.execute("delete from ops.process_log where proceso = 'reintentos_freno' "
+                "and created_at >= %s", (_INICIO,))
     n = limpiar()
     print(f"\nLimpieza: {n} filas de prueba borradas · quedan "
           f"{sdb.fetch_one('select count(*) n from ops.webhook_events where delivery_id like %s', (_PREF + '%',))['n']}")

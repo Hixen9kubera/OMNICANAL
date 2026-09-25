@@ -222,6 +222,13 @@ class Settings(BaseSettings):
     ml_webhook_reintentos_enabled: bool = False
     ml_webhook_reintentos_min: int = 5
     ml_webhook_reintentos_tope: int = 10
+    # EL FRENO de los dos reintentos (services/reintentos_freno.py): si en una
+    # hora un reintento CREA esta cantidad de pedidos, se detiene solo, avisa a
+    # Slack y SE QUEDA detenido aunque haya deploys, hasta que una persona lo
+    # libere (POST /api/webhooks/reintentos/liberar). La peor caída real dejó 13
+    # ventas sin pedido en 3 h.
+    ml_webhook_reintentos_max_creados_hora: int = 20
+    tiktok_webhook_reintentos_max_creados_hora: int = 20
     # GUÍA Y ETIQUETA PDF (pedidos_tiktok.refrescar_guias): número de rastreo en
     # la entrega de salida y el PDF de TikTok ("Subir guía", `<order_id>.pdf`)
     # en la orden CONFIRMADA de Odoo, verificados al re-leer. Cada 20 min porque

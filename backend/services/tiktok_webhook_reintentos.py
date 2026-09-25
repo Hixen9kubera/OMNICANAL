@@ -216,8 +216,9 @@ def _pendientes(limite: int) -> list[dict[str, Any]]:
 async def reprocesar(limite: int = _LOTE) -> dict[str, Any]:
     """Una pasada del reprocesador. Nunca lanza."""
     from services import pedidos_tiktok, pedidos_tiktok_sondeo as sondeo
+    from services.reintentos_freno import FRENO_TIKTOK, avisar_agotado
 
-    r: dict[str, Any] = {"estado": "ok", "filas": 0, "ordenes": 0, "ok": 0,
+    r: dict[str, Any] = {"estado": "ok", "filas": 0, "ordenes": 0, "ok": 0, "creados": 0,
                          "terminales": 0, "reintentar": 0, "agotados": 0,
                          "con_huella": 0, "no_numericos": 0, "error": None}
     try:
@@ -225,6 +226,12 @@ async def reprocesar(limite: int = _LOTE) -> dict[str, Any]:
             # Sin pedidos, `procesar` contestaría "apagado" y cada fila gastaría
             # un intento sin que nada haya fallado de verdad.
             r.update(estado="omitido", error="PEDIDOS_TIKTOK_ENABLED apagado")
+            return _cerrar(r)
+        # El FRENO (reintentos_freno): detenido por exceso de pedidos creados, o
+        # sin poder leer su estado → esta pasada no reintenta nada.
+        detenido = await asyncio.to_thread(FRENO_TIKTOK.detenido)
+        if detenido:
+            r.update(estado="frenado", error=detenido.get("motivo"))
             return _cerrar(r)
         filas = await asyncio.to_thread(_pendientes, limite)
         r["filas"] = len(filas)
@@ -278,6 +285,7 @@ async def reprocesar(limite: int = _LOTE) -> dict[str, Any]:
                     res = await pedidos_tiktok.procesar(oid, reintentable=True)
                 except Exception as exc:  # noqa: BLE001
                     res = {"ok": False, "motivo": f"{type(exc).__name__}: {str(exc)[:150]}"}
+            agotado = False
             for ev in eventos:
                 m = await asyncio.to_thread(marcar, ev.get("id"), res,
                                             int(ev.get("intentos") or 0))
@@ -288,8 +296,17 @@ async def reprocesar(limite: int = _LOTE) -> dict[str, Any]:
                     r["terminales"] += 1
                 elif m.get("agotado"):
                     r["agotados"] += 1
+                    agotado = True
                 else:
                     r["reintentar"] += 1
+            if agotado:
+                await asyncio.to_thread(avisar_agotado, "tiktok", oid,
+                                        (res or {}).get("motivo") or "", tope())
+            if isinstance(res, dict) and res.get("ok") and res.get("accion") == "creado":
+                r["creados"] += 1
+                if await asyncio.to_thread(FRENO_TIKTOK.anotar_creado, oid):
+                    r.update(estado="frenado", error="límite de pedidos creados por hora")
+                    break
     except Exception as exc:  # noqa: BLE001 — nunca lanza
         log.exception("tiktok_webhook_reintentos.reprocesar falló")
         r.update(estado="error", error=f"{type(exc).__name__}: {str(exc)[:200]}")

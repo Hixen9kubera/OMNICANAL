@@ -676,6 +676,38 @@ async def ping_ml():
     return {"ok": True, "servicio": "webhook Mercado Libre", "listo": True}
 
 
+@router.get("/reintentos", dependencies=[Depends(requiere_api_key)])
+async def reintentos_estado():
+    """Los dos reintentos automáticos de avisos (ML y TikTok): si están
+    encendidos, su última pasada, y su FRENO (services/reintentos_freno.py)."""
+    from services import ml_webhook_reintentos as mlr
+    from services import reintentos_freno as fr
+    from services import tiktok_webhook_reintentos as tkr
+    salida = {}
+    for canal, freno, mod, bandera in (
+            ("ml", fr.FRENO_ML, mlr, "ml_webhook_reintentos_enabled"),
+            ("tiktok", fr.FRENO_TIKTOK, tkr, "tiktok_webhook_reintentos_enabled")):
+        salida[canal] = {
+            "encendido": bool(getattr(settings, bandera, False)),
+            "ultima_pasada": mod.estado(),
+            "freno": {"detenido": await asyncio.to_thread(freno.detenido),
+                      "creados_ultima_hora": freno.creados_ultima_hora(),
+                      "limite_por_hora": freno.limite()},
+        }
+    return salida
+
+
+@router.post("/reintentos/liberar", dependencies=[Depends(requiere_api_key)])
+async def reintentos_liberar(canal: str = Query(..., pattern="^(ml|tiktok)$")):
+    """Quita el FRENO de un reintento. Antes: revisar que no haya pedidos
+    duplicados en Woo — el freno se activó porque el reintento creó demasiados."""
+    from services import reintentos_freno as fr
+    freno = fr.FRENO_ML if canal == "ml" else fr.FRENO_TIKTOK
+    anotado = await asyncio.to_thread(freno.liberar)
+    return {"ok": anotado, "canal": canal,
+            "detenido": await asyncio.to_thread(freno.detenido)}
+
+
 @router.get("/ml/salud")
 async def salud_ml():
     """

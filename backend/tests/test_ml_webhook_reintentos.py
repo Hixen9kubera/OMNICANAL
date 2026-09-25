@@ -24,7 +24,8 @@ import asyncio
 import unittest
 from unittest import mock
 
-from services import meli, ml_webhook_reintentos as mr, pedidos_ml
+from services import alertas, meli, ml_webhook_reintentos as mr, pedidos_ml
+from services import reintentos_freno as fr
 from services import supabase_db as sdb
 from services import tiktok_webhook_reintentos as tr
 
@@ -111,6 +112,9 @@ class Reprocesar(unittest.TestCase):
             side_effect=lambda oid, **k: {"ok": True, "wc_order_id": 9, "accion": "creado",
                                           "estado_wc": "processing"} if oid == "111"
             else {"ok": False, "motivo": "error al crear pedido: DNS"})).start()
+        self.detenido = mock.patch.object(fr.FRENO_ML, "detenido", return_value=None).start()
+        self.anotar = mock.patch.object(fr.FRENO_ML, "anotar_creado", return_value=False).start()
+        self.agotado = mock.patch.object(fr, "avisar_agotado").start()
         self.addCleanup(mock.patch.stopall)
 
     def correr(self):
@@ -150,6 +154,92 @@ class Reprocesar(unittest.TestCase):
             r = self.correr()
         self.assertEqual(r["estado"], "omitido")
         self.pend.assert_not_called()
+
+    def test_frenado_no_toca_nada(self):
+        self.detenido.return_value = {"desde": "x", "motivo": "20 pedidos en 1 h"}
+        r = self.correr()
+        self.assertEqual(r["estado"], "frenado")
+        self.pend.assert_not_called()
+        self.sinc.assert_not_awaited()
+
+    def test_cuenta_el_creado_y_si_llega_al_limite_se_para_ahi(self):
+        self.filas[:] = [{"id": 1, "external_id": "/orders/111", "intentos": 1},
+                         {"id": 2, "external_id": "/orders/333", "intentos": 1}]
+        self.sinc.side_effect = lambda oid, **k: {"ok": True, "wc_order_id": 9,
+                                                  "accion": "creado", "estado_wc": "p"}
+        self.anotar.return_value = True           # el primero ya llega al límite
+        r = self.correr()
+        self.assertEqual((r["estado"], r["creados"], self.sinc.await_count), ("frenado", 1, 1))
+
+    def test_las_actualizaciones_no_cuentan_para_el_freno(self):
+        self.sinc.side_effect = lambda oid, **k: {"ok": True, "wc_order_id": 9,
+                                                  "accion": "actualizado", "estado_wc": "p"}
+        self.correr()
+        self.anotar.assert_not_called()
+
+    def test_la_que_se_agota_avisa(self):
+        self.fallo.return_value = {"agotado": True}
+        self.correr()
+        ordenes = sorted(c.args[1] for c in self.agotado.call_args_list)
+        self.assertIn("222", ordenes)
+
+
+class FrenoTest(unittest.TestCase):
+    def setUp(self):
+        self.f = fr.Freno("ml", "ml_webhook_reintentos_max_creados_hora")
+        mock.patch.object(mr.settings, "ml_webhook_reintentos_max_creados_hora", 3).start()
+        self.ex = mock.patch.object(sdb, "execute", return_value=1).start()
+        self.avisar = mock.patch.object(alertas, "avisar").start()
+        self.addCleanup(mock.patch.stopall)
+
+    def test_se_detiene_al_llegar_al_limite_y_avisa_una_vez(self):
+        self.assertEqual([self.f.anotar_creado(str(i)) for i in range(3)], [False, False, True])
+        self.assertEqual(self.avisar.call_count, 1)
+        sql, p = self.ex.call_args.args
+        self.assertIn("'detenido'", sql)
+        self.assertEqual(p[:2], ("reintentos_freno", "ml"))
+
+    def test_la_ventana_es_de_una_hora(self):
+        self.f._creados.extend([0.0, 1.0])
+        self.assertEqual(self.f.creados_ultima_hora(ahora=3602.0), 0)
+
+    def test_detenido_lee_la_bitacora(self):
+        with mock.patch.object(sdb, "fetch_one", return_value={
+                "estado": "detenido", "created_at": "t", "detalle": {"motivo": "m"}}):
+            self.assertEqual(self.f.detenido()["motivo"], "m")
+        with mock.patch.object(sdb, "fetch_one", return_value={"estado": "liberado"}):
+            self.assertIsNone(self.f.detenido())
+        with mock.patch.object(sdb, "fetch_one", return_value=None):
+            self.assertIsNone(self.f.detenido())
+
+    def test_si_no_puede_leer_falla_cerrado(self):
+        with mock.patch.object(sdb, "fetch_one", side_effect=RuntimeError("kubera caída")):
+            self.assertIsNotNone(self.f.detenido())
+
+    def test_si_la_bitacora_no_acepta_la_detencion_se_detiene_igual(self):
+        self.ex.side_effect = RuntimeError("x")
+        self.f.detener("prueba")
+        with mock.patch.object(sdb, "fetch_one", return_value=None):
+            self.assertEqual(self.f.detenido()["motivo"], "prueba")
+
+    def test_liberar_anota_y_limpia(self):
+        self.f.detener("prueba")
+        self.ex.reset_mock()
+        self.assertTrue(self.f.liberar())
+        self.assertIn("'liberado'", self.ex.call_args.args[0])
+        with mock.patch.object(sdb, "fetch_one", return_value={"estado": "liberado"}):
+            self.assertIsNone(self.f.detenido())
+        self.assertEqual(self.f.creados_ultima_hora(), 0)
+
+
+class TikTokFreno(unittest.TestCase):
+    def test_frenado_no_toca_nada(self):
+        with mock.patch.object(tr.settings, "pedidos_tiktok_enabled", True), \
+             mock.patch.object(fr.FRENO_TIKTOK, "detenido", return_value={"motivo": "m"}), \
+             mock.patch.object(tr, "_pendientes") as pend:
+            r = asyncio.run(tr.reprocesar())
+        self.assertEqual(r["estado"], "frenado")
+        pend.assert_not_called()
 
 
 class Receptor(unittest.TestCase):
