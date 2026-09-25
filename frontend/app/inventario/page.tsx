@@ -778,14 +778,19 @@ function Fila({
         </div>
       </td>
 
-      {/* Tres cajas, tres preguntas: la que MANDA es la de bodega y no existe.
-          Se pinta igual —en ámbar y vacía— porque un hueco rotulado se puede
+      {/* Tres cajas, tres preguntas: la que MANDA es la de bodega. Llega del
+          Checklist de almacén (core.products.almacen_cajas, 24-sep); sin
+          captura se pinta en ámbar y vacía, porque un hueco rotulado se puede
           exigir y una columna ausente no. */}
       <td className="px-3 py-2.5 text-right">
         <div className="flex items-baseline justify-end gap-1.5"
-             title="Cajas que contó ALMACÉN al recibir. Mandan sobre las del packing list. Hoy no existe el canal para recibir ese dato.">
+             title={f.cotejo_cajas?.bodega === null || f.cotejo_cajas?.bodega === undefined
+               ? "Cajas que contó ALMACÉN. Mandan sobre las del packing list. Sin capturar: se llena en Inventario → Checklist."
+               : `Cajas que contó ALMACÉN${f.cotejo_cajas.bodega_por ? ` (${f.cotejo_cajas.bodega_por.split("@")[0]})` : ""}. Mandan sobre las del packing list.`}>
           <span className="text-[9px] font-bold uppercase tracking-wide text-amber-600">bod</span>
-          <span className="tabular-nums font-bold text-amber-600">—</span>
+          {f.cotejo_cajas?.bodega === null || f.cotejo_cajas?.bodega === undefined
+            ? <span className="tabular-nums font-bold text-amber-600">—</span>
+            : <span className="tabular-nums font-bold text-emerald-700">{numCajas(f.cotejo_cajas.bodega)}</span>}
         </div>
         <div className="flex items-baseline justify-end gap-1.5"
              title={!f.cotejo_cajas || f.cotejo_cajas.packing_list === null
@@ -1210,7 +1215,10 @@ function CotejoCajasBloque({ fila }: { fila: FilaInventario }) {
         {/* Desde el 24-sep la cuenta de almacén llega del Checklist. Sin
             captura se sigue diciendo que falta: es el dato que manda. */}
         {k.bodega === null || k.bodega === undefined
-          ? tarjeta("Bodega", "—", "sin capturar: almacén lo cuenta en Inventario → Checklist",
+          ? tarjeta("Bodega", "—",
+              k.bodega_piezas_por_caja
+                ? `cajas sin capturar · ${num(k.bodega_piezas_por_caja)} pzs/caja sí capturadas`
+                : "sin capturar: almacén lo cuenta en Inventario → Checklist",
               "border-amber-200 bg-amber-50 text-amber-800", true)
           : tarjeta("Bodega", numCajas(k.bodega),
               `contadas por almacén${k.bodega_piezas_por_caja ? ` · ${num(k.bodega_piezas_por_caja)} pzs/caja` : ""}${
@@ -1266,7 +1274,14 @@ function CotejoCajasBloque({ fila }: { fila: FilaInventario }) {
       )}
 
       <p className="mt-1.5 text-[11px] text-slate-400">
-        {k.estado === "cotejable"
+        {k.estado === "bodega_vs_pl"
+          ? (k.bodega_vs_pl === 0 || k.bodega_vs_pl === null || k.bodega_vs_pl === undefined
+              ? "Almacén contó lo mismo que dice el packing list."
+              : `Almacén contó ${numCajas(k.bodega)} y el packing list dice ${numCajas(k.packing_list)}: ${
+                  (k.bodega_vs_pl ?? 0) > 0 ? "sobran" : "faltan"} ${numCajas(Math.abs(k.bodega_vs_pl ?? 0))}. Manda almacén.`)
+          : k.estado === "solo_bodega"
+            ? `Sin packing list: manda lo que contó almacén.${k.odoo !== null ? " Odoo es el piso libre de hoy, no se resta." : ""}`
+            : k.estado === "cotejable"
           ? "El packing list es el EMBARQUE y Odoo es el PISO de hoy: no se restan. La diferencia normal es lo que ya se vendió."
           : k.estado === "solo_pl"
             ? "Solo hay la del embarque: no queda piso libre que contar."

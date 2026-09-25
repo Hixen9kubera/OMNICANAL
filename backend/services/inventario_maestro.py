@@ -181,7 +181,8 @@ def filas(skus: list[str] | None = None) -> list[dict[str, Any]]:
     specs_ = specs._por_sku_sync(pedidos)
     recs = odoo.recibido_por_sku(pedidos)
     # Las cajas que CONTÓ almacén, capturadas en Inventario · Checklist
-    # (ops.checklist_almacen, 0058). Nunca truena: sin la tabla, vacío.
+    # (core.products.almacen_cajas y almacen_piezas_por_caja, 0058). Nunca
+    # truena: sin las columnas, vacío.
     bodega = checklist.almacen_de(pedidos)
 
     salida = []
@@ -1136,7 +1137,7 @@ def _cotejo_cajas(o: dict | None, c: dict | None,
 
       1. BODEGA       · cuantas cajas conto el almacen. MANDA sobre las otras
                         dos. No existia en ningun sistema hasta el Checklist de
-                        almacen (24-sep, ops.checklist_almacen): hoy llega de
+                        almacen (24-sep, core.products.almacen_*): hoy llega de
                         ahi, y es None mientras nadie la capture.
       2. PACKING LIST · cuantas cajas dijo el proveedor que embarco.
       3. ODOO         · cuantas cajas llenarian las piezas LIBRES de hoy.
@@ -1185,12 +1186,29 @@ def _cotejo_cajas(o: dict | None, c: dict | None,
     else:
         estado, nota = "sin_dato", "ni packing list ni piso libre"
 
+    # LA DE ALMACÉN MANDA (Brandon, 8-sep): si almacén ya contó, el cotejo es
+    # almacén contra packing list. Antes la cifra se pintaba en la tarjeta pero
+    # el estado y la nota la ignoraban, y el pie decía «no hay nada que
+    # cotejar» junto a un número verde.
+    b = _num((bodega or {}).get("cajas"))
+    dif = None
+    if b is not None:
+        if pl is not None:
+            dif = round(b - pl, 2)
+            estado = "bodega_vs_pl"
+            nota = ("almacén contó lo mismo que dice el packing list" if abs(dif) < 0.01
+                    else f"almacén contó {b:g} y el packing list dice {pl:g} ({dif:+g})")
+        else:
+            estado, nota = "solo_bodega", "sin packing list: manda lo que contó almacén"
+
     return {
         # El que manda: lo que almacén contó en el Checklist. None = sin capturar.
         "bodega": (bodega or {}).get("cajas"),
         "bodega_piezas_por_caja": (bodega or {}).get("piezas_por_caja"),
         "bodega_por": (bodega or {}).get("capturado_por"),
         "bodega_en": (bodega or {}).get("capturado_en"),
+        # Almacén menos packing list; None si falta alguna de las dos.
+        "bodega_vs_pl": dif,
         "packing_list": pl,
         # De dónde salió la cifra de arriba, para poder discutirla.
         "pl_fuente": ("renglon" if del_renglon is not None

@@ -56,6 +56,7 @@ const ESTADO: Record<EstadoChecklist, { t: string; c: string }> = {
 const NIVEL: Record<NivelChecklist, { t: string; c: string; style?: React.CSSProperties }> = {
   ml: { t: "Obligatorio ML", c: "text-[#2d3277] ring-[#e6cf00]", style: { background: ML } },
   matriz: { t: "Obligatorio (matriz)", c: "bg-orange-200 text-orange-900 ring-orange-300" },
+  auto: { t: "Automático", c: "bg-emerald-50 text-emerald-700 ring-emerald-200" },
   principal: { t: "Opcional", c: "bg-slate-100 text-slate-600 ring-slate-200" },
   secundario: { t: "Opcional · facturación", c: "bg-slate-50 text-slate-400 ring-slate-200" },
 };
@@ -870,7 +871,10 @@ function ModalAgregar({
   const [desconocidos, setDesconocidos] = useState<string[]>([]);
   const [archivo, setArchivo] = useState<File | null>(null);
   const [previa, setPrevia] = useState<ListaChecklist | null>(null);
-  const cuantos = texto.split(/[\s,;]+/).filter(Boolean).length;
+  // Mismo corte que el backend: la coma separa salvo entre dos dígitos. Sin
+  // lookbehind: Safari anterior a 16.4 no lo entiende y tiraba la página.
+  const cuantos = texto.replace(/(\d),(?=\d)/g, "$1\u0001")
+    .split(/[\s;,]+/).filter(Boolean).length;
 
   const leerLista = async (f: File, hoja: string | null) => {
     setArchivo(f);
@@ -989,6 +993,14 @@ function ModalAgregar({
                   <div className="mt-1 text-xs text-amber-800">
                     {previa.desconocidos.length} no existen en kubera y no se agregarán:{" "}
                     <span className="font-mono">{previa.desconocidos.join(", ")}</span>
+                  </div>
+                )}
+                {!!previa.descartados?.length && (
+                  <div className="mt-1 text-xs text-slate-500">
+                    {previa.descartados_total ?? previa.descartados.length} celda(s) de la columna
+                    SKU no tienen forma de SKU y se ignoran:{" "}
+                    <span className="font-mono">{previa.descartados.slice(0, 8).join(", ")}
+                      {previa.descartados.length > 8 ? "…" : ""}</span>
                   </div>
                 )}
               </div>
@@ -1118,8 +1130,9 @@ function ModalMatriz({
   });
   const grupos: { t: string; items: CampoChecklist[] }[] = [
     { t: "Obligatorios de Mercado Libre", items: visibles.filter((x) => x.nivel === "ml") },
-    { t: "Opcionales · del producto", items: visibles.filter((x) => x.nivel !== "ml" && x.jerarquia !== "ITEM") },
-    { t: "Opcionales · facturación (clave SAT, IVA…)", items: visibles.filter((x) => x.nivel !== "ml" && x.jerarquia === "ITEM") },
+    { t: "Automáticos · los llena el publicador", items: visibles.filter((x) => x.nivel === "auto") },
+    { t: "Opcionales · del producto", items: visibles.filter((x) => x.nivel !== "ml" && x.nivel !== "auto" && x.jerarquia !== "ITEM") },
+    { t: "Opcionales · facturación (clave SAT, IVA…)", items: visibles.filter((x) => x.nivel !== "ml" && x.nivel !== "auto" && x.jerarquia === "ITEM") },
   ];
 
   return (
@@ -1183,7 +1196,9 @@ function ModalMatriz({
                       {g.t} · {g.items.length}
                     </div>
                     {g.items.map((x) => {
-                      const esMl = x.nivel === "ml";
+                      // Los de ML y los automáticos no se tocan: los primeros
+                      // los exige el canal, los segundos los llena el publicador.
+                      const esMl = x.nivel === "ml" || x.nivel === "auto";
                       const on = esMl || !!marcas[x.campo];
                       return (
                         <label key={x.campo}
@@ -1201,7 +1216,12 @@ function ModalMatriz({
                               {x.valores.length > 0 && <> · {x.valores.length} valores sugeridos</>}
                             </div>
                           </div>
-                          {esMl ? (
+                          {x.nivel === "auto" ? (
+                            <span className="rounded-md bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700 ring-1 ring-emerald-200"
+                                  title="El publicador lo llena solo si se deja vacío">
+                              Automático{x.por_omision ? `: ${x.por_omision}` : ""}
+                            </span>
+                          ) : esMl ? (
                             <span style={{ background: ML }} className="rounded-md px-2 py-0.5 text-[10px] font-bold text-[#2d3277]">
                               Obligatorio ML
                             </span>

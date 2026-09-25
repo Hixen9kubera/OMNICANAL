@@ -174,7 +174,13 @@ def _requisitos(pares: set[tuple[str, str]]) -> dict[tuple[str, str], list[dict]
              # Medido en MLM81144: 5 atributos contra 12 campos de cuerpo, y
              # contarlos juntos daba «faltan 11 de 16» cuando el trabajo real
              # son 4.
-             "captura": r["categoria_id"] != "*" and r["fuente"] == "api",
+             "captura": r["categoria_id"] != "*" and (
+                 r["fuente"] == "api" or _es_matriz(r)),
+             # Una promoción de la MATRIZ del checklist (fila manual de ML).
+             # Cuenta como captura —el equipo decidió exigirla—, pero NO sirve
+             # para decir que la categoría está verificada: eso solo lo dice
+             # una fila que vino del canal.
+             "promovido": _es_matriz(r),
              "leido_at": r["leido_at"].isoformat() if r["leido_at"] else None}
         if r["categoria_id"] == "*":
             comodines.setdefault(r["canal"], []).append(d)
@@ -189,6 +195,14 @@ def _requisitos(pares: set[tuple[str, str]]) -> dict[tuple[str, str], list[dict]
         salida.setdefault((canal, cat), []).extend(
             x for x in extra if x["campo"] not in propios)
     return salida
+
+
+def _es_matriz(r: dict) -> bool:
+    """Las filas `fuente='manual'` de ML las escribe SOLO la matriz del checklist
+    de almacén (services/checklist.py). Las manuales de Walmart son otra cosa
+    (requisitos curados a mano) y no se tocan."""
+    return (r.get("fuente") == "manual" and r.get("canal") == "mercado_libre"
+            and r.get("categoria_id") != "*")
 
 
 def _llenos(skus: list[str]) -> dict[tuple[str, str], set[str]]:
@@ -219,9 +233,20 @@ def _llenos(skus: list[str]) -> dict[tuple[str, str], set[str]]:
             campos = {k for k, v in attrs.items() if v not in (None, "", [])}
         elif isinstance(attrs, list):
             for a in attrs:
-                if isinstance(a, dict) and a.get("valor") not in (None, "", []):
-                    campos.add(str(a.get("campo") or a.get("id") or ""))
-        salida[(r["sku"], r["canal"])] = {c for c in campos if c}
+                if not isinstance(a, dict):
+                    continue
+                # Tres formas guardadas: {campo, valor} (ML/TikTok), {nombre,
+                # valor} (14 filas de ML con 144 atributos así; Amazon también
+                # guarda `nombre`) y {name, value[]} (Temu). Leer solo `campo`
+                # daba falso «falta».
+                v = a.get("valor", a.get("value"))
+                if v not in (None, "", []):
+                    campos.add(str(a.get("campo") or a.get("id") or a.get("nombre")
+                                   or a.get("name") or ""))
+        # UNIÓN de las cuentas del canal: el Checklist escribe en cuenta '' y
+        # el Estudio por cuenta (BEKURA, SANCORFASHION). Quedarse con la última
+        # fila (sin ORDER BY, la que tocara) escondía una captura detrás de otra.
+        salida.setdefault((r["sku"], r["canal"]), set()).update(c for c in campos if c)
     return salida
 
 
@@ -257,7 +282,7 @@ def _estado(cat: str | None, reqs: list[dict],
     """
     if not cat:
         return "sin_categoria", [], [], []
-    if not any(not r["comodin"] for r in reqs):
+    if not any(not r["comodin"] and not r.get("promovido") for r in reqs):
         return "sin_verificar", [], [], []
     faltan, automaticos, del_publicador = [], [], []
     for r in reqs:

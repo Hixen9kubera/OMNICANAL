@@ -76,8 +76,11 @@ async def guardar_matriz(categoria: str, body: _Matriz):
 
 
 def _archivo(datos: bytes, nombre: str, tipo: str) -> Response:
+    # Expose-Headers: sin él, el navegador (otro origen) no deja leer
+    # Content-Disposition y el archivo bajaba con el nombre de respaldo.
     return Response(content=datos, media_type=tipo,
-                    headers={"Content-Disposition": f'attachment; filename="{nombre}"'})
+                    headers={"Content-Disposition": f'attachment; filename="{nombre}"',
+                             "Access-Control-Expose-Headers": "Content-Disposition"})
 
 
 @router.get("/excel")

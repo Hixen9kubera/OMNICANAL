@@ -1001,6 +1001,89 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.573.0 — Checklist con la 0058 ya aplicada: lo que encontró la auditoría, corregido
+
+La 0058 quedó aplicada en producción el 24-sep (Eduardo). Se verificó con SELECT:
+la tabla, las 8 columnas `almacen_*`, los 2 CHECK, el índice, RLS sin políticas y
+los grants; la FK del lote quedó en NO ACTION (v0.569). Después se auditó el
+impacto con varios agentes y verificación adversarial. **Fuera del Checklist
+nada se rompe**: ningún escritor de `core.products` pisa las columnas nuevas,
+nadie lee `core.products` con `*` (medido en `pg_stat_statements`), y
+`verificar_rls` pasa. Lo que sí apareció estaba en la lógica del Checklist, y
+es lo que corrige esta versión.
+
+**La matriz ya no ensucia el Publicador ni el Catálogo.**
+- Las filas que escribe la matriz llevan `campo_canonico = 'atributos'`, como las
+  2,753 de la API. Con NULL, `channel_content.faltantes()` daba el atributo por
+  faltante PARA SIEMPRE en el Estudio, aunque Bodega ya lo hubiera llenado.
+- En `specs.py`, una fila manual de ML (`_es_matriz`) cuenta como captura en el
+  Catálogo Maestro, pero NO sirve para salir de «sin verificar». Así una sola
+  promoción ya no vuelve verde una categoría que nadie verificó. Las manuales de
+  Walmart no cambian.
+- `specs._llenos` reconoce las tres formas guardadas (`campo`, `nombre`,
+  `name/value`) y une las cuentas del canal. Antes, 14 filas de ML guardadas con
+  `nombre` salían como faltantes en el Maestro y completas en el Checklist.
+
+**Lo automático no se le pide a almacén.** BRAND tiene `default_value =
+'Ferrahome'` en todas las categorías de ML: el publicador lo llena solo. El
+Checklist lo pintaba en amarillo como obligatorio y el Maestro lo daba por
+automático. Ahora sale con el nivel **Automático**: no se exige, no cuenta como
+opcional y va en su propio grupo de la matriz. Con eso, MIC-0001-GRI pasa de
+pedir BRAND y MODEL a pedir solo MODEL, igual que en el Maestro.
+
+**Medidas: se rechaza en la vista previa lo que la base iba a rechazar.**
+- Unidades de verdad: `250 mm` = 25 cm y `250 g` = 0.25 kg; también se aceptan
+  `cms`, `kilos`, `pza`, `pcs`, etc. Antes «250 g» se guardaba como 250 kg.
+- Se aplican los topes de `numeric(8,2)`, `numeric(9,3)` e `integer`. Lo que al
+  redondearse queda en 0 se rechaza en la vista previa con un motivo legible; antes
+  pasaba la vista previa y tronaba al guardar.
+- «1,200 g» se rechaza por ambiguo. Adivinar si la coma es de miles o decimal da
+  un error de 1000×.
+- **Una transacción corta por SKU.** Antes, un solo valor malo revertía las
+  ~100 medidas de la semana. Se probaron savepoints y se quitaron: DBUtils
+  re-ejecuta en otra conexión cuando hereda el candado de solo-lectura, y el
+  RELEASE tronaba con 3B001 sin auto-sanarse (regla 13). Ahora un error del
+  valor se queda en su SKU. Si la base no contesta, se detiene y dice cuáles
+  quedaron sin guardar.
+
+**La lista semanal y los SKUs raros.**
+- Hay 12 SKUs con comillas (`HERR-0032-ROJ-16"`) y 48 con `*`, `°`, `´`, `>` o
+  `Ñ`. Ya entran por la lista, por el pegado y por la importación, y en el CSV
+  con las comillas dobladas.
+- Al pegar, la coma separa salvo entre dos dígitos: `TEC-1660-NEG-SONIC-1,6L`
+  sigue entero y «A-1,B-2» se parte.
+- El encabezado de la lista debe EMPEZAR con «SKU». La columna se elige por
+  cuántos SKUs de kubera tiene debajo: de un packing list gana `SKU ODOO`, y un
+  renglón de título ya no rompe la hoja. Lo que no tiene forma de SKU se enseña
+  en «descartados», con su total.
+
+**El cotejo de cajas compara la cifra de almacén.** Hay dos estados nuevos,
+`bodega_vs_pl` («almacén contó 6 y el packing list dice 8») y `solo_bodega`, y
+el Maestro da la diferencia. La celda «bod» de la tabla, la tarjeta del Catálogo
+y la `TarjetaSello` del Flujo ya muestran lo capturado. Antes decían «no existe
+el canal» o «no se captura».
+
+**Menores:** el Excel y el CSV bajan con su nombre (`Content-Disposition`
+expuesto por CORS); la URL de ML prefiere la publicación `published` y no la de
+status NULL; las comparaciones de SKU usan `citext[]`, porque
+`ROP-0695-BEI-m`/`-M` no empataba; y se corrigieron los comentarios que
+nombraban tablas que ya no existen.
+
+**Queda como tarea aparte** (chip creado, preexistente y no de este cambio): si
+la conexión muere ENTRE sentencias de un mismo `get_cursor`, SteadyDB la
+reemplaza en silencio y la operación reporta éxito con lo anterior perdido.
+Afecta a todos los escritores por tandas; el arreglo es `conn.begin()` en
+`supabase_db.get_cursor`.
+
+**Quedan para decisión de Brandon:**
+1. Leer los atributos de la publicación viva de ML (`GET /items`) para no marcar
+   «incompleto» lo que ya está publicado. Hoy solo 14 filas de ML en kubera
+   tienen atributos, así que casi toda la Week 39 sale incompleta.
+2. Que el Catálogo Maestro tome los obligatorios de la misma fuente que el
+   Checklist (la API viva). `field_requirements` es del 12-ago y le faltan 19
+   categorías de la Week 39.
+3. Que costos y la comisión de envío usen la medida real de almacén.
+
 ### v0.572.0 — El freno de los reintentos: si crean demasiados pedidos se detienen solos y no se reanudan sin una persona
 
 Condición de Eduardo para encender los reintentos de ML y TikTok (25-sep): que

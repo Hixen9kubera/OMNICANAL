@@ -1687,7 +1687,8 @@ export function descargarChecklist(
   formato: "excel" | "csv", semana: string, skus: string[],
 ): Promise<Headers> {
   const q = new URLSearchParams({ semana });
-  if (skus.length) q.set("skus", skus.join(","));
+  // Separados por renglón, no por coma: hay SKUs con coma (…-1,6L).
+  if (skus.length) q.set("skus", skus.join("\n"));
   return descargar(`${BASE}/api/checklist/${formato}?${q}`,
                    `checklist_${semana}.${formato === "excel" ? "xlsx" : "csv"}`);
 }

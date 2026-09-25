@@ -315,8 +315,10 @@ function TextoFuentePl({ c, contenedorDeOdoo }: { c: CotejoCajas; contenedorDeOd
 
 function TextoNoSeGuardaPl({ c }: { c: CotejoCajas }) {
   const huecos: string[] = [];
-  // La que MANDA y no existe: es el hallazgo, no un detalle.
-  huecos.push("el conteo de cajas en piso, que es justo el que manda");
+  // La que MANDA, si almacén todavía no la contó en el Checklist.
+  if (c.bodega === null || c.bodega === undefined) {
+    huecos.push("el conteo de cajas en piso, que es justo el que manda");
+  }
   if (!c.pl_archivo) huecos.push("de qué archivo salió");
   if (!c.pl_origen_renglon && c.pl_fuente === "renglon") huecos.push("cómo se encontró el renglón");
   if (c.pl_fuente === "costos_validados") huecos.push("el renglón del packing list");
@@ -347,6 +349,10 @@ function TramoRecibido({
   const piezasOdoo = c ? piezasDe(c.odoo, c.piezas_por_caja_odoo) : null;
   const discrepan = piezasPl !== null && piezasOdoo !== null
     && Math.abs(piezasPl - piezasOdoo) > 0.5;
+  // La columna de almacén se decide por CELDA: si capturó las piezas por caja
+  // pero no las cajas, se enseña lo capturado y no un «sin capturar» que lo tape.
+  const hayBodega = (c?.bodega !== null && c?.bodega !== undefined)
+    || (c?.bodega_piezas_por_caja !== null && c?.bodega_piezas_por_caja !== undefined);
 
   return (
     <Tramo>
@@ -400,19 +406,28 @@ function TramoRecibido({
             <span className="text-[11px] font-semibold leading-4 text-slate-600">Cajas</span>
             <Cifra n={c.packing_list} />
             <Cifra n={c.odoo} />
-            {/* `bodega` es la que MANDA (Brandon, 8-sep) y viene null en todo el
-                catálogo: no existe el canal para capturarla. Escribirlo como 0
-                afirmaría que se contó y dio cero. */}
-            <span
-              title="La cifra que manda según el cotejo, y ningún sistema la tiene: no hay canal para capturar el conteo de piso."
-              className="row-span-2 flex items-center text-[10px] leading-[14px] text-slate-400"
-            >
-              no se captura
-            </span>
+            {/* `bodega` es la que MANDA (Brandon, 8-sep). Llega del Checklist de
+                almacén (core.products.almacen_*, 24-sep). Sin captura NO se
+                escribe 0: eso afirmaría que se contó y dio cero. */}
+            {!hayBodega ? (
+              <span
+                title="La cifra que manda según el cotejo. Almacén la captura en Inventario → Checklist."
+                className="row-span-2 flex items-center text-[10px] leading-[14px] text-slate-400"
+              >
+                sin capturar
+              </span>
+            ) : c.bodega === null || c.bodega === undefined ? (
+              <span className="text-[10px] leading-[14px] text-slate-400">sin capturar</span>
+            ) : (
+              <span title={`Contó almacén${c.bodega_por ? ` (${c.bodega_por.split("@")[0]})` : ""}`}>
+                <Cifra n={c.bodega} />
+              </span>
+            )}
 
             <span className="text-[11px] font-semibold leading-4 text-slate-600">Piezas por caja</span>
             <Cifra n={c.piezas_por_caja_pl} />
             <Cifra n={c.piezas_por_caja_odoo} />
+            {hayBodega && <Cifra n={c.bodega_piezas_por_caja ?? null} />}
           </div>
 
           {discrepan && (

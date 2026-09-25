@@ -3,9 +3,9 @@
 --        (ops.checklist_lote + 8 columnas almacen_* en core.products)
 -- ═══════════════════════════════════════════════════════════════════════════
 --
--- Estado: NO APLICADA en producción. Sandbox primero; producción solo con el sí
--- de Eduardo (doble candado). Mientras no exista, Inventario → Checklist lo
--- DICE en pantalla («falta la migración 0058») y el Catálogo Maestro sigue igual.
+-- Estado: APLICADA en producción el 24-sep-2026 (Eduardo), en la versión de la
+-- v0.569.0: la FK del lote en NO ACTION, sin CASCADE. Verificado ese día con
+-- SELECT: tabla, 8 columnas, 2 CHECK, índice, RLS sin políticas y grants.
 --
 -- REESCRITA el 24-sep (v0.565.0) a pedido de Brandon: «las dimensiones y el
 -- número de cajas debes de buscarlo actualmente en la base de datos para no

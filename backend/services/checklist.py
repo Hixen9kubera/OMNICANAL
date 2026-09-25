@@ -77,11 +77,14 @@ from __future__ import annotations
 import csv
 import datetime as dt
 import io
+import json
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Iterable
 from zoneinfo import ZoneInfo
+
+import psycopg2
 
 from core import actor
 from services import specs, specs_editor
@@ -108,7 +111,7 @@ _LOG_ETIQUETA = {k: e for k, e, _ in LOGISTICA}
 _LOG_TIPO = {k: t for k, _, t in LOGISTICA}
 
 # El orden en que se enseñan y se exigen los atributos.
-NIVELES = ("ml", "matriz", "principal", "secundario")
+NIVELES = ("ml", "matriz", "auto", "principal", "secundario")
 _EXIGIDOS = frozenset({"ml", "matriz"})
 
 _MAX_SKUS_LOTE = 500      # por llamada; la semana típica son ~100
@@ -125,10 +128,16 @@ _MSG_MIGRACION = ("Falta aplicar la migración 0058 (ops.checklist_lote y las "
 
 
 def _sin_tabla(exc: Exception) -> bool:
-    """42P01 = tabla que no existe; 42703 = columna que no existe."""
-    return (getattr(exc, "pgcode", None) in ("42P01", "42703")
-            or ("does not exist" in str(exc)
-                and ("checklist_" in str(exc) or "almacen_" in str(exc))))
+    """42P01 = tabla que no existe; 42703 = columna que no existe.
+
+    El CÓDIGO manda. El texto solo se mira si el error no trae código: un
+    `savepoint "…" does not exist` (3B001) también dice «does not exist», y
+    confundirlo con la falta de la 0058 escondía una conexión muerta."""
+    codigo = getattr(exc, "pgcode", None)
+    if codigo:
+        return codigo in ("42P01", "42703")
+    return ("does not exist" in str(exc)
+            and ("checklist_" in str(exc) or "almacen_" in str(exc)))
 
 
 def _q(sql: str, params: Any = None) -> list[dict[str, Any]]:
@@ -175,19 +184,43 @@ def semana_de(texto: str | None) -> dt.date:
         return lunes()
 
 
+def _sin_comillas_envolventes(p: str) -> str:
+    """Quita SOLO las comillas que ENVUELVEN el texto. Las de adentro o las del
+    final son parte del SKU: hay 12 así en core.products (HERR-0032-ROJ-16",
+    ACC-0665-NEG-7"…), y quitarlas los volvía «desconocidos». Excel, al copiar
+    una celda con comillas, la envuelve y DUPLICA las de adentro
+    ("HERR-0032-ROJ-16""): eso también se deshace aquí."""
+    for q in ('"', "'"):
+        if len(p) >= 2 and p[0] == q and p[-1] == q:
+            return p[1:-1].replace(q + q, q)
+    return p
+
+
 def limpiar_skus(crudo: Iterable[str] | str | None) -> list[str]:
     """Acepta lista o texto pegado de Excel (renglones, comas, tabs, espacios).
     Quita duplicados conservando el orden."""
     if crudo is None:
         return []
     if isinstance(crudo, str):
-        partes = re.split(r"[\s,;]+", crudo)
+        # Espacios, renglones, tabs y ; siempre separan. La COMA también, salvo
+        # ENTRE DOS DÍGITOS: hay SKUs con coma decimal (TEC-1660-NEG-SONIC-1,6L),
+        # y en «TEC-0370-NEG,ORG-0863-ROS» la coma sí separa. (Decidirlo por si
+        # el texto trae renglones rompía «A-1,B-2» con un salto al final.)
+        partes = re.split(r"[\s;]+|(?<!\d),|,(?!\d)", crudo)
     else:
-        partes = [p for x in crudo for p in re.split(r"[\s,;]+", str(x or ""))]
+        # Una LISTA ya viene separada (celdas del Excel, la hoja semanal, la
+        # selección de la pantalla): cada elemento es UN SKU y no se parte.
+        partes = [str(x or "").strip() for x in crudo]
     salida: list[str] = []
     vistos: set[str] = set()
     for p in partes:
-        p = p.strip().strip('"').strip("'")
+        p = _sin_comillas_envolventes(p.strip())
+        # Ningún SKU EMPIEZA con comilla (medido: 0 en core.products). La que
+        # queda al inicio es de una celda multilínea que Excel envolvió; la
+        # del final puede ser parte del SKU y la decide _canonicos.
+        p = p.lstrip('"\'').replace('""', '"')
+        if not p.strip('"\''):
+            continue
         if p and p.upper() not in vistos:
             vistos.add(p.upper())
             salida.append(p)
@@ -209,9 +242,16 @@ def _canonicos(skus: list[str]) -> tuple[dict[str, str], list[str]]:
         return {}, []
     mayus = [s.upper() for s in skus]
     reales: dict[str, str] = {}
+    # Con y sin la comilla FINAL: 'HERR-0032-ROJ-16"' existe así, y
+    # 'ABC-0002-NEG"' es un SKU normal con la comilla de la celda de Excel.
+    sin_final = {s.upper().rstrip('"'): s.upper() for s in skus if s.endswith('"')}
     for r in sdb.fetch_all("select sku::text as sku from core.products "
-                           "where upper(sku::text) = any(%s)", (mayus,)):
+                           "where upper(sku::text) = any(%s)",
+                           (mayus + list(sin_final),)):
         reales.setdefault(r["sku"].upper(), r["sku"])
+    for corto, pegado in sin_final.items():
+        if pegado not in reales and corto in reales:
+            reales[pegado] = reales[corto]
     desconocidos = [s for s in skus if s.upper() not in reales]
     return reales, desconocidos
 
@@ -221,7 +261,8 @@ def _titulos(skus: list[str]) -> dict[str, str]:
         return {}
     try:
         return {r["sku"]: r["name"] for r in sdb.fetch_all(
-            "select sku, name from core.products where sku = any(%s)", (skus,))}
+            "select sku::text as sku, name from core.products "
+            "where sku = any(%s::citext[])", (skus,))}
     except Exception as exc:  # noqa: BLE001
         log.warning("checklist: títulos no disponibles: %s", exc)
         return {}
@@ -236,7 +277,13 @@ def _urls_ml(skus: list[str]) -> dict[str, str]:
         for r in sdb.fetch_all(
                 "select sku, url from channel.listings "
                 "where canal = %s and sku = any(%s) and url is not null "
-                "order by (status = 'active') desc, updated_at desc",
+                "  and coalesce(status, '') <> 'error' "
+                # En channel.listings de ML el estado vivo se llama
+                # 'published' (medido el 24-sep: published 3,580, NULL 1,771,
+                # error 275; 'active' no existe).
+                # coalesce: en DESC Postgres pone los NULL PRIMERO, y hay
+                # 1,751 filas de ML con status NULL y url.
+                "order by coalesce(status = 'published', false) desc, updated_at desc",
                 (CANAL, skus)):
             salida.setdefault(r["sku"], r["url"])
     except Exception as exc:  # noqa: BLE001
@@ -311,7 +358,7 @@ def _capturado(skus: list[str]) -> dict[str, dict[str, Any]]:
     cols = ", ".join(_COLUMNA.values())
     salida: dict[str, dict[str, Any]] = {}
     for r in _q(f"select sku::text as sku, {cols}, almacen_por, almacen_en "
-                f"from core.products where sku::text = any(%s)", (skus,)):
+                f"from core.products where sku = any(%s::citext[])", (skus,)):
         d = {k: _num_o_none(r.get(c), _LOG_TIPO[k] == "entero")
              for k, c in _COLUMNA.items()}
         d["capturado_por"] = r.get("almacen_por")
@@ -330,8 +377,11 @@ def _sistema(skus: list[str]) -> dict[str, dict[str, Any]]:
         for r in sdb.fetch_all(
                 "select sku::text as sku, largo, ancho, alto, peso, cajas, "
                 "       piezas_por_caja "
-                "from costing.costos_validados where sku::text = any(%s)", (skus,)):
-            salida[r["sku"]] = {
+                "from costing.costos_validados where sku = any(%s::citext[])",
+                (skus,)):
+            # En MAYÚSCULAS: costos_validados guarda 'ROP-0695-BEI-m' y
+            # core.products 'ROP-0695-BEI-M'. citext los empata; el dict no.
+            salida[r["sku"].upper()] = {
                 "largo": _num_o_none(r["largo"]), "ancho": _num_o_none(r["ancho"]),
                 "alto": _num_o_none(r["alto"]), "peso": _num_o_none(r["peso"]),
                 "cajas_pl": _num_o_none(r["cajas"]),
@@ -349,7 +399,7 @@ def _almacen(skus: list[str]) -> dict[str, dict[str, Any]]:
     for s in skus:
         d = dict(capturado.get(s) or {**{k: None for k in _LOG_CLAVES},
                                       "capturado_por": None, "capturado_en": None})
-        d["sistema"] = sistema.get(s)
+        d["sistema"] = sistema.get(s.upper())
         salida[s] = d
     return salida
 
@@ -357,8 +407,12 @@ def _almacen(skus: list[str]) -> dict[str, dict[str, Any]]:
 def almacen_de(skus: list[str]) -> dict[str, dict[str, Any]]:
     """Para el Catálogo Maestro: lo capturado, o {} si la 0058 no existe aún.
     NUNCA truena — el cotejo de cajas no puede caerse por unas columnas nuevas."""
+    pedidos = {s.upper(): s for s in skus}
     try:
-        return {s: d for s, d in _capturado(skus).items() if d.get("capturado_en")}
+        # Con la grafía que PIDIÓ el Catálogo: core.products puede escribirlo
+        # distinto (citext los empata; el dict no).
+        return {pedidos.get(s.upper(), s): d for s, d in _capturado(skus).items()
+                if d.get("capturado_en")}
     except Exception as exc:  # noqa: BLE001
         if not isinstance(exc, FaltaMigracion):
             log.warning("checklist: almacén no disponible: %s", exc)
@@ -393,11 +447,18 @@ def _escribir_matriz(cat: str, promover: dict[str, str | None],
         with sdb.get_cursor() as cur:
             for campo, tipo in promover.items():
                 cur.execute(
+                    # campo_canonico = 'atributos', como las 2,753 filas de
+                    # la API: channel_content.faltantes() revisa el atributo
+                    # dentro de contenido->'atributos' SOLO con ese canónico;
+                    # con NULL lo daba por faltante para siempre en el
+                    # Publicador aunque Bodega ya lo hubiera llenado.
                     "insert into channel.field_requirements as fr "
-                    "  (canal, categoria_id, campo, obligatorio, tipo, fuente, leido_at) "
-                    "values (%s, %s, %s, true, %s, 'manual', now()) "
+                    "  (canal, categoria_id, campo, campo_canonico, obligatorio, "
+                    "   tipo, fuente, leido_at) "
+                    "values (%s, %s, %s, 'atributos', true, %s, 'manual', now()) "
                     "on conflict (canal, categoria_id, campo) do update set "
-                    "  obligatorio = true, updated_at = now() "
+                    "  obligatorio = true, updated_at = now(), "
+                    "  campo_canonico = coalesce(fr.campo_canonico, 'atributos') "
                     "where fr.fuente = 'manual'", (CANAL, cat, campo, tipo))
                 n += cur.rowcount
             for campo in quitar:
@@ -410,36 +471,82 @@ def _escribir_matriz(cat: str, promover: dict[str, str | None],
     return sdb.reintentar_transitorio(_hacer)
 
 
-def _guardar_almacen(filas: dict[str, dict[str, Any]], por: str) -> int:
+def _guardar_almacen(filas: dict[str, dict[str, Any]],
+                     por: str) -> tuple[int, list[dict[str, str]]]:
     """UPDATE de core.products por SKU. Solo pisa lo que trae valor (coalesce):
     una captura parcial no borra lo que ya se había medido. La fila siempre
-    existe: el SKU se validó contra core.products."""
+    existe: el SKU se validó contra core.products.
+
+    UNA TRANSACCIÓN CORTA POR SKU. Antes iban todos en una y un solo valor que
+    la base rechazara revertía las ~100 medidas de la semana sin decir cuál.
+    Ahora un error del VALOR (22xxx desbordamiento, 23xxx CHECK) se queda en ese
+    SKU y los demás se guardan.
+
+    Por qué NO savepoints (se probaron y se quitaron): DBUtils (SteadyDB)
+    re-ejecuta la sentencia en una conexión NUEVA, fuera de la transacción,
+    cuando choca con el candado de solo-lectura heredado del pooler o con una
+    conexión muerta; el savepoint se queda en la vieja y el RELEASE truena con
+    3B001, que nadie reconoce como transitorio. Con una transacción por SKU ese
+    cambio de conexión es inofensivo y reintentar_transitorio cura cada SKU por
+    su cuenta (regla 13). Devuelve (guardados, fallidos)."""
     if not filas:
-        return 0
+        return 0, []
     sets = ", ".join(f"{c} = coalesce(%s, {c})" for c in _COLUMNA.values())
     sql = (f"update core.products set {sets}, almacen_por = %s, "
            f"almacen_en = now() where sku = %s")
-
-    def _hacer() -> int:
-        n = 0
-        with sdb.get_cursor() as cur:
-            for sku, vals in filas.items():
+    n, fallidos = 0, []
+    pendientes = list(filas.items())
+    for i, (sku, vals) in enumerate(pendientes):
+        def _uno(sku: str = sku, vals: dict[str, Any] = vals) -> int:
+            with sdb.get_cursor() as cur:
                 cur.execute(sql, (*[vals.get(k) for k in _COLUMNA], por or None, sku))
-                n += cur.rowcount
-        return n
-    try:
-        return sdb.reintentar_transitorio(_hacer)
-    except Exception as exc:  # noqa: BLE001
-        if _sin_tabla(exc):
-            raise FaltaMigracion(_MSG_MIGRACION) from exc
-        raise
+                return cur.rowcount
+        try:
+            n += sdb.reintentar_transitorio(_uno)
+        except (psycopg2.DataError, psycopg2.IntegrityError) as exc:
+            fallidos.append({"sku": sku, "motivo": f"medidas/cajas: {exc}".strip()})
+        except Exception as exc:  # noqa: BLE001
+            if _sin_tabla(exc):
+                raise FaltaMigracion(_MSG_MIGRACION) from exc
+            # La base no contesta (y el reintento no la curó): se para aquí y
+            # se dice cuáles quedaron sin guardar, en vez de esperar un error
+            # por cada uno de los que faltan.
+            log.warning("checklist: almacén se detuvo en %s: %s", sku, exc)
+            fallidos.extend({"sku": s, "motivo": f"no se guardó: {exc}".strip()}
+                            for s, _ in pendientes[i:])
+            break
+    return n, fallidos
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Los campos de una categoría, ya con su NIVEL
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _nivel(c: dict[str, Any], promovidos: dict[str, bool]) -> str:
+def _automaticos(cats: Iterable[str]) -> dict[str, dict[str, str]]:
+    """{categoría: {campo: valor por omisión}} de ML, de field_requirements
+    (la categoría y el comodín '*'). Es lo que el PUBLICADOR llena solo si se
+    deja vacío —BRAND = 'Ferrahome' en todas—, y por eso NO se le pide a
+    almacén. Mismo criterio que specs._estado usa en el Catálogo Maestro."""
+    cats = sorted({c for c in cats if c})
+    if not cats:
+        return {}
+    try:
+        reqs = specs._requisitos({(CANAL, c) for c in cats})
+    except Exception as exc:  # noqa: BLE001
+        log.warning("checklist: valores por omisión no disponibles: %s", exc)
+        return {}
+    salida: dict[str, dict[str, str]] = {}
+    for c in cats:
+        for r in reqs.get((CANAL, c)) or []:
+            d = r.get("default")
+            if d is not None and d != "":
+                salida.setdefault(c, {})[r["campo"]] = (
+                    d if isinstance(d, str) else json.dumps(d, ensure_ascii=False))
+    return salida
+
+
+def _nivel(c: dict[str, Any], promovidos: dict[str, bool],
+           automaticos: dict[str, str] | None = None) -> str:
     """ml > matriz > principal > secundario.
 
     SECUNDARIO = jerarquía `ITEM` de ML: clave SAT, unidad de medida SAT, IVA,
@@ -448,6 +555,8 @@ def _nivel(c: dict[str, Any], promovidos: dict[str, bool]) -> str:
     (llaves del catálogo, GTIN, características de familia) es PRINCIPAL.
     Medido el 24-sep: `relevance` vale 1 en TODOS los visibles, no separa nada.
     """
+    if (automaticos or {}).get(c["campo"]):
+        return "auto"
     if c.get("obligatorio"):
         return "ml"
     if promovidos.get(c["campo"]):
@@ -458,7 +567,8 @@ def _nivel(c: dict[str, Any], promovidos: dict[str, bool]) -> str:
 
 
 def campos_de(cat: str, crudos: list[dict[str, Any]],
-              promovidos: dict[str, bool]) -> list[dict[str, Any]]:
+              promovidos: dict[str, bool],
+              automaticos: dict[str, str] | None = None) -> list[dict[str, Any]]:
     """COPIAS de los campos de la caché de ML, con `nivel` y `exigido`.
     Copias: la lista de `_campos_ml` es compartida entre peticiones."""
     salida = []
@@ -467,8 +577,9 @@ def campos_de(cat: str, crudos: list[dict[str, Any]],
                                    "unidad_default")}
         d["valores"] = list(c.get("valores") or [])
         d["unidades"] = list(c.get("unidades") or [])
-        d["nivel"] = _nivel(c, promovidos)
+        d["nivel"] = _nivel(c, promovidos, automaticos)
         d["exigido"] = d["nivel"] in _EXIGIDOS
+        d["por_omision"] = (automaticos or {}).get(c["campo"])
         salida.append(d)
     salida.sort(key=lambda x: NIVELES.index(x["nivel"]))
     return salida
@@ -490,7 +601,9 @@ def _contexto(skus: list[str]) -> dict[str, Any]:
     cats = {v.get("categoria") for v in cats_por_sku.values() if v.get("categoria")}
     crudos = _campos_por_categoria(cats)
     matriz = _matriz(cats)
-    campos = {c: campos_de(c, crudos.get(c) or [], matriz.get(c) or {}) for c in cats}
+    auto = _automaticos(cats)
+    campos = {c: campos_de(c, crudos.get(c) or [], matriz.get(c) or {}, auto.get(c) or {})
+              for c in cats}
     return {
         "cats_por_sku": cats_por_sku,
         "campos": campos,
@@ -513,7 +626,8 @@ def _evaluar(sku: str, ctx: dict[str, Any]) -> dict[str, Any]:
     exigidos = [c for c in campos if c["exigido"]]
     faltan_ml = [{"campo": c["campo"], "etiqueta": c["etiqueta"], "nivel": c["nivel"]}
                  for c in exigidos if _vacio(valores.get(c["campo"]))]
-    opcionales = [c for c in campos if not c["exigido"]]
+    # Lo automático (BRAND → Ferrahome) ni se exige ni es opcional de almacén.
+    opcionales = [c for c in campos if not c["exigido"] and c["nivel"] != "auto"]
     faltan_alm = [k for k in _LOG_CLAVES if alm.get(k) is None]
 
     if not cat:
@@ -630,7 +744,7 @@ def agregar_sync(semana_txt: str | None, crudo: Iterable[str] | str,
         try:
             ya = {r["sku"].upper() for r in _q(
                 "select sku::text as sku from ops.checklist_lote "
-                "where semana = %s and sku::text = any(%s)", (semana, skus))}
+                "where semana = %s and sku = any(%s::citext[])", (semana, skus))}
         except FaltaMigracion as exc:
             return {"ok": False, "falta_migracion": True, "motivo": str(exc)}
 
@@ -662,7 +776,8 @@ def quitar_sync(semana_txt: str | None, crudo: Iterable[str] | str) -> dict[str,
     if not skus:
         return {"ok": True, "quitados": 0}
     try:
-        n = sdb.execute("delete from ops.checklist_lote where semana = %s and sku = any(%s)",
+        n = sdb.execute("delete from ops.checklist_lote "
+                        "where semana = %s and sku = any(%s::citext[])",
                         (semana, skus))
     except Exception as exc:  # noqa: BLE001
         if _sin_tabla(exc):
@@ -679,7 +794,8 @@ def matriz_sync(cat: str) -> dict[str, Any]:
     crudos = specs_editor._campos_ml(cat)
     nombre = _nombres_categoria([cat]).get(cat) or {}
     base = {"categoria": cat, "nombre": nombre.get("nombre"), "ruta": nombre.get("ruta")}
-    campos = campos_de(cat, crudos, _matriz([cat]).get(cat) or {})
+    campos = campos_de(cat, crudos, _matriz([cat]).get(cat) or {},
+                       _automaticos([cat]).get(cat) or {})
     return {**base, "ok": True, "falta_migracion": False,
             "motivo": None if campos else
             "Mercado Libre no contestó qué pide esta categoría; intenta en un momento.",
@@ -726,24 +842,69 @@ def _texto(v: Any) -> str:
     return str(v).strip()
 
 
+# Unidades que se aceptan en lo de almacén, convertidas a la de la columna.
+# Antes «250 g» se guardaba como 250 KG: la unidad escrita se ignoraba.
+_UNIDADES_CM = {
+    "cm": 1.0, "cms": 1.0, "centimetro": 1.0, "centimetros": 1.0,
+    "centímetro": 1.0, "centímetros": 1.0,
+    "mm": 0.1, "milimetro": 0.1, "milimetros": 0.1, "milímetro": 0.1, "milímetros": 0.1,
+    "m": 100.0, "mt": 100.0, "mts": 100.0, "metro": 100.0, "metros": 100.0,
+}
+_UNIDADES_KG = {
+    "kg": 1.0, "kgs": 1.0, "kilo": 1.0, "kilos": 1.0, "kilogramo": 1.0, "kilogramos": 1.0,
+    "g": 0.001, "gr": 0.001, "grs": 0.001, "gramo": 0.001, "gramos": 0.001,
+}
+_PALABRAS_ENTERO = {"", "cajas", "caja", "cj", "cjs", "pzs", "pz", "pza", "pzas",
+                    "piezas", "pieza", "pcs", "pc", "unidad", "unidades", "u"}
+# Los topes del tipo de cada columna de core.products (numeric(8,2),
+# numeric(9,3), integer). Pasarse daba 22003 al guardar, no en la vista previa.
+_TOPE = {"decimal_cm": 999999.99, "decimal_kg": 999999.999, "entero": 2147483647}
+
+
 def _normalizar_logistica(campo: str, crudo: str) -> tuple[Any, str | None]:
-    """(valor, error). Acepta '12,5', '12.5 cm', '3 kg'."""
+    """(valor, error). Acepta '12,5', '12.5 cm', '120 mm', '250 g', '3 kg'.
+
+    Todo lo que la base fuera a rechazar se rechaza AQUÍ, en la vista previa,
+    con un motivo legible: número fuera del tipo, algo que al redondear a la
+    escala de la columna queda en 0, o una unidad que no es de esa medida."""
     m = _NUM.match(crudo)  # el \s de Python ya cubre el espacio duro de Excel
     if not m:
         return None, f"«{crudo}» no es un número"
     n = float(m.group(1).replace(",", "."))
+    unidad = (m.group(2) or "").strip().lower().rstrip(".")
     if _LOG_TIPO[campo] == "entero":
+        if unidad not in _PALABRAS_ENTERO:
+            return None, f"«{crudo}»: escribe solo el número"
         if not n.is_integer():
             return None, f"«{crudo}» debe ser un número entero"
         n = int(n)
+        if n > _TOPE["entero"]:
+            return None, f"«{crudo}» es demasiado grande"
         if campo == "piezas_por_caja" and n <= 0:
             return None, "las piezas por caja deben ser más de 0"
         if n < 0:
             return None, "no puede ser negativo"
         return n, None
+    es_peso = campo == "peso_kg"
+    tabla = _UNIDADES_KG if es_peso else _UNIDADES_CM
+    if unidad and unidad not in tabla:
+        return None, (f"unidad «{unidad}» no válida; usa "
+                      f"{'kg o g' if es_peso else 'cm, mm o m'}")
+    # «1,200 g» ¿es 1.2 g o 1200 g? Con una unidad chica (g, mm) y justo tres
+    # dígitos tras el separador, la coma casi siempre es de MILES. Adivinar da
+    # un error de 1000×, así que se pide que se escriba sin ambigüedad.
+    if tabla.get(unidad, 1.0) < 1.0 and re.fullmatch(r"[1-9]\d{0,2}[.,]\d{3}", m.group(1)):
+        return None, (f"«{crudo}» es ambiguo: escribe "
+                      f"{'1200 g o 1.2 kg' if es_peso else '1500 mm o 150 cm'}")
+    n *= tabla.get(unidad, 1.0)
+    escala, tope = (3, _TOPE["decimal_kg"]) if es_peso else (2, _TOPE["decimal_cm"])
+    n = round(n, escala)
     if n <= 0:
-        return None, "debe ser mayor que 0"
-    return round(n, 3), None
+        return None, ("debe ser mayor que 0" if float(m.group(1).replace(",", ".")) <= 0
+                      else f"«{crudo}» es tan chico que se redondea a 0")
+    if n > tope:
+        return None, f"«{crudo}» es demasiado grande"
+    return n, None
 
 
 def _normalizar_ml(c: dict[str, Any], crudo: str) -> tuple[str | None, str | None, str | None]:
@@ -803,11 +964,12 @@ def _normalizar_ml(c: dict[str, Any], crudo: str) -> tuple[str | None, str | Non
 
 # Los colores del canal: el amarillo de Mercado Libre para lo que ML exige.
 _COLOR = {
-    "ml": "FFE600", "matriz": "FDBA74", "principal": "E2E8F0",
+    "ml": "FFE600", "matriz": "FDBA74", "auto": "D1FAE5", "principal": "E2E8F0",
     "secundario": "F1F5F9", "almacen": "BFDBFE", "id": "E5E7EB",
 }
 _HUECO = {"ml": "FFF9C4", "matriz": "FFEDD5", "almacen": "DBEAFE"}
 _NIVEL_TXT = {"ml": "Obligatorio ML", "matriz": "Obligatorio (matriz)",
+              "auto": "Automático",
               "principal": "Opcional", "secundario": "Opcional · facturación"}
 
 
@@ -866,7 +1028,9 @@ def _nombre_hoja(texto: str, usados: set[str]) -> str:
 
 def _pista(c: dict[str, Any]) -> str:
     partes = [_NIVEL_TXT[c["nivel"]]]
-    if c.get("tipo") == "boolean":
+    if c["nivel"] == "auto":
+        partes.append(f"si lo dejas vacío: {c.get('por_omision')}")
+    elif c.get("tipo") == "boolean":
         partes.append("Sí / No")
     elif c.get("tipo") == "number_unit" and c.get("unidades"):
         partes.append("número + " + "/".join(c["unidades"][:4])
@@ -1061,6 +1225,7 @@ def _instrucciones(ws, semana: dt.date, n: int, indice: list, fill, negrita) -> 
     for k, t in (("almacen", "Almacén (medidas, cajas, piezas)"),
                  ("ml", "Obligatorio de Mercado Libre"),
                  ("matriz", "Obligatorio por la matriz del equipo"),
+                 ("auto", "Automático: el publicador lo llena si lo dejas vacío"),
                  ("principal", "Opcional del producto"),
                  ("secundario", "Opcional de facturación (plegado)")):
         fila += 1
@@ -1158,6 +1323,10 @@ def _celdas_csv(datos: bytes) -> tuple[list[tuple[str, str, str, str, int]], lis
     muestra = texto[:4096]
     try:
         dialecto = csv.Sniffer().sniff(muestra, delimiters=",;\t")
+        # El sniff mira solo 4 KB: si ahí no hay un SKU con comillas, deduce
+        # doublequote=False y lee 'HERR-0032-ROJ-16""'. Excel y el panel
+        # siempre escriben las comillas DOBLADAS.
+        dialecto.doublequote = True
     except csv.Error:
         dialecto = csv.excel
     lector = csv.DictReader(io.StringIO(texto), dialect=dialecto)
@@ -1190,7 +1359,11 @@ def importar_sync(datos: bytes, nombre_archivo: str, aplicar: bool) -> dict[str,
         return {"ok": False, "motivo": f"No se pudo leer el archivo: {exc}"}
 
     avisos: list[dict[str, Any]] = []
-    pegados = limpiar_skus([c[0] for c in celdas])
+    # Cada celda SKU se limpia UNA vez y se busca ya limpia: con la celda
+    # cruda, un SKU envuelto en comillas («"MIC-0001-GRI"») o leído del CSV con
+    # comillas dobles se encontraba en kubera y aun así se tiraba en silencio.
+    limpio = {p: (limpiar_skus([p]) or [p])[0] for p in {c[0] for c in celdas}}
+    pegados = limpiar_skus([limpio[c[0]] for c in celdas])
     reales, desconocidos = _canonicos(pegados)
     for s in desconocidos:
         errores.append({"sku": s, "campo": None, "hoja": None, "fila": None,
@@ -1209,7 +1382,7 @@ def importar_sync(datos: bytes, nombre_archivo: str, aplicar: bool) -> dict[str,
     vistos: set[tuple[str, str]] = set()
 
     for pegado, campo, crudo, hoja, fila in celdas:
-        sku = reales.get(pegado.upper())
+        sku = reales.get(limpio.get(pegado, pegado).upper())
         if not sku:
             continue
         donde = {"sku": sku, "campo": campo, "hoja": hoja, "fila": fila}
@@ -1286,7 +1459,8 @@ def importar_sync(datos: bytes, nombre_archivo: str, aplicar: bool) -> dict[str,
     guardados_alm = 0
     if alm:
         try:
-            guardados_alm = _guardar_almacen(alm, actor.actual())
+            guardados_alm, fallidos_alm = _guardar_almacen(alm, actor.actual())
+            fallidos.extend(fallidos_alm)
         except FaltaMigracion as exc:
             fallidos.append({"sku": "—", "motivo": str(exc)})
         except Exception as exc:  # noqa: BLE001
@@ -1318,9 +1492,14 @@ def guardar_almacen_sync(sku: str, valores: dict[str, Any]) -> dict[str, Any]:
     if not fila:
         return {"ok": True, "guardados": 0}
     try:
-        _guardar_almacen({real: fila}, actor.actual())
+        _, fallidos = _guardar_almacen({real: fila}, actor.actual())
     except FaltaMigracion as exc:
         return {"ok": False, "falta_migracion": True, "motivo": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("checklist: almacén de %s no se guardó: %s", real, exc)
+        return {"ok": False, "motivo": f"No se pudo guardar: {exc}"}
+    if fallidos:
+        return {"ok": False, "motivo": fallidos[0]["motivo"]}
     return {"ok": True, "guardados": len(fila)}
 
 
@@ -1336,7 +1515,12 @@ def guardar_almacen_sync(sku: str, valores: dict[str, Any]) -> dict[str, Any]:
 # costos_validados y la tarima es ubicación de Odoo, no se repiten aquí.
 
 _HOJA_SEMANA = re.compile(r"(?i)\b(?:week|wk|semana|sem)\s*[-_.]?\s*(\d{1,2})\b")
-_PARECE_SKU = re.compile(r"^[A-Za-z]{2,6}-[A-Za-z0-9][A-Za-z0-9/_.\-]*$")
+_ENCABEZADO_SKU = re.compile(r"^(c[oó]digo|clave|id)\s*(de\s*)?sku")
+# Con comillas: hay SKUs reales como HERR-0032-ROJ-16" (12 en core.products).
+# Prefijo de letras (con Ñ: BAÑ-0486-EST), guion y lo que sea sin espacios:
+# hay SKUs reales con * ´ ° > , y " (MUE-0445-VER-180*300, TEC-1813-NEG-19´…).
+# La EXISTENCIA la decide _canonicos, no esta forma.
+_PARECE_SKU = re.compile(r"^[A-Za-zÑñ]{2,6}-\S+$")
 
 
 def _sku_de_lista(v: Any) -> str:
@@ -1345,13 +1529,18 @@ def _sku_de_lista(v: Any) -> str:
     return re.sub(r"[\[\]\s]", "", _texto(v))
 
 
-def _hojas_lista(datos: bytes, nombre: str) -> list[dict[str, Any]]:
-    """Cada hoja que trae SKUs: {hoja, semana_iso, skus, comentarios}."""
+def _hojas_lista(datos: bytes, nombre: str,
+                 conocidos=None) -> list[dict[str, Any]]:
+    """Cada hoja que trae SKUs: {hoja, semana_iso, skus, comentarios, descartados}.
+
+    `conocidos(lista) -> set(MAYÚSCULAS)` dice cuáles existen en kubera; con él
+    se elige la columna SKU. Sin él (pruebas), se puntúa por la forma."""
     tablas: list[tuple[str, list[list[Any]]]] = []
     if nombre.lower().endswith(".csv"):
         texto = datos.decode("utf-8-sig", errors="replace")
         try:
             dialecto = csv.Sniffer().sniff(texto[:4096], delimiters=",;\t")
+            dialecto.doublequote = True   # ver _celdas_csv
         except csv.Error:
             dialecto = csv.excel
         tablas.append((nombre.rsplit(".", 1)[0],
@@ -1371,23 +1560,45 @@ def _hojas_lista(datos: bytes, nombre: str) -> list[dict[str, Any]]:
     salida = []
     for titulo, filas in tablas:
         col_sku, col_com, inicio = None, None, 0
+        # El ENCABEZADO y la COLUMNA se eligen juntos: entre los primeros 5
+        # renglones, cada celda que diga «sku» es candidata, y gana la que más
+        # SKUs de kubera tenga debajo. Así un renglón de título («Lista de SKUs
+        # semana 39») no se confunde con el encabezado, y de un packing list con
+        # 'SKU ODOO' y 'SKU' (referencias del proveedor) gana la de Odoo.
+        mejor = (0, 0, -1)
         for i, fila in enumerate(filas[:5]):
             textos = [_texto(x).strip().lower() for x in fila]
-            if "sku" in textos:
-                col_sku = textos.index("sku")
-                col_com = next((j for j, x in enumerate(textos)
-                                if x.startswith("comentario")), None)
-                inicio = i + 1
-                break
+            for j, x in enumerate(textos):
+                # Un ENCABEZADO de SKU: empieza con «sku» ('SKU', 'SKU ODOO',
+                # 'SKUs') o es «código/clave SKU». Por subcadena, un renglón de
+                # datos como «crear SKU» se volvía encabezado y se comía los SKUs
+                # de arriba.
+                if not (x.startswith("sku") or _ENCABEZADO_SKU.match(x)):
+                    continue
+                debajo = [_sku_de_lista(f[j]) for f in filas[i + 1:] if j < len(f)]
+                debajo = [s for s in debajo if s and _PARECE_SKU.match(s)]
+                reales = len(conocidos(debajo)) if conocidos and debajo else 0
+                # En EMPATE gana el renglón más bajo, el pegado a los datos: un
+                # título «SKUs semana 40» arriba del encabezado real ve los
+                # mismos SKUs debajo, y si ganaba se perdían los comentarios.
+                puntos = (reales, len(debajo), i)
+                if puntos[:2] > (0, 0) and puntos > mejor:
+                    mejor = puntos
+                    col_sku, inicio = j, i + 1
+                    col_com = next((k for k, y in enumerate(textos)
+                                    if y.startswith("comentario")), None)
         if col_sku is None:
             col_sku = 0   # sin encabezado (así venía la Week 36): la primera columna
         skus: list[str] = []
         comentarios: dict[str, str] = {}
+        descartados: list[str] = []
         vistos: set[str] = set()
         for fila in filas[inicio:]:
             if col_sku >= len(fila):
                 continue
             s = _sku_de_lista(fila[col_sku])
+            if s and not _PARECE_SKU.match(s) and s not in descartados:
+                descartados.append(s)
             if not s or not _PARECE_SKU.match(s) or s.upper() in vistos:
                 continue
             vistos.add(s.upper())
@@ -1399,7 +1610,8 @@ def _hojas_lista(datos: bytes, nombre: str) -> list[dict[str, Any]]:
         if skus:
             m = _HOJA_SEMANA.search(titulo)
             salida.append({"hoja": titulo, "semana_iso": int(m.group(1)) if m else None,
-                           "skus": skus, "comentarios": comentarios})
+                           "skus": skus, "comentarios": comentarios,
+                           "descartados": descartados})
     return salida
 
 
@@ -1412,8 +1624,12 @@ def lista_sync(datos: bytes, nombre: str, semana_txt: str | None,
     se está viendo; si no, la de número más alto. La semana sale del NOMBRE de
     la hoja («Week 39» → lunes 21-sep-2026), en el año ISO de la semana vista.
     """
+    def conocidos(lista: list[str]) -> set[str]:
+        reales, _ = _canonicos(lista)
+        return {s.upper() for s in lista if s.upper() in reales}
+
     try:
-        hojas = _hojas_lista(datos, nombre or "")
+        hojas = _hojas_lista(datos, nombre or "", conocidos)
     except Exception as exc:  # noqa: BLE001
         log.warning("checklist: no se pudo leer la lista %s: %s", nombre, exc)
         return {"ok": False, "motivo": f"No se pudo leer el archivo: {exc}"}
@@ -1442,6 +1658,10 @@ def lista_sync(datos: bytes, nombre: str, semana_txt: str | None,
         "elegida": elegida["hoja"], "semana": semana.isoformat(),
         "etiqueta": etiqueta(semana), "skus": len(elegida["skus"]),
         "comentarios": len(elegida["comentarios"]), "desconocidos": desconocidos,
+        # Lo que venía en la columna SKU y no parece SKU: se enseña, no se
+        # tira en silencio.
+        "descartados": elegida["descartados"][:30],
+        "descartados_total": len(elegida["descartados"]),
     }
     if not aplicar:
         return {**base, "aplicado": False}

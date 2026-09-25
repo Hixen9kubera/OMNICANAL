@@ -1984,6 +1984,8 @@ export interface CotejoCajas {
   bodega_piezas_por_caja?: number | null;
   bodega_por?: string | null;
   bodega_en?: string | null;
+  /** Almacén menos packing list. null si falta alguna de las dos cifras. */
+  bodega_vs_pl?: number | null;
   /** Las cajas del packing list. Ver `pl_fuente` para saber de dónde salieron. */
   packing_list: number | null;
   /** `renglon` = leído del xlsx en el renglón exacto del SKU (el dato bueno).
@@ -2010,7 +2012,7 @@ export interface CotejoCajas {
   odoo: number | null;
   piezas_por_caja_odoo: number | null;
   manda: "bodega";
-  estado: "cotejable" | "solo_pl" | "solo_odoo" | "sin_dato";
+  estado: "cotejable" | "solo_pl" | "solo_odoo" | "sin_dato" | "bodega_vs_pl" | "solo_bodega";
   nota: string;
 }
 
@@ -2595,7 +2597,7 @@ export interface MovimientosResp {
 
 /** Qué tan exigido es un atributo: de ML, por la matriz del equipo, u
  *  opcional — del producto (principal) o de facturación (secundario). */
-export type NivelChecklist = "ml" | "matriz" | "principal" | "secundario";
+export type NivelChecklist = "ml" | "matriz" | "auto" | "principal" | "secundario";
 
 export interface CampoChecklist {
   campo: string;
@@ -2609,6 +2611,8 @@ export interface CampoChecklist {
   unidades: string[];
   /** La unidad que ML asume si llega un número solo. */
   unidad_default: string | null;
+  /** Nivel «auto»: lo que el publicador pone si se deja vacío (BRAND → Ferrahome). */
+  por_omision?: string | null;
 }
 
 /** Lo que HOY dice el sistema (costing.costos_validados), solo de referencia:
@@ -2715,6 +2719,9 @@ export interface ListaChecklist {
   skus: number;
   comentarios: number;
   desconocidos: string[];
+  /** Lo que venía en la columna SKU y no tiene forma de SKU (los primeros 30). */
+  descartados?: string[];
+  descartados_total?: number;
   agregados?: number;
   ya_estaban?: number;
 }
