@@ -92,7 +92,7 @@ export interface VarianteResumen {
   stock: number | null;
   valor: number | null; // stock × costo
   estado: string | null;
-  contenedor: string | null; // nº de contenedor (costos_validados)
+  contenedor: string | null; // nº de contenedor (tabla de contenedores → costos_validados)
   /** A quién se le ESCRIBE (`woocommerce.ruta_escritura`). */
   wc_id?: number | null;
   /** Miniatura PROPIA de la variante — la del color. 6,899 de 7,477 la tienen. */
@@ -153,7 +153,7 @@ export interface Producto {
   // Padre en una pestaña de canal: lo que cobran sus variantes ahí, de menor a
   // mayor (`n` de `total` con publicación viva en ese canal/cuenta).
   precio_rango?: { min: number; max: number; n: number; total: number } | null;
-  contenedor: string | null; // nº de contenedor (costos_validados)
+  contenedor: string | null; // nº de contenedor (tabla de contenedores → costos_validados)
   // Tipo en WooCommerce: simple | variable (padre) | variation
   tipo: string | null;
   // Si es padre: sus variantes (vista Crear Productos)
@@ -2121,6 +2121,27 @@ export interface SpecsSku {
   canal_veredicto: string;
 }
 
+/**
+ * Una N de la tabla de contenedores (`costing.sku_contenedor`, 0060): en qué
+ * contenedor de Kubera llegó el SKU. Un SKU puede traer varias (`multi`).
+ */
+export interface ContenedorTabla {
+  numero: number;
+  /** Código principal del embarque (ISO o guía). Informativo: la llave es `numero`. */
+  codigo: string | null;
+  /** A: el Ferraforme lo confirma o coinciden dos familias independientes
+   *  (Ferraforme, costos, campo de Odoo; la OC recibida solo apoya).
+   *  B: una sola familia fuerte; en un SKU con varios contenedores, también la
+   *  N cuyo único documento es la OC recibida. Una B puede traer evidencia en
+   *  contra (el Ferraforme de su N no trae al SKU) y cargarse igual. */
+  nivel: "A" | "B";
+  fuentes: ("ferraforme" | "costos" | "odoo_campo" | "odoo_oc")[];
+  /** El SKU llegó en más de un contenedor y cada N tiene documento. */
+  multi: boolean;
+  /** «CODIGO - N», o «Contenedor N» cuando la tabla no tiene código. */
+  etiqueta: string;
+}
+
 export interface FilaInventario {
   sku: string;
   existe_en_woo: boolean;
@@ -2138,18 +2159,31 @@ export interface FilaInventario {
   /** Uno de los tres SKUs de ejemplo con movimiento real. */
   es_referencia: boolean;
 
+  /** Con la tabla de contenedores, TODAS sus etiquetas unidas con « / », de
+   *  mayor a menor N («149504230930 - 64 / TXGU7222939 - 7»). */
   contenedor: string;
-  /** De dónde salió: "odoo" (manda) o "costos_validados" (respaldo). */
-  contenedor_fuente: "odoo" | "costos_validados" | "";
+  /** De dónde salió. Con LEER_SKU_CONTENEDOR manda "tabla"
+   *  (costing.sku_contenedor, 0060); "odoo" y luego "costos_validados" quedan
+   *  de respaldo. Sin el flag: "odoo" (manda) o "costos_validados". */
+  contenedor_fuente: "tabla" | "odoo" | "costos_validados" | "";
   /** El código mostrado es una referencia de booking, no un contenedor ISO. */
   contenedor_es_booking: boolean;
+  /** Con la tabla, sus N unidas igual que `contenedor` («64 / 7»). */
   embarque: string;
   contenedor_odoo: string;
   contenedor_costo: string;
   contenedor_discrepa: boolean;
   /** Las dos fuentes tienen dato pero una no trae número de embarque: no hay
-   *  con qué cotejarlas. NO es lo mismo que "concuerdan". */
+   *  con qué cotejarlas. NO es lo mismo que "concuerdan". Con la tabla, siempre
+   *  false: la tabla es justo el cotejo que faltaba. */
   contenedor_no_comparable: boolean;
+  /** Solo con LEER_SKU_CONTENEDOR (ausente = flag apagado, v0.575): las N que
+   *  la tabla de contenedores tiene del SKU, de mayor a menor. `[]` = la tabla
+   *  no lo tiene y todo lo de contenedor salió del respaldo (Odoo / costos). */
+  contenedores?: ContenedorTabla[];
+  /** Solo con el flag: el porqué de `contenedor_discrepa`, p. ej. «Odoo dice
+   *  12; la tabla dice 11» u «Odoo dice 103; costos dice 97». "" si no discrepa. */
+  contenedor_discrepa_detalle?: string;
   /** Piezas por caja MASTER, de Odoo. Nunca del packing list. */
   piezas_por_caja: number | null;
   /** Cajas de las piezas LIBRES de Odoo — derivadas: libres ÷ piezas por caja.

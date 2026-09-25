@@ -33,7 +33,7 @@ import {
   TIPO_CAMBIO_DEFAULT,
 } from "@/components/resolver/comunes";
 import { listarCostos, contenedoresCosto, embarquesCosto, costoBulk, costoPreview } from "@/lib/api";
-import type { CostoFila, EmbarquesResp } from "@/lib/api";
+import type { CostoFila, EmbarqueFila, EmbarquesResp } from "@/lib/api";
 import type { CostoRow, ContenedorInfo, Paginacion, CostoBulkResp, CostoCalculo } from "@/lib/types";
 
 const PER_PAGE = 50;
@@ -41,7 +41,8 @@ const PER_PAGE = 50;
 /**
  * Filtro de contenedor. Lleva su TIPO consigo porque hay dos contratos:
  *
- *   "embarque"   — clave de `_embarques` (costos + packing lists, kubera).
+ *   "embarque"   — clave de `_embarques` (costos + packing lists, kubera; con
+ *                  LEER_SKU_CONTENEDOR, también la tabla de contenedores).
  *   "contenedor" — texto exacto de `costos_validados.contenedor`, la lista de
  *                  siempre, para cuando `_embarques` no responde.
  *
@@ -302,11 +303,20 @@ export default function CostosPage() {
       const sin = embarques.sin_contenedor;
       return [
         { valor: sin.clave || "sin", etiqueta: "Sin contenedor", texto: `Sin contenedor (${sin.n})` },
-        ...embarques.embarques.map((e) => ({
-          valor: e.clave,
-          etiqueta: e.etiqueta,
-          texto: `${e.etiqueta} (${e.n}${e.sin_costo > 0 ? ` · ${e.sin_costo} sin costo` : ""})`,
-        })),
+        ...embarques.embarques.map((e) => {
+          // Una N que SOLO conoce la tabla de contenedores (LEER_SKU_CONTENEDOR)
+          // y sin código saldría como un número pelón, «102 (29)». Se nombra
+          // como en Inventario y Crear, «Contenedor 102», y se dice de dónde sale.
+          const soloTabla = e.fuentes?.length === 1 && e.fuentes[0] === "tabla";
+          const etiqueta = soloTabla && !e.codigos?.length && e.numero != null
+            ? `Contenedor ${e.numero}` : e.etiqueta;
+          return {
+            valor: e.clave,
+            etiqueta,
+            texto: `${etiqueta} (${e.n}${soloTabla ? " · solo en la tabla" : ""}${
+              e.sin_costo > 0 ? ` · ${e.sin_costo} sin costo` : ""})`,
+          };
+        }),
       ];
     }
     return contenedores.map((c) => ({
@@ -661,7 +671,9 @@ export default function CostosPage() {
               <Container size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
               {/* Con `_embarques` cada opción es un EMBARQUE: junta el código
                   de costos y el del packing list bajo el número de contenedor
-                  de Kubera. El conteo es de SKUs distintos del catálogo (con y
+                  de Kubera (con LEER_SKU_CONTENEDOR suma la tabla de
+                  contenedores, y una N que solo ella conoce trae su propia
+                  opción). El conteo es de SKUs distintos del catálogo (con y
                   sin costo); un SKU puede estar en dos, así que no suman el
                   total. */}
               <select value={filtroCont?.valor ?? ""} onChange={(e) => cambiarContenedor(e.target.value)}
@@ -1207,14 +1219,20 @@ function Desglose({ calc, pendiente }: { calc: CostoCalculo | null | undefined; 
  * pinta el `contenedor` crudo, como siempre. Una lista vacía con `contenedor`
  * lleno puede pasar durante los 30 s que dura la caché de la agrupación
  * después de capturar uno nuevo; también se pinta el crudo en vez de un hueco.
- * Por la misma caché la fila puede traer SOLO embarques del packing con un
- * `contenedor` que la agrupación aún no conoce: entonces se pinta el crudo
- * arriba y no va la «PL» (afirmaría que costos no lo tiene sin saberlo).
+ * Por la misma caché la fila puede traer SOLO embarques del packing (o de la
+ * tabla) con un `contenedor` que la agrupación aún no conoce: entonces se pinta
+ * el crudo arriba y no van la «PL» ni la «Tabla» (afirmarían que costos no lo
+ * tiene sin saberlo).
+ *
+ * Con LEER_SKU_CONTENEDOR la tabla de contenedores (`costing.sku_contenedor`)
+ * es la tercera fuente. «PL» sigue marcando lo que SOLO afirma el packing, y
+ * «Tabla» lo que la tabla afirma y costos no tiene (con o sin el packing):
+ * las dos insignias señalan el mismo hueco, costos sin ese contenedor.
  */
 function CeldaContenedor({ fila }: { fila: CostoFila }) {
   const embs = fila.embarques;
   if (!embs || embs.length === 0) return <>{fila.contenedor || "—"}</>;
-  const costosSinAgrupar = !!fila.contenedor && embs.every((e) => e.fuente === "packing");
+  const costosSinAgrupar = !!fila.contenedor && !embs.some((e) => fuentesDe(e).includes("costos"));
   return (
     <div className="flex flex-col gap-0.5">
       {costosSinAgrupar && (
@@ -1222,31 +1240,62 @@ function CeldaContenedor({ fila }: { fila: CostoFila }) {
           {fila.contenedor}
         </div>
       )}
-      {embs.map((e) => (
-        <div
-          key={e.clave}
-          title={
-            e.fuente !== "packing" && fila.contenedor
-              ? `${e.etiqueta} — en costos: «${fila.contenedor}»`
-              : e.etiqueta
-          }
-          className="flex items-center gap-1 whitespace-nowrap"
-        >
-          <span className="max-w-[190px] truncate">{e.etiqueta}</span>
-          {e.fuente === "packing" && !costosSinAgrupar && (
-            <span
-              title="Solo en el packing list: costos no tiene este contenedor"
-              className="rounded bg-sky-100 px-1 py-0.5 text-[9px] font-bold uppercase tracking-wide text-sky-700"
-            >
-              {/* El `title` no lo ve el teclado ni lo lee un lector de pantalla. */}
-              <span aria-hidden="true">PL</span>
-              <span className="sr-only">Solo en el packing list: costos no tiene este contenedor</span>
-            </span>
-          )}
-        </div>
-      ))}
+      {embs.map((e) => {
+        const fuentes = fuentesDe(e);
+        const tablaSinCostos = fuentes.includes("tabla") && !fuentes.includes("costos");
+        const textoTabla = fuentes.includes("packing")
+          ? "En la tabla de contenedores y en el packing list: costos no tiene este contenedor"
+          : "Solo en la tabla de contenedores: costos no tiene este contenedor";
+        return (
+          <div
+            key={e.clave}
+            title={tituloEmbarque(e, fila.contenedor)}
+            className="flex items-center gap-1 whitespace-nowrap"
+          >
+            <span className="max-w-[190px] truncate">{e.etiqueta}</span>
+            {e.fuente === "packing" && !costosSinAgrupar && (
+              <span
+                title="Solo en el packing list: costos no tiene este contenedor"
+                className="rounded bg-sky-100 px-1 py-0.5 text-[9px] font-bold uppercase tracking-wide text-sky-700"
+              >
+                {/* El `title` no lo ve el teclado ni lo lee un lector de pantalla. */}
+                <span aria-hidden="true">PL</span>
+                <span className="sr-only">Solo en el packing list: costos no tiene este contenedor</span>
+              </span>
+            )}
+            {tablaSinCostos && !costosSinAgrupar && (
+              <span
+                title={textoTabla}
+                className="rounded bg-violet-100 px-1 py-0.5 text-[9px] font-bold uppercase tracking-wide text-violet-700"
+              >
+                <span aria-hidden="true">Tabla</span>
+                <span className="sr-only">{textoTabla}</span>
+              </span>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
+}
+
+/**
+ * Las fuentes de un embarque de la fila. Con LEER_SKU_CONTENEDOR llegan en
+ * `fuentes`; sin él (v0.574) se deducen de `fuente`, donde "ambos" solo puede
+ * ser costos + packing.
+ */
+function fuentesDe(e: EmbarqueFila): ("costos" | "packing" | "tabla")[] {
+  if (e.fuentes) return e.fuentes;
+  return e.fuente === "ambos" ? ["costos", "packing"] : [e.fuente];
+}
+
+/** El `title` de un embarque: sin `fuentes` (flag apagado), el de v0.574 tal cual. */
+function tituloEmbarque(e: EmbarqueFila, contenedor: string | null | undefined): string {
+  const fuentes = fuentesDe(e);
+  const base = fuentes.includes("costos") && contenedor
+    ? `${e.etiqueta} — en costos: «${contenedor}»`
+    : e.etiqueta;
+  return e.fuentes && fuentes.includes("tabla") ? `${base} · en la tabla de contenedores` : base;
 }
 
 function CeldaInput({ value, onChange, align, prefijo }: {

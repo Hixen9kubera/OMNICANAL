@@ -48,7 +48,7 @@ import {
   specsCanal,
 } from "@/lib/api";
 import type {
-  ClaveEtapa, ClavePunto, Cuadre, EstadoEtapa, EstadoPunto, FilaInventario,
+  ClaveEtapa, ClavePunto, ContenedorTabla, Cuadre, EstadoEtapa, EstadoPunto, FilaInventario,
   InventarioResp, Movimiento, MovimientosResp, OrdenCompra,
   RecepcionPendiente, SpecCanal, CampoSpec, EditorSpecs,
 } from "@/lib/types";
@@ -97,6 +97,37 @@ function Almacen({ nombre, titulo }: { nombre: string; titulo?: string }) {
 /** El estado de uno de los cuatro requisitos, por su clave. */
 function punto(f: FilaInventario, clave: ClavePunto): EstadoPunto | null {
   return f.validacion_bodega.puntos.find((p) => p.clave === clave)?.estado ?? null;
+}
+
+/** Cómo se lee cada fuente de la tabla de contenedores (costing.sku_contenedor). */
+const FUENTE_TABLA: Record<ContenedorTabla["fuentes"][number], string> = {
+  ferraforme: "Ferraforme",
+  costos: "costos",
+  odoo_campo: "campo de Odoo",
+  odoo_oc: "OC recibida",
+};
+
+/** «nivel A · Ferraforme, costos»: el nivel y las fuentes de UNA N de la tabla. */
+function nivelTabla(c: ContenedorTabla): string {
+  const fuentes = c.fuentes.map((x) => FUENTE_TABLA[x] ?? x).join(", ");
+  return `nivel ${c.nivel}${fuentes ? ` · ${fuentes}` : ""}`;
+}
+
+/** El `title` de las N de la tabla: una línea por contenedor, con nivel y fuentes.
+ *  Los niveles, como los define la 0060: la OC recibida apoya pero NO es familia. */
+function tituloTabla(cs: ContenedorTabla[]): string {
+  return [
+    cs.length > 1 ? `De la tabla de contenedores: llegó en ${cs.length}.` : "De la tabla de contenedores.",
+    ...cs.map((c) => `${c.etiqueta} · ${nivelTabla(c)}`),
+    "Nivel A: el Ferraforme lo confirma o coinciden dos familias independientes (la OC recibida solo apoya). " +
+      "B: una sola familia fuerte; en un SKU con varios contenedores, también una N que solo documenta la OC recibida.",
+  ].join("\n");
+}
+
+/** El `title` de «discrepa». Sin `contenedor_discrepa_detalle` (flag apagado), el de v0.575. */
+function tituloDiscrepa(f: FilaInventario): string {
+  const crudo = `Odoo: ${f.contenedor_odoo} · costos: ${f.contenedor_costo}`;
+  return f.contenedor_discrepa_detalle ? `${f.contenedor_discrepa_detalle}. En crudo: ${crudo}` : crudo;
 }
 
 /** Los cuatro requisitos de VALIDADO BODEGA, en el orden que los dio Brandon. */
@@ -739,29 +770,63 @@ function Fila({
       </td>
 
       {/* EMPAQUE: el factor arriba, el contenedor abajo. Los dos de ODOO —
-          el packing list ya no manda aquí (Brandon, 4-sep). */}
+          el packing list ya no manda aquí (Brandon, 4-sep). Con
+          LEER_SKU_CONTENEDOR el contenedor lo da la tabla de contenedores
+          (25-sep) y Odoo queda de respaldo. */}
       <td className="px-3 py-2.5">
         <div className="text-xs font-bold text-slate-700">
           {f.piezas_por_caja === null ? "sin factor" : `${f.piezas_por_caja} pzs/caja`}
         </div>
-        <div className="flex items-center gap-1 text-[10px] text-slate-400">
+        {/* Con la tabla la fila puede envolver («· discrepa» baja de renglón en
+            vez de partir una etiqueta) y, con varias N, el ícono y las marcas
+            se quedan arriba en vez de flotar a media lista. Sin la tabla, las
+            clases de v0.575 tal cual. */}
+        <div className={`flex gap-1 text-[10px] text-slate-400 ${
+          f.contenedor_fuente !== "tabla" ? "items-center"
+            : (f.contenedores?.length ?? 0) > 1 ? "flex-wrap items-start" : "flex-wrap items-center"}`}>
           {f.contenedor ? (
             <>
               <Container className="h-3 w-3 shrink-0" />
-              <span className="font-mono">{f.contenedor}</span>
-              {f.embarque && <span>· emb. {f.embarque}</span>}
+              {/* Con la tabla de contenedores cada etiqueta ya trae su N
+                  («MEDU7316591 - 11»): el «emb.» la repetiría. Una etiqueta
+                  por renglón y sin partirse: unidas en un solo texto, la
+                  columna cortaba a media etiqueta y dejaba la N de una junto
+                  al código de la siguiente. El nivel va también en texto para
+                  lector de pantalla: el `title` no lo lee ni lo ve el teclado. */}
+              {f.contenedor_fuente === "tabla" && (f.contenedores?.length ?? 0) > 0 ? (
+                <span className="flex flex-col font-mono" title={tituloTabla(f.contenedores ?? [])}>
+                  {(f.contenedores ?? []).map((c) => (
+                    <span key={c.numero} className="whitespace-nowrap">
+                      {c.etiqueta}
+                      <span className="sr-only">, {nivelTabla(c)}.</span>
+                    </span>
+                  ))}
+                </span>
+              ) : (
+                <span className="font-mono">{f.contenedor}</span>
+              )}
+              {f.embarque && f.contenedor_fuente !== "tabla" && <span>· emb. {f.embarque}</span>}
               {f.contenedor_es_booking && (
                 <span title="Es la referencia del transitario, no un contenedor ISO">· booking</span>
               )}
+              {/* `contenedores` solo llega con LEER_SKU_CONTENEDOR. Vacío = la
+                  tabla no tiene al SKU y lo de aquí es el respaldo: se dice. */}
+              {f.contenedor_fuente === "odoo" && f.contenedores?.length === 0 && (
+                <span className="text-slate-400"
+                      title="La tabla de contenedores no tiene este SKU; se muestra el de Odoo">
+                  · de Odoo
+                </span>
+              )}
               {f.contenedor_fuente === "costos_validados" && (
                 <span className="text-slate-400"
-                      title="Odoo no tiene contenedor para este SKU; se muestra el de costos_validados">
+                      title={f.contenedores
+                        ? "Ni la tabla de contenedores ni Odoo tienen este SKU; se muestra el de costos_validados"
+                        : "Odoo no tiene contenedor para este SKU; se muestra el de costos_validados"}>
                   · de costos
                 </span>
               )}
               {f.contenedor_discrepa && (
-                <span className="text-rose-600"
-                      title={`Odoo: ${f.contenedor_odoo} · costos: ${f.contenedor_costo}`}>
+                <span className="text-rose-600" title={tituloDiscrepa(f)}>
                   · discrepa
                 </span>
               )}
@@ -1122,15 +1187,47 @@ function Cajon({
 }
 
 function Jerarquia({ fila }: { fila: FilaInventario }) {
-  const paso = (t: string, v: string, sub?: string, destacado?: boolean) => (
+  // `chico`: el valor no cabe en letra grande (varios contenedores de la tabla).
+  const paso = (t: string, v: React.ReactNode, sub?: string, destacado?: boolean, chico?: boolean) => (
     <div className={`flex-1 rounded-xl border p-3 ${
       destacado ? "border-indigo-200 bg-indigo-50" : "border-slate-200 bg-white"}`}>
       <div className="text-[10px] font-bold uppercase tracking-[0.06em] text-slate-400">{t}</div>
-      <div className={`mt-1 text-xl font-extrabold tabular-nums ${
+      <div className={`mt-1 ${chico ? "break-words text-sm" : "text-xl"} font-extrabold tabular-nums ${
         destacado ? "text-indigo-700" : "text-slate-900"}`}>{v}</div>
       {sub && <div className="mt-0.5 text-[11px] leading-tight text-slate-400">{sub}</div>}
     </div>
   );
+  // `contenedores` solo existe con LEER_SKU_CONTENEDOR; sin él, todo como en v0.575.
+  const conTabla = fila.contenedores !== undefined;
+  const deTabla = fila.contenedor_fuente === "tabla";
+  const nTabla = fila.contenedores?.length ?? 0;
+  const subContenedor =
+    deTabla ? "según la tabla de contenedores"
+      : fila.contenedor_fuente === "odoo" ? (conTabla ? "según Odoo · la tabla no lo tiene" : "según Odoo")
+        : fila.contenedor_fuente === "costos_validados"
+          ? (conTabla ? "según costos_validados · ni la tabla ni Odoo" : "según costos_validados")
+          : undefined;
+  // De la tabla, la etiqueta entera («MEDU7316591 - 11») no cabe en la caja y
+  // se partía a la mitad. Con uno solo va el código, como hoy con el de Odoo, y
+  // la N en «Embarque» debajo; con varios, uno por renglón y la N al frente.
+  const valorContenedor: React.ReactNode =
+    deTabla && nTabla === 1 ? (fila.contenedores?.[0]?.codigo || fila.contenedor)
+      : deTabla && nTabla > 1 ? (fila.contenedores ?? []).map((c) => (
+        <div key={c.numero} className="leading-tight">
+          {c.numero}
+          {/* Separador real: sin él el nombre accesible juntaba «88SZLS…». */}
+          {c.codigo && <span className="sr-only"> · </span>}
+          {c.codigo && (
+            <span className="ml-1 break-all font-mono text-[10px] font-semibold text-slate-500">
+              {c.codigo}
+            </span>
+          )}
+          {/* El nivel y las fuentes, a la vista: en un `title` no los ve el
+              teclado, el tacto ni (con certeza) un lector de pantalla. */}
+          <div className="text-[10px] font-normal text-slate-400">{nivelTabla(c)}</div>
+        </div>
+      ))
+        : fila.contenedor || "—";
   const signo = (s: string) => (
     <span className="self-center px-1 text-sm font-bold text-slate-300">{s}</span>
   );
@@ -1140,10 +1237,7 @@ function Jerarquia({ fila }: { fila: FilaInventario }) {
         Jerarquía de empaque
       </h3>
       <div className="mt-2 flex gap-1">
-        {paso("Contenedor", fila.contenedor || "—",
-          fila.contenedor_fuente === "odoo" ? "según Odoo"
-            : fila.contenedor_fuente === "costos_validados" ? "según costos_validados"
-              : undefined)}
+        {paso("Contenedor", valorContenedor, subContenedor, false, deTabla && nTabla > 1)}
         {signo("=")}
         {paso("Cajas", numCajas(fila.cajas), "libres en piso")}
         {signo("×")}
@@ -1162,8 +1256,27 @@ function Jerarquia({ fila }: { fila: FilaInventario }) {
           pedidos. El on hand es métrica de trackeo; lo vendible es lo libre.
         </p>
       )}
-      {fila.embarque && (
-        <p className="mt-1 text-[11px] text-slate-400">Embarque {fila.embarque}.</p>
+      {/* La 0060 solo carga las N con documento (los conflictos y refutados
+          van a la lista de Brandon): no se afirma que sean TODOS en los que
+          llegó. */}
+      {deTabla && nTabla > 1 ? (
+        <p className="mt-1 text-[11px] text-slate-400" title={tituloTabla(fila.contenedores ?? [])}>
+          Llegó en {nTabla} contenedores con documento: embarques {fila.embarque}. La tabla guarda
+          cada uno, no solo el último.
+        </p>
+      ) : fila.embarque && (
+        <p className="mt-1 text-[11px] text-slate-400"
+           title={deTabla ? tituloTabla(fila.contenedores ?? []) : undefined}>
+          Embarque {fila.embarque}.
+          {deTabla && fila.contenedores?.[0] && <> Tabla de contenedores, {nivelTabla(fila.contenedores[0])}.</>}
+        </p>
+      )}
+      {/* El porqué de «discrepa», solo con LEER_SKU_CONTENEDOR: «Odoo dice 12;
+          la tabla dice 11». */}
+      {fila.contenedor_discrepa && fila.contenedor_discrepa_detalle && (
+        <p className="mt-1 text-[11px] text-rose-600">
+          Contenedor discrepa: {fila.contenedor_discrepa_detalle}.
+        </p>
       )}
     </section>
   );

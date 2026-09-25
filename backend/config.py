@@ -164,6 +164,14 @@ class Settings(BaseSettings):
     # Encenderlo EXIGE la 0055 y la 0056 aplicadas en esa base: con el flag
     # prendido se lee y escribe `caja_compartida.archivo_sha256`.
     packing_leer_storage: bool = False
+    # Leer `costing.sku_contenedor` (0060) como la fuente PREFERIDA del
+    # contenedor de cada SKU en Inventario (tabla, ficha, alertas), el cotejo de
+    # cajas, Crear y el filtro de Costos. Lo de antes (Odoo, costos_validados,
+    # packing lists) queda de RESPALDO para los SKUs que la tabla no tiene. Es
+    # solo LECTURA: nada escribe en la tabla desde el panel. Apagado = todo se
+    # comporta exactamente como en v0.575. Si la tabla no existe en esa base
+    # (producción antes de la 0060), avisa una vez en el log y usa el respaldo.
+    leer_sku_contenedor: bool = False
     # Lo mismo para TikTok. Ojo: al crear, el producto todavía NO está publicado
     # en TikTok, así que no tiene categoría y sus atributos no se pueden pedir —
     # se genera el título y la descripción, y los atributos entran cuando el SKU

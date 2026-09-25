@@ -267,6 +267,11 @@ def _resolver(skus: list[str]) -> dict[str, dict[str, Any]]:
             contenedores = odoo.contenedores_por_sku(sin_registro)
         except Exception as exc:  # noqa: BLE001
             log.warning("packing_cajas: contenedores de Odoo: %s", exc)
+    # Con LEER_SKU_CONTENEDOR, la tabla de contenedores (0060) va ANTES que el
+    # campo de Odoo: sus códigos abren el packing list. Solo cuando el SKU tiene
+    # UNA N — con varias no se sabe en cuál viene este renglón, y se sigue como
+    # siempre. Sin flag o sin tabla, vacío.
+    refs_tabla = _refs_de_tabla(sin_registro)
 
     # (archivo, contenedor, huella): la huella va en la llave porque dos SKUs del
     # mismo archivo pudieron validarse contra versiones distintas.
@@ -279,6 +284,15 @@ def _resolver(skus: list[str]) -> dict[str, dict[str, Any]]:
                 clave = (archivo, reg.get("contenedor_base") or "",
                          reg.get("archivo_sha256") or "")
                 por_archivo.setdefault(clave, []).append(sku)
+            continue
+        hallado = False
+        for ref in refs_tabla.get(sku, ()):
+            hallados = drive.archivos_de(ref, inventario)
+            if hallados:
+                por_archivo.setdefault((hallados[0][1], ref, ""), []).append(sku)
+                hallado = True
+                break
+        if hallado:
             continue
         crudo = contenedores.get(sku.upper()) or contenedores.get(sku) or ""
         if not crudo:
@@ -571,6 +585,42 @@ def _gemelos_por_foto(ix: Any, fila: int, umbral: int = 8) -> set[int]:
     except Exception as exc:  # noqa: BLE001
         log.warning("packing_cajas: gemelos por foto de la fila %s: %s", fila, exc)
         return set()
+
+
+def _refs_de_tabla(skus: list[str]) -> dict[str, list[str]]:
+    """
+    ``{ sku: [códigos] }`` para abrir el packing list de los SKUs que
+    costing.sku_contenedor ubica en UNA sola N (flag LEER_SKU_CONTENEDOR).
+
+    La N se lleva a códigos con `embarques.agrupacion()`: el código de la tabla
+    primero y luego los del embarque (ISO del Ferraforme, guía o BL del
+    original), porque el archivo de Drive puede llamarse por cualquiera. Nunca
+    truena: sin flag, sin tabla o con la agrupación caída, lo que se pueda.
+    """
+    from services import embarques, sku_contenedor
+    if not skus or not sku_contenedor.activo():
+        return {}
+    tabla = sku_contenedor.por_sku(skus)
+    if not tabla:
+        return {}
+    try:
+        ag = embarques.agrupacion()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("packing_cajas: agrupación de embarques no disponible: %s", exc)
+        ag = None
+    salida: dict[str, list[str]] = {}
+    for sku in skus:
+        lista = sku_contenedor.de(tabla, sku)
+        if len(lista) != 1:
+            continue
+        refs = [lista[0]["codigo"]] if lista[0].get("codigo") else []
+        grupo = ag.por_clave.get(f"n:{lista[0]['numero']}") if ag else None
+        for k in (grupo or {}).get("codigos") or ():
+            if k not in refs:
+                refs.append(k)
+        if refs:
+            salida[sku] = refs
+    return salida
 
 
 def _indexar(archivo: str, contenedor: str, inventario: dict[str, str],

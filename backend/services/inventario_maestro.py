@@ -88,6 +88,9 @@ LAS TRES MENTIRAS QUE ESTA PESTAÑA TIENE PROHIBIDO REPETIR
 3. **El contenedor de Odoo y el de `costos_validados` discrepan en el 37%** de
    los SKUs donde ambos existen, y no solo de formato. Se devuelven LOS DOS y
    se marca `contenedor_discrepa` — pintar uno solo sería inventar.
+   Desde el 25-sep, con `LEER_SKU_CONTENEDOR`, manda `costing.sku_contenedor`
+   (0060), que ya cruzó esas fuentes con evidencia y guarda TODAS las N de un
+   SKU: tabla → Odoo → costos_validados, y la discrepancia se mide contra ella.
 """
 from __future__ import annotations
 
@@ -96,8 +99,8 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from services import (checklist, odoo, packing_cajas, specs, supabase_db as sdb,
-                      wp_db)
+from services import (checklist, embarques, odoo, packing_cajas, sku_contenedor,
+                      specs, supabase_db as sdb, wp_db)
 
 log = logging.getLogger("omnicanal.inventario_maestro")
 
@@ -184,6 +187,14 @@ def filas(skus: list[str] | None = None) -> list[dict[str, Any]]:
     # (core.products.almacen_cajas y almacen_piezas_por_caja, 0058). Nunca
     # truena: sin las columnas, vacío.
     bodega = checklist.almacen_de(pedidos)
+    # El contenedor según costing.sku_contenedor (0060), la fuente PREFERIDA.
+    # Solo con LEER_SKU_CONTENEDOR: apagado, `tabla` es None y cada fila sale
+    # idéntica a v0.575 (ni siquiera lleva las llaves nuevas). Encendido y con
+    # la tabla caída (ausente, en su espera de 5 min o con la lectura fallida),
+    # por_sku devuelve None y la fila TAMBIÉN sale como en v0.575: sin
+    # `contenedores`, el frontend no afirma «la tabla no lo tiene» de un SKU
+    # cuando en realidad no la pudo leer. `{}` = se leyó y no tiene a nadie.
+    tabla = sku_contenedor.por_sku(pedidos) if sku_contenedor.activo() else None
 
     salida = []
     for sku in pedidos:
@@ -192,7 +203,9 @@ def filas(skus: list[str] | None = None) -> list[dict[str, Any]]:
                             imgs.get(sku), ubis.get(sku, []),
                             hermanos.get(sku, []), pls.get(sku), recs.get(sku),
                             pl_leyendo=sku in leyendo,
-                            spec=specs_.get(sku), bodega=bodega.get(sku)))
+                            spec=specs_.get(sku), bodega=bodega.get(sku),
+                            contenedores=(None if tabla is None
+                                          else sku_contenedor.de(tabla, sku))))
     return salida
 
 
@@ -202,7 +215,11 @@ def _fila(sku: str, w: dict | None, o: dict | None, c: dict | None,
           pl: dict | None = None, rec: dict | None = None,
           pl_leyendo: bool = False,
           spec: dict | None = None,
-          bodega: dict | None = None) -> dict[str, Any]:
+          bodega: dict | None = None,
+          contenedores: list[dict] | None = None) -> dict[str, Any]:
+    """Un renglón. `contenedores` es lo que costing.sku_contenedor sabe del SKU:
+    `None` = flag apagado o tabla ilegible (la fila sale como en v0.575, sin
+    llaves nuevas); `[]` = la tabla se leyó y no tiene al SKU (respaldo)."""
     es_padre = bool(w and w["n_hijas"] > 0)
 
     emp_odoo = _empaque((o or {}).get("contenedor"))
@@ -241,6 +258,48 @@ def _fila(sku: str, w: dict | None, o: dict | None, c: dict | None,
                     and emp_odoo["embarque"] != emp_costo["embarque"])
     no_comparable = bool(not discrepa and emp_odoo["crudo"] and emp_costo["crudo"]
                          and not (emp_odoo["embarque"] and emp_costo["embarque"]))
+    # El porqué de `discrepa`, solo para el respaldo con el flag encendido (sin
+    # flag no sale). La BANDERA sigue con la regla de siempre, pero el TEXTO lee
+    # los números con los lectores de la tabla: la regex de `_empaque` toma el
+    # primer «-NNNN» y a «INHERIT(ACC-0703-CAF) - 54» le saca un contenedor 0703
+    # que no existe (ACC-0703-NEG-AZL-*). Si esos lectores no hallan número, o
+    # dan lo mismo de los dos lados, queda lo de `_empaque`, que es lo que
+    # encendió la bandera.
+    discrepa_detalle = ""
+    if discrepa and contenedores is not None and not contenedores:
+        x_odoo = (_ns_texto(_ns_odoo((o or {}).get("contenedor")))
+                  or emp_odoo["embarque"])
+        x_costo = (_ns_texto(_ns_costos((c or {}).get("contenedor")))
+                   or emp_costo["embarque"])
+        if x_odoo == x_costo:
+            x_odoo, x_costo = emp_odoo["embarque"], emp_costo["embarque"]
+        discrepa_detalle = f"Odoo dice {x_odoo}; costos dice {x_costo}"
+
+    # LA TABLA MANDA cuando tiene al SKU (costing.sku_contenedor, 0060): ya cruzó
+    # Ferraforme, el linaje de costos y Odoo con evidencia, así que la celda
+    # enseña SUS N —todas, un SKU sí llega en varios— y el cotejo se hace contra
+    # ella: Odoo o costos que nombran una N que la tabla no tiene → discrepa
+    # («Odoo dice 12; la tabla dice 11», el caso de CALZ-0029-GRI-BLN-39). Lo que
+    # no trae número (un booking pelón) ya no queda «sin cotejar»: la tabla es
+    # justo el cotejo que faltaba. Sin fila en la tabla, todo lo de arriba sigue.
+    if contenedores:
+        ns_tabla = {x["numero"] for x in contenedores}
+        # El texto COMPLETO de Odoo, no `crudo` (recortado a 60): con varias
+        # partes separadas por coma, la N de la última se perdería.
+        ns_odoo = _ns_odoo((o or {}).get("contenedor"))
+        ns_costo = _ns_costos((c or {}).get("contenedor"))
+        contenedor = sku_contenedor.etiquetas(contenedores)
+        embarque = " / ".join(str(x["numero"]) for x in contenedores)
+        codigos_ = [x["codigo"] for x in contenedores if x.get("codigo")]
+        es_booking = bool(codigos_) and not any(_ISO.fullmatch(k) for k in codigos_)
+        fuente = "tabla"
+        odoo_fuera = bool(ns_odoo - ns_tabla)
+        costo_fuera = bool(ns_costo - ns_tabla)
+        discrepa = odoo_fuera or costo_fuera
+        no_comparable = False
+        discrepa_detalle = _texto_discrepa(ns_odoo if odoo_fuera else set(),
+                                           ns_costo if costo_fuera else set(),
+                                           ns_tabla)
 
     full = sum(float(p.get("stock_full") or 0) for p in pubs)
     fba = sum(float(p.get("stock_fba") or 0) for p in pubs)
@@ -355,6 +414,11 @@ def _fila(sku: str, w: dict | None, o: dict | None, c: dict | None,
         "fecha": _iso(plog.get("created_at")),
     } if plog else None)
     fila["cuadre"] = _cuadre(fila, pubs)
+    if contenedores is not None:
+        # Solo con LEER_SKU_CONTENEDOR. `contenedores` vacío = la tabla no tiene
+        # al SKU y todo lo de contenedor salió del respaldo (Odoo / costos).
+        fila["contenedores"] = sku_contenedor.con_etiqueta(contenedores)
+        fila["contenedor_discrepa_detalle"] = discrepa_detalle
     return fila
 
 
@@ -1065,6 +1129,64 @@ def _empaque(crudo: Any) -> dict[str, str]:
     return {"iso": iso.group(1) if iso else "",
             "embarque": emb.group(1) if emb else "",
             "crudo": texto[:60]}
+
+
+def _n_valido(n: Any) -> int | None:
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
+def _ns_odoo(crudo: Any) -> set[int]:
+    """
+    Las N que el campo de Odoo afirma CON NÚMERO, para cotejarlas contra la
+    tabla. Por partes (el campo separa con coma): «… contenedor 56», «cont 103»
+    o el sufijo « - N». Un código pelón (booking sin número) no afirma ninguna N
+    y no se adivina aquí: la tabla ya lo resolvió con el mapa de códigos.
+
+    Es la misma lectura que el cargador de la tabla (`embarques.numero` y luego
+    `separar_valor_costos`), y NO la regex de `_empaque`: ésa le saca «543» a
+    «PRY25-543», que es una referencia entera y no el contenedor 543.
+    """
+    salida: set[int] = set()
+    texto = " ".join(str(crudo or "").replace("\xa0", " ").split())
+    for parte in (p.strip() for p in texto.split(",")):
+        if not parte:
+            continue
+        n = _n_valido(embarques.numero(parte))
+        if n is None:
+            n = _n_valido(embarques.separar_valor_costos(parte)[1])
+        if n is not None:
+            salida.add(n)
+    return salida
+
+
+def _ns_costos(crudo: Any) -> set[int]:
+    """La N de `costos_validados.contenedor` si trae sufijo («MEDU7316591 - 11»).
+    «PRY25-543» no trae: su N sale del Ferraforme, y eso ya lo sabe la tabla."""
+    n = _n_valido(embarques.separar_valor_costos(str(crudo or ""))[1])
+    return {n} if n is not None else set()
+
+
+def _ns_texto(ns: set[int]) -> str:
+    """Varias N en texto, la mayor primero: «64 / 7». Vacío sin ninguna."""
+    return " / ".join(str(n) for n in sorted(ns, reverse=True))
+
+
+def _texto_discrepa(ns_odoo: set[int], ns_costo: set[int], ns_tabla: set[int]) -> str:
+    """«Odoo dice 12; la tabla dice 11» · «costos dice 12; …» ·
+    «Odoo dice 12 y costos 13; la tabla dice 11». Vacío si nadie discrepa."""
+    if not ns_odoo and not ns_costo:
+        return ""
+    if ns_odoo and ns_costo:
+        quien = f"Odoo dice {_ns_texto(ns_odoo)} y costos {_ns_texto(ns_costo)}"
+    elif ns_odoo:
+        quien = f"Odoo dice {_ns_texto(ns_odoo)}"
+    else:
+        quien = f"costos dice {_ns_texto(ns_costo)}"
+    return f"{quien}; la tabla dice {_ns_texto(ns_tabla)}"
 
 
 def _recorrido(o: dict | None, pl: dict | None,

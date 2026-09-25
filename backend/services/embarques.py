@@ -312,6 +312,49 @@ def agrupar(ferraformes: list[dict], valores: list[dict]) -> list[dict]:
     return con_n + sin_n
 
 
+def etiqueta_tabla(numero: int, codigo: str | None) -> str:
+    """Etiqueta de una N que solo conoce costing.sku_contenedor: «80 · TGHU6894814»."""
+    return " · ".join([str(numero)] + ([codigo] if codigo else []))
+
+
+def sumar_tabla(grupos: list[dict], numeros: dict[int, str | None]) -> list[dict]:
+    """
+    Los grupos de `agrupar` con costing.sku_contenedor (0060) como TERCERA fuente
+    (flag LEER_SKU_CONTENEDOR). `numeros` = ``{N: código principal}`` de la tabla.
+
+      - Un grupo `n:N` cuya N está en la tabla gana "tabla" en `fuentes`.
+      - Una N de la tabla sin grupo (ningún packing list ni costos la nombra)
+        crea su opción, con el código de la tabla.
+
+    No toca los grupos recibidos (vienen de la caché): devuelve copias. Mismo
+    orden que `agrupar`: con N de mayor a menor, luego los sin N.
+    """
+    if not numeros:
+        return grupos
+    salida, vistos = [], set()
+    for g in grupos:
+        n = g.get("numero")
+        if n is not None and n in numeros:
+            g = {**g, "fuentes": [*g.get("fuentes", []), "tabla"]}
+            vistos.add(n)
+        salida.append(g)
+    for n, codigo in numeros.items():
+        if n in vistos:
+            continue
+        salida.append({
+            "clave": f"n:{n}",
+            "etiqueta": etiqueta_tabla(n, codigo),
+            "numero": n,
+            "codigos": [codigo] if codigo else [],
+            "valores_costos": [],
+            "shas": [],
+            "fuentes": ["tabla"],
+        })
+    con_n = sorted((s for s in salida if s["numero"] is not None), key=lambda s: -s["numero"])
+    sin_n = [s for s in salida if s["numero"] is None]
+    return con_n + sin_n
+
+
 @dataclass(frozen=True)
 class Agrupacion:
     grupos: list[dict]

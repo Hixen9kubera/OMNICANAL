@@ -15,7 +15,8 @@ import logging
 import re
 from typing import Any
 
-from services import costing_read, costing_write, db, odoo, woocommerce
+from services import (costing_read, costing_write, db, odoo, sku_contenedor,
+                      woocommerce)
 
 log = logging.getLogger("omnicanal.creacion")
 
@@ -273,6 +274,31 @@ def _contenedores_por_sku(skus: list[str]) -> dict[str, str]:
     return salida
 
 
+def _contenedores_con_tabla(skus: list[str]) -> dict[str, str]:
+    """
+    ``{ sku: contenedor }`` con LEER_SKU_CONTENEDOR: manda costing.sku_contenedor
+    (0060). El texto es «CODIGO - N», el mismo formato que ya traía costos, y un
+    SKU que llegó en varios enseña todos, la N mayor primero («B - 88 / A - 80»,
+    el mismo orden de Inventario y Costos). Los que la tabla no tiene caen a
+    `costos_validados` como siempre; con la tabla caída (`por_sku` da None) es
+    exactamente `_contenedores_por_sku`.
+    """
+    tabla = sku_contenedor.por_sku(skus)
+    if not tabla:
+        return _contenedores_por_sku(skus)
+    salida: dict[str, str] = {}
+    resto: list[str] = []
+    for s in skus:
+        lista = sku_contenedor.de(tabla, s)
+        if lista:
+            salida[s] = sku_contenedor.etiquetas(lista)
+        else:
+            resto.append(s)
+    if resto:
+        salida.update(_contenedores_por_sku(resto))
+    return salida
+
+
 # Claves de ordenamiento de la vista Crear Productos (campo_direccion).
 _CLAVES_ORDEN = {
     "valor": lambda g: g.get("valor") or 0,
@@ -503,9 +529,12 @@ async def items_candidatos(grupos: list[dict[str, Any]]) -> list[dict[str, Any]]
         for it in await woocommerce.productos_por_wc_id(wc_ids[i:i + 100]):
             vivos[it["wc_id"]] = it
 
-    # Nº de contenedor por SKU (costos_validados), para todos los miembros.
+    # Nº de contenedor por SKU, para todos los miembros: la tabla de
+    # contenedores (0060) con LEER_SKU_CONTENEDOR, y si no, costos_validados.
     skus = [m["sku"] for g in grupos for m in g["miembros"]]
-    contenedores = await asyncio.to_thread(_contenedores_por_sku, skus)
+    lector = (_contenedores_con_tabla if sku_contenedor.activo()
+              else _contenedores_por_sku)
+    contenedores = await asyncio.to_thread(lector, skus)
 
     items: list[dict[str, Any]] = []
     for g in grupos:

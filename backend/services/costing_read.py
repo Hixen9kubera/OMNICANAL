@@ -25,7 +25,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from services import channel_read, embarques
+from services import channel_read, embarques, sku_contenedor
 from services import supabase_db as sdb
 
 log = logging.getLogger("omnicanal.costing_read")
@@ -208,13 +208,40 @@ _SIN_CONTENEDOR = (
     "(select 1 from costing.packing_ubicaciones u where u.sku = p.sku)")
 _EN_PACKING = ("p.sku in (select u.sku from costing.packing_ubicaciones u "
                "where u.ferraforme_sha256 = any(%s::text[]))")
+# La TERCERA fuente, con LEER_SKU_CONTENEDOR: costing.sku_contenedor (0060). Mismo
+# molde que el packing (subplan hasheado por `numero`, que tiene índice) y, en
+# «sin contenedor», mismo anti-join unido con AND.
+_EN_TABLA = ("p.sku in (select sc.sku from costing.sku_contenedor sc "
+             "where sc.numero = %s)")
+_SIN_TABLA = (" and not exists "
+              "(select 1 from costing.sku_contenedor sc where sc.sku = p.sku)")
+
+
+def _grupos(forzar: bool = False) -> tuple[embarques.Agrupacion, list[dict],
+                                           dict[str, dict], dict[int, str | None]]:
+    """
+    (agrupación, grupos, por_clave, números de la tabla). Sin
+    LEER_SKU_CONTENEDOR (o con la tabla caída) los números vienen vacíos y los
+    grupos son los de `embarques.agrupacion()` tal cual: v0.574. Con el flag, la
+    tabla se SUMA
+    (`embarques.sumar_tabla`): "tabla" en `fuentes` y las N que solo ella
+    conoce como opción nueva.
+    """
+    ag = embarques.agrupacion(forzar=forzar) if forzar else embarques.agrupacion()
+    tabla = sku_contenedor.numeros(forzar=forzar) if forzar else sku_contenedor.numeros()
+    if not tabla:
+        return ag, ag.grupos, ag.por_clave, {}
+    grupos = embarques.sumar_tabla(ag.grupos, tabla)
+    return ag, grupos, {g["clave"]: g for g in grupos}, tabla
 
 
 def _filtro_embarque(clave: str) -> tuple[str, list] | None:
     """(fragmento WHERE, params) del embarque, o None si la clave no existe."""
     if clave == "sin":
-        return _SIN_CONTENEDOR, []
-    grupo = embarques.agrupacion().por_clave.get(clave)
+        # «Sin contenedor» también excluye lo que la tabla ubica (con el flag).
+        return (_SIN_CONTENEDOR + (_SIN_TABLA if sku_contenedor.numeros() else "")), []
+    _, _, por_clave, tabla = _grupos()
+    grupo = por_clave.get(clave)
     if grupo is None:
         return None
     partes, params = [], []
@@ -224,6 +251,9 @@ def _filtro_embarque(clave: str) -> tuple[str, list] | None:
     if grupo["shas"]:
         partes.append(_EN_PACKING)
         params.append(list(grupo["shas"]))
+    if grupo.get("numero") is not None and grupo["numero"] in tabla:
+        partes.append(_EN_TABLA)
+        params.append(int(grupo["numero"]))
     if not partes:
         return "false", []
     return "(" + " or ".join(partes) + ")", params
@@ -238,11 +268,17 @@ def _embarques_de_filas(rows: list[dict]) -> None:
     Es decoración: si el packing no se puede leer, las filas van con
     `embarques: None` (el panel pinta el `contenedor` crudo, como en MySQL) en
     vez de tumbar el listado entero.
+
+    Con LEER_SKU_CONTENEDOR la tabla costing.sku_contenedor es la TERCERA fuente
+    (una consulta más por página): cada embarque gana además `fuentes` (la
+    lista, p. ej. ``["costos", "tabla"]``) y `fuente` puede valer `tabla` (solo
+    la tabla lo afirma). Con dos o más fuentes, `fuente` = `ambos`; «packing»
+    sigue significando que SOLO el packing lo afirma (la «PL» del panel).
     """
     if not rows:
         return
     try:
-        ag = embarques.agrupacion()
+        ag, grupos, por_clave, tabla = _grupos()
         skus = [str(r["sku"]) for r in rows if r.get("sku")]
         packing = sdb.fetch_all(
             """select distinct u.sku::text as sku, u.ferraforme_sha256 as sha
@@ -253,12 +289,17 @@ def _embarques_de_filas(rows: list[dict]) -> None:
         for r in rows:
             r["embarques"] = None
         return
+    # La tabla por SKU, solo con el flag y si sus números se pudieron leer. Si
+    # esta lectura falla, `por_sku` devuelve None: ninguna fila gana la fuente
+    # «tabla» y la columna enseña lo mismo que en v0.574.
+    en_tabla = sku_contenedor.por_sku(skus) if tabla else {}
     shas_por_sku: dict[str, list[str]] = {}
     for f in packing:
         shas_por_sku.setdefault(str(f["sku"]).lower(), []).append(f["sha"])
-    posicion = {g["clave"]: i for i, g in enumerate(ag.grupos)}
+    posicion = {g["clave"]: i for i, g in enumerate(grupos)}
     for r in rows:
         fuentes: dict[str, set[str]] = {}
+        etiquetas: dict[str, str] = {}
         clave = ag.por_valor.get(r.get("contenedor") or "")
         if clave:
             fuentes.setdefault(clave, set()).add("costos")
@@ -266,13 +307,28 @@ def _embarques_de_filas(rows: list[dict]) -> None:
             clave = ag.por_sha.get(sha)
             if clave:
                 fuentes.setdefault(clave, set()).add("packing")
+        for c in sku_contenedor.de(en_tabla, r.get("sku")):
+            clave = f"n:{c['numero']}"
+            fuentes.setdefault(clave, set()).add("tabla")
+            if clave not in por_clave:  # N nueva que la caché de 30 s aún no ve
+                etiquetas[clave] = embarques.etiqueta_tabla(c["numero"], c.get("codigo"))
+        orden_ = sorted(fuentes.items(), key=lambda kv: posicion.get(kv[0], 0))
+        if not tabla:
+            r["embarques"] = [
+                {"clave": k, "etiqueta": por_clave[k]["etiqueta"],
+                 "fuente": "ambos" if len(f) == 2 else next(iter(f))}
+                for k, f in orden_]
+            continue
         r["embarques"] = [
-            {"clave": k, "etiqueta": ag.por_clave[k]["etiqueta"],
-             "fuente": "ambos" if len(f) == 2 else next(iter(f))}
-            for k, f in sorted(fuentes.items(), key=lambda kv: posicion.get(kv[0], 0))]
+            {"clave": k,
+             "etiqueta": por_clave[k]["etiqueta"] if k in por_clave else etiquetas[k],
+             "fuente": "ambos" if len(f) >= 2 else next(iter(f)),
+             "fuentes": [x for x in ("costos", "packing", "tabla") if x in f]}
+            for k, f in orden_]
 
 
-def conteos_embarques(grupos: list[dict]) -> dict[str, dict[str, int]]:
+def conteos_embarques(grupos: list[dict],
+                      tabla: dict[int, str | None] | None = None) -> dict[str, dict[str, int]]:
     """
     ``{clave: {n, sin_costo}}`` de TODOS los grupos más `sin`, en UNA consulta.
 
@@ -286,8 +342,14 @@ def conteos_embarques(grupos: list[dict]) -> dict[str, dict[str, int]]:
     (clave, sku), con la igualdad de citext) y products/costos_validados tienen
     sku único. `count(distinct p.sku)` daba lo mismo pero obligaba a ordenar
     por citext (~540 ms contra ~285 ms a volumen de prod).
+
+    Con LEER_SKU_CONTENEDOR (`tabla` = ``{N: código}``; None = leerlo aquí) la
+    tabla costing.sku_contenedor es una TERCERA rama de `miembros` y «sin» deja
+    fuera a los SKUs que ella ubica. Sin el flag, la consulta es la de v0.574.
     """
-    cl_c, val_c, cl_p, sha_p = [], [], [], []
+    if tabla is None:
+        tabla = sku_contenedor.numeros()
+    cl_c, val_c, cl_p, sha_p, cl_t, num_t = [], [], [], [], [], []
     for g in grupos:
         for v in g["valores_costos"]:
             cl_c.append(g["clave"])
@@ -295,19 +357,35 @@ def conteos_embarques(grupos: list[dict]) -> dict[str, dict[str, int]]:
         for s in g["shas"]:
             cl_p.append(g["clave"])
             sha_p.append(s)
+        if tabla and g.get("numero") is not None and g["numero"] in tabla:
+            cl_t.append(g["clave"])
+            num_t.append(int(g["numero"]))
+    cte_tabla = union_tabla = sin_tabla = ""
+    params: tuple = (cl_c, val_c, cl_p, sha_p)
+    if tabla:
+        cte_tabla = """, g_tabla as (
+                select * from unnest(%s::text[], %s::int[]) as t(clave, numero)
+            )"""
+        union_tabla = """
+                union
+                select g.clave, sc.sku
+                  from g_tabla g
+                  join costing.sku_contenedor sc on sc.numero = g.numero"""
+        sin_tabla = _SIN_TABLA
+        params = (cl_c, val_c, cl_p, sha_p, cl_t, num_t)
     filas = sdb.fetch_all(
         f"""with g_costos as (
                 select * from unnest(%s::text[], %s::text[]) as t(clave, valor)
             ), g_packing as (
                 select * from unnest(%s::text[], %s::text[]) as t(clave, sha)
-            ), miembros as (
+            ){cte_tabla}, miembros as (
                 select g.clave, v.sku
                   from g_costos g
                   join costing.costos_validados v on v.contenedor = g.valor
                 union
                 select g.clave, u.sku
                   from g_packing g
-                  join costing.packing_ubicaciones u on u.ferraforme_sha256 = g.sha
+                  join costing.packing_ubicaciones u on u.ferraforme_sha256 = g.sha{union_tabla}
             )
             select m.clave, count(*) as n,
                    count(*) filter (where v.sku is null) as sin_costo
@@ -320,8 +398,8 @@ def conteos_embarques(grupos: list[dict]) -> dict[str, dict[str, int]]:
                    count(*) filter (where v.sku is null) as sin_costo
               from core.products p
               left join costing.costos_validados v on v.sku = p.sku
-             where {_SIN_CONTENEDOR}""",
-        (cl_c, val_c, cl_p, sha_p))
+             where {_SIN_CONTENEDOR}{sin_tabla}""",
+        params)
     return {f["clave"]: {"n": int(f["n"] or 0), "sin_costo": int(f["sin_costo"] or 0)}
             for f in filas}
 
@@ -331,11 +409,14 @@ def embarques_con_conteos() -> dict[str, Any]:
     Cuerpo de `GET /api/crear/costos/_embarques`. Siempre rehace la agrupación
     (y con eso refresca la caché de 30 s del listado). Los grupos con n = 0
     (todos sus SKUs fuera de core.products) no se devuelven.
+
+    Con LEER_SKU_CONTENEDOR, `fuentes` puede traer "tabla" y aparecen las N que
+    solo conoce costing.sku_contenedor (`fuentes: ["tabla"]`).
     """
-    ag = embarques.agrupacion(forzar=True)
-    conteos = conteos_embarques(ag.grupos)
+    _, grupos, _, tabla = _grupos(forzar=True)
+    conteos = conteos_embarques(grupos, tabla)
     salida = []
-    for g in ag.grupos:
+    for g in grupos:
         c = conteos.get(g["clave"]) or {"n": 0, "sin_costo": 0}
         if c["n"] <= 0:
             continue

@@ -189,8 +189,10 @@ async def ficha(sku: str):
     # existe en ninguna parte: eso es un 404. OJO con no confundirlo con el
     # caso legítimo de DEPO-0048-EST, que NO está en Woo ni en Odoo pero SÍ
     # tiene costo de packing list — ése hay que mostrarlo, porque el hueco es
-    # justo lo que la pestaña tiene que hacer visible.
-    if not f["existe_en_woo"] and not f["existe_en_odoo"] and not f["contenedor"]:
+    # justo lo que la pestaña tiene que hacer visible. Con LEER_SKU_CONTENEDOR,
+    # estar en costing.sku_contenedor también cuenta como «tiene contenedor».
+    if (not f["existe_en_woo"] and not f["existe_en_odoo"] and not f["contenedor"]
+            and not f.get("contenedores")):
         raise HTTPException(404, f"SKU {sku} no existe en WooCommerce, Odoo ni costos")
     return f
 

@@ -1001,6 +1001,25 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.576.0 — Las pantallas leen el contenedor de `costing.sku_contenedor` (flag `LEER_SKU_CONTENEDOR`)
+
+Con el flag encendido, la tabla de la 0060 es la fuente PREFERIDA del contenedor de un SKU y lo de hoy queda de
+respaldo cuando la tabla no tiene ese SKU (conflictos, refutados, sin evidencia). Un SKU con varios contenedores los
+muestra todos. **Apagado por defecto: con el flag en false cada respuesta es idéntica a v0.575** (probado). Si la tabla
+no existe o no se puede leer, cada pantalla vuelve a lo de hoy sin error.
+
+- `services/sku_contenedor.py`: lector compartido (`por_sku` por lotes de 800; `None` = no se pudo leer, `{}` = leído
+  sin filas), etiquetas «CÓDIGO - N».
+- **Inventario** (Catálogo Maestro, ficha, alertas): tabla → Odoo → costos. «Contenedor discrepa» compara contra la
+  tabla («Odoo dice 12; la tabla dice 11»); la regla del 404 cuenta la tabla. **Cotejo de cajas**: con UNA N en la
+  tabla abre ese packing list antes que el campo de Odoo.
+- **Sello de Flujo** (/omnicanal, /productos): hereda la precedencia; textos nuevos para la tabla y varios contenedores.
+- **Crear Productos**: tabla → costos_validados («B - 88 / A - 80»).
+- **Costos**: la tabla es la tercera fuente del filtro, los conteos y la columna (marca «Tabla»); «Sin contenedor»
+  excluye lo que la tabla ubica.
+- Verificado en el sandbox con la tabla cargada: CALZ-0029-GRI-BLN-39 → 11 con «Odoo dice 12», MIC-0001-GRI → 80,
+  ACC-0096-ROS → 64 y 7; Costos con 106 opciones y «Sin contenedor» de 3,746 a 3,259.
+
 ### v0.575.0 — Cada SKU con su contenedor: tabla `costing.sku_contenedor` (0060) y su cargador (solo sandbox)
 
 `costos_validados.contenedor` guarda UNA N por SKU y casi no tiene escritor; ≥78 SKUs llegaron en dos contenedores.

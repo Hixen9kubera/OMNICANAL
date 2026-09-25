@@ -353,12 +353,18 @@ export interface ListarCostosParams {
 /**
  * Un contenedor de la fila, ya agrupado en EMBARQUE. `fuente` dice de dónde
  * sale: "costos" (`costos_validados.contenedor`), "packing" (solo el packing
- * list lo trae; costos no tiene ese contenedor) o "ambos".
+ * list lo trae; costos no tiene ese contenedor), "tabla" (solo la tabla de
+ * contenedores, `costing.sku_contenedor`, lo afirma) o "ambos" (dos o más).
+ *
+ * `fuentes` solo llega con LEER_SKU_CONTENEDOR y las lista todas, en ese
+ * orden fijo. Sin él (flag apagado, v0.574) hay dos fuentes y "ambos" es
+ * costos + packing.
  */
 export interface EmbarqueFila {
   clave: string;
   etiqueta: string;
-  fuente: "costos" | "packing" | "ambos";
+  fuente: "costos" | "packing" | "ambos" | "tabla";
+  fuentes?: ("costos" | "packing" | "tabla")[];
 }
 
 /**
@@ -399,8 +405,9 @@ export function contenedoresCosto(signal?: AbortSignal): Promise<{ contenedores:
  * SZLS…—, el packing el ISO del Ferraforme) bajo el número de contenedor de
  * Kubera cuando lo hay.
  *
- * `n` = SKUs DISTINTOS del catálogo que caen en el grupo por cualquiera de las
- * dos fuentes; `sin_costo` = cuántos de ellos no tienen fila de costo. Un SKU
+ * `n` = SKUs DISTINTOS del catálogo que caen en el grupo por cualquiera de sus
+ * fuentes (costos, packing y, con LEER_SKU_CONTENEDOR, la tabla de
+ * contenedores); `sin_costo` = cuántos de ellos no tienen fila de costo. Un SKU
  * puede estar en dos embarques, así que los `n` no suman el total.
  */
 export interface EmbarqueInfo {
@@ -410,12 +417,15 @@ export interface EmbarqueInfo {
   codigos: string[];
   n: number;
   sin_costo: number;
-  fuentes: ("costos" | "packing")[];
+  /** "tabla" solo con LEER_SKU_CONTENEDOR: la N está en la tabla de
+   *  contenedores. Una N que solo ella conoce llega con `["tabla"]`. */
+  fuentes: ("costos" | "packing" | "tabla")[];
 }
 
 export interface EmbarquesResp {
   embarques: EmbarqueInfo[];
-  /** SKUs sin contenedor en costos y fuera de todo packing list (clave "sin"). */
+  /** SKUs sin contenedor en costos y fuera de todo packing list (clave "sin");
+   *  con LEER_SKU_CONTENEDOR, también fuera de la tabla de contenedores. */
   sin_contenedor: { clave: string; n: number; sin_costo: number };
   generado_en: string;
 }

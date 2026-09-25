@@ -1008,7 +1008,11 @@ export default function CrearProductosPage() {
                       <td className="px-3 py-4 text-right font-bold text-slate-900">
                         {p.valor != null && p.valor > 0 ? precioMXN(p.valor) : "—"}
                       </td>
-                      {/* Nº de contenedor (costos_validados) */}
+                      {/* Nº de contenedor. Con LEER_SKU_CONTENEDOR sale de la
+                          tabla de contenedores y, si no lo tiene, de
+                          costos_validados; si llegó en varios, el backend ya
+                          los junta («B - 88 / A - 80»). No trae de qué fuente
+                          vino: el modelo de Producto no la declara. */}
                       <td className="px-3 py-4 text-xs">
                         {p.contenedor ? (
                           <span
@@ -1091,6 +1095,7 @@ export default function CrearProductosPage() {
                                     <td className="py-1.5 pr-3 text-right font-bold text-slate-900">
                                       {v.valor != null && v.valor > 0 ? precioMXN(v.valor) : "—"}
                                     </td>
+                                    {/* Misma precedencia que el padre: tabla → costos_validados. */}
                                     <td className="py-1.5 font-mono text-sky-700">
                                       {v.contenedor ?? "—"}
                                     </td>

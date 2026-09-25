@@ -272,10 +272,40 @@ function piezasDe(cajas: number | null, porCaja: number | null): number | null {
   return Math.round(cajas * porCaja * 100) / 100;
 }
 
-function TextoFuentePl({ c, contenedorDeOdoo }: { c: CotejoCajas; contenedorDeOdoo: boolean }) {
-  const contenedor = contenedorDeOdoo
-    ? " El contenedor, de Odoo."
+/**
+ * De dónde sale el contenedor, para la procedencia del packing list. Con
+ * LEER_SKU_CONTENEDOR (`fila.contenedores` presente) manda la tabla de
+ * contenedores y Odoo / costos son el respaldo; sin el flag, los textos de
+ * v0.575 tal cual.
+ *
+ * Con la tabla el texto va APARTE del packing list: el cotejo solo abre el PL
+ * por la tabla cuando ésta trae UNA sola N (con varias sigue el campo de Odoo)
+ * y guarda su resultado una hora, así que pegar las dos frases sugeriría que
+ * el archivo salió de ese contenedor sin saberlo.
+ */
+function textoFuenteContenedor(fila: FilaInventario | null): string {
+  const nTabla = fila?.contenedores?.length ?? 0;
+  if (fila?.contenedor_fuente === "tabla") {
+    return nTabla > 1
+      ? ` Aparte, los contenedores que se muestran salen de la tabla de contenedores (llegó en ${nTabla}); con varios, el packing list no se busca por ellos.`
+      : " Aparte, el contenedor que se muestra sale de la tabla de contenedores.";
+  }
+  const conTabla = fila?.contenedores !== undefined;
+  if (fila?.contenedor_fuente === "odoo") {
+    return conTabla
+      ? " El contenedor, de Odoo: la tabla de contenedores no tiene este SKU."
+      : " El contenedor, de Odoo.";
+  }
+  if (conTabla && fila?.contenedor_fuente !== "costos_validados") {
+    return " Ni la tabla de contenedores, ni Odoo, ni costos validados le dan contenedor.";
+  }
+  return conTabla
+    ? " El contenedor sale de la misma copia de costos validados: ni la tabla de contenedores ni Odoo lo tienen."
     : " El contenedor sale de la misma copia de costos validados.";
+}
+
+function TextoFuentePl({ c, fila }: { c: CotejoCajas; fila: FilaInventario | null }) {
+  const contenedor = textoFuenteContenedor(fila);
 
   if (c.pl_fuente === "costos_validados") {
     return (
@@ -359,10 +389,16 @@ function TramoRecibido({
       <div className="flex items-start justify-between gap-2">
         <Rotulo muestra={MUESTRA_FLUJO.recibido}>Recibido</Rotulo>
         <span className="flex min-w-0 items-center gap-1.5">
+          {/* Con la tabla de contenedores, `contenedor` ya trae la N de cada
+              uno («MEDU7316591 - 11», todos si llegó en varios): el «embarque»
+              la repetiría. Truncado, el `title` los enseña completos. */}
           {fila?.contenedor && (
-            <span className="truncate text-[10px] leading-[14px] text-slate-500">
+            <span
+              className="truncate text-[10px] leading-[14px] text-slate-500"
+              title={fila.contenedor_fuente === "tabla" ? fila.contenedor : undefined}
+            >
               {fila.contenedor}
-              {fila.embarque && ` · embarque ${fila.embarque}`}
+              {fila.embarque && fila.contenedor_fuente !== "tabla" && ` · embarque ${fila.embarque}`}
               {fila.contenedor_es_booking && " (booking)"}
             </span>
           )}
@@ -445,11 +481,20 @@ function TramoRecibido({
           )}
 
           <Procedencia
-            sale={<TextoFuentePl c={c} contenedorDeOdoo={fila?.contenedor_fuente === "odoo"} />}
+            sale={<TextoFuentePl c={c} fila={fila} />}
             noSeGuarda={
               <>
                 <TextoNoSeGuardaPl c={c} />{" "}
-                {fila?.contenedor && (
+                {/* «La base guarda uno» solo es cierto del RESPALDO (Odoo /
+                    costos). La tabla de contenedores guarda varias N, pero solo
+                    las que tienen documento (la 0060 manda conflictos y
+                    refutados a la lista de Brandon): no se afirma que sean
+                    TODAS. Lo que nadie guarda es cuántas cajas trajo cada una. */}
+                {fila?.contenedor && fila.contenedor_fuente === "tabla" ? (
+                  (fila.contenedores?.length ?? 0) > 1
+                    ? <>La tabla de contenedores guarda cada contenedor con documento ({fila.contenedores?.length} de ellos), no solo el último; no guarda cuántas cajas trajo cada uno.</>
+                    : <>La tabla de contenedores dice en cuál llegó según sus documentos, no cuántas cajas trajo.</>
+                ) : fila?.contenedor && (
                   <>Un SKU sí llega en varios contenedores y la base guarda uno: {fila.contenedor} es el último, no la lista.</>
                 )}
               </>
