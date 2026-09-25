@@ -326,6 +326,21 @@ def iniciar() -> None:
         log.info("Reintentos de avisos de TikTok cada %s min (tope %s intentos).",
                  settings.tiktok_webhook_reintentos_min,
                  settings.tiktok_webhook_reintentos_tope)
+    # Reintentos de los avisos de VENTA de ML cuyo pedido falló.
+    if getattr(settings, "ml_webhook_reintentos_enabled", False):
+        from services import ml_webhook_reintentos
+        _scheduler.add_job(
+            ml_webhook_reintentos.reprocesar,
+            "interval",
+            minutes=max(1, int(settings.ml_webhook_reintentos_min)),
+            id="ml_webhook_reintentos",
+            next_run_time=datetime.now() + timedelta(seconds=300),
+            max_instances=1,
+            coalesce=True,
+        )
+        log.info("Reintentos de avisos de venta de ML cada %s min (tope %s intentos).",
+                 settings.ml_webhook_reintentos_min,
+                 settings.ml_webhook_reintentos_tope)
     # Guía + etiqueta PDF de TikTok en Odoo. Cada 20 min: el PDF sólo existe
     # entre el agendado de la recolección y la recolección.
     if getattr(settings, "tiktok_guias_enabled", False):

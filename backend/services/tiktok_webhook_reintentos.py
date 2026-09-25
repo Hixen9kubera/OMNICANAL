@@ -136,6 +136,8 @@ def marcar(evento_id: int | None, r: dict[str, Any] | None,
                           procesado_at = now(), next_retry_at = null
                     where id = %(id)s""",
                 {"res": _texto(r, clase), "id": int(evento_id)})
+            if clase == "ok":
+                _resolver_previos(sdb, int(evento_id))
         else:
             fallo_n = max(0, int(intentos_previos or 0)) + 1
             espera = None if fallo_n >= tope() else espera_reintento(fallo_n)
@@ -159,6 +161,29 @@ def marcar(evento_id: int | None, r: dict[str, Any] | None,
         log.warning("TIKTOK aviso %s: no se pudo marcar en ops.webhook_events: %s",
                     evento_id, str(exc)[:200])
     return fuera
+
+
+def _resolver_previos(sdb, evento_id: int) -> None:
+    """
+    Los fallos ANTERIORES de la misma orden quedan resueltos: la pasada que salió
+    bien le preguntó a TikTok el estado de ahora y ya lo aplicó. Sin esto seguían
+    "por reintentar" en /flujo con la venta ya bien (24-sep: 6 de los 7 avisos
+    fallidos eran de pedidos completos). Nunca lanza: es bitácora.
+    """
+    try:
+        sdb.execute(
+            """update ops.webhook_events p
+                  set procesado = true, procesado_at = now(), next_retry_at = null,
+                      resultado = left('resuelto por un aviso posterior · '
+                                       || coalesce(p.resultado, ''), 255)
+                 from ops.webhook_events e
+                where e.id = %(id)s
+                  and p.canal = 'tiktok' and p.external_id = e.external_id
+                  and p.id < e.id and not p.procesado""",
+            {"id": evento_id})
+    except Exception as exc:  # noqa: BLE001
+        log.warning("TIKTOK aviso %s: no se pudieron resolver los previos: %s",
+                    evento_id, str(exc)[:200])
 
 
 def _pendientes(limite: int) -> list[dict[str, Any]]:

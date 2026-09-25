@@ -211,6 +211,17 @@ class Settings(BaseSettings):
     tiktok_webhook_reintentos_enabled: bool = False
     tiktok_webhook_reintentos_min: int = 5
     tiktok_webhook_reintentos_tope: int = 6
+    # REINTENTOS DEL AVISO DE VENTA DE ML (services/ml_webhook_reintentos.py).
+    # El receptor ya deja PENDIENTE el aviso `orders_v2` cuyo pedido falló
+    # (intentos + next_retry_at: 2 min·2^n, máximo 1 h por paso) y resuelve los
+    # fallos previos cuando otro aviso de la misma orden sale bien — sin
+    # bandera: es bitácora. Este job vuelve a pasar los vencidos de las últimas
+    # 48 h por `pedidos_ml.sincronizar` (el camino del webhook, con el candado
+    # de los sondeos) hasta TOPE intentos (~5 h con 10). Nace APAGADO (regla 3:
+    # crea pedidos). Sin PEDIDOS_WC_ENABLED no hace nada.
+    ml_webhook_reintentos_enabled: bool = False
+    ml_webhook_reintentos_min: int = 5
+    ml_webhook_reintentos_tope: int = 10
     # GUÍA Y ETIQUETA PDF (pedidos_tiktok.refrescar_guias): número de rastreo en
     # la entrega de salida y el PDF de TikTok ("Subir guía", `<order_id>.pdf`)
     # en la orden CONFIRMADA de Odoo, verificados al re-leer. Cada 20 min porque

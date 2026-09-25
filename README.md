@@ -1001,6 +1001,46 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.571.0 — Una venta de ML cuyo pedido falla queda pendiente y se reintenta sola; /flujo cuenta solo lo que pide atención
+
+A pedido de Eduardo (25-sep), tras la caída de DNS de Hostinger del 24-sep
+(`.shop DNS Issues`). El backend se quedó sin Woo de 19:24 a 20:13 y de 20:59 a
+22:32 UTC: 84 ventas de ML fallaron al volverse pedido, 70 se curaron solas con
+avisos posteriores y **13 pagadas quedaron sin pedido** hasta reprocesarlas a
+mano. Nadie lo vio: el receptor de ML marcaba el aviso `procesado=true` aunque el
+pedido fallara, y el indicador "webhooks sin procesar" decía 120, que eran casi
+todos avisos informativos de TikTok. Las ventas de ML no tienen sondeo: si el
+aviso falla, solo otro aviso de la misma orden las rescata.
+
+**Qué cambia (sin bandera, es bitácora):**
+- El aviso `orders_v2` cuyo pedido falla queda **pendiente**: `intentos+1`,
+  `resultado` y `next_retry_at` con espera de 2, 4, 8, 16 y 32 min, y luego 1 h
+  por paso. Al tope, `agotado`.
+- Cuando un aviso **posterior** de la misma orden sale bien, los fallos
+  **anteriores** quedan resueltos: el aviso no trae estado, así que el que salió
+  ya aplicó lo más reciente. Los que llegaron después no se tocan (pudieron traer
+  una cancelación). TikTok hace lo mismo desde esta versión: el 24-sep, 6 de sus
+  7 avisos fallidos eran de pedidos que ya estaban completos.
+- **/flujo** cuenta solo lo que pide atención: por reintentar (y «vencidos» si
+  llevan más de 30 min sin que nadie los reintente), agotados, e interrumpidos (ML
+  o TikTok con orden, más de 15 min sin resultado). Los avisos de TikTok sin orden
+  (`tipo:N`) ya no cuentan. El texto empieza con el total, que es lo que muestra
+  el KPI. Con los datos del 25-sep diría **7 por atender** en vez de 122.
+
+**El reintento automático** (`services/ml_webhook_reintentos.py`) nace **apagado**
+(regla 3: crea pedidos): `ML_WEBHOOK_REINTENTOS_ENABLED`, cada
+`ML_WEBHOOK_REINTENTOS_MIN` (5) min, tope `ML_WEBHOOK_REINTENTOS_TOPE` (10, unas
+5 h). Toma los vencidos de las últimas 48 h, UNO por orden, y los pasa por
+`meli.obtener_orden` + `pedidos_ml.sincronizar(reintentable=True)`: el camino del
+webhook con el candado anti-duplicados de los sondeos. Sin
+`PEDIDOS_WC_ENABLED` no hace nada.
+
+**Pruebas.** 24 unitarias (`tests/test_ml_webhook_reintentos.py`) y
+`scripts/probar_reintentos_ml_sandbox.py` contra `ops.webhook_events` del
+sandbox, con ML y Woo simulados: 17/17. Cubre el receptor, que solo se resuelvan
+los fallos anteriores, una pasada por orden, la espera, el tope, la ventana y el
+indicador.
+
 ### v0.570.0 — Crear FULL sólo para crear; la planeación se analiza en Análisis (ganadores con su reemplazo, títulos contra Odoo con fotos, órdenes sin completar)
 
 Brandon, 24-sep: *"me debes de dar la opción de poder borrar un SKU… me sirven sólo la B, los ganadores y su reemplazo;

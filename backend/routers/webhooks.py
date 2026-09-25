@@ -580,7 +580,20 @@ async def _procesar_ml(evento_id: int | None, payload: dict[str, Any]) -> None:
     _anotar_salud(topic, resultado, fallo=fallo, sin_accion=sin_accion)
     if evento_id:
         _actualizar(evento_id, sku, resultado)
-    await asyncio.to_thread(_actualizar_supabase, sb_id, sku, resultado)
+    es_venta = topic == "orders_v2" and "/orders/" in resource
+    if es_venta and fallo and sb_id:
+        # El pedido FALLÓ: el aviso queda pendiente, con su reintento. Hasta el
+        # 24-sep se marcaba procesado igual y la falla no se veía en ningún lado
+        # (13 ventas pagadas sin pedido tras la caída de DNS de Hostinger).
+        from services import ml_webhook_reintentos
+        await asyncio.to_thread(ml_webhook_reintentos.marcar_fallo, sb_id,
+                                resultado, 0, sku)
+    else:
+        await asyncio.to_thread(_actualizar_supabase, sb_id, sku, resultado)
+        if es_venta and not fallo and sb_id:
+            from services import ml_webhook_reintentos
+            await asyncio.to_thread(ml_webhook_reintentos.resolver_previos,
+                                    resource, sb_id)
     # application_id: identifica QUÉ app de ML nos manda este aviso (hay varias
     # apps en las cuentas: 2 del dashboard apuntan a Make; la que apunta aquí
     # es la que importa ahora que Make se va a abandonar).

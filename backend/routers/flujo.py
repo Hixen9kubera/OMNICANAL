@@ -195,6 +195,45 @@ _salud_cache: list[dict] = []
 _salud_t: float = 0.0
 
 
+# "Webhooks sin procesar" cuenta SOLO lo que pide atención. Hasta el 24-sep
+# contaba todo `not procesado`: 113 de sus 120 eran avisos de producto de TikTok
+# (sin orden, `external_id='tipo:N'`) que nunca se procesan porque no hay nada
+# que procesar, y a la vez NO veía los pedidos de ML que fallaron, porque el
+# receptor de ML los marcaba procesados igual. Ahora:
+#   · por reintentar: fallos con `next_retry_at` (ML y TikTok los marcan así);
+#     «vencidos» si llevan >30 min esperando: nadie los está reintentando.
+#   · agotados: se llegó al tope de intentos; ya solo una persona.
+#   · interrumpidos: ML o TikTok con orden, >15 min sin resultado: el proceso
+#     murió a medias (p. ej. un deploy). Temu y los avisos sin orden no marcan
+#     su fila, así que no cuentan aquí.
+# Sin `%` en el SQL: `_fetch_suave` siempre pasa parámetros.
+_SQL_WEBHOOKS_ACCIONABLES = """
+    select count(*) filter (where next_retry_at is not null) por_reintentar,
+           count(*) filter (where next_retry_at is not null
+                              and next_retry_at < now() - interval '30 minutes') vencidos,
+           count(*) filter (where next_retry_at is null and intentos > 0) agotados,
+           count(*) filter (where next_retry_at is null and intentos = 0
+                              and canal in ('mercado_libre', 'tiktok')
+                              and recibido_at < now() - interval '15 minutes') interrumpidos
+      from ops.webhook_events
+     where recibido_at > now() - interval '24 hours'
+       and not procesado
+       and left(external_id, 5) <> 'tipo:'"""
+
+
+def _salud_webhooks(r: dict[str, Any]) -> tuple[str, str]:
+    """(texto, estado). El texto EMPIEZA con el total: el KPI del frontend toma
+    la primera palabra."""
+    por, venc, agot, interr = (int(r.get(k) or 0) for k in
+                               ("por_reintentar", "vencidos", "agotados", "interrumpidos"))
+    total = por + agot + interr
+    texto = (f"{total} por atender · {por} por reintentar ({venc} vencidos) · "
+             f"{agot} agotados · {interr} interrumpidos")
+    if total == 0:
+        return texto, "ok"
+    return texto, ("mal" if (venc or agot or interr) else "aviso")
+
+
 def _fetch_suave(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
     """Una consulta de salud que falle (columna renombrada, tabla ausente en el
     sandbox) apaga SU fila, nunca el tablero entero."""
@@ -273,13 +312,8 @@ def _salud() -> list[dict[str, Any]]:
               else f"expira en {e/1440:.1f} d" if e is not None else "sin fecha",
               estado)
 
-    for r in _fetch_suave("""select count(*) filter (where not procesado) pend,
-            coalesce(sum(intentos) filter (where not procesado),0) reint
-            from ops.webhook_events where recibido_at > now() - interval '24 hours'"""):
-        pend = int(r["pend"] or 0)
-        poner("webhooks sin procesar (24 h)",
-              f"{pend} pendientes · {int(r['reint'] or 0)} reintentos",
-              "ok" if pend == 0 else ("aviso" if pend < 50 else "mal"))
+    for r in _fetch_suave(_SQL_WEBHOOKS_ACCIONABLES):
+        poner("webhooks sin procesar (24 h)", *_salud_webhooks(r))
 
     for r in _fetch_suave("""select extract(epoch from (now() - max(created_at)))/3600 h
             from ops.process_log where proceso='retencion_webhooks'"""):
