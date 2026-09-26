@@ -1001,6 +1001,26 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.578.0 — Una orden de ML que llega incompleta (206) ya no se tira
+
+Alerta del 26-sep (la de reintentos agotados de la v0.572.0): la orden
+2000018309931922 de SANCORFASHION agotó sus 10 reintentos con «no se pudo traer
+la orden». La orden sí existía. Mercado Libre la devolvía con **206 Partial
+Content** y `meli.obtener_orden` descartaba cualquier respuesta que no fuera
+200, igual que un 403 de la otra cuenta. Así que la venta nunca se habría vuelto
+pedido.
+
+Esta vez no costó nada: era una venta **cancelada y sin pago** (pago rechazado
+el 6-sep, sin envío). En los logs desde el 19-sep es la única orden que ML
+contestó con 206. Pero si pasara con una venta pagada, se perdería igual.
+
+**Cambio:** `obtener_orden` acepta el 206 cuando trae lo que decide el pedido,
+estado e ítems, y lo deja anotado en el log. Sin eso lo sigue descartando. El
+200 y el 403 no cambian.
+
+Pruebas: 5 unitarias (`tests/test_meli_orden_206.py`) y, en solo lectura contra
+ML, la orden real: ahora la trae (SANCORFASHION, cancelada, CAM-0030-IND x1).
+
 ### v0.577.0 — Candado: los identificadores provisionales «NNNN-NNNN» ya no se pueden re-crear
 
 Eduardo decidió borrar de Costos los 6,252 identificadores provisionales (`5070-0020`, `0759-0057-PURPLE`…): no son

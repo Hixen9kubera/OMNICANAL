@@ -410,9 +410,21 @@ async def obtener_orden(order_id: str) -> dict | None:
                     if nuevo:
                         cab = {"Authorization": f"Bearer {nuevo}"}
                         r = await cli.get(f"/orders/{order_id}", headers=cab)
-                if r.status_code != 200:
+                if r.status_code not in (200, 206):
                     continue  # 404/403 → probablemente es de la otra cuenta
                 d = r.json()
+                if r.status_code == 206:
+                    # 206 = ML contestó la orden INCOMPLETA (alguna parte no se
+                    # pudo leer). Hasta el 26-sep se trataba como "no es de esta
+                    # cuenta" y la venta no se volvía pedido nunca: la orden
+                    # 2000018309931922 (cancelada) agotó 10 reintentos así. Se
+                    # acepta solo si trae lo que decide el pedido: estado e ítems.
+                    if not (d.get("status") and d.get("order_items")):
+                        log.warning("ML orden %s (%s): 206 sin estado o ítems; no se usa.",
+                                    order_id, cuenta)
+                        continue
+                    log.warning("ML orden %s (%s): 206, llegó incompleta; se usa con "
+                                "estado e ítems.", order_id, cuenta)
 
                 # El envío va aparte: la orden solo trae shipping.id.
                 envio: dict = {}
