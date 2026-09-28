@@ -1,0 +1,47 @@
+{
+  "_nota": "Parámetros editables del laboratorio. Los marcados 'supuesto' NO están validados con contabilidad ni con los contratos de cada canal: se muestran con aviso en la interfaz.",
+  "contenedor": {
+    "costo_mxn": 525000,
+    "incluye_iva": false,
+    "metodo_recomendado": "volumetrico_real",
+    "rango_m3_normal": [55, 76],
+    "tarifa_fija_m3_referencia": 7500,
+    "carga_util_kg_40hc": 26500,
+    "tipo_cambio_referencia": 19.0
+  },
+  "mercado_libre": {
+    "iva": 0.16,
+    "comision_sobre_precio_con_iva": true,
+    "tramos_comision_precio": [0, 299, 500, 1000],
+    "precios_muestra_comision": [199, 399, 599, 1199],
+    "comision_respaldo_por_tramo": {"0": 0.195, "299": 0.18, "500": 0.16, "1000": 0.15},
+    "umbral_envio_gratis": 299,
+    "costo_full_unitario_mes": 0.0,
+    "_costo_full_unitario_mes": "supuesto: almacenaje FULL no modelado (sin API de billing); dejar en 0 hasta tener la tarifa real"
+  },
+  "optimizador": {
+    "piso_margen": 0.12,
+    "sacrificio_utilidad_max": 0.10,
+    "paso_max_semana": 0.05,
+    "paso_max_dia": 0.02,
+    "rejilla_min_factor": 0.55,
+    "rejilla_max_factor": 1.45,
+    "rejilla_paso": 0.01,
+    "banda_competencia": [0.70, 1.15],
+    "elasticidad_prior_unidades": -1.6,
+    "elasticidad_prior_visitas": -0.6,
+    "elasticidad_min": -6.0,
+    "elasticidad_max": -0.3,
+    "dias_base": 28,
+    "cobertura_dias_escasez": 10,
+    "cobertura_dias_exceso": 120,
+    "sacrificio_liquidacion": 0.25,
+    "terminaciones_psicologicas": true
+  },
+  "canales": {
+    "amazon": {"comision": 0.15, "envio_unitario": 0, "supuesto": true, "_nota": "referral fee típico MX; FBA no aplica (FULL es ML)"},
+    "walmart": {"comision": 0.15, "envio_unitario": 0, "supuesto": true},
+    "tiktok": {"comision": 0.08, "envio_unitario": 0, "supuesto": true, "_nota": "el precio guardado puede venir SIN IVA (tax_exclusive_price)"},
+    "temu": {"comision": 0.0, "envio_unitario": 0, "supuesto": true, "_nota": "basePrice = lo que Temu nos paga (neto)"}
+  }
+}
