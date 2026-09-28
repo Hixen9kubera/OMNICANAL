@@ -43,7 +43,7 @@ import type { PlanAnalisis } from "./AnalisisPlaneacion";
 import BuscarSku from "./BuscarSku";
 import ConfirmarFull, { GuiaOrden } from "./ConfirmarFull";
 import PromptFull from "./PromptFull";
-import type { OrdenPrompt } from "./PromptFull";
+import type { GrupoPrompt } from "./PromptFull";
 import ChatSemana, { datosParaIA } from "./RevisionIA";
 import type { VivoIA } from "./RevisionIA";
 import { claveDe, planear, totalesDe } from "./proponer";
@@ -100,7 +100,7 @@ const firmaPlan = (p: Record<string, EntradaPlan>, q: Set<string>) =>
 export interface PedidoReemplazo { id: number; tienda: Tienda; sku: string; de: string }
 
 export default function CrearFull({
-  stock, rol, recarga, semana, semanaActual, onEstado, onPlan, reemplazoPedido, onReemplazoHecho,
+  stock, rol, recarga, semana, semanaActual, onEstado, onPlan, reemplazoPedido, onReemplazoHecho, onAbrirEnvio,
 }: {
   stock: StockHoy | null | undefined;
   rol: Rol;
@@ -115,6 +115,8 @@ export default function CrearFull({
   /** Un reemplazo pedido desde Análisis: se marca aquí y se avisa con `onReemplazoHecho`. */
   reemplazoPedido?: PedidoReemplazo | null;
   onReemplazoHecho?: (id: number) => void;
+  /** Abre la ventana de una orden en Envíos (su trazabilidad), encima de esta pantalla. */
+  onAbrirEnvio?: (orden: string) => void;
 }) {
   const esActual = semana === semanaActual.clave;
   const [datos, setDatos] = useState<PropuestaFull | null>(null);
@@ -152,7 +154,7 @@ export default function CrearFull({
   const pidiendo = useRef<Set<string>>(new Set());
   const [vaciar, setVaciar] = useState(false);
   // El prompt de «CARGAR FULL CON PROMPT» y la semana que se está consultando (si no es la en curso).
-  const [prompt, setPrompt] = useState<{ ordenes: OrdenPrompt[]; aviso: string | null } | null>(null);
+  const [prompt, setPrompt] = useState<{ grupos: GrupoPrompt[]; aviso: string | null } | null>(null);
   const [consulta, setConsulta] = useState<EstadoSemana | null>(null);
 
   const cambiarPlan = useCallback((fn: (p: Record<string, EntradaPlan>) => Record<string, EntradaPlan>) => {
@@ -218,6 +220,7 @@ export default function CrearFull({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   [renglones, cantidad, activas]);
   const total = totalesDe(renglones, cantidad);
+  const origen = useMemo(() => almacenesDelPlan(renglones, cantidad, datos?.almacenes ?? []), [renglones, cantidad, datos]);
   const resumen: ResumenPlan = useMemo(() => {
     const van = renglones.filter((r) => cantidad(r) > 0);
     return {
@@ -601,17 +604,34 @@ export default function CrearFull({
   // ── Las órdenes de la semana y «CARGAR FULL CON PROMPT» ───────────────────
   const ordenesDe = (clave: string) => (datos?.borradores ?? []).filter((b) => b.panel && enSemana(b.creada, clave));
   const porCargar = ordenesDe(semanaActual.clave).filter((b) => b.tienda?.startsWith("meli") && !b.guia_pdf);
-  const abrirPrompt = (bs: Pick<BorradorFull, "id" | "orden" | "tienda" | "almacen">[], avisoTxt: string | null = null) =>
-    setPrompt({ ordenes: bs.map((b) => ({ id: b.id, orden: b.orden,
-                                          nombre: [b.tienda ? datos?.tiendas[b.tienda]?.nombre : null, b.almacen].filter(Boolean).join(" · ") })),
-                aviso: avisoTxt });
+  // UN prompt por CUENTA con todas sus órdenes de la semana (Brandon, 28-sep: "cargar FULL con
+  // prompt es por cada cuenta y cada cuenta deberá de tener su lista de SKUs").
+  const abrirPrompt = (bs: Pick<BorradorFull, "id" | "orden" | "tienda" | "almacen">[], avisoTxt: string | null = null) => {
+    const grupos = new Map<string, GrupoPrompt>();
+    for (const b of bs) {
+      const t = b.tienda ?? "sin tienda";
+      const g = grupos.get(t) ?? { tienda: t, nombre: (b.tienda && datos?.tiendas[b.tienda]?.nombre) || t, ordenes: [] };
+      if (!g.ordenes.some((o) => o.id === b.id)) g.ordenes.push({ id: b.id, orden: b.orden, almacen: b.almacen ?? null });
+      grupos.set(t, g);
+    }
+    setPrompt({ grupos: [...grupos.values()], aviso: avisoTxt });
+  };
+  /** Las órdenes pendientes de la misma cuenta que `b`: el prompt de esa cuenta las lleva todas. */
+  const deLaCuenta = (b: Pick<BorradorFull, "id" | "orden" | "tienda" | "almacen">) => {
+    const mismas = porCargar.filter((x) => x.tienda === b.tienda);
+    return mismas.some((x) => x.id === b.id) ? mismas : [...mismas, b];
+  };
+  const cuentasPorCargar = new Set(porCargar.map((b) => b.tienda)).size;
   const alCrear = (r: ResultadoCrear) => {
     void cargar(true, ventana);
     const ml = (r.tiendas ?? []).filter((t) => t.tienda.startsWith("meli"))
       .flatMap((t) => (t.ordenes ?? []).map((o) => ({ id: o.id, orden: o.orden, tienda: t.tienda, almacen: o.almacen })));
     if (!ml.length) return;          // sin órdenes de ML, la confirmación se queda abierta con su guía
     setRevisar(false);
-    abrirPrompt(ml, `${r.accion === "ya_existia" ? "Ya estaban creadas" : "Creadas en Odoo en borrador"}: `
+    // Cada cuenta con TODAS sus órdenes pendientes de la semana, no sólo las que se acaban de crear.
+    const cuentas = new Set(ml.map((o) => o.tienda));
+    abrirPrompt([...porCargar.filter((b) => cuentas.has(b.tienda as Tienda)), ...ml],
+                `${r.accion === "ya_existia" ? "Ya estaban creadas" : "Creadas en Odoo en borrador"}: `
       + `${ml.map((o) => o.orden).join(", ")}${r.prueba ? " (PRUEBA)" : ""}. Ahora cárgalas en Mercado Libre con el prompt.`);
   };
 
@@ -866,12 +886,12 @@ export default function CrearFull({
                 {vista === "todas" && <th className="px-3 py-2.5"><Ayuda lado="izq" texto="A qué almacén va: FULL de Kubera, FULL de San Corpe, FBA de Amazon o WFS de Walmart.">Tienda</Ayuda></th>}
                 <th className="px-3 py-2.5 text-right"><Ayuda texto="Precio de venta HOY en esa tienda (Mercado Libre en vivo; Amazon y Walmart, el de su publicación). Sirve para planear por ticket.">Precio</Ayuda></th>
                 <th className="px-3 py-2.5 text-right"><Ayuda texto="Piezas vendidas en esa tienda en la ventana y su ritmo por día. ↑ = la última semana vende más de 1.5 veces ese ritmo.">Vende</Ayuda></th>
-                <th className="px-3 py-2.5 text-right"><Ayuda texto="Lo que hay HOY en el almacén del marketplace (FULL, FBA o WFS). En Mercado Libre se lee en vivo. «?» = no se sabe, no es 0.">En almacén</Ayuda></th>
+                <th className="px-3 py-2.5 text-right"><Ayuda texto="Lo que hay HOY en el almacén FULL del marketplace (FBA en Amazon, WFS en Walmart). En Mercado Libre se lee en vivo. «?» = no se sabe, no es 0.">Almacén FULL</Ayuda></th>
                 <th className="px-3 py-2.5 text-right"><Ayuda texto="Cuántos días alcanza lo que hay en el almacén al ritmo de la ventana.">Aguanta</Ayuda></th>
-                <th className="px-3 py-2.5 text-right"><Ayuda texto="Lo que ya va hacia el almacén: salidas por validar, lo que el marketplace todavía no recibe y los borradores en Odoo. Se resta para no mandar dos veces.">En camino</Ayuda></th>
-                <th className="px-3 py-2.5 text-right"><Ayuda texto="Lo libre en Odoo (free_qty) en TEXCO y TEXCO II: lo que se puede surtir. Odoo es el master.">Libre Odoo</Ayuda></th>
+                <th className="px-3 py-2.5 text-right"><Ayuda texto="Lo que ya va hacia el almacén: salidas por validar, lo que el marketplace todavía no recibe y los borradores en Odoo. Se resta para no mandar dos veces. Toca una orden para abrirla en Envíos con su trazabilidad (los borradores abren Odoo).">En camino</Ayuda></th>
+                <th className="px-3 py-2.5 text-right"><Ayuda texto="Lo libre en Odoo (free_qty) en CADA almacén, con su barra: el que tiene más va resaltado. «sale» marca de dónde saldría la orden: de UN almacén si ahí cabe todo (TEXCO primero); si no, se parte.">Libre Odoo</Ayuda></th>
                 <th className="px-3 py-2.5 text-right"><Ayuda texto="Faltante = objetivo de cobertura − lo que hay en el almacén − lo que va en camino.">Pidió</Ayuda></th>
-                <th className="px-3 py-2.5 text-right"><Ayuda texto="Lo libre que le toca a esta tienda, ya repartido si otra tienda activa pide el mismo SKU.">Bodega puede</Ayuda></th>
+                <th className="px-3 py-2.5 text-right"><Ayuda texto="Lo libre en Odoo sumando TEXCO y TEXCO II. Si otra tienda activa pide el mismo SKU o dejas colchón para DROP, abajo dice cuánto le toca a esta tienda.">Stock total bodegas</Ayuda></th>
                 <th className="px-3 py-2.5 text-right"><Ayuda texto="Lo que sugiere el prompt estándar: el menor entre lo que pidió y lo que bodega puede (0 si queda debajo del mínimo por renglón). Es referencia: el plan lo arma la IA o tú.">Propuesta</Ayuda></th>
                 <th className="px-3 py-2.5 text-right"><Ayuda lado="der" texto="Lo que va en el plan de la semana y se creará en Odoo. La casilla lo incluye o lo deja fuera sin perder la cantidad. En violeta, lo que puso la IA; en azul, lo que cambiaste.">A mandar</Ayuda></th>
                 <th className="px-3 py-2.5"><Ayuda lado="der" texto="Aprobado: bodega cubre lo pedido. Recorte: Odoo no alcanza, va lo que hay. Pendiente: sin dato de Odoo (no es un cero). Cubierto: ya alcanza.">Estado</Ayuda></th>
@@ -881,6 +901,7 @@ export default function CrearFull({
             <tbody>
               {visibles.map((r) => (
                 <FilaUI key={r.clave} r={r} valor={filtro === "quitados" ? 0 : cantidad(r)} entrada={plan[r.clave]}
+                        origen={origen.get(r.clave) ?? null} minimo={params?.min_piezas ?? 0} onAbrirEnvio={onAbrirEnvio}
                         resaltada={resaltados.has(r.clave)}
                         conTienda={vista === "todas"} nombreTienda={datos?.tiendas[r.tienda].nombre ?? r.tienda}
                         quitada={filtro === "quitados"}
@@ -926,7 +947,7 @@ export default function CrearFull({
                     title={porCargar.length ? `${porCargar.map((b) => b.orden).join(", ")}: en borrador y sin guía`
                       : "Se activa cuando esta semana hay una orden de Mercado Libre creada en Odoo (en borrador) que todavía no tiene su guía."}
                     className="inline-flex items-center gap-1.5 rounded-lg border border-violet-300 bg-white px-3 py-2 text-sm font-extrabold uppercase tracking-wide text-violet-700 hover:bg-violet-50 disabled:opacity-40">
-              <Sparkles className="h-4 w-4" /> Cargar FULL con prompt{porCargar.length > 1 ? ` (${porCargar.length})` : ""}
+              <Sparkles className="h-4 w-4" /> Cargar FULL con prompt{cuentasPorCargar > 1 ? ` (${cuentasPorCargar} cuentas)` : ""}
             </button>
             <button type="button" onClick={() => setRevisar(true)} disabled={!total.skus_a_mandar}
                     className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-indigo-700 disabled:opacity-40">
@@ -938,7 +959,7 @@ export default function CrearFull({
 
       {datos && (
         <OrdenesSemana semana={semanaActual} ordenes={ordenesDe(semanaActual.clave)} datos={datos} rol={rol} esActual
-                       onPrompt={(b) => abrirPrompt([b])} onGuia={() => void cargar(true, ventana)} />
+                       onPrompt={(b) => abrirPrompt(deLaCuenta(b))} onGuia={() => void cargar(true, ventana)} />
       )}
 
       <p className="text-xs leading-relaxed text-slate-400">
@@ -955,7 +976,7 @@ export default function CrearFull({
           semana={`${semanaActual.semana} · ${semanaActual.rango}`} params={params} rol={rol}
           onDescargar={() => void descargar()} onCerrar={() => setRevisar(false)} onCreado={alCrear} />
       )}
-      {prompt && <PromptFull ordenes={prompt.ordenes} aviso={prompt.aviso} onCerrar={() => setPrompt(null)} />}
+      {prompt && <PromptFull grupos={prompt.grupos} aviso={prompt.aviso} onCerrar={() => setPrompt(null)} />}
     </div>
   );
 }
@@ -1040,11 +1061,58 @@ const ESTADO: Record<Renglon["estado"], { t: string; c: string }> = {
   cubierto: { t: "cubierto", c: "border-slate-200 bg-white text-slate-400" },
 };
 
-function FilaUI({ r, valor, entrada, resaltada, conTienda, nombreTienda, quitada, onCambio, onAlternar, onQuitar, onRestaurar }: {
+/**
+ * De qué almacén saldría cada renglón del plan: la MISMA regla que usa Odoo al crear
+ * (`fulfillment_full.repartir_almacenes` y `vista_previa`): tienda por tienda, UN almacén si
+ * ahí cabe todo lo de esa tienda (TEXCO primero); si no, cada renglón completo al primero que
+ * lo cubra; si ninguno, se parte. Lo que toma una tienda ya no lo tiene la siguiente.
+ */
+function almacenesDelPlan(renglones: Renglon[], cantidad: (r: Renglon) => number, almacenes: string[]) {
+  const salida = new Map<string, string>();
+  const restante = new Map<number, Record<string, number>>();
+  const libre = (r: Renglon, a: string) => Math.max(0, (restante.get(r.product_id!) ?? r.libre ?? {})[a] ?? 0);
+  const tomar = (r: Renglon, partes: Record<string, number>) => {
+    const actual = { ...(restante.get(r.product_id!) ?? r.libre ?? {}) };
+    for (const [a, n] of Object.entries(partes)) actual[a] = (actual[a] ?? 0) - n;
+    restante.set(r.product_id!, actual);
+    salida.set(r.clave, Object.keys(partes).join(" + "));
+  };
+  for (const t of TIENDAS) {
+    const van = renglones.filter((r) => r.tienda === t && r.product_id !== null && r.libre && cantidad(r) > 0)
+      .map((r) => ({ r, n: Math.min(cantidad(r), almacenes.reduce((s, a) => s + libre(r, a), 0)) }))
+      .filter((x) => x.n > 0);
+    const unico = almacenes.find((a) => van.length > 0 && van.every((x) => libre(x.r, a) >= x.n));
+    for (const x of van) {
+      const entero = unico ?? almacenes.find((a) => libre(x.r, a) >= x.n);
+      if (entero) { tomar(x.r, { [entero]: x.n }); continue; }
+      let falta = x.n;
+      const partes: Record<string, number> = {};
+      for (const a of almacenes) {
+        const toma = Math.min(libre(x.r, a), falta);
+        if (toma > 0) { partes[a] = toma; falta -= toma; }
+      }
+      tomar(x.r, partes);
+    }
+  }
+  return salida;
+}
+
+function FilaUI({
+  r, valor, entrada, resaltada, conTienda, nombreTienda, quitada, origen, minimo, onAbrirEnvio,
+  onCambio, onAlternar, onQuitar, onRestaurar,
+}: {
   r: Renglon; valor: number; entrada: EntradaPlan | undefined; resaltada: boolean; conTienda: boolean;
   nombreTienda: string; quitada: boolean;
+  /** De qué almacén saldría («TEXCO», «TEXCO II» o los dos). */
+  origen: string | null;
+  minimo: number;
+  onAbrirEnvio?: (orden: string) => void;
   onCambio: (v: string) => void; onAlternar: () => void; onQuitar: () => void; onRestaurar: () => void;
 }) {
+  // Lo más que pide la cobertura: el faltante, redondeado a cajas completas si hay caja.
+  const cobertura = r.pidio > 0 ? (r.caja ? Math.ceil(r.pidio / r.caja) * r.caja : r.pidio) : 0;
+  const totalBodegas = r.libre ? Object.values(r.libre).reduce((a, n) => a + n, 0) : null;
+  const mayor = r.libre ? Math.max(0, ...Object.values(r.libre)) : 0;
   const e = ESTADO[r.estado];
   const tonoAguanta = r.aguanta === null ? "text-slate-300"
     : r.aguanta < 7 ? "text-rose-700" : r.aguanta < 15 ? "text-amber-700" : "text-slate-600";
@@ -1112,19 +1180,55 @@ function FilaUI({ r, valor, entrada, resaltada, conTienda, nombreTienda, quitada
         {r.en_camino > 0
           ? <div className="font-mono tabular-nums text-amber-700" title={r.camino.join("\n")}>{num(r.en_camino)}</div>
           : <div className="font-mono text-slate-300">0</div>}
-        {r.borrador > 0 && <div className="text-[10.5px] text-indigo-600" title={r.borradores.join(", ")}>+{num(r.borrador)} borrador</div>}
+        {(r.camino_ordenes ?? []).map((o, i) => (
+          <button key={`c${i}`} type="button" disabled={!o.orden || !onAbrirEnvio}
+                  onClick={() => o.orden && onAbrirEnvio?.(o.orden)}
+                  title={`Abrir ${o.orden} en Envíos: ${o.estado}, ${o.piezas} pzs`}
+                  className="mt-0.5 block w-full whitespace-nowrap text-right text-[10.5px] text-indigo-600 hover:underline disabled:text-slate-500 disabled:no-underline">
+            <span className="font-mono font-bold">{o.orden}</span> · {num(o.piezas)} <span className="text-slate-400">{o.estado}</span>
+          </button>
+        ))}
+        {r.borrador > 0 && <div className="mt-0.5 text-[10.5px] text-indigo-600" title={r.borradores.join(", ")}>+{num(r.borrador)} borrador</div>}
+        {(r.borradores_ordenes ?? []).map((o, i) => (
+          <a key={`b${i}`} href={o.url ?? "#"} target="_blank" rel="noreferrer" title={`Abrir el borrador ${o.orden} en Odoo`}
+             className="block whitespace-nowrap text-right text-[10.5px] text-indigo-500 hover:underline">
+            <span className="font-mono">{o.orden}</span> · {num(o.piezas)} <span className="text-slate-400">borrador</span>
+          </a>
+        ))}
       </td>
       <td className="px-3 py-2 text-right text-[11.5px]">
-        {r.libre ? Object.entries(r.libre).map(([alm, n]) => (
-          <div key={alm} className={`font-mono tabular-nums ${n > 0 ? "text-slate-700" : "text-slate-300"}`}>
-            <span className="text-[10px] text-slate-400">{alm}</span> {num(n)}
+        {r.libre ? (
+          <div className="ml-auto flex w-[140px] flex-col gap-1">
+            {Object.entries(r.libre).map(([alm, n]) => {
+              const esMayor = n > 0 && n === mayor;
+              const sale = valor > 0 && !!origen?.split(" + ").includes(alm);
+              return (
+                <div key={alm} title={sale ? `La orden de este SKU saldría de ${alm}` : undefined}
+                     className={`rounded-md px-1.5 py-0.5 ${sale ? "bg-emerald-50 ring-1 ring-emerald-300" : ""}`}>
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className={`text-[10px] font-semibold ${esMayor ? "text-slate-700" : "text-slate-400"}`}>
+                      {alm}{sale && <span className="ml-1 font-bold text-emerald-700">· sale</span>}
+                    </span>
+                    <span className={`font-mono tabular-nums ${n === 0 ? "text-slate-300" : esMayor ? "font-extrabold text-slate-900" : "text-slate-600"}`}>
+                      {num(n)}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 h-1 rounded bg-slate-100">
+                    <div className={`h-1 rounded ${esMayor ? "bg-emerald-500" : "bg-slate-300"}`}
+                         style={{ width: `${mayor ? Math.round((n / mayor) * 100) : 0}%` }} />
+                  </div>
+                </div>
+              );
+            })}
           </div>
-        )) : <span className="text-slate-400">no está en Odoo</span>}
+        ) : <span className="text-slate-400">no está en Odoo</span>}
       </td>
       <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-700">{num(r.pidio)}</td>
       <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-700" title={r.repartido}>
-        {r.bodega === null ? <span className="text-slate-400">?</span> : num(r.bodega)}
-        {r.repartido && <div className="text-[10px] text-violet-700">repartido</div>}
+        {totalBodegas === null ? <span className="text-slate-400">?</span> : num(totalBodegas)}
+        {r.bodega !== null && totalBodegas !== null && r.bodega !== totalBodegas && (
+          <div className="text-[10px] text-violet-700">{r.repartido ? "repartido: " : "sin el colchón: "}le tocan {num(r.bodega)}</div>
+        )}
       </td>
       <td className="px-3 py-2 text-right font-mono font-bold tabular-nums text-indigo-700">{r.propuesta ? num(r.propuesta) : "—"}</td>
       <td className="px-3 py-2 text-right">
@@ -1142,6 +1246,16 @@ function FilaUI({ r, valor, entrada, resaltada, conTienda, nombreTienda, quitada
         </div>
         {r.bodega !== null && valor > r.bodega && (
           <div className="mt-0.5 text-[10px] font-semibold text-amber-700">más de lo libre: se recortará</div>
+        )}
+        {valor > 0 && r.estado === "cubierto" && (
+          <div className="mt-0.5 text-[10px] font-semibold text-amber-700"
+               title="Lo que hay en FULL, en camino y en borradores ya alcanza la cobertura: la propuesta es 0.">ya está cubierto</div>
+        )}
+        {valor > 0 && r.pidio > 0 && valor > cobertura && (
+          <div className="mt-0.5 text-[10px] font-semibold text-amber-700">más de lo que pide la cobertura ({num(cobertura)})</div>
+        )}
+        {valor > 0 && valor < minimo && (
+          <div className="mt-0.5 text-[10px] font-semibold text-amber-700">debajo del mínimo por renglón ({num(minimo)})</div>
         )}
       </td>
       <td className="px-3 py-2">

@@ -167,6 +167,11 @@ export default function FulfillmentPage() {
   }, []);
 
   const todos = useMemo(() => datos?.envios ?? [], [datos]);
+  // Crear FULL abre la ventana de una orden en camino (su trazabilidad) encima de su tabla.
+  const abrirEnvioPorOrden = useCallback((orden: string) => {
+    const e = todos.find((x) => x.orden === orden);
+    if (e) setAbierto(e);
+  }, [todos]);
   const envios = useMemo(() => todos
     .filter((e) => canal === "todos" || e.canal === canal)
     // Con una cuenta elegida, los envíos de ML sin cuenta NO entran: no se sabe de cuál son.
@@ -323,7 +328,8 @@ export default function FulfillmentPage() {
         <div className={pantalla === "crear" ? "" : "hidden"}>
           {actual && (
             <CrearFull stock={datos?.stock} rol={rol} recarga={recarga} semana={semana} semanaActual={actual}
-                       onEstado={setPorMandar} onPlan={setPlan} reemplazoPedido={reemplazo} onReemplazoHecho={reemplazoHecho} />
+                       onEstado={setPorMandar} onPlan={setPlan} reemplazoPedido={reemplazo} onReemplazoHecho={reemplazoHecho}
+                       onAbrirEnvio={abrirEnvioPorOrden} />
           )}
         </div>
         {pantalla === "envios" && (datos

@@ -151,11 +151,22 @@ AJUSTES_DEL_PANEL = """CÓMO SE CORRE ESTE PROMPT DENTRO DEL PANEL (manda sobre 
   cuenta y NUNCA inventes una cifra que no esté ahí. MySQL (canal_inventario, ml_progress) está congelado desde el
   13-ago-2026: el panel usa kubera, Mercado Libre verificado en vivo y Odoo en vivo.
 - Cada tienda trae su planeación COMPLETA como tabla: "columnas" dice qué es cada posición y "filas" trae un SKU por
-  renglón. "precio" = precio de venta de hoy en esa tienda, en pesos; null = no se sabe. "pidio" = faltante para la
-  cobertura; "libre" = lo que bodega puede surtir a esa tienda (free_qty de Odoo menos el colchón para DROP, ya
-  repartido si varias tiendas piden el mismo SKU); "propuesta" = lo que sugiere el prompt estándar. "titulo_mkt" sólo
-  viene cuando el título del marketplace no se parece al producto (posible reciclado).
+  renglón. "precio" = precio de venta de hoy en esa tienda, en pesos; null = no se sabe. "almacen_full" = piezas que hay
+  HOY en el almacén del marketplace (FULL, FBA). "pidio" = faltante para la cobertura. "libre_por_almacen" = lo libre en
+  Odoo en CADA almacén (TEXCO, TEXCO II): la orden sale de UN almacén si ahí cabe completa (TEXCO primero) y si no se
+  parte, así que prefiere cantidades que quepan en un solo almacén. "libre" = lo que bodega puede surtir a esa tienda
+  (free_qty de los dos almacenes menos el colchón para DROP, ya repartido si varias tiendas piden el mismo SKU).
+  "propuesta" = lo que sugiere el prompt estándar. "titulo_mkt" sólo viene cuando el título del marketplace no se
+  parece al producto (posible reciclado).
 - Al faltante ya se le restó lo que va en camino y lo que está en borradores, para no mandar dos veces lo mismo.
+- REGLAS DEL CÁLCULO (el panel descarta lo que no las cumpla, así que no las rompas):
+  1. Un SKU con estado "cubierto" (pidio 0) NO se manda: lo que hay en el almacén, en camino y en borradores ya
+     alcanza la cobertura.
+  2. Nunca más de "pidio" (si viene "caja", puedes redondear hacia arriba a cajas completas) ni más de "libre".
+  3. Nunca menos del mínimo por renglón ("min_piezas" de la corrida): si lo libre no llega al mínimo, no lo mandes y
+     dilo en tu respuesta.
+  4. "propuesta" ya cumple las tres: úsala tal cual salvo que la instrucción de la persona pida otra cosa dentro de
+     estas reglas (p. ej. sólo cierto precio, sólo lo que más vende).
 - Cada mensaje de la persona trae el PLAN ACTUAL de la semana: lo que ya va, con tus ajustes anteriores y lo que la
   persona cambió a mano. Trabaja sobre ese plan.
 - Eres el agente de planeación de la persona: sigue sus instrucciones (p. ej. «sólo SKUs con precio menor a $300»,
@@ -302,17 +313,35 @@ def _campos(x: Any, llaves: list[str], alias: dict[str, str] | None = None) -> d
     return None
 
 
+def _tope_cobertura(fila: dict[str, Any] | None) -> int | None:
+    """Lo más que pide la cobertura para un renglón: su faltante, redondeado a cajas completas si hay caja.
+    None = el renglón no dice cuánto pide (datos viejos): no se topa por aquí."""
+    if not fila or "pidio" not in fila:
+        return None
+    pidio = max(0, int(fila.get("pidio") or 0))
+    caja = int(fila.get("caja") or 0)
+    return -(-pidio // caja) * caja if caja > 0 and pidio else pidio
+
+
 def validar(respuesta: dict[str, Any], datos: dict[str, Any]) -> dict[str, Any]:
     """
     Lo que la IA contestó, pasado por los datos que se le dieron. Función pura.
     Un ajuste fuera de la planeación o por encima de lo libre NO pasa: se descarta
     (o se topa) y se dice por qué. Un SKU ajustado dos veces: manda el último.
+
+    Y las reglas del cálculo (v0.587.0, Brandon: "deberá de ser coherente"): lo «cubierto»
+    no se manda, nada arriba de lo que pide la cobertura (redondeado a caja) y nada debajo
+    del mínimo por renglón. El 28-sep la IA mandó 4 de un SKU que pedía 35 (el mínimo es 5)
+    y 20 de uno cubierto: la tabla decía «propuesta nula» y «a mandar 20».
     """
     tiendas = datos.get("tiendas") or {}
+    minimo = int((datos.get("corrida") or {}).get("min_piezas") or 0)
     permitidos: dict[str, dict[str, int]] = {}
+    filas_de: dict[str, dict[str, dict[str, Any]]] = {}
     candidatos: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
     for t, d in tiendas.items():
-        libres = {r["sku"]: int(r.get("libre") or 0) for r in renglones_de(d) if r.get("sku")}
+        filas_de[t] = {r["sku"]: r for r in renglones_de(d) if r.get("sku")}
+        libres = {s: int(r.get("libre") or 0) for s, r in filas_de[t].items()}
         for g in d.get("ganadores_agotados") or []:
             cs = {c["sku"]: {"libre": int(c.get("libre") or 0), "tipo": str(c.get("tipo") or "")}
                   for c in g.get("candidatos") or [] if c.get("sku")}
@@ -340,9 +369,21 @@ def validar(respuesta: dict[str, Any], datos: dict[str, Any]) -> dict[str, Any]:
             descartados.append({**a, "porque": "cantidad negativa"})
             continue
         tope, nota = permitidos[t][sku], None
+        cobertura = _tope_cobertura(filas_de.get(t, {}).get(sku))
+        if n > 0 and cobertura is not None:
+            if cobertura <= 0:
+                descartados.append({**a, "porque": "ya está cubierto: lo que hay en FULL, en camino y en borradores "
+                                                   "alcanza la cobertura"})
+                continue
+            if n > cobertura:
+                nota = f"la IA pidió {n}; se topó a lo que pide la cobertura ({cobertura})"
+                n = cobertura
         if n > tope:
             nota = f"la IA pidió {n}; se topó a lo libre ({tope})"
             n = tope
+        if 0 < n < minimo:
+            descartados.append({**a, "porque": f"{n} es menos del mínimo por renglón ({minimo})"})
+            continue
         ajustes.pop((t, sku), None)          # el último manda y queda al final
         ajustes[(t, sku)] = {"tienda": t, "sku": sku, "cantidad": n, "motivo": str(a.get("motivo") or "")[:300],
                              "nota": nota}
@@ -367,9 +408,17 @@ def validar(respuesta: dict[str, Any], datos: dict[str, Any]) -> dict[str, Any]:
         except (TypeError, ValueError):
             n = 0
         nota = None
+        # Un reemplazo cubre la demanda del AGOTADO: no más de lo que pedía ése, ni de lo libre del candidato.
+        demanda = _tope_cobertura(filas_de.get(t, {}).get(ag))
+        if demanda is not None and 0 < demanda < n:
+            nota = f"la IA pidió {n}; se topó a lo que pedía {ag} ({demanda})"
+            n = demanda
         if n > c["libre"]:
             nota = f"la IA pidió {n}; se topó a lo libre ({c['libre']})"
             n = c["libre"]
+        if 0 < n < minimo:
+            descartados.append({**r, "porque": f"{n} es menos del mínimo por renglón ({minimo})"})
+            continue
         usados[(t, re_)] = ag
         reemplazos.append({"tienda": t, "agotado": ag, "reemplazo": re_, "cantidad": n,
                            "tipo_match": c["tipo"][:40], "motivo": str(r.get("motivo") or "")[:300], "nota": nota})
@@ -622,8 +671,11 @@ def _huella(datos: dict[str, Any]) -> str:
     """Qué planeación es: tiendas y parámetros. Si cambian, la IA recibe otra tabla."""
     corrida = {k: v for k, v in (datos.get("corrida") or {}).items()
                if k in ("ventana", "cobertura_dias", "min_piezas", "ganador_desde", "dejar_en_bodega")}
-    return json.dumps({"tiendas": sorted((datos.get("tiendas") or {}).keys()), "corrida": corrida},
-                      ensure_ascii=False, sort_keys=True, default=str)
+    # Las columnas también: si la tabla cambia de forma (v0.587.0 le agregó lo libre por almacén),
+    # la IA tiene que recibir la nueva aunque sea el mismo día.
+    columnas = sorted({",".join(d.get("columnas") or []) for d in (datos.get("tiendas") or {}).values()})
+    return json.dumps({"tiendas": sorted((datos.get("tiendas") or {}).keys()), "corrida": corrida,
+                       "columnas": columnas}, ensure_ascii=False, sort_keys=True, default=str)
 
 
 def corriendo_en(clave: str) -> dict[str, Any] | None:

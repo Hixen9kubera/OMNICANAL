@@ -20,29 +20,33 @@ import { API_BASE, fetchSesion } from "@/lib/api";
 import { BotonCerrar, Ceja, Ventana, num } from "./ui";
 import type { PromptML } from "./tipos";
 
-export interface OrdenPrompt { id: number; orden: string; nombre?: string }
+export interface OrdenPrompt { id: number; orden: string; almacen?: string | null }
 
-export default function PromptFull({ ordenes, aviso, onCerrar }: {
-  ordenes: OrdenPrompt[];
+/** UNA cuenta con sus órdenes de la semana (una por almacén): un prompt por cuenta. */
+export interface GrupoPrompt { tienda: string; nombre: string; ordenes: OrdenPrompt[] }
+
+export default function PromptFull({ grupos, aviso, onCerrar }: {
+  grupos: GrupoPrompt[];
   /** Lo que acaba de pasar (p. ej. «Creadas en Odoo en borrador: S38990, S38991»). */
   aviso?: string | null;
   onCerrar: () => void;
 }) {
-  const [elegida, setElegida] = useState(ordenes[0]?.id ?? 0);
-  const [datos, setDatos] = useState<Record<number, PromptML | { ok: false; motivo: string }>>({});
+  const [elegida, setElegida] = useState(grupos[0]?.tienda ?? "");
+  const [datos, setDatos] = useState<Record<string, PromptML | { ok: false; motivo: string }>>({});
   const [copiado, setCopiado] = useState<string | null>(null);
 
   useEffect(() => {
     let vivo = true;
-    for (const o of ordenes) {
-      const panel = encodeURIComponent(window.location.origin);
-      fetchSesion(`${API_BASE}/api/fulfillment/crear-full/prompt-ml?orden_id=${o.id}&panel=${panel}`, { cache: "no-store" })
+    const panel = encodeURIComponent(window.location.origin);
+    for (const g of grupos) {
+      const ids = g.ordenes.map((o) => o.id).join(",");
+      fetchSesion(`${API_BASE}/api/fulfillment/crear-full/prompt-ml?orden_ids=${ids}&panel=${panel}`, { cache: "no-store" })
         .then(async (r) => (r.ok ? r.json() as Promise<PromptML> : { ok: false as const, motivo: `HTTP ${r.status}` }))
         .catch((e: unknown) => ({ ok: false as const, motivo: e instanceof Error ? e.message : String(e) }))
-        .then((d) => { if (vivo) setDatos((x) => ({ ...x, [o.id]: d })); });
+        .then((d) => { if (vivo) setDatos((x) => ({ ...x, [g.tienda]: d })); });
     }
     return () => { vivo = false; };
-  }, [ordenes]);
+  }, [grupos]);
 
   const d = datos[elegida];
   const p = d && d.ok ? (d as PromptML) : null;
@@ -51,7 +55,7 @@ export default function PromptFull({ ordenes, aviso, onCerrar }: {
     setCopiado(que);
     setTimeout(() => setCopiado(null), 1800);
   };
-  const skus = p?.lineas?.map((l) => `${l.sku}\t${l.cantidad}`).join("\n") ?? "";
+  const skus = p?.lineas?.map((l) => `${l.sku}\t${l.cantidad}\t${l.almacen ?? ""}`).join("\n") ?? "";
 
   return (
     <Ventana etiqueta="Cargar FULL con prompt" onCerrar={onCerrar} ancho="max-w-[980px]">
@@ -69,18 +73,15 @@ export default function PromptFull({ ordenes, aviso, onCerrar }: {
         <BotonCerrar onClick={onCerrar} />
       </div>
 
-      {ordenes.length > 1 && (
+      {grupos.length > 1 && (
         <div className="flex flex-wrap gap-1.5 border-b border-slate-100 px-6 py-2">
-          {ordenes.map((o) => {
-            const x = datos[o.id];
-            return (
-              <button key={o.id} type="button" onClick={() => setElegida(o.id)}
-                      className={`rounded-full border px-3 py-1 text-[12px] font-bold ${
-                        elegida === o.id ? "border-indigo-300 bg-indigo-50 text-indigo-800" : "border-slate-200 text-slate-500 hover:bg-slate-50"}`}>
-                {o.orden}{x && x.ok ? ` · ${(x as PromptML).nombre_tienda} · ${(x as PromptML).orden?.almacen ?? ""}` : o.nombre ? ` · ${o.nombre}` : ""}
-              </button>
-            );
-          })}
+          {grupos.map((g) => (
+            <button key={g.tienda} type="button" onClick={() => setElegida(g.tienda)}
+                    className={`rounded-full border px-3 py-1 text-[12px] font-bold ${
+                      elegida === g.tienda ? "border-indigo-300 bg-indigo-50 text-indigo-800" : "border-slate-200 text-slate-500 hover:bg-slate-50"}`}>
+              {g.nombre} · {g.ordenes.map((o) => o.orden).join(", ")}
+            </button>
+          ))}
         </div>
       )}
 
@@ -99,8 +100,11 @@ export default function PromptFull({ ordenes, aviso, onCerrar }: {
         {p && (
           <>
             <div className="flex flex-wrap items-center gap-2 text-[12.5px] text-slate-600">
-              <span className="font-mono text-[14px] font-extrabold text-slate-900">{p.orden?.orden}</span>
-              <span>· {p.nombre_tienda} · sale de {p.orden?.almacen ?? "—"} · {num(p.lineas?.length ?? 0)} SKUs · {num(p.piezas ?? 0)} pzs</span>
+              <span className="text-[14px] font-extrabold text-slate-900">{p.nombre_tienda}</span>
+              <span>
+                · {(p.ordenes ?? []).map((o) => `${o.orden} (${o.almacen ?? "—"})`).join(" · ")}
+                {" "}· {num(p.lineas?.length ?? 0)} SKUs · {num(p.piezas ?? 0)} pzs
+              </span>
               {p.orden?.prueba && (
                 <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-bold text-amber-800">
                   <FlaskConical className="h-3 w-3" /> PRUEBA: el agente no confirma nada
@@ -114,7 +118,7 @@ export default function PromptFull({ ordenes, aviso, onCerrar }: {
             </div>
             {!p.activo && (
               <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
-                El botón ya no va activo para esta orden: {p.porque}. El prompt se enseña sólo de consulta.
+                El botón ya no va activo para esta cuenta: {p.porque}. El prompt se enseña sólo de consulta.
               </p>
             )}
 
@@ -130,15 +134,17 @@ export default function PromptFull({ ordenes, aviso, onCerrar }: {
                 <div className="mt-1 max-h-[46vh] overflow-y-auto rounded-xl border border-slate-200">
                   <table className="w-full text-[12px]">
                     <thead className="sticky top-0 bg-slate-50 text-left text-[10px] font-bold uppercase tracking-[.05em] text-slate-400">
-                      <tr><th className="px-3 py-1.5">SKU · publicación</th><th className="px-3 py-1.5 text-right">Piezas</th></tr>
+                      <tr><th className="px-3 py-1.5">SKU · publicación</th><th className="px-3 py-1.5">Sale de</th>
+                        <th className="px-3 py-1.5 text-right">Piezas</th></tr>
                     </thead>
                     <tbody>
                       {p.lineas?.map((l) => (
-                        <tr key={l.sku} className="border-t border-slate-100">
+                        <tr key={`${l.orden}|${l.sku}`} className="border-t border-slate-100">
                           <td className="px-3 py-1.5">
                             <span className="font-mono font-bold text-slate-800">{l.sku}</span>
                             <span className="block font-mono text-[10.5px] text-slate-400">{l.listing_id ?? "sin publicación registrada"}</span>
                           </td>
+                          <td className="px-3 py-1.5 text-[11px] text-slate-500">{l.almacen ?? "—"}<span className="block font-mono text-[10px] text-slate-400">{l.orden}</span></td>
                           <td className="px-3 py-1.5 text-right font-mono font-bold tabular-nums">{num(l.cantidad)}</td>
                         </tr>
                       ))}

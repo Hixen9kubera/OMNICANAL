@@ -530,7 +530,11 @@ def en_camino(envios: list[dict[str, Any]],
     Lo que ya va hacia el almacén de cada tienda, por (tienda, SKU), con el porqué;
     y las salidas abiertas OLVIDADAS (más de 21 días), que se enseñan y no se restan.
     """
-    camino: dict[tuple[str, str], dict[str, Any]] = defaultdict(lambda: {"piezas": 0, "detalle": []})
+    camino: dict[tuple[str, str], dict[str, Any]] = defaultdict(lambda: {"piezas": 0, "detalle": [], "ordenes": []})
+
+    def anotar(k: tuple[str, str], e: dict[str, Any], n: int, estado: str) -> None:
+        # La orden con su id de salida: en Crear FULL es un botón que abre su ventana en Envíos.
+        camino[k]["ordenes"].append({"orden": e.get("orden"), "id": e.get("id"), "piezas": n, "estado": estado})
     zombis: list[dict[str, Any]] = []
     for e in envios:
         tienda = tienda_de_envio(e)
@@ -550,6 +554,7 @@ def en_camino(envios: list[dict[str, Any]],
                     k = (tienda, r["sku"])
                     camino[k]["piezas"] += n
                     camino[k]["detalle"].append(f"{e.get('orden')} por validar en Odoo ({n})")
+                    anotar(k, e, n, "por validar")
             continue
         c = e.get("cobertura") or {}
         if c.get("fuente") == "avisos":
@@ -560,6 +565,7 @@ def en_camino(envios: list[dict[str, Any]],
                 if falta > 0:
                     k = (tienda, r["sku"])
                     camino[k]["piezas"] += falta
+                    anotar(k, e, falta, "llegando")
                     camino[k]["detalle"].append(
                         f"{e.get('orden')} salió el {_dia_txt(salida)}: faltan {falta} por llegar"
                         if salida else f"{e.get('orden')}: faltan {falta} por llegar")
@@ -571,6 +577,7 @@ def en_camino(envios: list[dict[str, Any]],
                     k = (tienda, r["sku"])
                     camino[k]["piezas"] += n
                     camino[k]["detalle"].append(f"{e.get('orden')} salió el {_dia_txt(salida)} ({n}, sin avisos)")
+                    anotar(k, e, n, "salió")
     return dict(camino), zombis
 
 
@@ -693,7 +700,9 @@ def _fila(tienda: str, sku: str, venta: dict | None, pub: dict | None, vivo: dic
         "ultima_venta": (venta or {}).get("ultima").isoformat() if (venta or {}).get("ultima") else None,
         "stock": stock,
         "en_camino": cam["piezas"] if cam else 0, "camino": cam["detalle"] if cam else [],
+        "camino_ordenes": (cam or {}).get("ordenes") or [],
         "borrador": bor["piezas"] if bor else 0, "borradores": bor["detalle"] if bor else [],
+        "borradores_ordenes": (bor or {}).get("ordenes") or [],
         "libre": ({n: max(0, int((lib or {}).get(w, 0) or 0)) for w, n in ALMACENES} if producto else None),
         # Piezas por caja del packing list: menos de 1 no es una caja, es un hueco.
         "caja": (int(round(float(medidas["piezas_por_caja"])))
@@ -711,7 +720,7 @@ def armar_propuesta(tiendas: list[str], ventas: list[dict], pubs: dict[str, dict
                     ventana: int) -> dict[str, Any]:
     """Los insumos de la planeación, por tienda y SKU. Función pura."""
     camino, zombis = en_camino(envios, ahora)
-    borr: dict[tuple[str, str], dict[str, Any]] = defaultdict(lambda: {"piezas": 0, "detalle": []})
+    borr: dict[tuple[str, str], dict[str, Any]] = defaultdict(lambda: {"piezas": 0, "detalle": [], "ordenes": []})
     for b in borradores:
         # Las PRUEBAS no se restan (nadie las va a surtir) y los de más de 21 días tampoco.
         if not se_resta(b):
@@ -721,6 +730,8 @@ def armar_propuesta(tiendas: list[str], ventas: list[dict], pubs: dict[str, dict
                 k = (b["tienda"], r["sku"])
                 borr[k]["piezas"] += r["cantidad"]
                 borr[k]["detalle"].append(f"{b['orden']} ({r['cantidad']})")
+                borr[k]["ordenes"].append({"orden": b["orden"], "id": b.get("id"), "piezas": r["cantidad"],
+                                           "estado": "borrador", "url": b.get("url")})
     tienda_de = {("mercado_libre", "BEKURA"): "meli:Kubera", ("mercado_libre", "SANCORFASHION"): "meli:San Corpe",
                  ("amazon", "AMAZON"): "amazon"}
     ventas_por: dict[str, dict[str, dict]] = defaultdict(dict)
@@ -1387,19 +1398,22 @@ def _tienda_de_socio(nombre: str | None) -> str | None:
     return next((t for t, s in SOCIO.items() if s.upper() == n), None)
 
 
-def texto_prompt_ml(orden: dict[str, Any], tienda: str, lineas: list[dict[str, Any]],
+def texto_prompt_ml(ordenes: list[dict[str, Any]], tienda: str, lineas: list[dict[str, Any]],
                     semana: dict[str, Any], panel: str) -> str:
-    """El prompt para el agente con navegador. Función pura."""
+    """El prompt para el agente con navegador: UNA cuenta con todas sus órdenes. Función pura."""
     d = TIENDAS[tienda]
     piezas = sum(int(l["cantidad"]) for l in lineas)
+    varios = len({l.get("almacen") for l in lineas}) > 1
     productos = "\n".join(
         f"{i}. {l.get('listing_id') or 'sin publicación registrada'} · {l['sku']} · {int(l['cantidad']):,} pzs"
-        f" · {(l.get('nombre') or '').strip()[:70]}"
+        f" · {(l.get('nombre') or '').strip()[:70]}" + (f" · sale de {l['almacen']}" if varios and l.get("almacen") else "")
         for i, l in enumerate(lineas, 1))
-    prueba = bool(orden.get("prueba"))
+    prueba = any(o.get("prueba") for o in ordenes)
+    nombres = ", ".join(f"{o['orden']} ({o.get('almacen') or '—'})" for o in ordenes)
+    lista = " y ".join(o["orden"] for o in ordenes)
     encabezado = (
         f"Eres un agente con acceso a mi navegador (Claude in Chrome). Vas a cargar en Mercado Libre el envío a "
-        f"FULL de la orden {orden['orden']} de Omnicanal"
+        f"FULL de la cuenta {d['cuenta']} de esta semana"
         + (" —ES UNA PRUEBA: no se confirma nada— " if prueba else " ")
         + "y a guardar su guía en Omnicanal. Usa sólo las sesiones que ya están abiertas en este navegador: no "
         "inicies sesión con otra cuenta ni escribas contraseñas.")
@@ -1407,9 +1421,10 @@ def texto_prompt_ml(orden: dict[str, Any], tienda: str, lineas: list[dict[str, A
         "EL ENVÍO\n"
         f"- Cuenta de Mercado Libre: {d['cuenta']} ({d['codigo']}). Antes de empezar, confirma que la sesión abierta "
         "en Mercado Libre es de esa cuenta. Si es otra, DETENTE y avísame.\n"
-        f"- Orden de Odoo: {orden['orden']} · borrador · sale del almacén {orden.get('almacen') or '—'} · semana "
-        f"{semana['semana']} ({semana['rango']}).\n"
-        f"- {len(lineas)} productos · {piezas:,} piezas en total.")
+        f"- Órdenes de Odoo (en borrador): {nombres} · semana {semana['semana']} ({semana['rango']}).\n"
+        f"- {len(lineas)} productos · {piezas:,} piezas en total."
+        + ("\n- Salen de dos almacenes: si Mercado Libre pide un envío por origen, arma uno por almacén con sus "
+           "productos y anota el número de cada uno." if varios else ""))
     pasos = [
         "En Mercado Libre abre la gestión de stock de Full (Full, en el menú de Ventas) y entra a «Planificación de "
         "envíos» para crear un envío a Full.",
@@ -1432,16 +1447,17 @@ def texto_prompt_ml(orden: dict[str, Any], tienda: str, lineas: list[dict[str, A
             "Revisa el resumen contra esta lista y confirma el envío. Anota el número de envío que da Mercado Libre.",
             "Descarga todos los documentos del envío: etiquetas de productos, etiquetas de bultos y la autorización "
             "de ingreso (y el instructivo, si aparece).",
-            f"Abre Omnicanal: {panel}/fulfillment. En «Crear FULL», bloque «Órdenes de la semana», busca "
-            f"{orden['orden']} y presiona «Adjuntar guía». Escribe el número de envío, sube los PDF (puedes elegir "
-            "varios: el panel los une en uno) y presiona «Adjuntar». Espera a que diga «Guía adjuntada».",
+            f"Abre Omnicanal: {panel}/fulfillment. En «Crear FULL», bloque «Órdenes de la semana», adjunta la guía en "
+            f"{'cada una de las órdenes: ' + lista if len(ordenes) > 1 else 'la orden ' + lista} con «Adjuntar guía»: "
+            "escribe el número de envío, sube los PDF (puedes elegir varios: el panel los une en uno) y presiona "
+            "«Adjuntar». Espera a que diga «Guía adjuntada».",
             "Termina con un resumen: número de envío, forma y fecha de entrega, productos que Mercado Libre no aceptó "
             "y por qué, y los archivos que subiste.",
         ]
     reglas = (
         "LAS REGLAS\n"
-        "- No toques la orden en Odoo (no la confirmes ni la edites) ni cambies nada más en Mercado Libre: precios, "
-        "publicaciones y stock quedan igual.\n"
+        "- No toques las órdenes en Odoo (no las confirmes ni las edites) ni cambies nada más en Mercado Libre: "
+        "precios, publicaciones y stock quedan igual.\n"
         "- Si algo no coincide con esta lista (otra cuenta, otro producto, otra cantidad), detente y pregúntame.\n"
         "- No inventes datos: si no encuentras algo, dilo.")
     return "\n\n".join([
@@ -1452,33 +1468,60 @@ def texto_prompt_ml(orden: dict[str, Any], tienda: str, lineas: list[dict[str, A
     ])
 
 
-def prompt_ml(orden_id: int, panel: str | None = None, ahora: datetime | None = None) -> dict[str, Any]:
+def prompt_ml(orden_ids: int | list[int], panel: str | None = None, ahora: datetime | None = None) -> dict[str, Any]:
     """
-    El prompt de «CARGAR FULL CON PROMPT» para una orden que creó el panel, con sus
-    renglones RELEÍDOS de Odoo y el número de publicación de cada SKU en esa cuenta.
-    Dice si el botón va activo: orden de Mercado Libre, en borrador, de la semana en
-    curso y sin guía todavía.
+    El prompt de «CARGAR FULL CON PROMPT» de UNA CUENTA (Brandon, 28-sep: "cargar FULL con
+    prompt es por cada cuenta y cada cuenta deberá tener su lista de SKUs"): sus órdenes de
+    la semana —una por almacén— juntas, con los renglones RELEÍDOS de Odoo y el número de
+    publicación de cada SKU en esa cuenta. Dice si va activo: órdenes de Mercado Libre del
+    panel, en borrador, de la semana en curso y sin guía todavía (basta con una).
     """
     ahora = ahora or datetime.now(timezone.utc)
-    filas = odoo_ventas._kw("sale.order", "read", [[int(orden_id)], [
+    ids = [int(x) for x in ([orden_ids] if isinstance(orden_ids, int) else orden_ids)][:6]
+    if not ids:
+        return {"ok": False, "motivo": "falta la orden"}
+    filas = odoo_ventas._kw("sale.order", "read", [ids, [
         "name", "state", "origin", "client_order_ref", "create_date", "partner_id", "warehouse_id", "order_line",
         "meli_etiqueta_filename"]])
     if not filas:
-        return {"ok": False, "motivo": f"la orden {orden_id} no existe en Odoo"}
-    o = filas[0]
-    tienda = _tienda_de_socio(fenv._nombre(o.get("partner_id")))
-    if not str(o.get("origin") or "").startswith(fenv.ORIGEN_PANEL) or not tienda:
-        return {"ok": False, "motivo": f"{o['name']} no la creó «Crear FULL»: no tiene prompt"}
-    lineas: list[dict[str, Any]] = []
-    if o.get("order_line"):
-        for ln in odoo_ventas._kw("sale.order.line", "read", [o["order_line"], ["product_id", "product_uom_qty"]]):
-            if not ln.get("product_id") or int(ln.get("product_uom_qty") or 0) <= 0:
-                continue
-            completo = fenv._nombre(ln["product_id"])
-            m = fenv._RE_SKU.match(completo)
-            lineas.append({"sku": m.group(1) if m else completo, "nombre": (m.group(2) if m else completo) or None,
-                           "cantidad": int(ln["product_uom_qty"])})
+        return {"ok": False, "motivo": f"la orden {ids[0]} no existe en Odoo"}
+    tiendas = {_tienda_de_socio(fenv._nombre(o.get("partner_id"))) for o in filas}
+    ajenas = [o["name"] for o in filas if not str(o.get("origin") or "").startswith(fenv.ORIGEN_PANEL)]
+    if ajenas or None in tiendas:
+        return {"ok": False, "motivo": f"{', '.join(ajenas) or filas[0]['name']} no la creó «Crear FULL»: no tiene prompt"}
+    if len(tiendas) > 1:
+        return {"ok": False, "motivo": "esas órdenes son de cuentas distintas: el prompt es por cuenta"}
+    tienda = tiendas.pop()
     d = TIENDAS[tienda]
+    semana_hoy = fsem.semana_de(ahora)
+    ordenes: list[dict[str, Any]] = []
+    lineas: list[dict[str, Any]] = []
+    for o in sorted(filas, key=lambda x: x["name"]):
+        almacen = fenv._nombre(o.get("warehouse_id")) or None
+        creada = fenv._iso(o.get("create_date"))
+        try:
+            sem = fsem.semana_de(datetime.fromisoformat(creada.replace("Z", "+00:00")) if creada else ahora)
+        except ValueError:
+            sem = semana_hoy
+        guia = o.get("meli_etiqueta_filename") or None
+        porque = (f"{o['name']} ya no está en borrador" if o.get("state") not in ("draft", "sent")
+                  else "el prompt es para Mercado Libre" if d["canal"] != "meli"
+                  else f"{o['name']} no es de esta semana" if sem["clave"] != semana_hoy["clave"]
+                  else f"{o['name']} ya tiene su guía" if guia else None)
+        ordenes.append({"id": o["id"], "orden": o["name"], "estado": o.get("state"), "almacen": almacen,
+                        "creada": creada, "semana": sem["clave"], "referencia": o.get("client_order_ref") or None,
+                        "guia_pdf": guia, "activo": porque is None, "porque": porque,
+                        "prueba": ("PRUEBA" in str(o.get("origin") or "").upper()
+                                   or "PRUEBA" in str(o.get("client_order_ref") or "").upper()),
+                        "url": odoo_ventas.url_orden_publica().format(id=o["id"])})
+        if o.get("order_line"):
+            for ln in odoo_ventas._kw("sale.order.line", "read", [o["order_line"], ["product_id", "product_uom_qty"]]):
+                if not ln.get("product_id") or int(ln.get("product_uom_qty") or 0) <= 0:
+                    continue
+                completo = fenv._nombre(ln["product_id"])
+                m = fenv._RE_SKU.match(completo)
+                lineas.append({"sku": m.group(1) if m else completo, "nombre": (m.group(2) if m else completo) or None,
+                               "cantidad": int(ln["product_uom_qty"]), "almacen": almacen, "orden": o["name"]})
     if d["canal"] == "meli" and lineas:
         # Una publicación por SKU y cuenta; si hubiera dos, la que ya es FULL.
         pubs: dict[str, dict[str, Any]] = {}
@@ -1487,29 +1530,18 @@ def prompt_ml(orden_id: int, panel: str | None = None, ahora: datetime | None = 
                 "from channel.listings l join core.accounts a on a.id = l.account_id "
                 "where a.legacy_code = %(c)s and l.canal = 'mercado_libre' and l.sku::text = any(%(s)s) "
                 "and l.situacion in ('active', 'paused', 'under_review')",
-                {"c": d["codigo"], "s": [l["sku"] for l in lineas]}):
+                {"c": d["codigo"], "s": sorted({l["sku"] for l in lineas})}):
             previa = pubs.get(f["sku"])
             if not previa or (f["en_almacen"] and not previa["en_almacen"]):
                 pubs[f["sku"]] = f
         for l in lineas:
             l["listing_id"] = (pubs.get(l["sku"]) or {}).get("listing_id")
-    creada = fenv._iso(o.get("create_date"))
-    try:
-        semana = fsem.semana_de(datetime.fromisoformat(creada.replace("Z", "+00:00")) if creada else ahora)
-    except ValueError:
-        semana = fsem.semana_de(ahora)
-    prueba = ("PRUEBA" in str(o.get("origin") or "").upper()
-              or "PRUEBA" in str(o.get("client_order_ref") or "").upper())
-    guia = o.get("meli_etiqueta_filename") or None
-    porque = (f"{o['name']} ya no está en borrador" if o.get("state") not in ("draft", "sent")
-              else "el prompt es para Mercado Libre" if d["canal"] != "meli"
-              else "la orden no es de esta semana" if semana["clave"] != fsem.semana_de(ahora)["clave"]
-              else "ya tiene su guía" if guia else None)
-    orden = {"id": o["id"], "orden": o["name"], "estado": o.get("state"),
-             "almacen": fenv._nombre(o.get("warehouse_id")) or None, "creada": creada, "prueba": prueba,
-             "referencia": o.get("client_order_ref") or None, "guia_pdf": guia}
+    activas = [o for o in ordenes if o["activo"]]
     panel = panel if panel and _RE_ORIGEN_WEB.match(panel) else PANEL_POR_OMISION
-    return {"ok": True, "activo": porque is None, "porque": porque, "tienda": tienda, "nombre_tienda": d["nombre"],
-            "semana": semana, "orden": orden, "lineas": lineas, "piezas": sum(l["cantidad"] for l in lineas),
-            "prompt": texto_prompt_ml(orden, tienda, lineas, semana, panel),
-            "url": odoo_ventas.url_orden_publica().format(id=o["id"])}
+    semana = fsem.semana_por_clave(ordenes[0]["semana"]) or semana_hoy
+    orden = ordenes[0]
+    return {"ok": True, "activo": bool(activas), "porque": None if activas else "; ".join(o["porque"] for o in ordenes),
+            "tienda": tienda, "nombre_tienda": d["nombre"], "cuenta": d["cuenta"], "semana": semana,
+            "ordenes": ordenes, "orden": {**orden, "prueba": any(o["prueba"] for o in ordenes)},
+            "lineas": lineas, "piezas": sum(l["cantidad"] for l in lineas),
+            "prompt": texto_prompt_ml(ordenes, tienda, lineas, semana, panel), "url": orden["url"]}

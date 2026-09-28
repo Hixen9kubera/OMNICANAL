@@ -1001,6 +1001,50 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.587.0 — Crear FULL: el prompt es por cuenta, la tabla dice de qué almacén sale y la IA respeta el cálculo
+
+Brandon, 28-sep, la lista de mejoras menores después de usar la versión semanal:
+
+**1. «CARGAR FULL CON PROMPT» es por CUENTA.** *"Es por cada cuenta y cada cuenta deberá de tener su lista de SKUs
+correspondientes al plan."* El prompt ya no es por orden de Odoo: junta TODAS las órdenes pendientes de la cuenta en la
+semana (una por almacén) en una sola lista, cada SKU con su publicación, sus piezas y de qué almacén sale; si salen de
+dos almacenes, el agente arma un envío por origen si ML lo pide, y adjunta la guía en cada orden. La ventana tiene una
+pestaña por cuenta (ML Kubera, ML San Corpe) y el botón dice cuántas cuentas faltan. `GET /crear-full/prompt-ml` recibe
+`orden_ids=1,2` (y rechaza mezclar cuentas).
+
+**2. «En almacén» se llama «Almacén FULL».**
+
+**3. En camino, libre por almacén y stock total.**
+- *"En camino deberá indicarme qué orden es… al presionar su orden me dirige a la orden en Envíos para ver su
+  trazabilidad… si llegasen a tener 2 en un mismo SKU me das la opción de seleccionar"*: cada orden que trae piezas del
+  SKU aparece en la celda (orden · piezas · por validar/llegando) y es un botón que abre SU ventana de Envíos encima de
+  Crear FULL. Los borradores abren su orden en Odoo. El backend manda las órdenes con su id (`camino_ordenes`,
+  `borradores_ordenes`).
+- *"Libre Odoo deberá indicarme visualmente cuánto tiene cada almacén, ya que depende muchísimo de qué almacén lo va a
+  tomar"*: cada almacén con su barra, el mayor resaltado, y «sale» en el almacén del que saldría la orden, calculado con
+  la MISMA regla que usa Odoo al crear (tienda por tienda, un almacén si ahí cabe todo, TEXCO primero; lo que toma una
+  tienda ya no lo tiene la siguiente).
+- *"Bodega puede déjalo como Stock total bodegas"*: la columna suma TEXCO y TEXCO II; si otra tienda pide el mismo SKU o
+  hay colchón para DROP, abajo dice cuánto le toca a esta tienda.
+
+**4. La IA respeta el cálculo.** *"Veo que pide en uno 35 pero bodega sólo tiene 4, no me sirve, y en el otro… tengo en
+bodega 110 y mandaríamos 20 pero la propuesta fue nula… deberá de ser coherente."* Lo que pasó: la IA mandó 4 piezas de
+un SKU cuyo mínimo por renglón es 5 (la propuesta estándar lo había dejado en 0 por eso), y 20 de un SKU «cubierto» (lo
+que hay en FULL, en camino y en borradores ya alcanzaba la cobertura). Ahora:
+- La IA recibe el libre POR ALMACÉN (`libre_por_almacen`) además del total, y lo que hay en FULL con nombre claro
+  (`almacen_full`); el prompt explica que la orden sale de un almacén si ahí cabe completa.
+- Reglas duras que el servidor aplica al validar (y el prompt las dice): lo «cubierto» no se manda; nada arriba de lo que
+  pide la cobertura (redondeado a cajas completas si hay caja) ni de lo libre; nada debajo del mínimo por renglón. Un
+  reemplazo cubre lo que pedía el agotado, no más.
+- La tabla avisa bajo «A mandar» cuando un renglón rompe esas reglas («ya está cubierto», «más de lo que pide la
+  cobertura», «debajo del mínimo»), por ejemplo los que puso la IA antes de este cambio.
+- Como la tabla que recibe la IA cambió de forma, la huella de la planeación incluye las columnas: el siguiente turno le
+  da la tabla nueva aunque sea el mismo día.
+
+**Pruebas:** 82 de FULL. Nuevas: el prompt de una cuenta con sus dos almacenes, que no mezcla cuentas, las reglas del
+cálculo en el validador (cubierto, mínimo, cobertura con caja, reemplazo topado a lo que pedía el agotado) y la huella
+con columnas. Suite completa en verde; `tsc` limpio y `next build` en verde.
+
 ### v0.586.0 — Crear FULL con IA trabaja en segundo plano: el servidor guarda el plan y la pestaña avisa con una chispa que respira
 
 Brandon, 28-sep, después del primer uso: *"escribí este prompt, pero en la tabla me aparece vacío… me salí de la tab de

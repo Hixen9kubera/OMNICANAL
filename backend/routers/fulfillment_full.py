@@ -16,7 +16,7 @@ y services/fulfillment_sku.py.
   POST /api/fulfillment/crear-full/ia            un turno del chat de la semana con DeepSeek. No escribe en Odoo.
   GET  /api/fulfillment/crear-full/ia/{id}       cómo va (lo que lleva escrito, ya validado) y su resultado
   GET  /api/fulfillment/crear-full/actividad     si la IA está trabajando en la semana (el ícono de la pestaña)
-  GET  /api/fulfillment/crear-full/prompt-ml     el prompt para cargar en ML el FULL de una orden del panel
+  GET  /api/fulfillment/crear-full/prompt-ml     el prompt para cargar en ML el FULL de una CUENTA (sus órdenes)
   POST /api/fulfillment/crear-full               crea las cotizaciones en BORRADOR (interruptor)
   POST /api/fulfillment/crear-full/guia          número de envío + guía PDF (uno o varios, se unen) en una orden
   POST /api/fulfillment/crear-full/interruptor   enciende/apaga la escritura en Odoo
@@ -184,10 +184,14 @@ async def actividad() -> dict[str, Any]:
 
 
 @router.get("/crear-full/prompt-ml")
-async def prompt_ml(orden_id: int = Query(...), panel: str = Query("", max_length=200)) -> dict[str, Any]:
-    """El prompt de «CARGAR FULL CON PROMPT»: renglones releídos de Odoo y publicaciones de esa cuenta."""
+async def prompt_ml(orden_ids: str = Query("", max_length=200), orden_id: int | None = Query(None),
+                    panel: str = Query("", max_length=200)) -> dict[str, Any]:
+    """El prompt de «CARGAR FULL CON PROMPT» de UNA cuenta: sus órdenes (`orden_ids=1,2`) releídas de Odoo."""
+    ids = [int(x) for x in orden_ids.split(",") if x.strip().isdigit()] or ([orden_id] if orden_id else [])
+    if not ids:
+        raise HTTPException(400, "falta orden_ids")
     try:
-        return await asyncio.to_thread(fulfillment_full.prompt_ml, orden_id, panel)
+        return await asyncio.to_thread(fulfillment_full.prompt_ml, ids, panel)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(502, f"Odoo no contestó: {exc}") from exc
 

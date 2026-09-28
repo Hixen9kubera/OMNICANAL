@@ -47,8 +47,10 @@ const EJEMPLOS = [
 // El orden de las columnas es el contrato con el backend (fulfillment_ia.renglones_de). Sin
 // «a_mandar»: el plan de ese momento viaja en el mensaje de cada turno, no en la tabla, para
 // que la tabla (el prefijo de la conversación) no cambie y DeepSeek la relea de su caché.
-const COLUMNAS = ["sku", "nombre", "precio", "vendio", "vendio_7d", "en_almacen", "en_camino", "borrador",
-  "libre", "pidio", "propuesta", "estado", "caja", "alertas", "titulo_mkt"];
+// v0.587.0: «almacen_full» (lo que hay en FULL/FBA) y «libre_por_almacen» ({TEXCO, TEXCO II}): la
+// orden sale de UN almacén si ahí cabe completa, así que la IA tiene que ver cuánto hay en cada uno.
+const COLUMNAS = ["sku", "nombre", "precio", "vendio", "vendio_7d", "almacen_full", "en_camino", "borrador",
+  "libre_por_almacen", "libre", "pidio", "propuesta", "estado", "caja", "alertas", "titulo_mkt"];
 
 /**
  * Lo que se le da a la IA: la planeación COMPLETA de cada tienda activa en tabla
@@ -64,7 +66,7 @@ export function datosParaIA(renglones: Renglon[], p: ParametrosFull, datos: Prop
       columnas: COLUMNAS,
       filas: rs.slice(0, 1500).map((r) => [
         r.sku, (r.nombre ?? "").slice(0, 60), r.precio, r.vv, r.v7, r.stock, r.en_camino, r.borrador,
-        r.bodega, r.pidio, r.propuesta, r.estado, r.caja, r.alertas.join(",") || null,
+        r.libre, r.bodega, r.pidio, r.propuesta, r.estado, r.caja, r.alertas.join(",") || null,
         r.alertas.includes("reciclado") ? (r.titulo_mkt ?? "").slice(0, 70) : null,
       ]),
       ganadores_agotados: rs.filter((r) => r.ganador_agotado).slice(0, 120).map((r) => ({

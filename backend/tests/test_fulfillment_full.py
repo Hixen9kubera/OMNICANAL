@@ -886,41 +886,65 @@ class SemanaFull(unittest.TestCase):
 
 
 class CargarFullConPrompt(unittest.TestCase):
-    """El prompt para que un agente con navegador cargue el FULL en Mercado Libre y suba su guía."""
+    """El prompt POR CUENTA para que un agente con navegador cargue el FULL en ML y suba su guía."""
 
     ORDEN = {"id": 55, "name": "S38990", "state": "draft", "client_order_ref": False,
              "origin": "Panel FULLFILMENT · ML Kubera · brandon · a1b2c3d4 · TEXCO",
              "create_date": "2026-09-28 16:00:00", "partner_id": [9, "FULL KUBERA"], "warehouse_id": [135, "TEXCO"],
              "order_line": [1, 2], "meli_etiqueta_filename": False}
     MARTES = datetime(2026, 9, 29, 18, 0, tzinfo=timezone.utc)
+    LINEAS = {1: {"product_id": [1, "[TEC-0393-ROS] Audífonos invisibles rosa"], "product_uom_qty": 251.0},
+              2: {"product_id": [2, "[JUEG-0012-MUL] Torre de madera"], "product_uom_qty": 0.0},
+              3: {"product_id": [3, "[DEPO-0001-ROS] Scooter rosa"], "product_uom_qty": 84.0}}
 
-    def _prompt(self, orden, ahora=MARTES, panel="https://panel.example"):
+    def _prompt(self, *ordenes, ahora=MARTES, panel="https://panel.example"):
+        por_id = {o["id"]: o for o in ordenes}
+
         def kw(modelo, metodo, args, kwargs=None):
             if (modelo, metodo) == ("sale.order", "read"):
-                return [orden]
+                return [por_id[i] for i in args[0] if i in por_id]
             if (modelo, metodo) == ("sale.order.line", "read"):
-                return [{"product_id": [1, "[TEC-0393-ROS] Audífonos invisibles rosa"], "product_uom_qty": 251.0},
-                        {"product_id": [2, "[JUEG-0012-MUL] Torre de madera"], "product_uom_qty": 0.0}]
+                return [self.LINEAS[i] for i in args[0]]
             raise AssertionError(f"llamada no esperada a Odoo: {modelo}.{metodo}")
 
         pubs = [{"sku": "TEC-0393-ROS", "listing_id": "MLM111", "en_almacen": False},
-                {"sku": "TEC-0393-ROS", "listing_id": "MLM2703304601", "en_almacen": True}]
+                {"sku": "TEC-0393-ROS", "listing_id": "MLM2703304601", "en_almacen": True},
+                {"sku": "DEPO-0001-ROS", "listing_id": "MLM3102678609", "en_almacen": True}]
         with mock.patch.object(ff.odoo_ventas, "_kw", kw), mock.patch.object(ff.sdb, "fetch_all", lambda *a, **k: pubs), \
              mock.patch.object(ff.odoo_ventas, "url_orden_publica", lambda: "https://odoo/{id}"):
-            return ff.prompt_ml(55, panel, ahora)
+            return ff.prompt_ml([o["id"] for o in ordenes], panel, ahora)
 
     def test_lleva_cuenta_orden_y_cada_sku_con_su_publicacion(self):
         r = self._prompt(dict(self.ORDEN))
         self.assertTrue(r["ok"] and r["activo"], r)
         p = r["prompt"]
-        for texto in ("Kubera (BEKURA)", "S38990", "almacén TEXCO", "S40 (28 sep – 4 oct)",
+        for texto in ("cuenta Kubera", "Kubera (BEKURA)", "S38990 (TEXCO)", "S40 (28 sep – 4 oct)",
                       "MLM2703304601 · TEC-0393-ROS · 251 pzs · Audífonos invisibles rosa", "PREGÚNTAME",
                       "https://panel.example/fulfillment", "Planificación de envíos", "Adjuntar guía",
-                      "No toques la orden en Odoo"):
+                      "No toques las órdenes en Odoo"):
             self.assertIn(texto, p)
         self.assertNotIn("JUEG-0012-MUL", p, "un renglón en 0 no se manda")
+        self.assertNotIn("sale de", p, "con un solo almacén no hace falta decirlo")
         self.assertEqual((r["piezas"], r["tienda"], r["lineas"][0]["listing_id"]),
                          (251, "meli:Kubera", "MLM2703304601"), "si hay dos publicaciones, la que ya es FULL")
+
+    def test_una_cuenta_con_sus_dos_almacenes_en_un_solo_prompt(self):
+        texco2 = {**self.ORDEN, "id": 56, "name": "S38991", "warehouse_id": [150, "TEXCO II"], "order_line": [3],
+                  "origin": self.ORDEN["origin"].replace("TEXCO", "TEXCO II")}
+        r = self._prompt(dict(self.ORDEN), texco2)
+        self.assertTrue(r["ok"] and r["activo"], r)
+        p = r["prompt"]
+        self.assertEqual((r["piezas"], len(r["lineas"]), [o["orden"] for o in r["ordenes"]]),
+                         (335, 2, ["S38990", "S38991"]))
+        for texto in ("S38990 (TEXCO), S38991 (TEXCO II)", "· sale de TEXCO II",
+                      "cada una de las órdenes: S38990 y S38991", "arma uno por almacén"):
+            self.assertIn(texto, p)
+
+    def test_cuentas_distintas_no_se_mezclan(self):
+        san_corpe = {**self.ORDEN, "id": 57, "name": "S38992", "partner_id": [10, "FULL SAN CORPE"]}
+        r = self._prompt(dict(self.ORDEN), san_corpe)
+        self.assertFalse(r["ok"])
+        self.assertIn("por cuenta", r["motivo"])
 
     def test_la_prueba_no_confirma_nada(self):
         p = self._prompt({**self.ORDEN, "origin": self.ORDEN["origin"] + " · PRUEBA"})["prompt"]
@@ -934,7 +958,7 @@ class CargarFullConPrompt(unittest.TestCase):
                  (dict(self.ORDEN), datetime(2026, 10, 6, 18, 0, tzinfo=timezone.utc), "no es de esta semana"),
                  ({**self.ORDEN, "partner_id": [9, "AMAZON FBA"]}, self.MARTES, "es para Mercado Libre")]
         for orden, ahora, porque in casos:
-            r = self._prompt(orden, ahora)
+            r = self._prompt(orden, ahora=ahora)
             self.assertFalse(r["activo"], porque)
             self.assertIn(porque, r["porque"])
         r = self._prompt({**self.ORDEN, "origin": "S38990"})
@@ -944,6 +968,36 @@ class CargarFullConPrompt(unittest.TestCase):
         p = self._prompt(dict(self.ORDEN), panel="javascript:alert(1)")["prompt"]
         self.assertIn(ff.PANEL_POR_OMISION + "/fulfillment", p)
         self.assertNotIn("javascript", p)
+
+
+class ReglasDelCalculoIA(unittest.TestCase):
+    """La IA no rompe el cálculo: lo cubierto no va, ni menos del mínimo, ni más de lo que pide la cobertura."""
+
+    DATOS = {"corrida": {"min_piezas": 5}, "tiendas": {"meli:Kubera": {
+        "columnas": ["sku", "libre", "pidio", "caja", "estado"],
+        "filas": [["CUB", 110, 0, None, "cubierto"], ["POCO", 4, 35, None, "recorte"],
+                  ["CAJA", 500, 42, 20, "aprobado"], ["OK", 50, 30, None, "aprobado"], ["AGOT", 0, 18, None, "recorte"]],
+        "ganadores_agotados": [{"sku": "AGOT", "candidatos": [{"sku": "REP", "libre": 90, "tipo": "mismo modelo"}]}]}}}
+
+    def test_las_reglas_del_calculo(self):
+        r = fia.validar({"ajustes": [["meli:Kubera", "CUB", 20, "x"], ["meli:Kubera", "POCO", 4, "x"],
+                                     ["meli:Kubera", "CAJA", 100, "x"], ["meli:Kubera", "OK", 30, "x"],
+                                     ["meli:Kubera", "CUB", 0, "sacarlo sí se puede"]],
+                         "reemplazos": [["meli:Kubera", "AGOT", "REP", 60, "x"]]}, self.DATOS)
+        self.assertEqual([(a["sku"], a["cantidad"]) for a in r["ajustes"]], [("CAJA", 60), ("OK", 30), ("CUB", 0)],
+                         "CAJA se topa a 42 redondeado a cajas de 20 (60); POCO y el 20 de CUB no pasan")
+        porques = " | ".join(d["porque"] for d in r["descartados"])
+        self.assertIn("ya está cubierto", porques)
+        self.assertIn("menos del mínimo por renglón (5)", porques)
+        self.assertEqual([(x["reemplazo"], x["cantidad"]) for x in r["reemplazos"]], [("REP", 18)],
+                         "un reemplazo cubre lo que pedía el agotado, no más")
+
+    def test_la_tabla_nueva_cambia_la_huella(self):
+        viejo = {"corrida": {}, "tiendas": {"meli:Kubera": {"columnas": ["sku", "libre"], "filas": []}}}
+        nuevo = {"corrida": {}, "tiendas": {"meli:Kubera": {"columnas": ["sku", "libre_por_almacen", "libre"],
+                                                            "filas": []}}}
+        self.assertNotEqual(fia._huella(viejo), fia._huella(nuevo),
+                            "con la tabla nueva la IA recibe la planeación nueva, aunque sea el mismo día")
 
 
 @unittest.skipUnless(__import__("importlib.util").util.find_spec("pypdf"), "pypdf no está instalado aquí (en Railway sí: requirements.txt)")

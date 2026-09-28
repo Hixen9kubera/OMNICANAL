@@ -278,8 +278,12 @@ export interface FilaPlan {
   stock: number | null;
   en_camino: number;
   camino: string[];
+  /** Las órdenes que van en camino, con su id de salida: cada una abre su ventana en Envíos. */
+  camino_ordenes?: OrdenEnCamino[];
   borrador: number;
   borradores: string[];
+  /** Los borradores de Odoo que lo traen (no tienen salida todavía: abren Odoo). */
+  borradores_ordenes?: OrdenEnCamino[];
   /** Libre en Odoo por almacén. null = el SKU no está en Odoo → «pendiente». */
   libre: Record<string, number> | null;
   /** Piezas por caja del packing list. */
@@ -531,7 +535,22 @@ export interface AvanceIA {
   sin_guardar?: boolean;
 }
 
-/** `GET /api/fulfillment/crear-full/prompt-ml`: «CARGAR FULL CON PROMPT». */
+/** Una orden que trae piezas de un SKU hacia el almacén (o en borrador). */
+export interface OrdenEnCamino {
+  orden: string | null;
+  /** id de la salida (Envíos) o de la orden de venta (borrador). */
+  id: number | null;
+  piezas: number;
+  estado: "por validar" | "llegando" | "salió" | "borrador" | string;
+  url?: string | null;
+}
+
+export interface OrdenDelPrompt {
+  id: number; orden: string; estado: string; almacen: string | null; creada: string | null; prueba: boolean;
+  referencia: string | null; guia_pdf: string | null; activo?: boolean; porque?: string | null; url?: string;
+}
+
+/** `GET /api/fulfillment/crear-full/prompt-ml`: «CARGAR FULL CON PROMPT», UNO POR CUENTA. */
 export interface PromptML {
   ok: boolean;
   motivo?: string;
@@ -539,12 +558,13 @@ export interface PromptML {
   porque?: string | null;
   tienda?: Tienda;
   nombre_tienda?: string;
+  cuenta?: string | null;
   semana?: SemanaInfo;
-  orden?: {
-    id: number; orden: string; estado: string; almacen: string | null; creada: string | null; prueba: boolean;
-    referencia: string | null; guia_pdf: string | null;
-  };
-  lineas?: { sku: string; nombre: string | null; cantidad: number; listing_id?: string | null }[];
+  /** Las órdenes de esa cuenta en la semana (una por almacén). */
+  ordenes?: OrdenDelPrompt[];
+  orden?: OrdenDelPrompt;
+  lineas?: { sku: string; nombre: string | null; cantidad: number; listing_id?: string | null; almacen?: string | null;
+             orden?: string | null }[];
   piezas?: number;
   prompt?: string;
   url?: string;
