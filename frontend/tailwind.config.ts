@@ -31,10 +31,16 @@ const config: Config = {
           "0%": { transform: "translateX(100%)" },
           "100%": { transform: "translateX(0)" },
         },
+        // FULLFILMENT · el renglón que la IA acaba de poner en el plan (v0.583.0).
+        resalta: {
+          "0%": { backgroundColor: "#ede9fe" },
+          "100%": { backgroundColor: "rgba(237,233,254,0.25)" },
+        },
       },
       animation: {
         "fade-in": "fade-in 0.25s ease-out",
         "slide-in": "slide-in 0.28s cubic-bezier(0.22,1,0.36,1)",
+        resalta: "resalta 2.4s ease-out forwards",
       },
     },
   },

@@ -22,7 +22,9 @@ export interface PedidoTienda { tienda: Tienda; lineas: { sku: string; cantidad:
 
 export default function ConfirmarFull({ pedidos, semana, params, rol, onDescargar, onCerrar, onCreado }: {
   pedidos: PedidoTienda[]; semana: string; params: ParametrosFull; rol: Rol;
-  onDescargar: () => void; onCerrar: () => void; onCreado: () => void;
+  onDescargar: () => void; onCerrar: () => void;
+  /** Ya creadas (o ya existían con esta clave): Crear FULL abre el prompt para cargarlas en ML. */
+  onCreado: (r: ResultadoCrear) => void;
 }) {
   // La clave nace UNA vez por confirmación: reintentar con ella no duplica.
   const [clave] = useState(() => (typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -59,7 +61,7 @@ export default function ConfirmarFull({ pedidos, semana, params, rol, onDescarga
       const d = await r.json().catch(() => ({})) as ResultadoCrear & { detail?: string };
       if (!r.ok) throw new Error(d.detail ?? `HTTP ${r.status}`);
       setResultado(d);
-      if (d.accion === "creada") onCreado();
+      if (d.accion === "creada" || d.accion === "ya_existia") onCreado(d);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -213,11 +215,15 @@ function OrdenLink({ o }: { o: OrdenCreada }) {
 /**
  * El número del envío del marketplace y su guía en PDF, en la orden de Odoo
  * («Subir guía», la convención de la casa). Sólo en órdenes que creó el panel y
- * que siguen en borrador: el backend lo vuelve a revisar.
+ * que siguen en borrador: el backend lo vuelve a revisar. Acepta VARIOS PDF (las
+ * etiquetas de productos, las de bultos, la autorización de ingreso de ML): el
+ * backend los une en uno, en el orden en que se eligieron.
  */
-export function GuiaOrden({ orden, compacta }: { orden: { id: number; orden: string }; compacta?: boolean }) {
+export function GuiaOrden({ orden, compacta, onAdjuntada }: {
+  orden: { id: number; orden: string }; compacta?: boolean; onAdjuntada?: () => void;
+}) {
   const [numero, setNumero] = useState("");
-  const [pdf, setPdf] = useState<File | null>(null);
+  const [pdfs, setPdfs] = useState<File[]>([]);
   const [enviando, setEnviando] = useState(false);
   const [res, setRes] = useState<ResultadoGuia | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -229,12 +235,13 @@ export function GuiaOrden({ orden, compacta }: { orden: { id: number; orden: str
       const fd = new FormData();
       fd.append("orden_id", String(orden.id));
       fd.append("numero", numero.trim());
-      if (pdf) fd.append("pdf", pdf);
+      for (const f of pdfs) fd.append("pdfs", f);
       const r = await fetchSesion(`${API_BASE}/api/fulfillment/crear-full/guia`, { method: "POST", body: fd });
       const d = await r.json().catch(() => ({})) as ResultadoGuia & { detail?: string };
       if (!r.ok) throw new Error(d.detail ?? `HTTP ${r.status}`);
       setRes(d);
       if (!d.ok) setError(d.motivo ?? "no quedó");
+      else onAdjuntada?.();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -255,12 +262,14 @@ export function GuiaOrden({ orden, compacta }: { orden: { id: number; orden: str
       <span className="font-semibold text-slate-600">Guía del marketplace:</span>
       <input value={numero} onChange={(ev) => setNumero(ev.target.value)} placeholder="Número del envío"
              className="w-40 rounded-md border border-slate-200 px-2 py-1 font-mono text-[12px]" />
-      <label className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-slate-600 hover:bg-slate-50">
-        <FileUp className="h-3.5 w-3.5" /> {pdf ? pdf.name.slice(0, 24) : "PDF de la guía"}
-        <input type="file" accept="application/pdf" className="hidden"
-               onChange={(ev) => setPdf(ev.target.files?.[0] ?? null)} />
+      <label className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-slate-600 hover:bg-slate-50"
+             title={pdfs.length ? pdfs.map((f) => f.name).join("\n") : "Uno o varios PDF: se unen en uno"}>
+        <FileUp className="h-3.5 w-3.5" />
+        {pdfs.length === 1 ? pdfs[0].name.slice(0, 24) : pdfs.length > 1 ? `${pdfs.length} PDF (se unen en uno)` : "PDF de la guía"}
+        <input type="file" accept="application/pdf" multiple className="hidden" aria-label="PDF de la guía"
+               onChange={(ev) => setPdfs(Array.from(ev.target.files ?? []))} />
       </label>
-      <button type="button" onClick={() => void enviar()} disabled={enviando || (!numero.trim() && !pdf)}
+      <button type="button" onClick={() => void enviar()} disabled={enviando || (!numero.trim() && !pdfs.length)}
               className="rounded-md bg-indigo-600 px-2.5 py-1 font-bold text-white hover:bg-indigo-700 disabled:opacity-40">
         {enviando ? "Adjuntando…" : "Adjuntar"}
       </button>

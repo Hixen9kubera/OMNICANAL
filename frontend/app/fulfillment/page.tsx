@@ -26,6 +26,13 @@
  * queda MONTADO aunque se cambie de pantalla —lo editado y la conversación con la
  * IA no se pierden— y le pasa esos datos a Análisis con `onPlan`.
  *
+ * WEEK OVER WEEK (v0.583.0, Brandon, 28-sep: "la planeación es week over week… los
+ * envíos se deberán poder filtrar week over week, al igual que análisis, además de poder
+ * seleccionar la week en la que estamos indicando los días correspondientes"). UN selector
+ * de semana arriba manda en las tres pantallas: Crear FULL planea la semana en curso y
+ * enseña las anteriores de consulta; Envíos filtra por la semana de la ORDEN; Análisis,
+ * por la de la SALIDA validada (components/fulfillment/SelectorSemana.tsx).
+ *
  * La carpeta ES la ruta; `SesionGuard` ya lo monta `app/layout.tsx`, así que
  * aquí NO va — pero `AppNavbar` sí, porque el layout no lo pinta.
  *
@@ -33,7 +40,7 @@
  * «fue cero» (caja blanca), y ninguna etapa se deduce restando otra.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ComponentType } from "react";
 import { AlertTriangle, BarChart3, PlusCircle, RefreshCw, Truck } from "lucide-react";
 import AppNavbar from "@/components/AppNavbar";
@@ -44,6 +51,8 @@ import CrearFull from "@/components/fulfillment/CrearFull";
 import type { PedidoReemplazo } from "@/components/fulfillment/CrearFull";
 import type { PlanAnalisis } from "@/components/fulfillment/AnalisisPlaneacion";
 import { DetalleEnvioModal, TablaEnvios, seguimientoDe } from "@/components/fulfillment/Envios";
+import SelectorSemana from "@/components/fulfillment/SelectorSemana";
+import { semanaDe, semanaPorClave } from "@/components/fulfillment/semana";
 import { FONDO_RAYADO, PUNTO_CUENTA, TEMA_CANAL, num } from "@/components/fulfillment/ui";
 import type { Envio, FiltroCanal, FiltroCuenta, RespuestaEnvios, Rol, Tienda } from "@/components/fulfillment/tipos";
 
@@ -65,6 +74,9 @@ const CANALES: { k: FiltroCanal; t: string; punto: string; titulo?: string }[] =
   { k: "walmart", t: "Walmart WFS", punto: "#0071DC", titulo: "Un solo envío a WFS en toda la historia." },
 ];
 
+/** La fecha con que un envío entra a una semana: la de su orden de venta (o su salida si no hay). */
+const fechaDeEnvio = (e: Envio) => e.etapas[0]?.ts ?? e.etapas[1]?.ts ?? null;
+
 function pantallaDeLaUrl(): Pantalla {
   if (typeof window === "undefined") return "crear";
   const h = window.location.hash.replace("#", "");
@@ -77,6 +89,27 @@ export default function FulfillmentPage() {
   const [cuenta, setCuenta] = useState<FiltroCuenta>("todas");
   const [abierto, setAbierto] = useState<Envio | null>(null);
   const [recarga, setRecarga] = useState(0);
+  // La semana: la en curso al entrar (hora de CDMX). Se recalcula al volver a la pestaña
+  // por si cruzó la medianoche del domingo con la página abierta.
+  const [actual, setActual] = useState(() => semanaDe());
+  const [semana, setSemana] = useState(() => semanaDe().clave);
+  const [enviosTodas, setEnviosTodas] = useState(false);
+  const actualRef = useRef(actual);
+  useEffect(() => {
+    const revisar = () => {
+      const hoy = semanaDe();
+      if (hoy.clave === actualRef.current.clave) return;
+      const antes = actualRef.current.clave;
+      actualRef.current = hoy;
+      setActual(hoy);
+      // Quien estaba en la semana en curso pasa a la nueva; quien consultaba otra, se queda.
+      setSemana((s) => (s === antes ? hoy.clave : s));
+    };
+    window.addEventListener("focus", revisar);
+    const t = setInterval(revisar, 60_000);
+    return () => { window.removeEventListener("focus", revisar); clearInterval(t); };
+  }, []);
+  const infoSemana = semanaPorClave(semana) ?? actual;
   const [porMandar, setPorMandar] = useState<{ skus: number; piezas: number; tiendas: number } | null>(null);
   // Lo que Crear FULL le pasa a Análisis, y los reemplazos que Análisis le pide a Crear FULL.
   const [plan, setPlan] = useState<PlanAnalisis | null>(null);
@@ -136,6 +169,11 @@ export default function FulfillmentPage() {
     // Con una cuenta elegida, los envíos de ML sin cuenta NO entran: no se sabe de cuál son.
     .filter((e) => cuenta === "todas" || e.canal !== "meli" || e.cuenta === cuenta),
   [todos, canal, cuenta]);
+  // Envíos de la semana elegida (por la fecha de su orden), o de todas.
+  const enviosSemana = useMemo(() => (enviosTodas ? envios : envios.filter((e) => {
+    const f = fechaDeEnvio(e);
+    return !!f && semanaDe(f).clave === semana;
+  })), [envios, enviosTodas, semana]);
   const enCurso = useMemo(() => {
     let porValidar = 0;
     let llegando = 0;
@@ -207,6 +245,19 @@ export default function FulfillmentPage() {
           </nav>
         </section>
 
+        {/* ── La semana: una sola para las tres pantallas ── */}
+        <SelectorSemana valor={semana} actual={actual} onCambio={setSemana}
+                        nota={pantalla === "crear" ? (semana === actual.clave ? "se planea esta semana" : "semana cerrada: sólo consulta")
+                          : pantalla === "envios" ? (enviosTodas ? "todas las semanas" : "por la fecha de la orden de venta")
+                            : "por la fecha de la salida validada"}
+                        extra={pantalla === "envios" ? (
+                          <label className="inline-flex cursor-pointer items-center gap-1.5 text-[12px] font-semibold text-slate-600">
+                            <input type="checkbox" checked={enviosTodas} onChange={(ev) => setEnviosTodas(ev.target.checked)}
+                                   className="accent-indigo-600" />
+                            ver todas las semanas
+                          </label>
+                        ) : undefined} />
+
         {/* ── Filtros: sólo donde se ven envíos (Crear FULL tiene sus propias tiendas) ── */}
         {pantalla !== "crear" && (
           <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2">
@@ -267,14 +318,16 @@ export default function FulfillmentPage() {
 
         {/* Siempre montado: cambiar de pantalla no borra lo editado ni la conversación con la IA. */}
         <div className={pantalla === "crear" ? "" : "hidden"}>
-          <CrearFull stock={datos?.stock} rol={rol} recarga={recarga} onEstado={setPorMandar}
-                     onPlan={setPlan} reemplazoPedido={reemplazo} onReemplazoHecho={reemplazoHecho} />
+          <CrearFull stock={datos?.stock} rol={rol} recarga={recarga} semana={semana} semanaActual={actual}
+                     onEstado={setPorMandar} onPlan={setPlan} reemplazoPedido={reemplazo} onReemplazoHecho={reemplazoHecho} />
         </div>
         {pantalla === "envios" && (datos
-          ? <TablaEnvios envios={envios} total={todos.length} onAbrir={setAbierto} />
+          ? <TablaEnvios envios={enviosSemana} total={todos.length} onAbrir={setAbierto}
+                         semana={enviosTodas ? null : infoSemana} />
           : <Espera cargando={cargando} />)}
         {pantalla === "analisis" && <Analisis canal={canal} cuenta={cuenta} datos={datos} onAbrir={setAbierto}
-                                              plan={plan} onAgregarReemplazo={pedirReemplazo} />}
+                                              plan={plan} onAgregarReemplazo={pedirReemplazo}
+                                              semana={semana} semanaActual={actual} onSemana={setSemana} />}
 
         {/* El detalle de un envío se abre ENCIMA, y la ficha de un SKU encima de él. */}
         {abierto && <DetalleEnvioModal envio={abierto} onCerrar={() => setAbierto(null)} />}

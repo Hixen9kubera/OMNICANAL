@@ -1001,6 +1001,85 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.583.0 — FULL semana a semana: el plan nace vacío cada lunes, un chat con la IA por semana, sus ajustes en vivo y «CARGAR FULL CON PROMPT»
+
+Brandon, 28-sep, la lista de mejoras de FULLFILMENT (puntos 0 a 6) y *"adicional replicar el funcionamiento del filtro
+week over week sobre envíos y sobre análisis"*.
+
+**La semana manda (puntos 0 y 3).** Una semana es la ISO: de lunes a domingo, en hora de CDMX, con la clave «2026-S40»
+(28 sep – 4 oct), la misma que ya usaba Análisis. Arriba de las tres pantallas hay UN selector de semana (`SelectorSemana`)
+con los días de cada una y «ir a esta semana». Crear FULL planea la semana en curso y enseña las anteriores de consulta
+(su chat, su plan tal como quedó y sus órdenes); Envíos filtra por la semana de la ORDEN de venta (con «ver todas las
+semanas»); Análisis, por la de la SALIDA validada, y sus flechas, su gráfica y su tabla mueven el mismo selector. Si la
+página queda abierta al cruzar la medianoche del domingo, pasa sola a la semana nueva.
+
+**El plan de la semana nace VACÍO (punto 0).** Ya no se precarga la propuesta del prompt estándar: la semana empieza en
+cero y la IA la arma con los datos de hoy. La columna «Propuesta» sigue a la vista como referencia y hay un botón para
+«Llenar con la propuesta estándar» (sin IA) y otro para vaciar el plan. Lo que se guarda es el PLAN: por tienda y SKU,
+la cantidad, quién la puso (la IA, a mano o la propuesta estándar), por qué, si es reemplazo de otro y si está incluido.
+Se guarda solo, 1.5 s después del último cambio, y la pantalla dice cuándo y quién guardó.
+
+**«Crear FULL con IA» y el chat justo debajo (puntos 1 y 2).** El botón «Planear con IA» cambió por una barra «Crear FULL
+con IA» debajo del título, con lo que lleva el plan (SKUs a FULL, piezas, reemplazos); al tocarla, el chat se despliega
+con animación (la altura pasa de 0 a la del chat) y el cursor queda listo para escribir el prompt.
+
+**Un chat por semana, guardado (punto 4).** Antes, recargar la página perdía la conversación. Ahora cada semana tiene
+UN chat compartido por el equipo, en la bitácora de acciones (`ops.process_log`, proceso `fulfillment_semana`, SIN SKU
+para no aparecer como «último paso» de ningún producto en Inventario; `services/fulfillment_semana.py`). Entrar a la
+pantalla no llama a la IA ni empieza nada: se lee lo guardado. El lunes nace el chat de la semana nueva. Sólo se
+escribe en la semana en curso y hay un turno a la vez por semana (si otra persona tiene uno corriendo, se le da
+seguimiento en vivo en vez de empezar otro).
+- **Más eficiente.** La planeación completa se le da a la IA UNA vez al día (y otra si cambian las tiendas o los
+  parámetros) y la conversación se rearma con los textos EXACTOS de cada turno: DeepSeek relee de su caché todo lo
+  anterior y cada seguimiento paga sólo lo nuevo (la entrada de caché cuesta US$0.044 contra 1.32 por millón en V4 Pro).
+  El plan de ese momento viaja en el último mensaje, no en la tabla, para no romper la caché.
+- **Respuesta compacta.** La IA contesta tres cosas: `respuesta` (de 1 a 3 frases), `ajustes` como
+  `[tienda, sku, piezas, recomendación]` y `reemplazos` como `[tienda, agotado, reemplazo, piezas, recomendación]`, en
+  listas y no en objetos (casi la mitad de tokens de salida).
+
+**Los ajustes, en vivo en la tabla (punto 5).** DeepSeek contesta por streaming; el backend valida lo que va escrito por
+pedazos (`parcial`) y la pantalla lo aplica cada 2 s: el renglón aparece en «Por mandar» resaltado en violeta, con la
+etiqueta IA y su recomendación debajo del nombre. Cada renglón tiene una casilla para dejarlo fuera sin perder la
+cantidad, se corrige a mano o se quita. Si la persona corrige un renglón mientras la IA sigue escribiendo, su cambio se
+respeta. Hay un filtro «De la IA» con lo que puso o sacó. Un mismo SKU ya no puede reemplazar a dos agotados (el 28-sep
+propuso TEC-1326-NEG-MOR para dos y su stock libre se habría contado dos veces).
+- **Se quitaron** las recomendaciones aparte (ahora van dentro de cada ajuste), las alertas de la IA y la confirmación y
+  el resumen. **La IA ya no suma**: en la prueba del 28-sep los 37 SKUs que quitó eran exactamente los correctos, pero su
+  texto dijo Kubera 1,245 / total 1,864 y eran 1,269 / 1,888. Los totales los calcula el panel.
+
+**«CARGAR FULL CON PROMPT» (punto 6).** Al crear las órdenes en Odoo (en borrador), se abre una ventana con el prompt para
+pegarlo en un chat NUEVO de Claude con acceso al navegador (Claude in Chrome): la cuenta de Mercado Libre, la orden, el
+almacén y cada SKU con su número de publicación (MLM, la que ya es FULL si hay dos) y sus piezas, releídos de Odoo. El
+agente entra a «Planificación de envíos» de Full, carga EXACTAMENTE esos productos, anota los que ML no acepte (no los
+sustituye), PREGUNTA antes de elegir la forma de entrega y la cita, confirma, descarga los documentos del envío
+(etiquetas de productos, de bultos y la autorización de ingreso) y los sube como la guía de la orden en «Órdenes de la
+semana». No toca Odoo ni cambia nada más en ML. Si la orden es de PRUEBA, el prompt lo dice y el agente se detiene en el
+resumen sin confirmar nada. Al cerrar la ventana, el prompt sigue en el botón «CARGAR FULL CON PROMPT», que sólo va
+activo en la semana en curso, con órdenes de Mercado Libre en borrador y sin guía; con la guía adjunta se apaga solo.
+Mercado Libre no deja crear envíos a Full por API (ni sus etiquetas ni la autorización de ingreso): por eso es un
+agente con la sesión de la persona. Amazon FBA y Walmart WFS siguen con la guía manual.
+
+**La guía acepta varios PDF.** «Adjuntar guía» deja elegir varios PDF y el backend los une en uno (`pypdf`, ya en
+requirements) porque la orden de Odoo guarda una sola guía (`meli_etiqueta_file`). Hasta 15 MB cada uno y 25 MB juntos.
+
+**Lo que no cambia.** Crear en Odoo sigue detrás de su interruptor y es de admin; nada confirma órdenes. El plan y el chat
+los guarda cualquier operador (`POST /crear-full/semana/plan` quedó como `operador` en `core/rbac.py`) y no tocan Odoo.
+Endpoints nuevos: `GET /api/fulfillment/crear-full/semana`, `POST /api/fulfillment/crear-full/semana/plan` y
+`GET /api/fulfillment/crear-full/prompt-ml`.
+
+**Pruebas:** 72 de FULL (eran 54): la semana ISO en CDMX (el domingo a las 23:30 sigue en la S39), el plan limpio y su
+resumen, la bitácora sin SKU, la conversación rearmada con los textos exactos (el principio del turno 3 es el turno 2
+completo), la planeación reusada el mismo día y renovada al siguiente, sólo la semana en curso y un turno a la vez, el
+turno con error guardado, la validación de listas compactas y objetos, el último ajuste manda, un reemplazo no cubre dos
+agotados, lo escrito a medias validado por pedazos, el stream de DeepSeek, el prompt de ML (cuenta, orden, cada SKU con
+su publicación, cuándo no va activo, PRUEBA sin confirmar, una liga rara no entra) y la unión de PDF. Suite completa:
+834 en verde (9 saltadas). `tsc` limpio y `next build` en verde.
+
+**Pendiente.** El streaming de DeepSeek se probó con pedazos simulados: la primera corrida real es la prueba de fuego
+(el error, si lo hay, se enseña en el chat y queda guardado). Aparte de este cambio: según la documentación de DeepSeek
+del 28-sep los únicos modelos válidos son `deepseek-flash` y `deepseek-v4-pro`, y los generadores que usan
+`DEEPSEEK_MODEL` siguen con `deepseek-chat` por omisión; si DeepSeek lo rechaza, caen a Claude sin avisar.
+
 ### v0.582.0 — El Catálogo Maestro enseña TODOS los SKUs; la semana del Checklist es solo un filtro
 
 Brandon, 28-sep, corrigiendo la v0.581: *"en el catálogo maestro aparecerán TODOS LOS SKUS… el filtro solo aplica si

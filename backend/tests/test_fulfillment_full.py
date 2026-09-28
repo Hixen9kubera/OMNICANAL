@@ -18,6 +18,14 @@
      seguimiento con historial y la planeación primero, en caché.
   8. Análisis (v0.570.0): el reemplazo es el siguiente que VENDE y tiene stock; el título se
      compara contra Odoo con la foto; cada orden sin completar dice cuánto lleva.
+  9. La SEMANA (v0.583.0): ISO en hora de CDMX; un plan y un chat por semana en la bitácora
+     (sin SKU); la planeación se le da a la IA una vez al día y la conversación se rearma con los
+     textos exactos (caché de DeepSeek); sólo la semana en curso se planea, un turno a la vez.
+ 10. La IA arma el plan desde CERO con listas compactas y la recomendación dentro de cada ajuste;
+     sin alertas, recomendaciones ni resumen aparte; lo que va escribiendo se valida por pedazos.
+ 11. «CARGAR FULL CON PROMPT»: el prompt lleva la cuenta, la orden y cada SKU con su publicación;
+     sólo va activo en borrador, en su semana y sin guía; en PRUEBA no confirma nada. La guía
+     acepta varios PDF y los une en uno.
 
 No se llama a Odoo, kubera ni Mercado Libre: se sustituyen por falsos.
 
@@ -38,6 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from services import fulfillment_excel as fx  # noqa: E402
 from services import fulfillment_full as ff  # noqa: E402
 from services import fulfillment_ia as fia  # noqa: E402
+from services import fulfillment_semana as fsem  # noqa: E402
 from services import fulfillment_sku as fs  # noqa: E402
 
 AHORA = datetime(2026, 9, 24, 18, 0, tzinfo=timezone.utc)      # jueves de la S39
@@ -453,108 +462,235 @@ class SolicitudEnBitacora(unittest.TestCase):
 class ValidarIA(unittest.TestCase):
     DATOS = {"tiendas": {"meli:Kubera": {
         "renglones": [{"sku": "A", "libre": 10}, {"sku": "B", "libre": 0}],
-        "ganadores_agotados": [{"sku": "B", "candidatos": [{"sku": "C", "libre": 7}]}]}}}
+        "ganadores_agotados": [{"sku": "B", "candidatos": [{"sku": "C", "libre": 7, "tipo": "mismo modelo"}]},
+                               {"sku": "D", "candidatos": [{"sku": "C", "libre": 7, "tipo": "misma categoría"}]}]}}}
 
-    def test_lo_que_no_esta_en_la_planeacion_no_pasa(self):
-        r = fia.validar({"ajustes": [{"tienda": "meli:Kubera", "sku": "A", "cantidad": 25, "motivo": "sube"},
-                                     {"tienda": "meli:Kubera", "sku": "Z", "cantidad": 3, "motivo": "?"},
-                                     {"tienda": "temu", "sku": "A", "cantidad": 3, "motivo": "?"},
-                                     {"tienda": "meli:Kubera", "sku": "C", "cantidad": 4, "motivo": "reemplazo"}],
-                         "reemplazos": [{"tienda": "meli:Kubera", "agotado": "B", "reemplazo": "C",
-                                         "tipo_match": "mismo modelo", "motivo": "ok"},
-                                        {"tienda": "meli:Kubera", "agotado": "B", "reemplazo": "Q",
-                                         "tipo_match": "misma por nombre", "motivo": "inventado"}],
-                         "alertas": [], "confirmacion": "c", "resumen": "r"}, self.DATOS)
+    def test_listas_compactas_se_validan_y_se_topan(self):
+        r = fia.validar({"respuesta": "Armé la semana.",
+                         "ajustes": [["meli:Kubera", "A", 25, "vende 8 al día"], ["meli:Kubera", "Z", 3, "?"],
+                                     ["temu", "A", 3, "?"], ["meli:Kubera", "C", 4, "candidato"],
+                                     ["meli:Kubera", "B", "muchas", "?"]],
+                         "reemplazos": [["meli:Kubera", "B", "C", 9, "mismo modelo, con stock"],
+                                        ["meli:Kubera", "B", "Q", 2, "inventado"]]}, self.DATOS)
         self.assertEqual([(a["sku"], a["cantidad"]) for a in r["ajustes"]], [("A", 10), ("C", 4)],
                          "A se topa a lo libre; C es un candidato válido")
         self.assertIn("se topó", r["ajustes"][0]["nota"])
-        self.assertEqual([x["reemplazo"] for x in r["reemplazos"]], ["C"])
-        self.assertEqual(len(r["descartados"]), 3)
+        self.assertEqual(r["ajustes"][0]["motivo"], "vende 8 al día", "la recomendación va en el ajuste")
+        self.assertEqual([(x["reemplazo"], x["cantidad"], x["tipo_match"]) for x in r["reemplazos"]],
+                         [("C", 7, "mismo modelo")], "el reemplazo también se topa y el tipo lo pone el código")
+        self.assertEqual(len(r["descartados"]), 4)
+        self.assertEqual(set(r), {"respuesta", "ajustes", "reemplazos", "descartados"},
+                         "sin recomendaciones, alertas, confirmación ni resumen (Brandon, 28-sep)")
 
-    def test_la_tienda_por_su_nombre_tambien_vale(self):
+    def test_objetos_y_la_tienda_por_su_nombre_tambien_valen(self):
         datos = {"tiendas": {"meli:Kubera": {"nombre": "ML Kubera", "destino": "meli_bekura",
                                              **self.DATOS["tiendas"]["meli:Kubera"]}}}
-        r = fia.validar({"ajustes": [{"tienda": "ML Kubera", "sku": "A", "cantidad": 4, "motivo": "sube"},
-                                     {"tienda": "BEKURA", "sku": "A", "cantidad": 5, "motivo": "sube"}],
-                         "reemplazos": [{"tienda": "meli_bekura", "agotado": "B", "reemplazo": "C",
-                                         "tipo_match": "mismo modelo", "motivo": "ok"}],
-                         "alertas": [], "confirmacion": "c", "resumen": "r"}, datos)
-        self.assertEqual([(a["tienda"], a["cantidad"]) for a in r["ajustes"]], [("meli:Kubera", 4), ("meli:Kubera", 5)],
-                         "la 1ª corrida real descartó todo por escribir «ML Kubera»")
+        r = fia.validar({"ajustes": [{"tienda": "ML Kubera", "sku": "A", "piezas": 4, "recomendacion": "sube"}],
+                         "reemplazos": [{"tienda": "meli_bekura", "agotado": "B", "reemplazo": "C", "cantidad": 2,
+                                         "motivo": "ok"}]}, datos)
+        self.assertEqual([(a["tienda"], a["cantidad"], a["motivo"]) for a in r["ajustes"]],
+                         [("meli:Kubera", 4, "sube")], "la 1ª corrida real descartó todo por escribir «ML Kubera»")
         self.assertEqual([x["tienda"] for x in r["reemplazos"]], ["meli:Kubera"])
         self.assertEqual(r["descartados"], [])
 
-    def test_el_esquema_exige_la_llave_de_la_tienda(self):
+    def test_el_ultimo_ajuste_de_un_sku_manda(self):
+        r = fia.validar({"ajustes": [["meli:Kubera", "A", 4, "x"], ["meli:Kubera", "A", 0, "mejor no"]]}, self.DATOS)
+        self.assertEqual([(a["sku"], a["cantidad"], a["motivo"]) for a in r["ajustes"]], [("A", 0, "mejor no")])
+
+    def test_un_sku_no_reemplaza_a_dos_agotados(self):
+        r = fia.validar({"reemplazos": [["meli:Kubera", "B", "C", 3, "x"], ["meli:Kubera", "D", "C", 3, "y"]]},
+                        self.DATOS)
+        self.assertEqual([x["agotado"] for x in r["reemplazos"]], ["B"],
+                         "el 28-sep propuso TEC-1326-NEG-MOR para dos agotados: su libre se contaba dos veces")
+        self.assertIn("ya es el reemplazo de B", r["descartados"][0]["porque"])
+
+    def test_el_esquema_de_claude_exige_la_llave_de_la_tienda(self):
         ajuste = fia.ESQUEMA["properties"]["ajustes"]["items"]["properties"]["tienda"]
         self.assertEqual(ajuste["enum"], ["meli:Kubera", "meli:San Corpe", "amazon", "walmart"])
 
-    def test_tabla_compacta_respuesta_y_recomendaciones(self):
-        datos = {"tiendas": {"meli:Kubera": {
-            "columnas": ["sku", "precio", "libre"], "filas": [["A", 250.0, 10], ["B", 480.0, 6]],
-            "ganadores_agotados": []}}}
-        r = fia.validar({"respuesta": "Tomé los de menos de $300.", "recomendaciones": ["Mandar A", "Comprar Z"],
-                         "ajustes": [{"tienda": "meli:Kubera", "sku": "A", "cantidad": 8, "motivo": "ticket bajo"},
-                                     {"tienda": "meli:Kubera", "sku": "B", "cantidad": 0, "motivo": "ticket alto"}],
-                         "reemplazos": [], "alertas": [], "confirmacion": "c", "resumen": "r"}, datos)
-        self.assertEqual([(a["sku"], a["cantidad"]) for a in r["ajustes"]], [("A", 8), ("B", 0)],
-                         "la tabla compacta también dice qué SKUs y cuánto libre hay")
-        self.assertEqual(r["respuesta"], "Tomé los de menos de $300.")
-        self.assertEqual(r["recomendaciones"], ["Mandar A", "Comprar Z"])
 
-    def test_la_planeacion_va_primero_y_en_cache(self):
-        m = fia.mensajes({"tiendas": {}}, "sólo SKUs con precio menor a $300")
-        self.assertEqual(len(m), 1)
-        datos, instruccion = m[0]["content"]
-        self.assertEqual(datos["cache_control"], {"type": "ephemeral"})
-        self.assertIn("menor a $300", instruccion["text"])
-        self.assertNotIn("cache_control", instruccion, "la instrucción cambia: va después de la caché")
-        self.assertIn("Sin instrucciones", fia.mensajes({"tiendas": {}})[0]["content"][1]["text"])
+class IAEnVivo(unittest.TestCase):
+    """La respuesta llega por streaming y se aplica a la tabla mientras se escribe."""
 
-    def test_el_seguimiento_recuerda_la_conversacion(self):
-        historial = fia.historial_limpio([
-            {"instruccion": "sólo menores a 300", "respuesta": {"respuesta": "Listo: 40 SKUs.", "resumen": "r1",
-                                                                "ajustes": [{"tienda": "meli:Kubera", "sku": "A",
-                                                                             "cantidad": 8, "motivo": "x"}]}},
-            {"instruccion": "basura sin respuesta"},
-            "tampoco esto",
-            {"instruccion": "ahora quita los reciclados", "respuesta": {"respuesta": "Quité 3.", "ajustes": []}},
-        ])
-        self.assertEqual([t["instruccion"] for t in historial], ["sólo menores a 300", "ahora quita los reciclados"])
-        m = fia.mensajes({"tiendas": {}}, "¿qué me recomiendas comprar?", historial)
-        self.assertEqual([x["role"] for x in m], ["user", "assistant", "user", "assistant", "user"])
-        self.assertIn("sólo menores a 300", m[0]["content"][1]["text"])
-        self.assertIn("Listo: 40 SKUs.", m[1]["content"])
-        self.assertNotIn("motivo", m[1]["content"], "lo anterior se le recuerda compacto")
-        self.assertIn("ahora quita los reciclados", m[2]["content"])
-        self.assertIn("qué me recomiendas comprar", m[4]["content"])
+    DATOS = ValidarIA.DATOS
 
-    def test_arranca_con_instrucciones_y_acepta_el_cuerpo_viejo(self):
+    def test_lo_que_lleva_escrito_se_valida_por_pedazos(self):
+        completo = json.dumps({"respuesta": "Listo.", "ajustes": [["meli:Kubera", "A", 5, "sube"],
+                                                                  ["meli:Kubera", "C", 2, "r"]], "reemplazos": []})
+        corte = completo.index('["meli:Kubera", "C"') + 8
+        p = fia.parcial(completo[:corte], self.DATOS)
+        self.assertEqual(p["respuesta"], "Listo.")
+        self.assertEqual([a["sku"] for a in p["ajustes"]], ["A"], "el segundo todavía no termina de llegar")
+        self.assertEqual([a["sku"] for a in fia.parcial(completo, self.DATOS)["ajustes"]], ["A", "C"])
+        self.assertEqual(fia.parcial('{"respues', self.DATOS), {"respuesta": "", "ajustes": [], "reemplazos": []})
+        falso = json.dumps({"respuesta": 'dije "ajustes": [ sin querer', "ajustes": [["meli:Kubera", "A", 1, "x"]]})
+        self.assertEqual([a["sku"] for a in fia.parcial(falso, self.DATOS)["ajustes"]], ["A"],
+                         "la palabra dentro del texto no confunde la lista")
+
+    def test_el_stream_de_deepseek(self):
+        pedazos = [{"model": "deepseek-v4-pro", "choices": [{"delta": {"reasoning_content": "pienso..."}}]},
+                   {"choices": [{"delta": {"content": '{"respuesta": "ok", '}}]},
+                   {"choices": [{"delta": {"content": '"ajustes": [], "reemplazos": []}'}, "finish_reason": "stop"}]},
+                   {"choices": [], "usage": {"prompt_tokens": 100, "prompt_cache_hit_tokens": 60,
+                                             "completion_tokens": 30,
+                                             "completion_tokens_details": {"reasoning_tokens": 12}}}]
+        lineas = [": keep-alive", ""] + [f"data: {json.dumps(p)}" for p in pedazos] + ["data: [DONE]"]
         vistos = []
+        s = fia.leer_sse(lineas, lambda texto, razon: vistos.append((len(texto), razon)))
+        self.assertEqual(json.loads(s["texto"])["respuesta"], "ok")
+        self.assertEqual((s["fin"], s["modelo"], s["razonamiento_chars"]), ("stop", "deepseek-v4-pro", 9))
+        self.assertEqual(s["uso"]["prompt_cache_hit_tokens"], 60)
+        self.assertEqual(vistos[-1][0], len(s["texto"]), "el último aviso trae todo lo escrito")
 
-        def llamar(datos, instrucciones="", historial=None, modelo=None):
-            vistos.append((instrucciones, len(historial or []), modelo))
-            return {"respuesta": {"respuesta": "ok", "ajustes": [], "reemplazos": [], "alertas": [],
-                                  "recomendaciones": [], "confirmacion": "", "resumen": ""},
-                    "modelo": modelo, "tokens": {"entrada": 1, "salida": 1, "cache": 0}}
+    def test_reintenta_sin_razonamiento_si_contesta_vacio(self):
+        llamadas = []
+
+        def pedir(cuerpo, al_avanzar):
+            llamadas.append(cuerpo)
+            texto = "" if len(llamadas) == 1 else '{"respuesta": "ok", "ajustes": [], "reemplazos": []}'
+            return {"status": 200, "error": None, "texto": texto, "razonamiento_chars": 0, "fin": "stop",
+                    "modelo": "deepseek-v4-pro",
+                    "uso": {"prompt_tokens": 100, "prompt_cache_hit_tokens": 60, "completion_tokens": 20}}
+
+        with mock.patch.object(fia, "_pedir", pedir):
+            r = fia._llamar_deepseek([{"role": "user", "content": "x"}], "deepseek-v4-pro")
+        self.assertEqual(r["respuesta"]["respuesta"], "ok")
+        self.assertNotIn("thinking", llamadas[0], "la primera va con el razonamiento por omisión")
+        self.assertEqual(llamadas[1]["thinking"], {"type": "disabled"}, "la segunda, sin razonamiento")
+        self.assertEqual((llamadas[0]["stream"], llamadas[0]["stream_options"]), (True, {"include_usage": True}))
+        self.assertEqual(llamadas[0]["response_format"], {"type": "json_object"})
+        self.assertEqual(llamadas[0]["messages"][0]["role"], "system")
+        self.assertEqual((r["tokens"]["cache"], r["tokens"]["entrada_sin_cache"]), (60, 40))
+
+    def test_un_error_de_deepseek_se_dice(self):
+        with mock.patch.object(fia, "_pedir", lambda c, a: {"status": 401, "error": "llave inválida"}):
+            with self.assertRaisesRegex(RuntimeError, "401"):
+                fia._llamar_deepseek([], "deepseek-v4-pro")
+
+
+class ChatDeLaSemana(unittest.TestCase):
+    """Un chat por semana, guardado; el plan nace vacío y la planeación se le da una vez al día."""
+
+    DATOS = {"corrida": {"ventana": "30 días", "cobertura_dias": 30, "renglones_pendientes": 2},
+             "tiendas": {"meli:Kubera": {"columnas": ["sku", "libre"], "filas": [["A", 10], ["B", 4]],
+                                         "ganadores_agotados": []}}}
+    LUNES = datetime(2026, 9, 28, 18, 0, tzinfo=timezone.utc)       # lunes de la S40
+
+    def tearDown(self):
+        fia._trabajos.clear()
+
+    def test_el_plan_de_ese_momento_va_en_el_mensaje(self):
+        vacio = fia.mensaje_turno("", fia.plan_actual([]))
+        self.assertIn("vacío", vacio)
+        self.assertIn("Sin instrucciones", vacio)
+        plan = fia.plan_actual([["meli:Kubera", "B", 4], ["meli:Kubera", "A", 10], ["meli:Kubera", "C", 0],
+                                ["temu", "X", 3], "basura"])
+        self.assertEqual(plan, {"meli:Kubera": [["A", 10], ["B", 4]]}, "ordenado, sin ceros ni tiendas ajenas")
+        m = fia.mensaje_turno("sólo < $300", plan)
+        self.assertIn('{"meli:Kubera":[["A",10],["B",4]]}', m)
+        self.assertIn("sólo < $300", m)
+
+    def test_la_conversacion_se_rearma_con_los_textos_exactos(self):
+        turnos = [{"mensaje": "M1", "salida": "S1"}, {"mensaje": "M2", "salida": "S2"}]
+        m = fia.conversacion_openai(self.DATOS, turnos, "M3")
+        self.assertEqual([x["role"] for x in m], ["user", "assistant", "user", "assistant", "user"])
+        self.assertTrue(m[0]["content"].startswith('{"corrida"'), "la planeación al principio: prefijo en caché")
+        self.assertTrue(m[0]["content"].endswith("M1"))
+        self.assertEqual([x["content"] for x in m[1:]], ["S1", "M2", "S2", "M3"])
+        self.assertEqual(fia.conversacion_openai(self.DATOS, turnos[:1], "M2"), m[:3],
+                         "lo que se mandó en el turno 2 es el principio EXACTO del turno 3: DeepSeek lo relee de caché")
+
+    def test_la_huella_no_cambia_por_los_pendientes(self):
+        otra = {**self.DATOS, "corrida": {**self.DATOS["corrida"], "renglones_pendientes": 5}}
+        self.assertEqual(fia._huella(self.DATOS), fia._huella(otra))
+        self.assertNotEqual(fia._huella(self.DATOS),
+                            fia._huella({**self.DATOS, "corrida": {**self.DATOS["corrida"], "cobertura_dias": 45}}))
+
+    def _correr(self, cuerpo, conv, falla=None):
+        guardados, vistos = [], []
+
+        def llamar(mensajes, modelo=None, al_avanzar=None):
+            vistos.append(mensajes)
+            if falla:
+                raise RuntimeError(falla)
+            if al_avanzar:
+                al_avanzar('{"respuesta": "Armé la semana.", "ajustes": [["meli:Kubera", "A", 6, "sube"]', 1000)
+            return {"respuesta": {"respuesta": "Armé la semana.",
+                                  "ajustes": [["meli:Kubera", "A", 6, "sube"], ["meli:Kubera", "Z", 1, "?"]],
+                                  "reemplazos": []},
+                    "texto": "SALIDA", "modelo": "deepseek-v4-pro",
+                    "tokens": {"entrada": 100, "entrada_sin_cache": 40, "cache": 60, "salida": 10}}
+
+        def guardar(clave, accion, detalle, quien="", sufijo=""):
+            guardados.append((clave, accion, detalle))
+            return 77
 
         with mock.patch.object(fia, "_hay_llave", lambda p: True), mock.patch.object(fia, "_llamar", llamar), \
+             mock.patch.object(fia.fsem, "conversacion", lambda clave: conv), \
+             mock.patch.object(fia.fsem, "guardar", guardar), \
              mock.patch.object(fia.settings, "fulfillment_ia_modelo", "deepseek-v4-pro"):
-            nuevo = fia.iniciar({"datos": self.DATOS, "instrucciones": "  sólo < 300  ", "historial": []}, "b@k.mx")
-            viejo = fia.iniciar(self.DATOS, "b@k.mx")
-            for r in (nuevo, viejo):
-                self.assertTrue(r["ok"])
-                for _ in range(200):
+            r = fia.iniciar(cuerpo, "brandon@kubera.mx", self.LUNES)
+            if r.get("ok"):
+                for _ in range(300):
                     if fia.estado(r["id"])["estado"] != "corriendo":
                         break
                     time.sleep(0.01)
-                self.assertEqual(fia.estado(r["id"])["estado"], "listo")
-        self.assertEqual(sorted(vistos), [("", 0, "deepseek-v4-pro"), ("sólo < 300", 0, "deepseek-v4-pro")],
-                         "sin elegir modelo va el de la configuración: DeepSeek V4 Pro")
+        return r, guardados, vistos
+
+    def test_primer_turno_de_la_semana(self):
+        r, guardados, vistos = self._correr({"semana": "2026-S40", "datos": self.DATOS, "plan": [],
+                                             "instrucciones": "arma el FULL"}, {"datos": None, "turnos": []})
+        self.assertTrue(r["ok"], r)
+        e = fia.estado(r["id"])
+        self.assertEqual(e["estado"], "listo")
+        self.assertEqual([(a["sku"], a["cantidad"]) for a in e["resultado"]["ajustes"]], [("A", 6)])
+        self.assertEqual(len(e["resultado"]["descartados"]), 1)
+        self.assertEqual([g[1] for g in guardados], ["datos", "turno"], "la planeación de hoy y el turno")
+        self.assertEqual(guardados[0][2]["dia"], "2026-09-28")
+        turno = guardados[1][2]
+        self.assertEqual((turno["estado"], turno["salida"], turno["datos_id"]), ("listo", "SALIDA", 77))
+        self.assertIn("vacío", turno["mensaje"], "la semana empieza en cero")
+        self.assertEqual(len(vistos[0]), 1, "primer turno: un solo mensaje, con la planeación al principio")
+
+    def test_seguimiento_del_mismo_dia_reusa_la_planeacion(self):
+        conv = {"datos": {"id": 5, "dia": "2026-09-28", "huella": fia._huella(self.DATOS), "datos": self.DATOS},
+                "turnos": [{"mensaje": "M1", "salida": "S1"}]}
+        r, guardados, vistos = self._correr({"semana": "2026-S40", "datos": self.DATOS,
+                                             "plan": [["meli:Kubera", "A", 6]], "instrucciones": "quita A"}, conv)
+        self.assertEqual([g[1] for g in guardados], ["turno"], "no se vuelve a guardar la planeación")
+        self.assertEqual(guardados[0][2]["datos_id"], 5)
+        self.assertEqual([x["content"] for x in vistos[0][1:]], ["S1", guardados[0][2]["mensaje"]])
+        self.assertIn('[["A",6]]', guardados[0][2]["mensaje"], "el plan de ese momento viaja en el mensaje")
+
+    def test_otro_dia_otra_planeacion(self):
+        conv = {"datos": {"id": 5, "dia": "2026-09-27", "huella": fia._huella(self.DATOS), "datos": self.DATOS},
+                "turnos": []}
+        _, guardados, _ = self._correr({"semana": "2026-S40", "datos": self.DATOS, "plan": []}, conv)
+        self.assertEqual([g[1] for g in guardados], ["datos", "turno"])
+
+    def test_si_la_ia_falla_el_turno_queda_con_su_error(self):
+        r, guardados, _ = self._correr({"semana": "2026-S40", "datos": self.DATOS, "plan": []},
+                                       {"datos": None, "turnos": []}, falla="DeepSeek contestó 402")
+        self.assertEqual(fia.estado(r["id"])["estado"], "error")
+        self.assertEqual((guardados[-1][1], guardados[-1][2]["estado"]), ("turno", "error"))
+        self.assertIn("402", guardados[-1][2]["error"])
+
+    def test_solo_la_semana_en_curso_y_un_turno_a_la_vez(self):
+        with mock.patch.object(fia, "_hay_llave", lambda p: True):
+            r = fia.iniciar({"semana": "2026-S39", "datos": self.DATOS}, "b@k.mx", self.LUNES)
+            self.assertFalse(r["ok"])
+            self.assertIn("semana en curso", r["motivo"])
+            fia._trabajos["x1"] = {"estado": "corriendo", "inicio": time.time(), "quien": "cinthya@kubera.mx",
+                                   "semana": "2026-S40", "instrucciones": "", "modelo": "deepseek-v4-pro"}
+            r = fia.iniciar({"semana": "2026-S40", "datos": self.DATOS}, "b@k.mx", self.LUNES)
+        self.assertEqual((r["ok"], r["id"]), (False, "x1"))
+        self.assertIn("cinthya", r["motivo"])
+        self.assertEqual(fia.corriendo_en("2026-S40")["id"], "x1")
 
     def test_sin_clave_no_arranca(self):
         with mock.patch.object(fia.settings, "anthropic_api_key", ""), \
              mock.patch.object(fia.settings, "deepseek_api_key", ""):
-            self.assertFalse(fia.iniciar(self.DATOS)["ok"])
+            self.assertFalse(fia.iniciar({"datos": self.DATOS})["ok"])
 
     def test_modelo_desconocido_o_sin_llave_no_arranca(self):
         with mock.patch.object(fia.settings, "anthropic_api_key", ""), \
@@ -570,15 +706,6 @@ class ValidarIA(unittest.TestCase):
             self.assertFalse(fia.disponible(), "con llave de Claude pero sin DeepSeek, no hay agente")
             self.assertEqual([m["id"] for m in fia.modelos_disponibles()], ["deepseek-v4-pro", "deepseek-flash"])
 
-    def test_la_conversacion_en_formato_deepseek(self):
-        historial = fia.historial_limpio([{"instruccion": "sólo < 300",
-                                           "respuesta": {"respuesta": "Listo.", "ajustes": []}}])
-        m = fia.mensajes_openai({"tiendas": {}}, "¿qué compro?", historial)
-        self.assertEqual([x["role"] for x in m], ["user", "assistant", "user"])
-        self.assertTrue(m[0]["content"].startswith('{"tiendas"'), "la planeación al principio: prefijo en caché")
-        self.assertIn("sólo < 300", m[0]["content"])
-        self.assertIn("qué compro", m[2]["content"])
-
     def test_costo_del_turno_con_hora_pico(self):
         tokens = {"entrada_sin_cache": 80_000, "cache": 0, "salida": 10_000}
         pico = datetime(2026, 9, 28, 7, 0, tzinfo=timezone.utc)          # lunes 07:00 UTC
@@ -589,29 +716,164 @@ class ValidarIA(unittest.TestCase):
         flash = fia.costo_usd("deepseek-flash", {"entrada_sin_cache": 20_000, "cache": 60_000, "salida": 5_000}, pico)
         self.assertEqual(flash, round((20_000 * 0.30 + 60_000 * 0.006 + 5_000 * 1.20) / 1e6, 4))
 
-    def test_deepseek_reintenta_sin_razonamiento_si_contesta_vacio(self):
+
+class SemanaFull(unittest.TestCase):
+    """La semana ISO en hora de CDMX y su plan en la bitácora."""
+
+    def test_la_semana_es_la_iso_en_hora_de_cdmx(self):
+        domingo = datetime(2026, 9, 28, 5, 30, tzinfo=timezone.utc)      # domingo 27, 23:30 en CDMX
+        lunes = datetime(2026, 9, 28, 6, 30, tzinfo=timezone.utc)        # lunes 28, 00:30 en CDMX
+        self.assertEqual(fsem.semana_de(domingo)["clave"], "2026-S39")
+        s = fsem.semana_de(lunes)
+        self.assertEqual((s["clave"], s["lunes"], s["domingo"], s["rango"]),
+                         ("2026-S40", "2026-09-28", "2026-10-04", "28 sep – 4 oct"))
+        self.assertEqual(fsem.semana_por_clave("2026-S40"), s)
+        self.assertEqual(fsem.semana_por_clave("2026-S39")["rango"], "21–27 sep")
+        for mala in ("2026-S60", "S40", "", None):
+            self.assertIsNone(fsem.semana_por_clave(mala))
+        self.assertTrue(fsem.en_semana("2026-09-28T06:30:00+00:00", "2026-S40"))
+        self.assertFalse(fsem.en_semana("2026-09-28T05:30:00+00:00", "2026-S40"))
+        self.assertFalse(fsem.en_semana(None, "2026-S40"))
+
+    def test_el_plan_se_guarda_limpio(self):
+        p = fsem.limpiar_plan({
+            "version": 3, "activas": ["meli:Kubera", "temu"], "parametros": {"cobertura_dias": "30", "otra": 5},
+            "entradas": [
+                {"tienda": "meli:Kubera", "sku": "A", "cantidad": "12", "origen": "ia", "motivo": "x" * 400},
+                {"tienda": "meli:Kubera", "sku": "A", "cantidad": 8, "origen": "manual"},
+                {"tienda": "temu", "sku": "B", "cantidad": 3},
+                {"tienda": "meli:San Corpe", "sku": "C", "cantidad": -4, "origen": "raro", "reemplazo_de": "D",
+                 "incluido": False}],
+            "quitados": ["meli:Kubera|Z", "basura", "temu|Q"]})
+        self.assertEqual([(e["tienda"], e["sku"], e["cantidad"], e["origen"], e["incluido"]) for e in p["entradas"]],
+                         [("meli:Kubera", "A", 8, "manual", True), ("meli:San Corpe", "C", 0, "manual", False)],
+                         "un renglón por tienda y SKU (manda el último); Temu no entra")
+        self.assertEqual(p["entradas"][1]["reemplazo_de"], "D")
+        self.assertEqual((p["quitados"], p["activas"], p["parametros"], p["version"]),
+                         (["meli:Kubera|Z"], ["meli:Kubera"], {"cobertura_dias": 30}, 3))
+        self.assertEqual(len(fsem.limpiar_plan({"entradas": [{"tienda": "amazon", "sku": "X", "motivo": "y" * 900}]})
+                             ["entradas"][0]["motivo"]), 300)
+
+    def test_cuanto_va_en_un_plan(self):
+        r = fsem.resumen_plan({"entradas": [
+            {"tienda": "meli:Kubera", "sku": "A", "cantidad": 10, "origen": "ia", "incluido": True},
+            {"tienda": "meli:Kubera", "sku": "B", "cantidad": 5, "origen": "manual", "reemplazo_de": "Z",
+             "incluido": True},
+            {"tienda": "meli:Kubera", "sku": "C", "cantidad": 7, "origen": "ia", "incluido": False},
+            {"tienda": "meli:San Corpe", "sku": "D", "cantidad": 0, "origen": "ia", "incluido": True}]})
+        self.assertEqual((r["skus"], r["piezas"], r["reemplazos"], r["de_ia"]), (2, 15, 1, 1),
+                         "lo des-seleccionado y lo que va en 0 no cuentan")
+
+    def test_la_bitacora_sin_sku_y_con_su_referencia(self):
         llamadas = []
+        with mock.patch.object(fsem.sdb, "execute_returning", lambda sql, p=None: llamadas.append((sql, p)) or {"id": 41}):
+            self.assertEqual(fsem.guardar("2026-S40", "plan", {"x": 1}, "brandon@kubera.mx", "3"), 41)
+        sql, p = llamadas[0]
+        self.assertIn("insert into ops.process_log", sql)
+        self.assertNotIn("sku", sql.split("values")[0], "sin SKU: no es el «último paso» de ningún producto")
+        self.assertEqual((p["p"], p["a"], p["r"], p["q"]),
+                         ("fulfillment_semana", "plan", "fulfillment_semana:2026-S40:plan:3", "brandon@kubera.mx"))
 
-        class Resp:
-            def __init__(self, contenido):
-                self.status_code, self.text, self._c = 200, "", contenido
+    def test_leer_la_semana(self):
+        t = datetime(2026, 9, 28, 17, 0, tzinfo=timezone.utc)
+        filas = [{"id": 1, "accion": "datos", "actor": "b", "created_at": t, "detalle": {"dia": "2026-09-28"}},
+                 {"id": 2, "accion": "turno", "actor": "b", "created_at": t, "detalle": {"id": "t1", "estado": "listo"}},
+                 {"id": 3, "accion": "plan", "actor": "b", "created_at": t, "detalle": {"version": 1, "entradas": []}},
+                 {"id": 4, "accion": "plan", "actor": "c", "created_at": t, "detalle": {"version": 2, "entradas": []}}]
+        vistos = []
+        with mock.patch.object(fsem.sdb, "fetch_all", lambda sql, p=None: vistos.append((sql, p)) or filas):
+            s = fsem.leer("2026-S40")
+        self.assertEqual((s["plan"]["version"], s["plan"]["quien"]), (2, "c"), "manda el último guardado")
+        self.assertEqual([x["id"] for x in s["turnos"]], ["t1"])
+        self.assertEqual(s["datos"]["dia"], "2026-09-28")
+        self.assertIn("detalle - 'datos'", vistos[0][0], "la planeación completa no viaja a la pantalla")
+        self.assertEqual(vistos[0][1]["pref"], "fulfillment_semana:2026-S40:%")
 
-            def json(self):
-                return {"model": "deepseek-v4-pro",
-                        "choices": [{"finish_reason": "stop", "message": {"content": self._c}}],
-                        "usage": {"prompt_tokens": 100, "prompt_cache_hit_tokens": 60, "completion_tokens": 20}}
 
-        def post(url, headers=None, json=None, timeout=None):
-            llamadas.append(json)
-            return Resp("" if len(llamadas) == 1 else '{"respuesta": "ok", "ajustes": []}')
+class CargarFullConPrompt(unittest.TestCase):
+    """El prompt para que un agente con navegador cargue el FULL en Mercado Libre y suba su guía."""
 
-        with mock.patch("httpx.post", post), mock.patch.object(fia.settings, "deepseek_api_key", "x"):
-            r = fia._llamar_deepseek({"tiendas": {}}, "", None, "deepseek-v4-pro")
-        self.assertEqual(r["respuesta"]["respuesta"], "ok")
-        self.assertNotIn("thinking", llamadas[0], "la primera va con el razonamiento por omisión")
-        self.assertEqual(llamadas[1]["thinking"], {"type": "disabled"}, "la segunda, sin razonamiento")
-        self.assertEqual(llamadas[0]["response_format"], {"type": "json_object"})
-        self.assertEqual((r["tokens"]["cache"], r["tokens"]["entrada_sin_cache"]), (60, 40))
+    ORDEN = {"id": 55, "name": "S38990", "state": "draft", "client_order_ref": False,
+             "origin": "Panel FULLFILMENT · ML Kubera · brandon · a1b2c3d4 · TEXCO",
+             "create_date": "2026-09-28 16:00:00", "partner_id": [9, "FULL KUBERA"], "warehouse_id": [135, "TEXCO"],
+             "order_line": [1, 2], "meli_etiqueta_filename": False}
+    MARTES = datetime(2026, 9, 29, 18, 0, tzinfo=timezone.utc)
+
+    def _prompt(self, orden, ahora=MARTES, panel="https://panel.example"):
+        def kw(modelo, metodo, args, kwargs=None):
+            if (modelo, metodo) == ("sale.order", "read"):
+                return [orden]
+            if (modelo, metodo) == ("sale.order.line", "read"):
+                return [{"product_id": [1, "[TEC-0393-ROS] Audífonos invisibles rosa"], "product_uom_qty": 251.0},
+                        {"product_id": [2, "[JUEG-0012-MUL] Torre de madera"], "product_uom_qty": 0.0}]
+            raise AssertionError(f"llamada no esperada a Odoo: {modelo}.{metodo}")
+
+        pubs = [{"sku": "TEC-0393-ROS", "listing_id": "MLM111", "en_almacen": False},
+                {"sku": "TEC-0393-ROS", "listing_id": "MLM2703304601", "en_almacen": True}]
+        with mock.patch.object(ff.odoo_ventas, "_kw", kw), mock.patch.object(ff.sdb, "fetch_all", lambda *a, **k: pubs), \
+             mock.patch.object(ff.odoo_ventas, "url_orden_publica", lambda: "https://odoo/{id}"):
+            return ff.prompt_ml(55, panel, ahora)
+
+    def test_lleva_cuenta_orden_y_cada_sku_con_su_publicacion(self):
+        r = self._prompt(dict(self.ORDEN))
+        self.assertTrue(r["ok"] and r["activo"], r)
+        p = r["prompt"]
+        for texto in ("Kubera (BEKURA)", "S38990", "almacén TEXCO", "S40 (28 sep – 4 oct)",
+                      "MLM2703304601 · TEC-0393-ROS · 251 pzs · Audífonos invisibles rosa", "PREGÚNTAME",
+                      "https://panel.example/fulfillment", "Planificación de envíos", "Adjuntar guía",
+                      "No toques la orden en Odoo"):
+            self.assertIn(texto, p)
+        self.assertNotIn("JUEG-0012-MUL", p, "un renglón en 0 no se manda")
+        self.assertEqual((r["piezas"], r["tienda"], r["lineas"][0]["listing_id"]),
+                         (251, "meli:Kubera", "MLM2703304601"), "si hay dos publicaciones, la que ya es FULL")
+
+    def test_la_prueba_no_confirma_nada(self):
+        p = self._prompt({**self.ORDEN, "origin": self.ORDEN["origin"] + " · PRUEBA"})["prompt"]
+        self.assertIn("ES UNA PRUEBA", p)
+        self.assertIn("No lo confirmes", p)
+        self.assertNotIn("Adjuntar guía", p)
+
+    def test_cuando_el_boton_no_va_activo(self):
+        casos = [({**self.ORDEN, "state": "sale"}, self.MARTES, "ya no está en borrador"),
+                 ({**self.ORDEN, "meli_etiqueta_filename": "guia.pdf"}, self.MARTES, "ya tiene su guía"),
+                 (dict(self.ORDEN), datetime(2026, 10, 6, 18, 0, tzinfo=timezone.utc), "no es de esta semana"),
+                 ({**self.ORDEN, "partner_id": [9, "AMAZON FBA"]}, self.MARTES, "es para Mercado Libre")]
+        for orden, ahora, porque in casos:
+            r = self._prompt(orden, ahora)
+            self.assertFalse(r["activo"], porque)
+            self.assertIn(porque, r["porque"])
+        r = self._prompt({**self.ORDEN, "origin": "S38990"})
+        self.assertFalse(r["ok"], "una orden que no creó el panel no tiene prompt")
+
+    def test_una_liga_rara_no_entra_al_prompt(self):
+        p = self._prompt(dict(self.ORDEN), panel="javascript:alert(1)")["prompt"]
+        self.assertIn(ff.PANEL_POR_OMISION + "/fulfillment", p)
+        self.assertNotIn("javascript", p)
+
+
+@unittest.skipUnless(__import__("importlib.util").util.find_spec("pypdf"), "pypdf no está instalado aquí (en Railway sí: requirements.txt)")
+class GuiaVariosPdf(unittest.TestCase):
+    @staticmethod
+    def _pdf(paginas):
+        import io
+
+        from pypdf import PdfWriter
+        w = PdfWriter()
+        for _ in range(paginas):
+            w.add_blank_page(width=200, height=200)
+        b = io.BytesIO()
+        w.write(b)
+        return b.getvalue()
+
+    def test_se_unen_en_uno_y_en_orden(self):
+        import io
+
+        from pypdf import PdfReader
+        unido = ff.unir_pdfs([self._pdf(1), self._pdf(2)])
+        self.assertTrue(unido.startswith(b"%PDF"))
+        self.assertEqual(len(PdfReader(io.BytesIO(unido)).pages), 3)
+        solo = self._pdf(1)
+        self.assertIs(ff.unir_pdfs([solo]), solo, "con uno solo, se queda tal cual")
 
 
 class Precio(unittest.TestCase):

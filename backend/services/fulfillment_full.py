@@ -83,6 +83,7 @@ import httpx
 
 from config import settings
 from services import fulfillment_envios as fenv
+from services import fulfillment_semana as fsem
 from services import odoo_ventas
 from services import supabase_db as sdb
 
@@ -439,7 +440,7 @@ def _borradores(ahora: datetime) -> list[dict[str, Any]]:
           "|", "|", "|", ["partner_id.name", "=ilike", "full%"], ["partner_id.name", "=ilike", "mercado libre"],
           ["partner_id.name", "=ilike", "amazon%"], ["partner_id.name", "=ilike", "wfs%"]]],
         {"fields": ["name", "create_uid", "create_date", "partner_id", "client_order_ref", "origin",
-                    "warehouse_id", "order_line"],
+                    "warehouse_id", "order_line", "meli_etiqueta_filename"],
          "order": "create_date desc", "limit": 150})
     ids = [i for o in ordenes for i in (o.get("order_line") or [])]
     lineas = ({l["id"]: l for l in odoo_ventas._kw("sale.order.line", "read",
@@ -474,6 +475,9 @@ def _borradores(ahora: datetime) -> list[dict[str, Any]]:
             "panel": origen.startswith(fenv.ORIGEN_PANEL),
             "prueba": "PRUEBA" in origen.upper() or "PRUEBA" in str(o.get("client_order_ref") or "").upper(),
             "piezas": piezas, "skus": len(renglones), "lineas": renglones,
+            # La guía del marketplace ya adjunta (su PDF): hasta entonces se ofrece
+            # «CARGAR FULL CON PROMPT» en la semana de la orden.
+            "guia_pdf": o.get("meli_etiqueta_filename") or None,
             "url": odoo_ventas.url_orden_publica().format(id=o["id"]),
         })
     return salida
@@ -1334,3 +1338,178 @@ def adjuntar_guia(orden_id: int, numero: str | None, pdf: bytes | None, nombre_p
     return {"ok": bool(ok), "accion": "adjuntada" if ok else "no_verificada", "orden": leida["name"],
             "referencia": leida.get("client_order_ref"), "pdf": leida.get("meli_etiqueta_filename") if pdf else None,
             "tamano_pdf": leida.get("meli_etiqueta_file") if pdf else None}
+
+
+# ── La guía: varios PDF en uno ──────────────────────────────────────────────
+
+def unir_pdfs(pdfs: list[bytes]) -> bytes:
+    """
+    Los documentos del envío (etiquetas de productos, de bultos, autorización de
+    ingreso…) en UN solo PDF, en el orden en que llegan: la orden de Odoo guarda una
+    sola guía (`meli_etiqueta_file`). Con uno solo, se queda tal cual.
+    """
+    if len(pdfs) == 1:
+        return pdfs[0]
+    import io
+
+    from pypdf import PdfReader, PdfWriter
+
+    escritor = PdfWriter()
+    for contenido in pdfs:
+        for pagina in PdfReader(io.BytesIO(contenido)).pages:
+            escritor.add_page(pagina)
+    salida = io.BytesIO()
+    escritor.write(salida)
+    return salida.getvalue()
+
+
+# ── CARGAR FULL CON PROMPT ──────────────────────────────────────────────────
+#
+# Brandon, 28-sep-2026: "una vez que se seleccione el botón de revisar y crear
+# contendrá el prompt estándar para que un chat nuevo de Claude entre al navegador y
+# arme el full en Mercado Libre, saque el documento necesario para el armado de full
+# y lo guarde en Omnicanal… con la lista de SKUs… este botón solo se activa en la week
+# over week y cuando se haya creado correctamente la orden de venta en Odoo EN STATUS
+# BORRADOR hasta que reciban el documento de GUÍA".
+#
+# Mercado Libre no deja crear envíos a Full por API (docs/ del 17-sep: ni el envío, ni
+# sus etiquetas, ni la autorización de ingreso): sólo se hacen en su panel. Por eso el
+# panel no lo hace solo: arma las instrucciones EXACTAS para un agente con navegador
+# (Claude in Chrome), que trabaja con la sesión abierta de la persona y le pregunta
+# antes de elegir la forma de entrega y la cita.
+
+PANEL_POR_OMISION = "https://frontendomnicanal-production.up.railway.app"
+_RE_ORIGEN_WEB = re.compile(r"^https?://[A-Za-z0-9.\-]+(:\d{2,5})?$")
+
+
+def _tienda_de_socio(nombre: str | None) -> str | None:
+    n = (nombre or "").strip().upper()
+    return next((t for t, s in SOCIO.items() if s.upper() == n), None)
+
+
+def texto_prompt_ml(orden: dict[str, Any], tienda: str, lineas: list[dict[str, Any]],
+                    semana: dict[str, Any], panel: str) -> str:
+    """El prompt para el agente con navegador. Función pura."""
+    d = TIENDAS[tienda]
+    piezas = sum(int(l["cantidad"]) for l in lineas)
+    productos = "\n".join(
+        f"{i}. {l.get('listing_id') or 'sin publicación registrada'} · {l['sku']} · {int(l['cantidad']):,} pzs"
+        f" · {(l.get('nombre') or '').strip()[:70]}"
+        for i, l in enumerate(lineas, 1))
+    prueba = bool(orden.get("prueba"))
+    encabezado = (
+        f"Eres un agente con acceso a mi navegador (Claude in Chrome). Vas a cargar en Mercado Libre el envío a "
+        f"FULL de la orden {orden['orden']} de Omnicanal"
+        + (" —ES UNA PRUEBA: no se confirma nada— " if prueba else " ")
+        + "y a guardar su guía en Omnicanal. Usa sólo las sesiones que ya están abiertas en este navegador: no "
+        "inicies sesión con otra cuenta ni escribas contraseñas.")
+    envio = (
+        "EL ENVÍO\n"
+        f"- Cuenta de Mercado Libre: {d['cuenta']} ({d['codigo']}). Antes de empezar, confirma que la sesión abierta "
+        "en Mercado Libre es de esa cuenta. Si es otra, DETENTE y avísame.\n"
+        f"- Orden de Odoo: {orden['orden']} · borrador · sale del almacén {orden.get('almacen') or '—'} · semana "
+        f"{semana['semana']} ({semana['rango']}).\n"
+        f"- {len(lineas)} productos · {piezas:,} piezas en total.")
+    pasos = [
+        "En Mercado Libre abre la gestión de stock de Full (Full, en el menú de Ventas) y entra a «Planificación de "
+        "envíos» para crear un envío a Full.",
+        "Agrega EXACTAMENTE estos productos con estas piezas. Búscalos por su número de publicación (MLM…) o por su "
+        "SKU. No agregues otros ni cambies cantidades, aunque Mercado Libre sugiera otras.",
+        "Si Mercado Libre no deja agregar un producto (no apto para Full, publicación pausada, límite de unidades), "
+        "NO lo sustituyas: anota el SKU y el motivo que muestre y sigue con los demás.",
+    ]
+    if prueba:
+        pasos += [
+            "ES UNA PRUEBA: llega hasta el resumen del envío y DETENTE. No lo confirmes, no reserves cita, no "
+            "descargues documentos y no subas nada a Omnicanal. Si Mercado Libre guardó un borrador del envío, dime "
+            "cómo encontrarlo para borrarlo después.",
+            "Termina con un resumen: qué productos aceptó Mercado Libre, cuáles no y por qué.",
+        ]
+    else:
+        pasos += [
+            "Cuando pida cómo y cuándo se entrega (colecta a domicilio, llevarlo a la bodega o paquetería) y la cita, "
+            "PREGÚNTAME antes de elegir: no reserves nada por tu cuenta.",
+            "Revisa el resumen contra esta lista y confirma el envío. Anota el número de envío que da Mercado Libre.",
+            "Descarga todos los documentos del envío: etiquetas de productos, etiquetas de bultos y la autorización "
+            "de ingreso (y el instructivo, si aparece).",
+            f"Abre Omnicanal: {panel}/fulfillment. En «Crear FULL», bloque «Órdenes de la semana», busca "
+            f"{orden['orden']} y presiona «Adjuntar guía». Escribe el número de envío, sube los PDF (puedes elegir "
+            "varios: el panel los une en uno) y presiona «Adjuntar». Espera a que diga «Guía adjuntada».",
+            "Termina con un resumen: número de envío, forma y fecha de entrega, productos que Mercado Libre no aceptó "
+            "y por qué, y los archivos que subiste.",
+        ]
+    reglas = (
+        "LAS REGLAS\n"
+        "- No toques la orden en Odoo (no la confirmes ni la edites) ni cambies nada más en Mercado Libre: precios, "
+        "publicaciones y stock quedan igual.\n"
+        "- Si algo no coincide con esta lista (otra cuenta, otro producto, otra cantidad), detente y pregúntame.\n"
+        "- No inventes datos: si no encuentras algo, dilo.")
+    return "\n\n".join([
+        encabezado, envio,
+        "LOS PRODUCTOS (publicación · SKU · piezas · producto)\n" + productos,
+        "LOS PASOS\n" + "\n".join(f"{i}. {p}" for i, p in enumerate(pasos, 1)),
+        reglas,
+    ])
+
+
+def prompt_ml(orden_id: int, panel: str | None = None, ahora: datetime | None = None) -> dict[str, Any]:
+    """
+    El prompt de «CARGAR FULL CON PROMPT» para una orden que creó el panel, con sus
+    renglones RELEÍDOS de Odoo y el número de publicación de cada SKU en esa cuenta.
+    Dice si el botón va activo: orden de Mercado Libre, en borrador, de la semana en
+    curso y sin guía todavía.
+    """
+    ahora = ahora or datetime.now(timezone.utc)
+    filas = odoo_ventas._kw("sale.order", "read", [[int(orden_id)], [
+        "name", "state", "origin", "client_order_ref", "create_date", "partner_id", "warehouse_id", "order_line",
+        "meli_etiqueta_filename"]])
+    if not filas:
+        return {"ok": False, "motivo": f"la orden {orden_id} no existe en Odoo"}
+    o = filas[0]
+    tienda = _tienda_de_socio(fenv._nombre(o.get("partner_id")))
+    if not str(o.get("origin") or "").startswith(fenv.ORIGEN_PANEL) or not tienda:
+        return {"ok": False, "motivo": f"{o['name']} no la creó «Crear FULL»: no tiene prompt"}
+    lineas: list[dict[str, Any]] = []
+    if o.get("order_line"):
+        for ln in odoo_ventas._kw("sale.order.line", "read", [o["order_line"], ["product_id", "product_uom_qty"]]):
+            if not ln.get("product_id") or int(ln.get("product_uom_qty") or 0) <= 0:
+                continue
+            completo = fenv._nombre(ln["product_id"])
+            m = fenv._RE_SKU.match(completo)
+            lineas.append({"sku": m.group(1) if m else completo, "nombre": (m.group(2) if m else completo) or None,
+                           "cantidad": int(ln["product_uom_qty"])})
+    d = TIENDAS[tienda]
+    if d["canal"] == "meli" and lineas:
+        # Una publicación por SKU y cuenta; si hubiera dos, la que ya es FULL.
+        pubs: dict[str, dict[str, Any]] = {}
+        for f in sdb.fetch_all(
+                "select l.sku::text sku, l.listing_id, coalesce(l.is_fulfillment, false) en_almacen "
+                "from channel.listings l join core.accounts a on a.id = l.account_id "
+                "where a.legacy_code = %(c)s and l.canal = 'mercado_libre' and l.sku::text = any(%(s)s) "
+                "and l.situacion in ('active', 'paused', 'under_review')",
+                {"c": d["codigo"], "s": [l["sku"] for l in lineas]}):
+            previa = pubs.get(f["sku"])
+            if not previa or (f["en_almacen"] and not previa["en_almacen"]):
+                pubs[f["sku"]] = f
+        for l in lineas:
+            l["listing_id"] = (pubs.get(l["sku"]) or {}).get("listing_id")
+    creada = fenv._iso(o.get("create_date"))
+    try:
+        semana = fsem.semana_de(datetime.fromisoformat(creada.replace("Z", "+00:00")) if creada else ahora)
+    except ValueError:
+        semana = fsem.semana_de(ahora)
+    prueba = ("PRUEBA" in str(o.get("origin") or "").upper()
+              or "PRUEBA" in str(o.get("client_order_ref") or "").upper())
+    guia = o.get("meli_etiqueta_filename") or None
+    porque = (f"{o['name']} ya no está en borrador" if o.get("state") not in ("draft", "sent")
+              else "el prompt es para Mercado Libre" if d["canal"] != "meli"
+              else "la orden no es de esta semana" if semana["clave"] != fsem.semana_de(ahora)["clave"]
+              else "ya tiene su guía" if guia else None)
+    orden = {"id": o["id"], "orden": o["name"], "estado": o.get("state"),
+             "almacen": fenv._nombre(o.get("warehouse_id")) or None, "creada": creada, "prueba": prueba,
+             "referencia": o.get("client_order_ref") or None, "guia_pdf": guia}
+    panel = panel if panel and _RE_ORIGEN_WEB.match(panel) else PANEL_POR_OMISION
+    return {"ok": True, "activo": porque is None, "porque": porque, "tienda": tienda, "nombre_tienda": d["nombre"],
+            "semana": semana, "orden": orden, "lineas": lineas, "piezas": sum(l["cantidad"] for l in lineas),
+            "prompt": texto_prompt_ml(orden, tienda, lineas, semana, panel),
+            "url": odoo_ventas.url_orden_publica().format(id=o["id"])}

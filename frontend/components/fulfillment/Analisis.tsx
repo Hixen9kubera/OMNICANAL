@@ -19,6 +19,9 @@
  * Los datos: `semanas` de `GET /api/fulfillment/envios`
  * (fulfillment_etapas.resumir_semanas); los envíos de la semana se filtran aquí.
  *
+ * WEEK OVER WEEK (v0.583.0): la semana la elige el selector de arriba de FULLFILMENT,
+ * el mismo de Crear FULL y Envíos; las flechas, la gráfica y la tabla de aquí lo mueven.
+ *
  * Desde v0.570.0 Análisis tiene una segunda vista, «Planeación de la semana»
  * (AnalisisPlaneacion.tsx): los totales, los ganadores sin existencia con su
  * reemplazo, los títulos que no coinciden con Odoo y las órdenes sin completar,
@@ -34,6 +37,7 @@ import {
   Ceja, ChipCanal, ChipFuente, FONDO_RAYADO, FONDO_RAYADO_AMBAR, PUNTO_CUENTA, RAYADO, RAYADO_ROSA, Tarjeta,
   num, rangoSemana, semanaIso,
 } from "./ui";
+import type { Semana } from "./semana";
 import type { Cuenta, Envio, FiltroCanal, FiltroCuenta, RespuestaEnvios, SemanaAnalisis, Tienda } from "./tipos";
 
 const TIT_AVISOS = "Avisos de FULL de Mercado Libre (webhook fbm_stock_operations) resueltos a tipo, piezas y SKU; "
@@ -45,9 +49,13 @@ const llave = (s: Pick<SemanaAnalisis, "anio" | "semana">) => `${s.anio}-${s.sem
 type Vista = "envios" | "planeacion";
 const LLAVE_VISTA = "fulfillment.analisis_vista";
 
-export default function Analisis({ canal, cuenta, datos, onAbrir, plan, onAgregarReemplazo }: {
+export default function Analisis({
+  canal, cuenta, datos, onAbrir, plan, onAgregarReemplazo, semana, semanaActual, onSemana,
+}: {
   canal: FiltroCanal; cuenta: FiltroCuenta; datos: RespuestaEnvios | null; onAbrir: (e: Envio) => void;
   plan: PlanAnalisis | null; onAgregarReemplazo: (tienda: Tienda, sku: string, de: string) => void;
+  /** La semana del selector de arriba («2026-S40») y cómo moverla desde aquí. */
+  semana: string; semanaActual: Semana; onSemana: (clave: string) => void;
 }) {
   const [vista, setVista] = useState<Vista>("envios");
   useEffect(() => {
@@ -63,8 +71,9 @@ export default function Analisis({ canal, cuenta, datos, onAbrir, plan, onAgrega
   const opciones: { k: Vista; t: string; sub: string }[] = [
     { k: "envios", t: "Enviado vs recibido", sub: "por semana" },
     { k: "planeacion", t: "Planeación de la semana",
-      sub: plan ? `${num(plan.ganadores.length)} ganadores sin existencia · ${num(plan.titulos.length)} títulos por revisar`
-        : "leyendo la planeación…" },
+      sub: semana !== semanaActual.clave ? "el plan que quedó guardado de esa semana"
+        : plan ? `${num(plan.ganadores.length)} ganadores sin existencia · ${num(plan.titulos.length)} títulos por revisar`
+          : "leyendo la planeación…" },
   ];
   return (
     <>
@@ -79,30 +88,25 @@ export default function Analisis({ canal, cuenta, datos, onAbrir, plan, onAgrega
         ))}
       </div>
       {vista === "envios"
-        ? <EnviosPorSemana canal={canal} cuenta={cuenta} datos={datos} onAbrir={onAbrir} />
-        : <PlaneacionSemana plan={plan} canal={canal} cuenta={cuenta} onAgregarReemplazo={onAgregarReemplazo} />}
+        ? <EnviosPorSemana canal={canal} cuenta={cuenta} datos={datos} onAbrir={onAbrir} semana={semana} onSemana={onSemana} />
+        : <PlaneacionSemana plan={plan} canal={canal} cuenta={cuenta} onAgregarReemplazo={onAgregarReemplazo}
+                            semana={semana} semanaActual={semanaActual} />}
     </>
   );
 }
 
-function EnviosPorSemana({ canal, cuenta, datos, onAbrir }: {
+function EnviosPorSemana({ canal, cuenta, datos, onAbrir, semana, onSemana }: {
   canal: FiltroCanal; cuenta: FiltroCuenta; datos: RespuestaEnvios | null; onAbrir: (e: Envio) => void;
+  semana: string; onSemana: (clave: string) => void;
 }) {
   const grupo = canal === "amazon" || canal === "walmart" ? canal : cuenta === "todas" ? "meli" : `meli:${cuenta}`;
   const serie = useMemo(() => datos?.semanas?.[grupo]?.semanas ?? [], [datos, grupo]);
   const porValidar = datos?.semanas?.[grupo]?.por_validar;
   const medible = grupo.startsWith("meli");
 
-  // Arranca en la semana en curso si ya tiene salidas; si no, en la última que sí.
-  const inicial = useMemo(() => {
-    const actual = serie.find((s) => s.actual);
-    if (actual && actual.envios > 0) return llave(actual);
-    const ultima = [...serie].reverse().find((s) => s.envios > 0);
-    return ultima ? llave(ultima) : actual ? llave(actual) : null;
-  }, [serie]);
-  const [elegida, setElegida] = useState<string | null>(null);
-  useEffect(() => { setElegida(inicial); }, [inicial]);
-  const i = serie.findIndex((s) => llave(s) === elegida);
+  // La semana la elige el selector de arriba (la misma de Crear FULL y Envíos).
+  const setElegida = onSemana;
+  const i = serie.findIndex((s) => llave(s) === semana);
   const s = i >= 0 ? serie[i] : null;
 
   const envios = useMemo(() => (datos?.envios ?? []).filter((e) => {
@@ -117,10 +121,25 @@ function EnviosPorSemana({ canal, cuenta, datos, onAbrir }: {
   if (!datos) {
     return <div className="mt-4 rounded-2xl px-6 py-12 text-center text-sm text-slate-500" style={RAYADO}>Leyendo Odoo y los avisos de ML…</div>;
   }
-  if (!serie.length || !s) {
+  if (!serie.length) {
     return <div className="mt-4 rounded-2xl px-6 py-12 text-center text-sm text-slate-500" style={RAYADO}>
       No hay salidas validadas para este programa y cuenta.
     </div>;
+  }
+  if (!s) {
+    // La semana elegida no está en la serie (es anterior al registro): se puede elegir otra aquí.
+    return (
+      <div className="mt-4 flex flex-col gap-3">
+        <div className="rounded-2xl px-6 py-8 text-center text-sm text-slate-500" style={RAYADO}>
+          La semana {semana.split("-")[1] ?? semana} no tiene salidas validadas registradas para este programa y cuenta.
+          Elige otra en el selector de arriba o en la gráfica.
+        </div>
+        <Tarjeta className="min-w-0">
+          <Ceja>Enviado contra recibido · últimas {Math.min(EN_GRAFICA, serie.length)} semanas</Ceja>
+          <Grafica semanas={serie.slice(-EN_GRAFICA)} elegida={semana} onElegir={setElegida} medible={grupo.startsWith("meli")} />
+        </Tarjeta>
+      </div>
+    );
   }
 
   const programa = grupo === "amazon" ? "Amazon FBA" : grupo === "walmart" ? "Walmart WFS"

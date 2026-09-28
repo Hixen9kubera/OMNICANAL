@@ -11,15 +11,19 @@ y services/fulfillment_sku.py.
   GET  /api/fulfillment/crear-full/imagenes      la foto de Odoo de cada SKU (títulos que no coinciden)
   POST /api/fulfillment/crear-full/vista-previa  qué se crearía, releyendo Odoo y ML. No escribe.
   POST /api/fulfillment/crear-full/excel         la planeación en .xlsx. No escribe.
-  POST /api/fulfillment/crear-full/ia            arranca la revisión con IA (Claude). No escribe.
-  GET  /api/fulfillment/crear-full/ia/{id}       su resultado
+  GET  /api/fulfillment/crear-full/semana        el plan y el chat de una semana (y si hay un turno corriendo)
+  POST /api/fulfillment/crear-full/semana/plan   guarda el plan de la semana EN CURSO (bitácora; no toca Odoo)
+  POST /api/fulfillment/crear-full/ia            un turno del chat de la semana con DeepSeek. No escribe en Odoo.
+  GET  /api/fulfillment/crear-full/ia/{id}       cómo va (lo que lleva escrito, ya validado) y su resultado
+  GET  /api/fulfillment/crear-full/prompt-ml     el prompt para cargar en ML el FULL de una orden del panel
   POST /api/fulfillment/crear-full               crea las cotizaciones en BORRADOR (interruptor)
-  POST /api/fulfillment/crear-full/guia          número de envío + guía PDF en una orden del panel
+  POST /api/fulfillment/crear-full/guia          número de envío + guía PDF (uno o varios, se unen) en una orden
   POST /api/fulfillment/crear-full/interruptor   enciende/apaga la escritura en Odoo
   GET  /api/fulfillment/sku/{sku}                la ficha del SKU (la ventana del detalle)
 
 Permisos (core/rbac.py): los GET heredan `operador` de /api/fulfillment; vista previa,
-Excel e IA también son de `operador` (no escriben); crear, guía e interruptor, de admin.
+Excel, IA y el plan de la semana también son de `operador` (no escriben en Odoo); crear,
+guía e interruptor, de admin.
 """
 from __future__ import annotations
 
@@ -32,12 +36,14 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from routers.fulfillment_envios import _lectura as lectura_envios
-from services import cache_lectura, fulfillment_excel, fulfillment_full, fulfillment_ia, fulfillment_sku
+from services import (cache_lectura, fulfillment_excel, fulfillment_full, fulfillment_ia, fulfillment_semana,
+                      fulfillment_sku)
 
 router = APIRouter(prefix="/api/fulfillment", tags=["fulfillment"])
 log = logging.getLogger("omnicanal.fulfillment_full")
 
 _MAX_PDF = 15 * 1024 * 1024
+_MAX_GUIA = 25 * 1024 * 1024     # los PDF de un envío, ya unidos en uno
 
 
 class Renglon(BaseModel):
@@ -60,6 +66,11 @@ class Solicitud(BaseModel):
     # Modo prueba: la orden dice «PRUEBA · NO CONFIRMAR NI SURTIR» y no se resta
     # de la siguiente planeación.
     prueba: bool = True
+
+
+class PlanSemana(BaseModel):
+    semana: str = Field(max_length=10)
+    plan: dict[str, Any]
 
 
 def _actor(request: Request | None) -> str:
@@ -126,14 +137,52 @@ async def excel(plan: dict[str, Any] = Body(...)) -> Response:
                     headers={"Content-Disposition": f'attachment; filename="{nombre}"'})
 
 
+@router.get("/crear-full/semana")
+async def semana(clave: str = Query("", max_length=10)) -> dict[str, Any]:
+    """El plan y el chat de una semana («2026-S40»; vacío = la en curso). Sólo la en curso se edita."""
+    actual = fulfillment_semana.semana_de()
+    info = fulfillment_semana.semana_por_clave(clave) if clave else actual
+    if not info:
+        raise HTTPException(400, "semana inválida: se escribe como «2026-S40»")
+    try:
+        datos = await asyncio.to_thread(fulfillment_semana.leer, info["clave"])
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"no se pudo leer la semana: {exc}") from exc
+    return {"semana": info, "actual": actual, "es_actual": info["clave"] == actual["clave"], **datos,
+            "resumen": fulfillment_semana.resumen_plan(datos.get("plan")),
+            "corriendo": fulfillment_ia.corriendo_en(info["clave"])}
+
+
+@router.post("/crear-full/semana/plan")
+async def guardar_plan(s: PlanSemana, request: Request) -> dict[str, Any]:
+    """Guarda el plan de la semana EN CURSO (cada guardado es una fila de la bitácora; manda la última)."""
+    actual = fulfillment_semana.semana_de()
+    if s.semana != actual["clave"]:
+        return {"ok": False, "motivo": f"Sólo se guarda el plan de la semana en curso ({actual['semana']})."}
+    try:
+        return await asyncio.to_thread(fulfillment_semana.guardar_plan, s.semana, s.plan, _actor(request))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"no se pudo guardar el plan: {exc}") from exc
+
+
 @router.post("/crear-full/ia")
 async def ia(datos: dict[str, Any] = Body(...), request: Request = None) -> dict[str, Any]:  # noqa: B008
+    # No bloquea: valida, registra el turno y lo corre en su hilo (ahí lee y escribe la bitácora).
     return fulfillment_ia.iniciar(datos, _actor(request))
 
 
 @router.get("/crear-full/ia/{tid}")
 async def ia_estado(tid: str) -> dict[str, Any]:
     return fulfillment_ia.estado(tid)
+
+
+@router.get("/crear-full/prompt-ml")
+async def prompt_ml(orden_id: int = Query(...), panel: str = Query("", max_length=200)) -> dict[str, Any]:
+    """El prompt de «CARGAR FULL CON PROMPT»: renglones releídos de Odoo y publicaciones de esa cuenta."""
+    try:
+        return await asyncio.to_thread(fulfillment_full.prompt_ml, orden_id, panel)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"Odoo no contestó: {exc}") from exc
 
 
 @router.post("/crear-full")
@@ -152,14 +201,30 @@ async def crear(s: Solicitud, request: Request) -> dict[str, Any]:
 
 @router.post("/crear-full/guia")
 async def guia(orden_id: int = Form(...), numero: str = Form(""), pdf: UploadFile | None = File(None),
+               pdfs: list[UploadFile] | None = File(None),
                request: Request = None) -> dict[str, Any]:  # noqa: B008
-    contenido = None
+    # Uno o varios PDF (etiquetas de productos, de bultos, autorización de ingreso): se unen en uno.
+    archivos = [f for f in [pdf, *(pdfs or [])] if f is not None]
+    partes: list[bytes] = []
     nombre = None
-    if pdf is not None:
-        contenido = await pdf.read()
-        nombre = pdf.filename
-        if len(contenido) > _MAX_PDF:
-            raise HTTPException(413, "la guía pesa más de 15 MB")
+    for f in archivos:
+        b = await f.read()
+        if len(b) > _MAX_PDF:
+            raise HTTPException(413, f"«{f.filename}» pesa más de 15 MB")
+        if not b.startswith(b"%PDF"):
+            return {"ok": False, "accion": "sin_pdf", "motivo": f"«{f.filename}» no es un PDF"}
+        partes.append(b)
+        nombre = nombre or f.filename
+    contenido = None
+    if partes:
+        try:
+            contenido = await asyncio.to_thread(fulfillment_full.unir_pdfs, partes)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "accion": "sin_pdf", "motivo": f"no se pudieron unir los PDF: {exc}"}
+        if len(contenido) > _MAX_GUIA:
+            raise HTTPException(413, "los PDF juntos pesan más de 25 MB")
+        if len(partes) > 1:
+            nombre = f"guia_{len(partes)}_documentos.pdf"
     try:
         r = await asyncio.to_thread(fulfillment_full.adjuntar_guia, orden_id, numero, contenido, nombre,
                                     _actor(request))

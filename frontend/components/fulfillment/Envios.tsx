@@ -27,6 +27,7 @@ import FichaSku from "./FichaSku";
 import {
   BotonCerrar, Ceja, ChipCanal, ChipFuente, FONDO_RAYADO, Rail, RailLinea, Tarjeta, Ventana, fecha, num, pasosDe, tasaDe,
 } from "./ui";
+import type { Semana } from "./semana";
 import type { Envio, EnvioConLineas, LineaOdoo } from "./tipos";
 
 const POR_PAGINA = 40;
@@ -53,8 +54,12 @@ const ESTADOS: { k: EstadoSeguimiento | "todos"; t: string; titulo: string; punt
 ];
 
 export function TablaEnvios({
-  envios, total, onAbrir,
-}: { envios: Envio[]; total: number; onAbrir: (e: Envio) => void }) {
+  envios, total, onAbrir, semana,
+}: {
+  envios: Envio[]; total: number; onAbrir: (e: Envio) => void;
+  /** La semana elegida arriba (por la fecha de la orden de venta). null = todas las semanas. */
+  semana?: Semana | null;
+}) {
   const [estado, setEstado] = useState<EstadoSeguimiento | "todos">("todos");
   const [busca, setBusca] = useState("");
   const [visibles, setVisibles] = useState(POR_PAGINA);
@@ -77,11 +82,14 @@ export function TablaEnvios({
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <div className="flex items-center gap-2">
-            <Ceja>Un renglón por salida de Odoo · {num(filtrados.length)} de {num(total)} envíos</Ceja>
+            <Ceja>
+              Un renglón por salida de Odoo · {num(filtrados.length)} de {num(total)} envíos
+              {semana ? ` · órdenes de la ${semana.semana} (${semana.rango})` : " · todas las semanas"}
+            </Ceja>
             <ChipFuente />
           </div>
           <h2 className="mt-1 text-[17px] font-extrabold tracking-tight text-slate-900">
-            ¿En qué va cada envío?
+            {semana ? `¿En qué va cada envío de la ${semana.semana}?` : "¿En qué va cada envío?"}
           </h2>
         </div>
         <label className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5">
@@ -194,7 +202,9 @@ export function TablaEnvios({
             {filtrados.length === 0 && (
               <tr>
                 <td colSpan={6} className="px-4 py-10 text-center text-sm text-slate-500">
-                  Ningún envío con estos filtros. No es un error de lectura: Odoo contestó y no hay salidas así.
+                  {semana
+                    ? `Ninguna orden a FULL creada en la ${semana.semana} (${semana.rango}) con estos filtros. No es un error de lectura: Odoo contestó. Cambia de semana arriba o marca «ver todas las semanas».`
+                    : "Ningún envío con estos filtros. No es un error de lectura: Odoo contestó y no hay salidas así."}
                 </td>
               </tr>
             )}

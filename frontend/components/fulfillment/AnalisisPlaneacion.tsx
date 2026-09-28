@@ -15,7 +15,8 @@
  *     sin validarse.
  *
  * Los datos los arma Crear FULL (`onPlan`), que se queda montado aunque se cambie de
- * pantalla: así lo editado no se pierde.
+ * pantalla: así lo editado no se pierde. Una semana ANTERIOR (v0.583.0, selector de arriba)
+ * enseña el plan que quedó guardado de esa semana (`PlanDeOtraSemana`).
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -23,7 +24,8 @@ import { CheckCircle2, ExternalLink, ImageOff, PackageX, Replace } from "lucide-
 import { API_BASE, fetchSesion } from "@/lib/api";
 import type { Totales } from "./proponer";
 import { Ayuda, Ceja, FONDO_RAYADO, Tarjeta, dia, num, pesos } from "./ui";
-import type { BorradorFull, FiltroCanal, FiltroCuenta, SalidaAbierta, Tienda } from "./tipos";
+import type { Semana } from "./semana";
+import type { BorradorFull, EstadoSemana, FiltroCanal, FiltroCuenta, SalidaAbierta, Tienda } from "./tipos";
 
 export interface GanadorAnalisis {
   tienda: Tienda; sku: string; nombre: string | null; vv: number; v7: number; precio: number | null;
@@ -71,11 +73,14 @@ function Lleva({ dias, limite = 21 }: { dias: number | null; limite?: number }) 
   );
 }
 
-export default function PlaneacionSemana({ plan, canal, cuenta, onAgregarReemplazo }: {
+export default function PlaneacionSemana({ plan, canal, cuenta, onAgregarReemplazo, semana, semanaActual }: {
   plan: PlanAnalisis | null;
   canal: FiltroCanal;
   cuenta: FiltroCuenta;
   onAgregarReemplazo: (tienda: Tienda, sku: string, de: string) => void;
+  /** La semana del selector de arriba; si no es la en curso, se enseña su plan guardado. */
+  semana?: string;
+  semanaActual?: Semana;
 }) {
   const [agregados, setAgregados] = useState<Set<string>>(new Set());
   // Primero lo accionable: los ganadores que SÍ tienen reemplazo.
@@ -103,6 +108,9 @@ export default function PlaneacionSemana({ plan, canal, cuenta, onAgregarReempla
     return () => { vivo = false; };
   }, [faltan]);
 
+  if (semana && semanaActual && semana !== semanaActual.clave) {
+    return <PlanDeOtraSemana clave={semana} canal={canal} cuenta={cuenta} />;
+  }
   if (!plan) {
     return (
       <div className="mt-4 rounded-2xl px-6 py-12 text-center text-sm text-slate-500" style={{ background: FONDO_RAYADO }}>
@@ -397,6 +405,101 @@ function Foto({ titulo, src, texto, enlace, extra, cargando }: {
           {extra ?? "ver"}<ExternalLink className="h-2.5 w-2.5" />
         </a>
       )}
+    </div>
+  );
+}
+
+/**
+ * Una semana ANTERIOR (v0.583.0): el plan que quedó guardado ese lunes a domingo, con
+ * quién puso cada renglón y por qué, y cuánto se habló con la IA. Los ganadores, los
+ * títulos y las órdenes sin completar son de HOY: se ven en la semana en curso.
+ */
+function PlanDeOtraSemana({ clave, canal, cuenta }: { clave: string; canal: FiltroCanal; cuenta: FiltroCuenta }) {
+  const [e, setE] = useState<EstadoSemana | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let vivo = true;
+    setE(null);
+    setError(null);
+    fetchSesion(`${API_BASE}/api/fulfillment/crear-full/semana?clave=${encodeURIComponent(clave)}`, { cache: "no-store" })
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
+        return r.json() as Promise<EstadoSemana>;
+      })
+      .then((d) => { if (vivo) setE(d); })
+      .catch((x: unknown) => { if (vivo) setError(x instanceof Error ? x.message : String(x)); });
+    return () => { vivo = false; };
+  }, [clave]);
+
+  if (error) return <p className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-[12.5px] text-rose-800">No se pudo leer esa semana: {error}</p>;
+  if (!e) return <div className="mt-4 rounded-2xl px-6 py-12 text-center text-sm text-slate-500" style={{ background: FONDO_RAYADO }}>Leyendo el plan guardado de esa semana…</div>;
+  const entradas = (e.plan?.entradas ?? [])
+    .filter((x) => x.incluido && x.cantidad > 0 && tiendaEnFiltro(x.tienda, canal, cuenta))
+    .sort((a, b) => b.cantidad - a.cantidad);
+  const porTienda = new Map<string, { skus: number; piezas: number; ia: number }>();
+  for (const x of entradas) {
+    const t = porTienda.get(x.tienda) ?? { skus: 0, piezas: 0, ia: 0 };
+    t.skus += 1;
+    t.piezas += x.cantidad;
+    t.ia += x.origen === "ia" ? 1 : 0;
+    porTienda.set(x.tienda, t);
+  }
+  const costo = e.turnos.reduce((a, t) => a + (t.resultado?.costo_usd ?? 0), 0);
+  return (
+    <div className="mt-4 flex flex-col gap-3">
+      <Tarjeta className="min-w-0">
+        <Ceja>Planeación de la {e.semana.semana} · {e.semana.rango} · semana cerrada</Ceja>
+        <h3 className="mt-1 text-[16px] font-extrabold tracking-tight text-slate-900">Así quedó el plan de esa semana</h3>
+        <p className="mt-0.5 text-[12px] text-slate-500">
+          {e.plan?.guardado ? `Último guardado: ${dia(e.plan.guardado)}${e.plan.quien ? ` por ${e.plan.quien.split("@")[0]}` : ""}. ` : "Esa semana no se guardó ningún plan. "}
+          {e.turnos.length ? `${e.turnos.length} turno${e.turnos.length === 1 ? "" : "s"} con la IA${costo ? ` (≈ US$${costo.toFixed(2)})` : ""}.` : "Sin chat con la IA."}
+          {" "}Lo que se envió y recibió de verdad está en «Enviado vs recibido».
+        </p>
+        <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          {[...porTienda.entries()].map(([t, x]) => (
+            <div key={t} className="rounded-xl border border-slate-200 px-3 py-2 text-[12.5px]">
+              <div className="font-bold text-slate-700">{t.replace("meli:", "ML ")}</div>
+              <div className="font-mono text-[15px] font-extrabold tabular-nums text-slate-900">{num(x.piezas)} pzs</div>
+              <div className="text-[11.5px] text-slate-500">{num(x.skus)} SKUs · {num(x.ia)} de la IA</div>
+            </div>
+          ))}
+          {!porTienda.size && <p className="text-[12.5px] text-slate-400">Nada para este canal y cuenta.</p>}
+        </div>
+      </Tarjeta>
+      {entradas.length > 0 && (
+        <Tarjeta className="min-w-0">
+          <Ceja>Los SKUs del plan · {entradas.length}</Ceja>
+          <div className="mt-2 max-h-[60vh] overflow-auto rounded-xl border border-slate-200">
+            <table className="w-full min-w-[720px] text-[12.5px]">
+              <thead className="sticky top-0 bg-slate-50 text-left text-[10px] font-bold uppercase tracking-[.05em] text-slate-500">
+                <tr>
+                  <th className="px-3 py-2">SKU</th><th className="px-3 py-2">Tienda</th>
+                  <th className="px-3 py-2 text-right">Piezas</th><th className="px-3 py-2">Quién · por qué</th>
+                </tr>
+              </thead>
+              <tbody>
+                {entradas.map((x) => (
+                  <tr key={`${x.tienda}|${x.sku}`} className="border-t border-slate-100 align-top">
+                    <td className="px-3 py-1.5 font-mono font-bold text-slate-800">
+                      {x.sku}
+                      {x.reemplazo_de && <span className="ml-1.5 rounded bg-violet-600 px-1.5 text-[9.5px] font-extrabold uppercase text-white">reemplazo de {x.reemplazo_de}</span>}
+                    </td>
+                    <td className="px-3 py-1.5 text-slate-600">{x.tienda.replace("meli:", "ML ")}</td>
+                    <td className="px-3 py-1.5 text-right font-mono font-bold tabular-nums">{num(x.cantidad)}</td>
+                    <td className="px-3 py-1.5 text-[11.5px] text-slate-500">
+                      {x.origen === "ia" ? <span className="font-semibold text-violet-700">IA</span> : x.origen === "estandar" ? "propuesta estándar" : "a mano"}
+                      {x.motivo ? ` · ${x.motivo}` : ""}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Tarjeta>
+      )}
+      <p className="text-xs text-slate-400">
+        Los ganadores sin existencia, los títulos que no coinciden y las órdenes sin completar son de hoy: se ven en la semana en curso.
+      </p>
     </div>
   );
 }

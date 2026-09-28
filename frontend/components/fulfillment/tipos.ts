@@ -330,6 +330,9 @@ export interface BorradorFull {
   prueba: boolean;
   piezas: number;
   skus: number;
+  lineas?: { sku: string; cantidad: number }[];
+  /** El PDF de la guía del marketplace, si ya se adjuntó. Hasta entonces: «CARGAR FULL CON PROMPT». */
+  guia_pdf?: string | null;
   url: string;
 }
 
@@ -421,25 +424,130 @@ export interface ResultadoGuia {
 
 export interface ModeloIA { id: string; proveedor: string; nombre: string; nota: string; disponible: boolean }
 
-/** Un turno del agente de planeación (DeepSeek), ya validado por el backend. */
-export interface RevisionIA {
-  /** Lo que la IA le contesta a la persona sobre su instrucción. */
+// ── La semana: su plan y su chat (v0.583.0) ────────────────────────────────
+
+/** Una semana ISO (lunes a domingo, hora de CDMX), como la contesta el backend. */
+export interface SemanaInfo {
+  clave: string; semana: string; anio: number; numero: number; lunes: string; domingo: string; rango: string;
+}
+
+/** Quién puso un renglón del plan: la IA, la persona a mano o la propuesta estándar. */
+export type OrigenEntrada = "ia" | "manual" | "estandar";
+
+/** Un renglón del plan de la semana: cuánto va de un SKU a una tienda, quién lo puso y por qué. */
+export interface EntradaPlan {
+  tienda: Tienda;
+  sku: string;
+  cantidad: number;
+  origen: OrigenEntrada;
+  /** La recomendación de la IA para ese SKU. */
+  motivo: string | null;
+  /** El turno de la IA que lo tocó por última vez. */
+  turno: string | null;
+  reemplazo_de: string | null;
+  /** Des-seleccionado = no va, pero conserva su cantidad por si se vuelve a marcar. */
+  incluido: boolean;
+}
+
+/** El plan como se guarda en la bitácora: cada guardado es una fila y manda la última. */
+export interface PlanGuardado {
+  version: number;
+  entradas: EntradaPlan[];
+  quitados: string[];
+  activas: Tienda[];
+  parametros: Partial<ParametrosFull>;
+  id?: number;
+  guardado?: string | null;
+  quien?: string | null;
+}
+
+export interface AjusteIA { tienda: Tienda; sku: string; cantidad: number; motivo: string; nota: string | null }
+export interface ReemplazoIA {
+  tienda: Tienda; agotado: string; reemplazo: string; cantidad: number; tipo_match: string; motivo: string;
+  nota: string | null;
+}
+
+/**
+ * Lo que contestó la IA en un turno, ya validado por el backend. Sin recomendaciones,
+ * alertas, confirmación ni resumen aparte (Brandon, 28-sep): la recomendación va dentro
+ * de cada ajuste y los totales los calcula el panel.
+ */
+export interface RespuestaIA {
   respuesta: string;
-  /** Acciones concretas para la semana, como las diría un planeador. */
-  recomendaciones: string[];
-  confirmacion: string;
-  resumen: string;
-  ajustes: { tienda: Tienda; sku: string; cantidad: number; motivo: string; nota: string | null }[];
-  reemplazos: { tienda: Tienda; agotado: string; reemplazo: string; tipo_match: string; motivo: string }[];
-  alertas: { tienda: string; sku: string; tipo: string; detalle: string }[];
+  ajustes: AjusteIA[];
+  reemplazos: ReemplazoIA[];
   descartados: Record<string, unknown>[];
   modelo?: string;
-  /** `cache` = tokens de entrada que se releyeron de la caché (turnos de seguimiento). */
-  tokens?: { entrada: number; salida: number; cache?: number; razonamiento?: number };
   modelo_id?: string;
   modelo_nombre?: string;
+  /** `cache` = tokens de entrada que se releyeron de la caché (turnos de seguimiento). */
+  tokens?: { entrada: number; salida: number; cache?: number; razonamiento?: number; entrada_sin_cache?: number };
   /** Lo que costó el turno con los precios de lista (US$). */
   costo_usd?: number | null;
+  /** Ese turno le dio a la IA la planeación del día (el primero de cada día). */
+  datos_nuevos?: boolean;
+}
+
+/** Un turno del chat de la semana, como lo guarda la bitácora. */
+export interface TurnoSemana {
+  id: string;
+  instruccion: string;
+  modelo?: string;
+  modelo_nombre?: string;
+  estado: "listo" | "error";
+  error?: string;
+  resultado?: RespuestaIA;
+  segundos?: number;
+  creado?: string | null;
+  quien?: string | null;
+}
+
+export interface ResumenPlan { skus: number; piezas: number; reemplazos: number; de_ia: number }
+
+/** `GET /api/fulfillment/crear-full/semana`. */
+export interface EstadoSemana {
+  semana: SemanaInfo;
+  actual: SemanaInfo;
+  es_actual: boolean;
+  turnos: TurnoSemana[];
+  plan: PlanGuardado | null;
+  datos: { dia?: string; creado?: string | null; quien?: string | null; tiendas?: string[] } | null;
+  resumen: ResumenPlan & { por_tienda: Record<string, ResumenPlan> };
+  corriendo: { id: string; quien: string; instruccion: string; modelo: string; segundos: number } | null;
+}
+
+/** Cómo va un turno de la IA (`GET /api/fulfillment/crear-full/ia/{id}`). */
+export interface AvanceIA {
+  estado: "corriendo" | "listo" | "error" | "desconocido";
+  semana?: string;
+  segundos?: number;
+  fase?: "leyendo" | "pensando" | "escribiendo";
+  /** Tokens de razonamiento, aproximados, mientras piensa. */
+  razonamiento?: number;
+  /** Lo que lleva escrito, ya validado: se aplica a la tabla en vivo. */
+  parcial?: { respuesta: string; ajustes: AjusteIA[]; reemplazos: ReemplazoIA[] };
+  resultado?: RespuestaIA;
+  motivo?: string;
+  sin_guardar?: boolean;
+}
+
+/** `GET /api/fulfillment/crear-full/prompt-ml`: «CARGAR FULL CON PROMPT». */
+export interface PromptML {
+  ok: boolean;
+  motivo?: string;
+  activo?: boolean;
+  porque?: string | null;
+  tienda?: Tienda;
+  nombre_tienda?: string;
+  semana?: SemanaInfo;
+  orden?: {
+    id: number; orden: string; estado: string; almacen: string | null; creada: string | null; prueba: boolean;
+    referencia: string | null; guia_pdf: string | null;
+  };
+  lineas?: { sku: string; nombre: string | null; cantidad: number; listing_id?: string | null }[];
+  piezas?: number;
+  prompt?: string;
+  url?: string;
 }
 
 // ── La ficha del SKU ────────────────────────────────────────────────────────

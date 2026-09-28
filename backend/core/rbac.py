@@ -160,6 +160,10 @@ REGLAS: tuple[tuple[str, str, str], ...] = (
     # interruptor siguen en admin por la línea de abajo.
     ("POST", "/api/fulfillment/crear-full/excel", "operador"),
     ("POST", "/api/fulfillment/crear-full/ia", "operador"),
+    # v0.583.0 · el PLAN de la semana es de quien planea: se guarda en la bitácora
+    # (ops.process_log) y no toca Odoo. Le gana a la regla de admin de abajo porque
+    # su prefijo es más largo (_ORDENADAS).
+    ("POST", "/api/fulfillment/crear-full/semana", "operador"),
     ("POST", "/api/fulfillment/crear-full", "admin"),
     # Omnicanal · las publicaciones por canal, con su `margen_pct` — mismo
     # criterio que /api/fulfillment. Es la pestaña entera y el cajón de detalle
