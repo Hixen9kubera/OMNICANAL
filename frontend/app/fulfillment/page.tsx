@@ -53,6 +53,7 @@ import type { PlanAnalisis } from "@/components/fulfillment/AnalisisPlaneacion";
 import { DetalleEnvioModal, TablaEnvios, seguimientoDe } from "@/components/fulfillment/Envios";
 import SelectorSemana from "@/components/fulfillment/SelectorSemana";
 import { semanaDe, semanaPorClave } from "@/components/fulfillment/semana";
+import type { Semana } from "@/components/fulfillment/semana";
 import { FONDO_RAYADO, PUNTO_CUENTA, TEMA_CANAL, num } from "@/components/fulfillment/ui";
 import type { Envio, FiltroCanal, FiltroCuenta, RespuestaEnvios, Rol, Tienda } from "@/components/fulfillment/tipos";
 
@@ -89,22 +90,24 @@ export default function FulfillmentPage() {
   const [cuenta, setCuenta] = useState<FiltroCuenta>("todas");
   const [abierto, setAbierto] = useState<Envio | null>(null);
   const [recarga, setRecarga] = useState(0);
-  // La semana: la en curso al entrar (hora de CDMX). Se recalcula al volver a la pestaña
-  // por si cruzó la medianoche del domingo con la página abierta.
-  const [actual, setActual] = useState(() => semanaDe());
-  const [semana, setSemana] = useState(() => semanaDe().clave);
+  // La semana en curso (hora de CDMX) se calcula AL MONTAR: esta página se pre-renderiza al
+  // compilar y ahí «hoy» sería el día del build. Se recalcula al volver a la pestaña, por si
+  // cruzó la medianoche del domingo con la página abierta.
+  const [actual, setActual] = useState<Semana | null>(null);
+  const [semana, setSemana] = useState("");
   const [enviosTodas, setEnviosTodas] = useState(false);
-  const actualRef = useRef(actual);
+  const actualRef = useRef<Semana | null>(null);
   useEffect(() => {
     const revisar = () => {
       const hoy = semanaDe();
-      if (hoy.clave === actualRef.current.clave) return;
-      const antes = actualRef.current.clave;
+      const antes = actualRef.current?.clave;
+      if (hoy.clave === antes) return;
       actualRef.current = hoy;
       setActual(hoy);
-      // Quien estaba en la semana en curso pasa a la nueva; quien consultaba otra, se queda.
-      setSemana((s) => (s === antes ? hoy.clave : s));
+      // Al entrar, y quien estaba en la semana en curso, pasan a la nueva; quien consultaba otra, se queda.
+      setSemana((s) => (!s || s === antes ? hoy.clave : s));
     };
+    revisar();
     window.addEventListener("focus", revisar);
     const t = setInterval(revisar, 60_000);
     return () => { window.removeEventListener("focus", revisar); clearInterval(t); };
@@ -246,7 +249,7 @@ export default function FulfillmentPage() {
         </section>
 
         {/* ── La semana: una sola para las tres pantallas ── */}
-        <SelectorSemana valor={semana} actual={actual} onCambio={setSemana}
+        {actual && <SelectorSemana valor={semana} actual={actual} onCambio={setSemana}
                         nota={pantalla === "crear" ? (semana === actual.clave ? "se planea esta semana" : "semana cerrada: sólo consulta")
                           : pantalla === "envios" ? (enviosTodas ? "todas las semanas" : "por la fecha de la orden de venta")
                             : "por la fecha de la salida validada"}
@@ -256,7 +259,7 @@ export default function FulfillmentPage() {
                                    className="accent-indigo-600" />
                             ver todas las semanas
                           </label>
-                        ) : undefined} />
+                        ) : undefined} />}
 
         {/* ── Filtros: sólo donde se ven envíos (Crear FULL tiene sus propias tiendas) ── */}
         {pantalla !== "crear" && (
@@ -318,14 +321,16 @@ export default function FulfillmentPage() {
 
         {/* Siempre montado: cambiar de pantalla no borra lo editado ni la conversación con la IA. */}
         <div className={pantalla === "crear" ? "" : "hidden"}>
-          <CrearFull stock={datos?.stock} rol={rol} recarga={recarga} semana={semana} semanaActual={actual}
-                     onEstado={setPorMandar} onPlan={setPlan} reemplazoPedido={reemplazo} onReemplazoHecho={reemplazoHecho} />
+          {actual && (
+            <CrearFull stock={datos?.stock} rol={rol} recarga={recarga} semana={semana} semanaActual={actual}
+                       onEstado={setPorMandar} onPlan={setPlan} reemplazoPedido={reemplazo} onReemplazoHecho={reemplazoHecho} />
+          )}
         </div>
         {pantalla === "envios" && (datos
           ? <TablaEnvios envios={enviosSemana} total={todos.length} onAbrir={setAbierto}
                          semana={enviosTodas ? null : infoSemana} />
           : <Espera cargando={cargando} />)}
-        {pantalla === "analisis" && <Analisis canal={canal} cuenta={cuenta} datos={datos} onAbrir={setAbierto}
+        {pantalla === "analisis" && actual && <Analisis canal={canal} cuenta={cuenta} datos={datos} onAbrir={setAbierto}
                                               plan={plan} onAgregarReemplazo={pedirReemplazo}
                                               semana={semana} semanaActual={actual} onSemana={setSemana} />}
 

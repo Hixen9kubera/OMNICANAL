@@ -1001,6 +1001,21 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.584.0 — FULL semana a semana: el chat se rearma en orden y la semana la calcula el navegador
+
+Dos correcciones a v0.583.0, encontradas al releer el SQL y el render ANTES de que nadie usara el chat nuevo:
+
+- **El orden de la conversación.** `fulfillment_semana.conversacion` pedía los turnos con
+  `detalle->>'id' id … order by id`, y en Postgres el alias de salida le gana a la columna: los ordenaba por el id del
+  turno (texto al azar), no por la fila de la bitácora. La IA habría recibido la conversación revuelta y DeepSeek no
+  habría encontrado el prefijo en su caché. Ahora el id del turno va como `turno` y se ordena por `l.id`; una prueba
+  nueva fija el orden.
+- **La semana en curso se calcula al montar.** `/fulfillment` se pre-renderiza al compilar; con la semana calculada en
+  el `useState` inicial, el HTML traía la semana del día del build y, al pasar el lunes, no coincidía con la del
+  navegador. Ahora la calcula el navegador al abrir la página.
+
+**Pruebas:** 73 de FULL, suite completa en verde, `tsc` limpio y `next build` en verde.
+
 ### v0.583.0 — FULL semana a semana: el plan nace vacío cada lunes, un chat con la IA por semana, sus ajustes en vivo y «CARGAR FULL CON PROMPT»
 
 Brandon, 28-sep, la lista de mejoras de FULLFILMENT (puntos 0 a 6) y *"adicional replicar el funcionamiento del filtro

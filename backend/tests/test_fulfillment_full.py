@@ -790,6 +790,24 @@ class SemanaFull(unittest.TestCase):
         self.assertEqual(vistos[0][1]["pref"], "fulfillment_semana:2026-S40:%")
 
 
+    def test_la_conversacion_sale_en_el_orden_en_que_se_guardo(self):
+        consultas = []
+
+        def fetch_all(sql, p=None):
+            consultas.append(sql)
+            return [{"fila": 7, "turno": "b2", "mensaje": "M1", "salida": "S1"},
+                    {"fila": 9, "turno": "a1", "mensaje": "M2", "salida": "S2"},
+                    {"fila": 10, "turno": "c3", "mensaje": "M3", "salida": None}]
+
+        with mock.patch.object(fsem.sdb, "fetch_one",
+                               lambda sql, p=None: {"id": 5, "detalle": {"dia": "2026-09-28", "datos": {"tiendas": {}}}}),              mock.patch.object(fsem.sdb, "fetch_all", fetch_all):
+            c = fsem.conversacion("2026-S40")
+        self.assertEqual([t["id"] for t in c["turnos"]], ["b2", "a1"], "en orden de la bitácora; sin salida no se rearma")
+        self.assertIn("order by l.id", consultas[0],
+                      "por la fila, no por el id del turno: con alias «id» el orden salía revuelto")
+        self.assertEqual((c["datos"]["id"], c["datos"]["dia"]), (5, "2026-09-28"))
+
+
 class CargarFullConPrompt(unittest.TestCase):
     """El prompt para que un agente con navegador cargue el FULL en Mercado Libre y suba su guía."""
 

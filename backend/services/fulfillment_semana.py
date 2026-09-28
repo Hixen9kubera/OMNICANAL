@@ -224,14 +224,17 @@ def conversacion(clave: str) -> dict[str, Any]:
             where proceso = %(p)s and detail_ref like %(pref)s and accion = 'datos'
             order by id desc limit 1""",
         {"p": PROCESO, "pref": f"{PROCESO}:{clave}:%"})
+    # Ojo: el id del TURNO va como «turno». Con alias «id», el `order by id` ordenaría por
+    # ese texto (el alias le gana a la columna) y la conversación saldría revuelta.
     filas = sdb.fetch_all(
-        """select detalle->>'id' id, detalle->>'mensaje' mensaje, detalle->>'salida' salida
-             from ops.process_log
-            where proceso = %(p)s and detail_ref like %(pref)s and accion = 'turno'
-              and detalle->>'estado' = 'listo'
-            order by id""",
+        """select l.id as fila, l.detalle->>'id' as turno, l.detalle->>'mensaje' as mensaje,
+                  l.detalle->>'salida' as salida
+             from ops.process_log l
+            where l.proceso = %(p)s and l.detail_ref like %(pref)s and l.accion = 'turno'
+              and l.detalle->>'estado' = 'listo'
+            order by l.id""",
         {"p": PROCESO, "pref": f"{PROCESO}:{clave}:%"})
-    turnos = [{"id": f["id"], "mensaje": f["mensaje"], "salida": f["salida"]}
+    turnos = [{"id": f["turno"], "mensaje": f["mensaje"], "salida": f["salida"]}
               for f in filas if f.get("mensaje") and f.get("salida")]
     return {"datos": ({**(datos["detalle"] or {}), "id": datos["id"]} if datos else None), "turnos": turnos}
 
