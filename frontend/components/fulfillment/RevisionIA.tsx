@@ -111,7 +111,7 @@ function movio(r: Pick<RespuestaIA, "ajustes" | "reemplazos">) {
 }
 
 export default function ChatSemana({
-  semana, esActual, turnos, vivo, datos, totales, abierto, onAbrir, onEnviar, onVerIA, bloqueo,
+  semana, esActual, turnos, vivo, datos, totales, abierto, onAbrir, onEnviar, onVerIA, bloqueo, onAplicarTurno,
 }: {
   semana: SemanaInfo;
   esActual: boolean;
@@ -127,6 +127,8 @@ export default function ChatSemana({
   onVerIA: () => void;
   /** Por qué no se puede escribir ahora (semana pasada, IA sin configurar, planeación leyéndose). */
   bloqueo?: string | null;
+  /** Vuelve a poner en el plan lo que propuso un turno (lo que se quitó a mano no regresa). */
+  onAplicarTurno?: (t: TurnoSemana) => void;
 }) {
   const [texto, setTexto] = useState("");
   const modelos: ModeloIA[] = datos?.ia_modelos ?? [];
@@ -203,7 +205,10 @@ export default function ChatSemana({
 
             {(turnos.length > 0 || vivo) && (
               <div ref={lista} className="mt-3 flex max-h-[460px] flex-col gap-3 overflow-y-auto pr-1">
-                {turnos.map((t) => <TurnoUI key={t.id} t={t} onVerIA={onVerIA} />)}
+                {turnos.map((t) => (
+                  <TurnoUI key={t.id} t={t} onVerIA={onVerIA}
+                           onAplicar={esActual && !vivo && onAplicarTurno ? () => onAplicarTurno(t) : undefined} />
+                ))}
                 {vivo && <EnCurso vivo={vivo} />}
               </div>
             )}
@@ -283,9 +288,10 @@ function Burbuja({ instruccion, pie }: { instruccion: string; pie: string }) {
   );
 }
 
-function TurnoUI({ t, onVerIA }: { t: TurnoSemana; onVerIA: () => void }) {
+function TurnoUI({ t, onVerIA, onAplicar }: { t: TurnoSemana; onVerIA: () => void; onAplicar?: () => void }) {
   const r = t.resultado;
   const quien = (t.quien ?? "").split("@")[0];
+  const [hecho, setHecho] = useState(false);
   return (
     <div className="flex flex-col gap-2">
       <Burbuja instruccion={t.instruccion}
@@ -301,6 +307,13 @@ function TurnoUI({ t, onVerIA }: { t: TurnoSemana; onVerIA: () => void }) {
             {(r.ajustes.length > 0 || r.reemplazos.length > 0) && (
               <button type="button" onClick={onVerIA} className="text-[11.5px] font-semibold text-violet-700 hover:underline">
                 ver en la tabla ↓
+              </button>
+            )}
+            {onAplicar && (r.ajustes.length > 0 || r.reemplazos.length > 0) && (
+              <button type="button" onClick={() => { onAplicar(); setHecho(true); }}
+                      title="Vuelve a poner en la tabla lo que propuso este turno. Lo que quitaste a mano no regresa."
+                      className="rounded-md border border-violet-200 bg-white px-2 py-0.5 text-[11px] font-bold text-violet-700 hover:bg-violet-50">
+                {hecho ? "aplicado ✓" : "Aplicar al plan"}
               </button>
             )}
           </div>

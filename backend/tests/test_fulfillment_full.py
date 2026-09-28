@@ -600,14 +600,25 @@ class ChatDeLaSemana(unittest.TestCase):
         self.assertEqual(fia.conversacion_openai(self.DATOS, turnos[:1], "M2"), m[:3],
                          "lo que se mandó en el turno 2 es el principio EXACTO del turno 3: DeepSeek lo relee de caché")
 
+    def test_la_tabla_se_escribe_igual_venga_de_la_pantalla_o_de_la_bitacora(self):
+        de_la_pantalla = {"tiendas": {"meli:Kubera": {"columnas": ["sku", "libre"], "filas": [["A", 10]]}},
+                          "corrida": {"ventana": "30 días", "cobertura_dias": 30}}
+        # jsonb no respeta el orden de las llaves: así regresa de la bitácora.
+        de_la_bitacora = {"corrida": {"cobertura_dias": 30, "ventana": "30 días"},
+                          "tiendas": {"meli:Kubera": {"filas": [["A", 10]], "columnas": ["sku", "libre"]}}}
+        self.assertEqual(fia.conversacion_openai(de_la_pantalla, [], "M")[0]["content"],
+                         fia.conversacion_openai(de_la_bitacora, [], "M")[0]["content"],
+                         "el 28-sep el 2º turno releyó de caché 1,024 de 61,311 tokens por el orden de las llaves")
+
     def test_la_huella_no_cambia_por_los_pendientes(self):
         otra = {**self.DATOS, "corrida": {**self.DATOS["corrida"], "renglones_pendientes": 5}}
         self.assertEqual(fia._huella(self.DATOS), fia._huella(otra))
         self.assertNotEqual(fia._huella(self.DATOS),
                             fia._huella({**self.DATOS, "corrida": {**self.DATOS["corrida"], "cobertura_dias": 45}}))
 
-    def _correr(self, cuerpo, conv, falla=None):
+    def _correr(self, cuerpo, conv, falla=None, plan_base=None):
         guardados, vistos = [], []
+        self.planes = []
 
         def llamar(mensajes, modelo=None, al_avanzar=None):
             vistos.append(mensajes)
@@ -625,9 +636,15 @@ class ChatDeLaSemana(unittest.TestCase):
             guardados.append((clave, accion, detalle))
             return 77
 
+        def guardar_plan(clave, plan, quien=""):
+            self.planes.append((clave, plan, quien))
+            return {"ok": True, "version": plan["version"]}
+
         with mock.patch.object(fia, "_hay_llave", lambda p: True), mock.patch.object(fia, "_llamar", llamar), \
              mock.patch.object(fia.fsem, "conversacion", lambda clave: conv), \
              mock.patch.object(fia.fsem, "guardar", guardar), \
+             mock.patch.object(fia.fsem, "ultimo_plan", lambda clave: plan_base), \
+             mock.patch.object(fia.fsem, "guardar_plan", guardar_plan), \
              mock.patch.object(fia.settings, "fulfillment_ia_modelo", "deepseek-v4-pro"):
             r = fia.iniciar(cuerpo, "brandon@kubera.mx", self.LUNES)
             if r.get("ok"):
@@ -651,6 +668,45 @@ class ChatDeLaSemana(unittest.TestCase):
         self.assertEqual((turno["estado"], turno["salida"], turno["datos_id"]), ("listo", "SALIDA", 77))
         self.assertIn("vacío", turno["mensaje"], "la semana empieza en cero")
         self.assertEqual(len(vistos[0]), 1, "primer turno: un solo mensaje, con la planeación al principio")
+        # El SERVIDOR guarda el plan con lo que propuso: si la persona se salió, al volver ya está.
+        self.assertEqual(len(self.planes), 1)
+        clave, plan, quien = self.planes[0]
+        self.assertEqual((clave, plan["version"], quien), ("2026-S40", 1, "brandon@kubera.mx"))
+        self.assertEqual([(x["sku"], x["cantidad"], x["origen"], x["turno"]) for x in plan["entradas"]],
+                         [("A", 6, "ia", r["id"])])
+        self.assertEqual(e["resultado"]["plan_version"], 1)
+
+    def test_el_resultado_se_suma_al_plan_guardado(self):
+        base = {"version": 3, "quitados": [],
+                "entradas": [{"tienda": "meli:Kubera", "sku": "B", "cantidad": 4, "origen": "manual"}]}
+        self._correr({"semana": "2026-S40", "datos": self.DATOS, "plan": [["meli:Kubera", "B", 4]]},
+                     {"datos": None, "turnos": []}, plan_base=base)
+        _, plan, _ = self.planes[0]
+        self.assertEqual(plan["version"], 4)
+        self.assertEqual(sorted((x["sku"], x["cantidad"], x["origen"]) for x in plan["entradas"]),
+                         [("A", 6, "ia"), ("B", 4, "manual")], "lo que la persona puso a mano se queda")
+
+    def test_si_la_ia_falla_no_se_toca_el_plan(self):
+        self._correr({"semana": "2026-S40", "datos": self.DATOS, "plan": []}, {"datos": None, "turnos": []},
+                     falla="DeepSeek contestó 500")
+        self.assertEqual(self.planes, [])
+
+    def test_la_actividad_para_el_icono_de_la_pestana(self):
+        ahora = time.time()
+        base = {"quien": "brandon@kubera.mx", "instrucciones": "", "modelo": "deepseek-v4-pro"}
+        fia._trabajos.update({
+            "c1": {**base, "estado": "corriendo", "inicio": ahora - 30, "semana": "2026-S40", "fase": "pensando"},
+            "l1": {**base, "estado": "listo", "inicio": ahora - 400, "fin": ahora - 100, "semana": "2026-S40",
+                   "resultado": {"ajustes": [{"cantidad": 5}, {"cantidad": 0}], "reemplazos": [{"cantidad": 2}]}},
+            "l0": {**base, "estado": "listo", "inicio": ahora - 900, "fin": ahora - 800, "semana": "2026-S40",
+                   "resultado": {"ajustes": [], "reemplazos": []}},
+            "s39": {**base, "estado": "listo", "inicio": ahora - 60, "fin": ahora - 5, "semana": "2026-S39"},
+        })
+        a = fia.actividad("2026-S40")
+        self.assertEqual((a["corriendo"]["id"], a["corriendo"]["fase"]), ("c1", "pensando"))
+        self.assertEqual((a["ultimo"]["id"], a["ultimo"]["estado"], a["ultimo"]["skus"], a["ultimo"]["piezas"]),
+                         ("l1", "listo", 2, 7), "el último que terminó ESA semana, con lo que puso")
+        self.assertEqual(fia.actividad("2026-S41"), {"semana": "2026-S41", "corriendo": None, "ultimo": None})
 
     def test_seguimiento_del_mismo_dia_reusa_la_planeacion(self):
         conv = {"datos": {"id": 5, "dia": "2026-09-28", "huella": fia._huella(self.DATOS), "datos": self.DATOS},
@@ -753,6 +809,27 @@ class SemanaFull(unittest.TestCase):
                          (["meli:Kubera|Z"], ["meli:Kubera"], {"cobertura_dias": 30}, 3))
         self.assertEqual(len(fsem.limpiar_plan({"entradas": [{"tienda": "amazon", "sku": "X", "motivo": "y" * 900}]})
                              ["entradas"][0]["motivo"]), 300)
+
+    def test_el_turno_de_la_ia_se_aplica_al_plan(self):
+        base = {"version": 2, "quitados": ["meli:Kubera|Q"], "entradas": [
+            {"tienda": "meli:Kubera", "sku": "A", "cantidad": 5, "origen": "manual", "reemplazo_de": "V"},
+            {"tienda": "meli:Kubera", "sku": "B", "cantidad": 3, "origen": "estandar"}]}
+        r = {"ajustes": [{"tienda": "meli:Kubera", "sku": "A", "cantidad": 9, "motivo": "vende más"},
+                         {"tienda": "meli:Kubera", "sku": "B", "cantidad": 0, "motivo": "ticket alto"},
+                         {"tienda": "meli:Kubera", "sku": "Q", "cantidad": 7, "motivo": "lo habían quitado"}],
+             "reemplazos": [{"tienda": "meli:San Corpe", "agotado": "X", "reemplazo": "Y", "cantidad": 4,
+                             "motivo": "mismo modelo"}]}
+        p = fsem.aplicar_turno(base, r, "t9")
+        por = {(e["tienda"], e["sku"]): e for e in p["entradas"]}
+        a = por[("meli:Kubera", "A")]
+        self.assertEqual(p["version"], 3)
+        self.assertEqual((a["cantidad"], a["origen"], a["reemplazo_de"], a["turno"], a["motivo"]),
+                         (9, "ia", "V", "t9", "vende más"), "conserva de quién es reemplazo")
+        self.assertEqual(por[("meli:Kubera", "B")]["cantidad"], 0, "0 = la IA lo saca")
+        self.assertNotIn(("meli:Kubera", "Q"), por, "lo que la persona quitó no regresa")
+        y = por[("meli:San Corpe", "Y")]
+        self.assertEqual((y["reemplazo_de"], y["cantidad"], y["incluido"]), ("X", 4, True))
+        self.assertEqual(fsem.aplicar_turno(None, r, "t1")["version"], 1, "sobre una semana vacía")
 
     def test_cuanto_va_en_un_plan(self):
         r = fsem.resumen_plan({"entradas": [

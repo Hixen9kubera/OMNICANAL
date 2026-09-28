@@ -1001,6 +1001,45 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.586.0 — Crear FULL con IA trabaja en segundo plano: el servidor guarda el plan y la pestaña avisa con una chispa que respira
+
+Brandon, 28-sep, después del primer uso: *"escribí este prompt, pero en la tabla me aparece vacío… me salí de la tab de
+FULLFILMENT… deberá de estar trabajando en segundo plano para poder realizar otras actividades como si fuera un chat de
+Claude; la tab FULLFILMENT tendrá un ícono con luces parecido a Claude: cuando está pensando cambia de color, estilo
+respiración; cuando termina, color verde"*, y *"deben permanecer los resultados aunque esté pensando… si me salgo cuando
+sigue pensando y me vuelvo a meter cuando termine de pensar"*.
+
+**Qué pasó.** El primer turno real (28-sep, 4 min 29 s, US$0.11) sí terminó —108 SKUs, 2,876 pzs, 9 reemplazos— pero la
+tabla quedó vacía: en v0.583.0 los ajustes los aplicaba la PANTALLA, y como la persona se salió de FULLFILMENT mientras la
+IA pensaba, nadie los puso en el plan ni lo guardó. El turno sí quedó guardado en el chat.
+
+**Ahora lo aplica el servidor.** Al terminar cada turno, el backend pone su resultado en el plan de la semana
+(`fulfillment_semana.aplicar_turno`, con el mismo criterio de la pantalla: cada ajuste deja su cantidad marcada «IA» con
+su recomendación, cada reemplazo entra «REEMPLAZO de …», lo que la persona quitó no regresa y lo que puso a mano se
+queda) y lo guarda ANTES de avisar que terminó. Si la persona sigue en la pantalla, la pantalla aplica lo mismo en vivo y
+guarda encima; si se fue, al volver ya está en la tabla, con lo del último turno resaltado. Mientras la IA piensa, el
+plan que ya había se queda como estaba.
+
+**«Aplicar al plan».** Cada turno del chat tiene un botón para volver a poner lo que propuso (lo quitado no regresa). Con
+él se recupera el primer turno del 28-sep, que se quedó sin aplicar.
+
+**La chispa de la pestaña.** Junto a «FULLFILMENT», en la barra de cualquier pantalla del panel, una chispa de rayos como
+la de Claude: mientras la IA piensa, respira y cambia de color (coral ↔ violeta); al terminar se pone verde (roja si
+falló) hasta que se abre FULLFILMENT (si ya se estaba ahí, se apaga a los 45 s). Al pasar el cursor dice qué está
+haciendo o qué dejó. Pregunta a `GET /api/fulfillment/crear-full/actividad`, que sólo mira la memoria del backend (no
+toca la base): cada 4 s mientras piensa, cada 15 s si no, y nunca con la pestaña del navegador escondida.
+
+**La caché de DeepSeek no se estaba aprovechando.** En los logs del 28-sep, el segundo turno releyó de caché sólo 1,024
+de 61,311 tokens: la planeación del primer turno llega de la pantalla y la de los siguientes, de la bitácora (jsonb), que
+no respeta el orden de las llaves, así que el texto cambiaba. Ahora se escribe con las llaves ordenadas y el prefijo es
+el mismo turno tras turno (la entrada de caché cuesta 30 veces menos). El segundo turno de ese día, de todos modos, tardó
+1 min 12 s y usó 7,947 tokens de salida contra los 35,687 del primero.
+
+**Pruebas:** 78 de FULL. Nuevas: el turno se aplica al plan en el servidor (y se suma a lo que ya había), un turno que
+falla no toca el plan, `aplicar_turno` respeta lo quitado y conserva el «reemplazo de», la actividad para el ícono (el
+último que terminó esa semana, con lo que puso) y la planeación escrita igual venga de la pantalla o de la bitácora.
+Suite completa en verde; `tsc` limpio y `next build` en verde.
+
 ### v0.585.0 — FULL semana a semana: el plan se guarda una vez por turno de la IA, no cada 2 segundos
 
 Mientras la IA escribe, sus ajustes llegan a la tabla cada 2 s y el guardado automático del plan (1.5 s después del último

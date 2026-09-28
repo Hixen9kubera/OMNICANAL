@@ -147,6 +147,39 @@ def limpiar_plan(plan: Any) -> dict[str, Any]:
             "quitados": quitados, "activas": activas, "parametros": parametros}
 
 
+def aplicar_turno(plan: dict[str, Any] | None, resultado: dict[str, Any], turno: str) -> dict[str, Any]:
+    """
+    El plan con lo que propuso un turno de la IA, con el MISMO criterio que la pantalla:
+    cada ajuste deja esa cantidad (0 = lo saca) marcado «IA» con su recomendación, cada
+    reemplazo entra marcado «REEMPLAZO de …», y lo que la persona QUITÓ no regresa.
+    Función pura.
+
+    Lo aplica el SERVIDOR al terminar el turno (v0.586.0, Brandon: "debe permanecer los
+    resultados… si me salgo cuando sigue pensando y me vuelvo a meter cuando termine"):
+    antes lo aplicaba la pantalla, y si la persona se salía de la pestaña, nadie lo guardaba.
+    """
+    base = limpiar_plan(plan or {})
+    quitados = set(base["quitados"])
+    entradas = {(e["tienda"], e["sku"]): e for e in base["entradas"]}
+
+    def poner(tienda: str, sku: str, cantidad: Any, motivo: Any, reemplazo_de: str | None) -> None:
+        if tienda not in TIENDAS_VALIDAS or not sku or f"{tienda}|{sku}" in quitados:
+            return
+        previa = entradas.get((tienda, sku)) or {}
+        entradas[(tienda, sku)] = {
+            "tienda": tienda, "sku": sku, "cantidad": _entero(cantidad), "origen": "ia",
+            "motivo": _texto(motivo, 300) or previa.get("motivo"), "turno": _texto(turno, 24),
+            "reemplazo_de": reemplazo_de or previa.get("reemplazo_de"), "incluido": True,
+        }
+
+    for a in resultado.get("ajustes") or []:
+        poner(str(a.get("tienda") or ""), str(a.get("sku") or ""), a.get("cantidad"), a.get("motivo"), None)
+    for r in resultado.get("reemplazos") or []:
+        poner(str(r.get("tienda") or ""), str(r.get("reemplazo") or ""), r.get("cantidad"), r.get("motivo"),
+              _texto(r.get("agotado"), 60))
+    return {**base, "version": base["version"] + 1, "entradas": list(entradas.values())}
+
+
 def resumen_plan(plan: dict[str, Any] | None) -> dict[str, Any]:
     """Cuánto va en un plan guardado, por tienda: SKUs, piezas y reemplazos."""
     por: dict[str, dict[str, int]] = {}
@@ -237,6 +270,16 @@ def conversacion(clave: str) -> dict[str, Any]:
     turnos = [{"id": f["turno"], "mensaje": f["mensaje"], "salida": f["salida"]}
               for f in filas if f.get("mensaje") and f.get("salida")]
     return {"datos": ({**(datos["detalle"] or {}), "id": datos["id"]} if datos else None), "turnos": turnos}
+
+
+def ultimo_plan(clave: str) -> dict[str, Any] | None:
+    """El último plan guardado de la semana (None = todavía vacío)."""
+    f = sdb.fetch_one(
+        """select id, detalle from ops.process_log
+            where proceso = %(p)s and detail_ref like %(pref)s and accion = 'plan'
+            order by id desc limit 1""",
+        {"p": PROCESO, "pref": f"{PROCESO}:{clave}:%"})
+    return {**(f["detalle"] or {}), "id": f["id"]} if f else None
 
 
 def guardar_plan(clave: str, plan: Any, quien: str = "") -> dict[str, Any]:

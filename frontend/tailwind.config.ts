@@ -36,11 +36,17 @@ const config: Config = {
           "0%": { backgroundColor: "#ede9fe" },
           "100%": { backgroundColor: "rgba(237,233,254,0.25)" },
         },
+        // FULLFILMENT · la chispa de la IA mientras piensa: respira y cambia de color (v0.586.0).
+        respira: {
+          "0%, 100%": { color: "#D97757", opacity: "0.55", transform: "scale(0.86)" },
+          "50%": { color: "#8B5CF6", opacity: "1", transform: "scale(1.1)" },
+        },
       },
       animation: {
         "fade-in": "fade-in 0.25s ease-out",
         "slide-in": "slide-in 0.28s cubic-bezier(0.22,1,0.36,1)",
         resalta: "resalta 2.4s ease-out forwards",
+        respira: "respira 2.6s ease-in-out infinite",
       },
     },
   },

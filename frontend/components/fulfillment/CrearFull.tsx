@@ -343,6 +343,13 @@ export default function CrearFull({
         version.current = e.plan?.version ?? 0;
         ultimaFirma.current = firmaPlan(entradas, q);
         setGuardado(e.plan ? { cuando: e.plan.guardado ?? null, quien: e.plan.quien ?? null } : null);
+        // Lo que puso el ÚLTIMO turno de la IA se resalta: si terminó mientras la persona estaba en
+        // otra pantalla, al volver se ve qué cambió (el servidor ya lo guardó en el plan).
+        const listos = e.turnos.filter((t) => t.estado === "listo");
+        const ultimoTurno = listos.length ? listos[listos.length - 1].id : null;
+        if (ultimoTurno && !e.corriendo) {
+          setResaltados(new Set(Object.entries(entradas).filter(([, x]) => x.turno === ultimoTurno).map(([k]) => k)));
+        }
       }
       setListo(true);
       if (e.turnos.length || e.corriendo) setChatAbierto(true);
@@ -494,6 +501,16 @@ export default function CrearFull({
     onReemplazoHecho?.(reemplazoPedido.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reemplazoPedido?.id, datos, listo]);
+
+  /** «Aplicar al plan» en un turno del chat: vuelve a poner lo que propuso (lo quitado no regresa). */
+  const aplicarTurno = (t: TurnoSemana) => {
+    if (!t.resultado || vivo) return;
+    aplicados.current = new Map();          // aplicar de nuevo aunque ya se hubiera aplicado antes
+    aplicarIA(t.id, t.resultado.ajustes, t.resultado.reemplazos);
+    setAviso(`Se aplicó al plan lo que propuso la IA en ese turno: ${t.resultado.ajustes.length} ajustes y `
+      + `${t.resultado.reemplazos.length} reemplazos, en violeta en la tabla.`);
+    setFiltro("ia");
+  };
 
   const llenarEstandar = () => {
     let n = 0;
@@ -674,7 +691,7 @@ export default function CrearFull({
         <ChatSemana semana={semanaActual} esActual turnos={turnos} vivo={vivo} datos={datos} totales={resumen}
                     abierto={chatAbierto} onAbrir={setChatAbierto} onEnviar={(t, m) => void pedirIA(t, m)}
                     onVerIA={() => { setFiltro("ia"); document.getElementById("plan-semana")?.scrollIntoView({ behavior: "smooth" }); }}
-                    bloqueo={bloqueo} />
+                    bloqueo={bloqueo} onAplicarTurno={listo ? aplicarTurno : undefined} />
         {errorSemana && (
           <p className="mt-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-[12px] text-rose-800">
             No se pudo leer el plan y el chat guardados de la semana: {errorSemana}. Lo que hagas no se va a guardar hasta

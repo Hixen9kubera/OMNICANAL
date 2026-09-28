@@ -15,6 +15,7 @@ y services/fulfillment_sku.py.
   POST /api/fulfillment/crear-full/semana/plan   guarda el plan de la semana EN CURSO (bitácora; no toca Odoo)
   POST /api/fulfillment/crear-full/ia            un turno del chat de la semana con DeepSeek. No escribe en Odoo.
   GET  /api/fulfillment/crear-full/ia/{id}       cómo va (lo que lleva escrito, ya validado) y su resultado
+  GET  /api/fulfillment/crear-full/actividad     si la IA está trabajando en la semana (el ícono de la pestaña)
   GET  /api/fulfillment/crear-full/prompt-ml     el prompt para cargar en ML el FULL de una orden del panel
   POST /api/fulfillment/crear-full               crea las cotizaciones en BORRADOR (interruptor)
   POST /api/fulfillment/crear-full/guia          número de envío + guía PDF (uno o varios, se unen) en una orden
@@ -174,6 +175,12 @@ async def ia(datos: dict[str, Any] = Body(...), request: Request = None) -> dict
 @router.get("/crear-full/ia/{tid}")
 async def ia_estado(tid: str) -> dict[str, Any]:
     return fulfillment_ia.estado(tid)
+
+
+@router.get("/crear-full/actividad")
+async def actividad() -> dict[str, Any]:
+    """Para el ícono de la pestaña: si la IA trabaja en la semana en curso. Sólo memoria (no toca la base)."""
+    return fulfillment_ia.actividad(fulfillment_semana.semana_de()["clave"])
 
 
 @router.get("/crear-full/prompt-ml")

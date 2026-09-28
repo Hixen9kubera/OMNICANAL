@@ -460,10 +460,15 @@ def conversacion_openai(datos: dict[str, Any], turnos: list[dict[str, Any]], men
     La planeación va al PRINCIPIO del primer mensaje y cada turno anterior se repite con
     su texto EXACTO (el que se guardó): así el prefijo es idéntico de un turno al
     siguiente y DeepSeek lo relee de su caché. Al final, el mensaje de ahora.
+
+    Con las llaves ORDENADAS: la planeación del primer turno llega de la pantalla y la de los
+    siguientes, de la bitácora (jsonb), que no respeta el orden de las llaves. Sin ordenarlas,
+    el texto cambiaba y el segundo turno no encontraba el prefijo en la caché (28-sep: releyó
+    1,024 de 61,311 tokens).
     """
     primera = turnos[0]["mensaje"] if turnos else mensaje
     salida: list[dict[str, Any]] = [{"role": "user", "content": (
-        json.dumps(datos, ensure_ascii=False, separators=(",", ":")) + "\n\n" + primera)}]
+        json.dumps(datos, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n\n" + primera)}]
     for i, t in enumerate(turnos):
         salida.append({"role": "assistant", "content": t["salida"]})
         salida.append({"role": "user", "content": turnos[i + 1]["mensaje"] if i + 1 < len(turnos) else mensaje})
@@ -627,8 +632,30 @@ def corriendo_en(clave: str) -> dict[str, Any] | None:
     for tid, t in list(_trabajos.items()):
         if t["estado"] == "corriendo" and t["semana"] == clave:
             return {"id": tid, "quien": t["quien"], "instruccion": t["instrucciones"], "modelo": t["modelo"],
-                    "segundos": round(time.time() - t["inicio"])}
+                    "segundos": round(time.time() - t["inicio"]), "fase": t.get("fase")}
     return None
+
+
+def actividad(clave: str) -> dict[str, Any]:
+    """
+    Para el ícono de la pestaña FULLFILMENT (v0.586.0, Brandon: "un ícono con luces parecido a
+    Claude: cuando está pensando cambia de color, estilo respiración; cuando termina, verde").
+    Si hay un turno corriendo en la semana y cuál fue el último que terminó. Sólo memoria: la
+    pregunta llega desde cualquier pantalla del panel cada pocos segundos y no toca la base.
+    """
+    terminados = [(tid, t) for tid, t in list(_trabajos.items())
+                  if t["semana"] == clave and t["estado"] in ("listo", "error") and t.get("fin")]
+    ultimo = None
+    if terminados:
+        tid, t = max(terminados, key=lambda x: x[1]["fin"])
+        r = t.get("resultado") or {}
+        puso = [a for a in r.get("ajustes") or [] if a.get("cantidad")]
+        ultimo = {"id": tid, "estado": t["estado"], "quien": t["quien"],
+                  "termino": datetime.fromtimestamp(t["fin"], timezone.utc).isoformat(),
+                  "skus": len(puso) + len(r.get("reemplazos") or []),
+                  "piezas": sum(a["cantidad"] for a in puso) + sum(x.get("cantidad") or 0 for x in r.get("reemplazos") or []),
+                  "motivo": t.get("error")}
+    return {"semana": clave, "corriendo": corriendo_en(clave), "ultimo": ultimo}
 
 
 def iniciar(cuerpo: dict[str, Any], quien: str = "", ahora: datetime | None = None) -> dict[str, Any]:
@@ -699,6 +726,15 @@ def iniciar(cuerpo: dict[str, Any], quien: str = "", ahora: datetime | None = No
                          "modelo_nombre": MODELOS[modelo]["nombre"], "tokens": r["tokens"],
                          "costo_usd": costo_usd(modelo, r["tokens"], datetime.now(timezone.utc)),
                          "datos_nuevos": base is None or base.get("id") != datos_id}
+            # El resultado va al PLAN de la semana aquí, en el servidor, ANTES de avisar que terminó:
+            # si la persona se salió de la pestaña mientras la IA pensaba, al volver ya está en la
+            # tabla (v0.586.0). Si la pantalla sigue abierta, aplica lo mismo y guarda encima.
+            try:
+                g = fsem.guardar_plan(clave, fsem.aplicar_turno(fsem.ultimo_plan(clave), revisado, tid), quien)
+                resultado["plan_version"] = g["version"]
+            except Exception as exc:  # noqa: BLE001 — la pantalla abierta lo aplica igual
+                log.warning("planeación IA: el turno %s no se aplicó al plan: %s", tid, exc)
+                resultado["plan_error"] = str(exc)[:200]
             registro.update(estado="listo", mensaje=mensaje, salida=r["texto"][:MAX_SALIDA], datos_id=datos_id,
                             resultado=resultado, segundos=round(time.time() - t["inicio"]))
             t.update(estado="listo", resultado=resultado)

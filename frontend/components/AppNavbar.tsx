@@ -30,6 +30,7 @@ import {
   ClipboardCheck,
 } from "lucide-react";
 import NotificationBell from "./NotificationBell";
+import IndicadorIA from "./fulfillment/IndicadorIA";
 import { cerrarSesion, quienSoy, type Usuario } from "@/lib/sesion";
 
 // El rol que el equipo llama KAM se guarda como 'operador' (core.usuarios tiene
@@ -301,6 +302,9 @@ export default function AppNavbar() {
                 >
                   <Icon size={17} />
                   {item.label}
+                  {/* La chispa de la IA de Crear FULL: respira mientras piensa, verde al terminar
+                      (v0.586.0). Se ve desde cualquier pantalla del panel. */}
+                  {item.id === "fulfillment" && <IndicadorIA />}
                   {/* BETA: la sección ya es navegable pero sigue en construcción.
                       Distinto de "Pronto", que marca lo que todavía no existe. */}
                   {item.beta && (
