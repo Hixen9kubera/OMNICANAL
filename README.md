@@ -1001,6 +1001,37 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.588.0 — Checklist: la matriz por categoría vuelve a ser un popup
+
+Brandon, 28-sep: *"mejor si manda la matriz por categoría como un POP"*.
+
+- **La matriz ya no es un apartado debajo de la tabla:** se abre en un popup con el botón «Matriz por categoría» de la
+  barra. Adentro:
+  - las categorías de ML del lote, desplegables, cada una con las casillas de sus opcionales;
+  - la búsqueda de categoría;
+  - el mismo guardado por categoría en `channel.field_requirements`.
+- **El nombre de la categoría de cada renglón** abre el popup ya desplegado en esa categoría y la lleva a la vista.
+- **El encabezado y la búsqueda se quedan fijos;** la lista se desplaza dentro del popup. Con 57 categorías, el encabezado
+  se perdía al bajar.
+- **Se cierra con Esc o con un clic fuera.** Guardar recalcula el lote (faltantes, exigidos, conteos por categoría) sin
+  cerrarlo, para seguir marcando otras categorías.
+- **Solo cambia la pantalla:** nada de backend ni de base.
+
+**Verificado en local:**
+- el popup abre con las 57 categorías de la Week 39;
+- desde un renglón abre desplegado en «Mixers de DJs» (22 casillas);
+- se cierra con Esc y con un clic fuera;
+- el apartado ya no está en la página.
+
+`tsc` limpio.
+
+**Pendiente de decisión (no se cambió):** que la matriz se defina por categorías GENERALES y se replique a sus
+subcategorías. Se midió contra la Week 39 y se explicó por qué no conviene tal cual (ver la conversación del 28-sep):
+- ML no define atributos propios en las categorías padre;
+- las hojas hermanas casi no comparten opcionales.
+
+La alternativa propuesta es una regla POR ATRIBUTO («Color obligatorio donde exista»).
+
 ### v0.587.0 — Crear FULL: el prompt es por cuenta, la tabla dice de qué almacén sale y la IA respeta el cálculo
 
 Brandon, 28-sep, la lista de mejoras menores después de usar la versión semanal:

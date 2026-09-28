@@ -142,9 +142,11 @@ export default function ChecklistPage() {
   const [filtro, setFiltro] = useState<Filtro>("todos");
   const [busqueda, setBusqueda] = useState("");
   const [abierto, setAbierto] = useState<string | null>(null);
-  const [modal, setModal] = useState<null | "agregar" | "cargar">(null);
+  const [modal, setModal] = useState<null | "agregar" | "cargar" | "matriz">(null);
   // Las categorías abiertas en el apartado de la matriz.
   const [matrizAbiertas, setMatrizAbiertas] = useState<Set<string>>(new Set());
+  // La categoría a la que llevó el clic en un renglón: el popup se abre ahí.
+  const [matrizFoco, setMatrizFoco] = useState<string | null>(null);
   const [aviso, setAviso] = useState<string | null>(null);
   const [bajando, setBajando] = useState<null | "excel" | "csv">(null);
   // Sube con cada lectura buena del tablero (tras guardar la matriz, cargar un
@@ -281,11 +283,13 @@ export default function ChecklistPage() {
     });
   };
 
-  const abrirMatriz = (cat: string) => {
-    setMatrizAbiertas((m) => new Set(m).add(cat));
-    // Después del render, para que el apartado ya esté abierto.
-    setTimeout(() => document.getElementById(`matriz-${cat}`)
-      ?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
+  // La matriz es un POPUP (Brandon, 28-sep: «mejor si manda la matriz por
+  // categoría como un POP»). Desde la categoría de un renglón se abre ya
+  // desplegada en ESA categoría.
+  const abrirMatriz = (cat?: string) => {
+    if (cat) setMatrizAbiertas((m) => new Set(m).add(cat));
+    setMatrizFoco(cat ?? null);
+    setModal("matriz");
   };
 
   const todosVisibles = filas.length > 0 && filas.every((f) => sel.has(f.sku));
@@ -353,9 +357,8 @@ export default function ChecklistPage() {
             Agregar SKUs
           </Boton>
           <Boton icono={SlidersHorizontal} deshabilitado={bloqueado || !vigente?.categorias.length}
-                 titulo="Ir al apartado de la matriz: por categoría, qué opcionales se vuelven obligatorios"
-                 onClick={() => document.getElementById("matriz")
-                   ?.scrollIntoView({ behavior: "smooth", block: "start" })}>
+                 titulo="Por categoría del lote: qué opcionales se vuelven obligatorios"
+                 onClick={() => abrirMatriz()}>
             Matriz por categoría
           </Boton>
 
@@ -412,18 +415,6 @@ export default function ChecklistPage() {
           onMatriz={abrirMatriz}
         />
 
-        {vigente && vigente.categorias.length > 0 && (
-          <MatrizPorCategoria
-            categorias={vigente.categorias} abiertas={matrizAbiertas}
-            onAlternar={(cat) => setMatrizAbiertas((m) => {
-              const nuevo = new Set(m);
-              if (nuevo.has(cat)) nuevo.delete(cat); else nuevo.add(cat);
-              return nuevo;
-            })}
-            puedeCapturar={puedeCapturar && !bloqueado}
-            onGuardada={(msg) => { setAviso(msg); cargar(); }}
-          />
-        )}
 
         <p className="mt-4 text-xs leading-relaxed text-slate-400">
           Solo kubera y la API de Mercado Libre — nada de WordPress. Los
@@ -447,6 +438,21 @@ export default function ChecklistPage() {
       )}
       {modal === "cargar" && (
         <ModalCargar onCerrar={(cambio) => { setModal(null); if (cambio) cargar(); }} />
+      )}
+      {modal === "matriz" && vigente && (
+        <ModalMatriz
+          categorias={vigente.categorias} abiertas={matrizAbiertas} foco={matrizFoco}
+          onAlternar={(cat) => setMatrizAbiertas((m) => {
+            const nuevo = new Set(m);
+            if (nuevo.has(cat)) nuevo.delete(cat); else nuevo.add(cat);
+            return nuevo;
+          })}
+          puedeCapturar={puedeCapturar && !bloqueado}
+          // Guardar recalcula el lote (faltantes, exigidos) sin cerrar el
+          // popup: se pueden seguir marcando otras categorías.
+          onGuardada={(msg) => { setAviso(msg); cargar(); }}
+          onCerrar={() => { setModal(null); setMatrizFoco(null); }}
+        />
       )}
 
       {aviso && (
@@ -1205,73 +1211,107 @@ function AtributosML({
 }
 
 /**
- * LA MATRIZ, en la página (Brandon, 28-sep: «en vez de un botón, un apartado
- * por categoría»): por cada categoría del lote, sus opcionales con una casilla
- * para volverlos obligatorios. Se guarda por CATEGORÍA (no por semana) en
- * channel.field_requirements, así que vale para los SKUs que caigan después en
- * esa categoría.
+ * LA MATRIZ, en un POPUP por categoría (Brandon, 28-sep). Por cada categoría del
+ * lote, sus opcionales con una casilla para volverlos obligatorios. Se guarda por
+ * CATEGORÍA (no por semana) en channel.field_requirements, así que vale para los
+ * SKUs que caigan después en esa categoría.
+ *
+ * El encabezado y la búsqueda se quedan fijos; la lista se desplaza dentro del
+ * popup (con 57 categorías, el encabezado se perdía al bajar). Esc o un clic
+ * fuera lo cierran.
  */
-function MatrizPorCategoria({
-  categorias, abiertas, onAlternar, puedeCapturar, onGuardada,
+function ModalMatriz({
+  categorias, abiertas, foco, onAlternar, puedeCapturar, onGuardada, onCerrar,
 }: {
   categorias: TableroChecklist["categorias"];
   abiertas: Set<string>;
+  /** La categoría a la que se llegó desde un renglón: se lleva a la vista. */
+  foco: string | null;
   onAlternar: (cat: string) => void;
   puedeCapturar: boolean;
   onGuardada: (msg: string) => void;
+  onCerrar: () => void;
 }) {
   const [filtro, setFiltro] = useState("");
+  const lista = useRef<HTMLDivElement>(null);
   const q = filtro.trim().toLowerCase();
   const visibles = categorias.filter((c) => !q
     || (c.nombre ?? "").toLowerCase().includes(q) || c.categoria.toLowerCase().includes(q));
+
+  useEffect(() => {
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") onCerrar(); };
+    window.addEventListener("keydown", esc);
+    return () => window.removeEventListener("keydown", esc);
+  }, [onCerrar]);
+
+  useEffect(() => {
+    if (!foco) return;
+    // Después del render, para que la categoría ya esté desplegada.
+    const t = setTimeout(() => lista.current?.querySelector(`[data-cat="${CSS.escape(foco)}"]`)
+      ?.scrollIntoView({ block: "start" }), 30);
+    return () => clearTimeout(t);
+  }, [foco]);
+
   return (
-    <section id="matriz" className="mt-6 scroll-mt-24 rounded-2xl border border-slate-200 bg-white">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
-        <div>
-          <h2 className="flex items-center gap-2 text-base font-extrabold text-slate-900">
-            <SlidersHorizontal className="h-4 w-4 text-orange-500" />
-            Matriz de obligatorios · por categoría
-          </h2>
-          <p className="mt-0.5 text-xs text-slate-500">
-            Las {categorias.length} categorías de Mercado Libre de este lote. Marca los
-            opcionales que almacén debe llenar: queda guardado para esa categoría y
-            aplica también a los SKUs que caigan en ella las semanas siguientes.
-          </p>
-        </div>
-        <input value={filtro} onChange={(e) => setFiltro(e.target.value)} placeholder="Buscar categoría"
-               className="w-56 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs outline-none focus:border-indigo-300" />
-      </div>
-      <div className="divide-y divide-slate-100">
-        {visibles.map((c) => (
-          <div key={c.categoria} id={`matriz-${c.categoria}`} className="scroll-mt-24">
-            <button type="button" onClick={() => onAlternar(c.categoria)}
-                    aria-expanded={abiertas.has(c.categoria)}
-                    className="flex w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-slate-50">
-              <ChevronDown className={`h-4 w-4 shrink-0 text-slate-400 transition ${
-                abiertas.has(c.categoria) ? "" : "-rotate-90"}`} />
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-sm font-semibold text-slate-800">{c.nombre ?? c.categoria}</div>
-                <div className="text-[11px] text-slate-400">
-                  <span className="font-mono">{c.categoria}</span> · {c.skus} SKU(s) del lote
-                </div>
-              </div>
-              <span className="rounded-md px-2 py-0.5 text-[10px] font-bold text-[#2d3277]" style={{ background: ML }}>
-                {c.obligatorios_ml} ML
-              </span>
-              <span className={`rounded-md px-2 py-0.5 text-[10px] font-bold ${
-                c.promovidos ? "bg-orange-200 text-orange-900" : "bg-slate-100 text-slate-400"}`}>
-                {c.promovidos} matriz
-              </span>
-              <span className="w-24 text-right text-[11px] text-slate-500">{c.opcionales} opcionales</span>
-            </button>
-            {abiertas.has(c.categoria) && (
-              <MatrizCategoria cat={c.categoria} puedeCapturar={puedeCapturar} onGuardada={onGuardada} />
-            )}
+    <div className="fixed inset-0 z-40 flex items-start justify-center bg-slate-900/40 p-4 pt-[5vh]"
+         onMouseDown={(e) => { if (e.target === e.currentTarget) onCerrar(); }}>
+      <div role="dialog" aria-modal="true" aria-label="Matriz de obligatorios por categoría"
+           className="flex max-h-[88vh] w-full max-w-5xl flex-col rounded-2xl bg-white shadow-2xl">
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 px-5 py-4">
+          <div className="min-w-0 flex-1">
+            <h2 className="flex items-center gap-2 text-lg font-extrabold text-slate-900">
+              <SlidersHorizontal className="h-5 w-5 text-orange-500" />
+              Matriz de obligatorios · por categoría
+            </h2>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Las {categorias.length} categorías de Mercado Libre de este lote. Marca los
+              opcionales que almacén debe llenar: queda guardado para esa categoría y
+              aplica también a los SKUs que caigan en ella las semanas siguientes.
+            </p>
           </div>
-        ))}
-        {!visibles.length && <p className="px-4 py-6 text-center text-xs text-slate-400">Ninguna categoría con ese nombre.</p>}
+          <div className="flex items-center gap-2">
+            <input value={filtro} onChange={(e) => setFiltro(e.target.value)} placeholder="Buscar categoría"
+                   autoFocus={!foco}
+                   className="w-56 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs outline-none focus:border-indigo-300" />
+            <button type="button" onClick={onCerrar} title="Cerrar (Esc)"
+                    className="rounded-lg p-1 text-slate-400 hover:bg-slate-100">
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+        </div>
+        <div ref={lista} className="min-h-0 flex-1 divide-y divide-slate-100 overflow-y-auto">
+          {visibles.map((c) => (
+            <div key={c.categoria} data-cat={c.categoria}>
+              <button type="button" onClick={() => onAlternar(c.categoria)}
+                      aria-expanded={abiertas.has(c.categoria)}
+                      className={`flex w-full items-center gap-3 px-5 py-2.5 text-left hover:bg-slate-50 ${
+                        c.categoria === foco ? "bg-indigo-50/60" : ""}`}>
+                <ChevronDown className={`h-4 w-4 shrink-0 text-slate-400 transition ${
+                  abiertas.has(c.categoria) ? "" : "-rotate-90"}`} />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-semibold text-slate-800">{c.nombre ?? c.categoria}</div>
+                  <div className="text-[11px] text-slate-400">
+                    <span className="font-mono">{c.categoria}</span> · {c.skus} SKU(s) del lote
+                  </div>
+                </div>
+                <span className="rounded-md px-2 py-0.5 text-[10px] font-bold text-[#2d3277]" style={{ background: ML }}>
+                  {c.obligatorios_ml} ML
+                </span>
+                <span className={`rounded-md px-2 py-0.5 text-[10px] font-bold ${
+                  c.promovidos ? "bg-orange-200 text-orange-900" : "bg-slate-100 text-slate-400"}`}>
+                  {c.promovidos} matriz
+                </span>
+                <span className="w-24 text-right text-[11px] text-slate-500">{c.opcionales} opcionales</span>
+              </button>
+              {abiertas.has(c.categoria) && (
+                <MatrizCategoria cat={c.categoria} puedeCapturar={puedeCapturar} onGuardada={onGuardada} />
+              )}
+            </div>
+          ))}
+          {!visibles.length && <p className="px-5 py-6 text-center text-xs text-slate-400">Ninguna categoría con ese nombre.</p>}
+        </div>
       </div>
-    </section>
+    </div>
   );
 }
 
