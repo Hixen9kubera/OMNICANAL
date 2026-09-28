@@ -19,6 +19,7 @@ import {
   Sparkles,
   TrendingUp,
   Ban,
+  Package,
   Pause,
   RefreshCw,
   BookOpen,
@@ -481,6 +482,30 @@ function FilasSku({
                       <Crown size={9} />#{s.posicion_top}
                     </span>
                   ) : null}
+                  {/* STOCK junto al SKU (Eduardo, 28-sep-2026): cuántas piezas
+                      respaldan lo que se ve del mercado. Propio = bodega (Woo es
+                      la fuente); Full = bodega de ML. Sin dato ≠ 0. */}
+                  <span
+                    className={`inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] font-medium tabular-nums ${
+                      s.stock_propio == null
+                        ? "bg-slate-50 text-slate-400"
+                        : (s.stock_propio ?? 0) + (s.stock_full ?? 0) > 0
+                          ? "bg-slate-100 text-slate-700"
+                          : "bg-rose-50 text-rose-700"
+                    }`}
+                    title={
+                      s.stock_propio == null
+                        ? "Sin dato de stock"
+                        : `Stock propio ${s.stock_propio.toLocaleString("es-MX")} piezas` +
+                          (s.stock_full ? ` · en Full ${s.stock_full.toLocaleString("es-MX")}` : "")
+                    }
+                  >
+                    <Package size={9} />
+                    {s.stock_propio == null ? "—" : s.stock_propio.toLocaleString("es-MX")}
+                    {s.stock_full ? (
+                      <span className="text-sky-700">· Full {s.stock_full.toLocaleString("es-MX")}</span>
+                    ) : null}
+                  </span>
                 </div>
                 {/* El nombre del PRODUCTO se retiró de aquí (4-sep-2026, Eduardo).
                     Estaba repetido: la columna «Título de la tienda» ya trae el

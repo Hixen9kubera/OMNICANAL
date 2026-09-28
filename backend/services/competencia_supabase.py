@@ -296,6 +296,38 @@ def conteo_terminos() -> dict[str, int]:
         "FROM enrich.market_terms")}
 
 
+def stock_por_sku(skus: list[str]) -> dict[str, dict[str, int]]:
+    """Stock de cada SKU, en una sola consulta: {sku: {propio, full}}.
+
+    El stock propio es COMPARTIDO — Woo es la fuente y cada publicación lo
+    espeja —, así que se toma el max() por SKU y nunca la suma (memoria
+    stock-woo-fuente-y-espejo). Full vive aparte, en la bodega de ML: el max de
+    `stock_full` por cuenta, sumado. La misma regla que usa el Radar de precios.
+    """
+    if not skus:
+        return {}
+    # Un JOIN contra la lista y una sola pasada. La forma con subconsulta
+    # correlacionada + dos `any()` no terminaba en 5 min con los ~3,000 SKUs de
+    # la vista; esta tarda ~1.4 s (medido en el sandbox el 28-sep-2026).
+    filas = supabase_db.fetch_all(
+        """
+        with s(sku) as (select distinct unnest(%s::citext[])),
+        l as (select l.sku, l.account_id, l.canal, l.is_fulfillment,
+                     l.stock_own, l.stock_full
+                from channel.listings l join s on l.sku = s.sku),
+        fa as (select sku, account_id, max(coalesce(stock_full, 0)) as sf
+                 from l where canal = 'mercado_libre' and is_fulfillment
+                group by 1, 2),
+        f as (select sku, sum(sf) as sf from fa group by 1)
+        select l.sku::text as sku, max(l.stock_own) as propio,
+               coalesce(max(f.sf), 0) as full_
+          from l left join f on f.sku = l.sku
+         group by l.sku
+        """, (list(skus),))
+    return {f["sku"].upper(): {"propio": f["propio"], "full": int(f["full_"] or 0)}
+            for f in filas}
+
+
 def total_terminos(categoria_id: str) -> int:
     n = supabase_db.fetch_scalar(
         "SELECT jsonb_array_length(terminos) FROM enrich.market_terms "

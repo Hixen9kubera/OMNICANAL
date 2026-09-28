@@ -409,6 +409,15 @@ def conteo_terminos() -> dict[str, int]:
         "No hay SUPABASE_DB_URL. Competencia vive 100%% en enrich.market_* "
         "de la BD kubera; este módulo ya no tiene modo local.")
 
+def stock_por_sku(skus: list[str]) -> dict[str, dict[str, int]]:
+    """{SKU en mayúsculas: {propio, full}}, una sola consulta para toda la vista."""
+    r = _remoto()
+    if r:
+        return r.stock_por_sku(skus)
+    raise RuntimeError(
+        "No hay SUPABASE_DB_URL. Competencia vive 100%% en enrich.market_* "
+        "de la BD kubera; este módulo ya no tiene modo local.")
+
 def vista(canal: str = "mercado_libre") -> list[dict[str, Any]]:
     """
     El árbol que pinta el tab: raíz → subcategorías → nuestros SKUs.
@@ -449,6 +458,18 @@ def vista(canal: str = "mercado_libre") -> list[dict[str, Any]]:
     # una por una eran ~1,800 viajes a la base por carga de página.
     rk = rankings_por_categoria()
     nterm = conteo_terminos()
+    # STOCK junto al SKU (Eduardo, 28-sep-2026): cuántas piezas hay para
+    # respaldar lo que se ve en el mercado. Una consulta para todo el árbol; si
+    # falla, la vista sale igual y el stock queda como «sin dato» (None ≠ 0).
+    try:
+        stock = stock_por_sku(sorted({f["sku"] for f in filas if f.get("sku")}))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Competencia: sin stock en la vista (%s)", exc)
+        stock = {}
+    for f in filas:
+        st = stock.get(str(f.get("sku") or "").upper())
+        f["stock_propio"] = st["propio"] if st else None
+        f["stock_full"] = st["full"] if st else None
 
     # El sondeo GRATIS de /highlights, una consulta para todo el árbol. De aquí
     # salen `top_movido` (¿ML se movió desde que pagamos por raspar?) y

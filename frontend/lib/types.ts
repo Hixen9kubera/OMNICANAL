@@ -1052,6 +1052,10 @@ export interface CompetenciaSkuVista extends CompetenciaFilaSku {
   /** Aparecemos en el top de nuestra subcategoría, y en qué posición. */
   posicion_top: number | null;
   en_top: boolean;
+  /** Piezas en bodega propia (Woo es la fuente: max por SKU). null = sin dato. */
+  stock_propio?: number | null;
+  /** Piezas en Full de ML, sumando las cuentas. */
+  stock_full?: number | null;
 }
 
 /** Avisos que salen del sondeo GRATIS de /highlights, para cualquier categoría. */

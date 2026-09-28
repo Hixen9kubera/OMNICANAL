@@ -1001,6 +1001,26 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.591.0 — Competencia: el stock de cada SKU junto a su código
+
+Eduardo, 28-sep: *"En competencia agrega al lado del sku su stock del producto"*.
+
+- **En la tabla «Nuestros SKUs en…»**, junto al código de cada SKU sale una etiqueta con su stock:
+  - el primer número es la **bodega propia** (Woo es la fuente y cada publicación la espeja: `max()` por SKU, nunca la
+    suma);
+  - **«· Full N»** son las piezas en Full de ML, sumando las cuentas; solo aparece si hay.
+  - Gris con piezas, rojo si no queda nada en ningún lado y «—» sin dato (**sin dato ≠ 0**). Al pasar el cursor, el
+    detalle.
+- **Una sola consulta para todo el árbol** (`competencia_supabase.stock_por_sku`): un `JOIN` contra la lista de SKUs de la
+  vista. La primera forma (subconsulta correlacionada + dos `any()`) no terminaba en 5 minutos con los ~3,000 SKUs; esta
+  tarda ~1.4 s. Si la consulta fallara, la vista sale igual y el stock queda en «—».
+- **Solo lectura:** ni jobs ni flags ni escrituras. La regla de stock es la misma del Radar de precios.
+
+**Verificado en el sandbox:** 2,930 de 3,024 SKUs con stock (los otros no tienen publicación); en pantalla, JUGU-0034-BLN
+«0 · Full 13» y JUGU-0154-BLN «6». 56 pruebas de Competencia, `tsc` y `next build` limpios.
+
+**Reversa:** revert de este commit.
+
 ### v0.590.0 — Walmart: 11 categorías nuevas con exención de UPC y selector de categoría con IA en el Estudio
 
 Tickets de Cinthya García (16–18-sep) y avisos de Seller Support (17-sep). Hasta hoy el publicador de Walmart solo
