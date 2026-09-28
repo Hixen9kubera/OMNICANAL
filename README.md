@@ -1001,6 +1001,16 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.585.0 — FULL semana a semana: el plan se guarda una vez por turno de la IA, no cada 2 segundos
+
+Mientras la IA escribe, sus ajustes llegan a la tabla cada 2 s y el guardado automático del plan (1.5 s después del último
+cambio) habría escrito una fila en la bitácora (`ops.process_log`) casi con cada pedazo: decenas por turno, cada una con
+el plan completo. Ahora, mientras hay un turno corriendo, el plan no se guarda; se guarda UNA vez al terminar, y la
+pantalla lo dice («la IA está escribiendo: se guarda al terminar»). Lo que la persona edite a mano durante el turno
+también queda en ese guardado.
+
+**Pruebas:** `tsc` limpio y `next build` en verde (el cambio es sólo de la pantalla).
+
 ### v0.584.0 — FULL semana a semana: el chat se rearma en orden y la semana la calcula el navegador
 
 Dos correcciones a v0.583.0, encontradas al releer el SQL y el render ANTES de que nadie usara el chat nuevo:

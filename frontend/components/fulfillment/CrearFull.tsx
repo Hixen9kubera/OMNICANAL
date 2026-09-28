@@ -365,9 +365,10 @@ export default function CrearFull({
     if (faltan.length) void traerFilas(faltan);
   }, [listo, datos, params, activas, traerFilas]);
 
-  // Guardar el plan: 1.5 s después del último cambio y sólo si cambió.
+  // Guardar el plan: 1.5 s después del último cambio y sólo si cambió. Mientras la IA escribe
+  // no: el plan cambia cada 2 s y serían decenas de guardados por turno; se guarda al terminar.
   useEffect(() => {
-    if (!listo) return;
+    if (!listo || vivo) return;
     const f = firmaPlan(plan, quitadas);
     if (f === ultimaFirma.current) return;
     const t = setTimeout(async () => {
@@ -390,7 +391,7 @@ export default function CrearFull({
     }, 1500);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [plan, quitadas, listo]);
+  }, [plan, quitadas, listo, !!vivo]);
 
   // Una semana anterior: sólo consulta (su chat, su plan y sus órdenes).
   useEffect(() => {
@@ -796,7 +797,8 @@ export default function CrearFull({
                 </button>
               )}
             </div>
-            <GuardadoUI guardado={guardado} listo={listo} sucio={listo && firmaPlan(plan, quitadas) !== ultimaFirma.current} />
+            <GuardadoUI guardado={guardado} listo={listo} sucio={listo && firmaPlan(plan, quitadas) !== ultimaFirma.current}
+                        iaEscribiendo={!!vivo} />
           </div>
         </div>
 
@@ -941,11 +943,13 @@ export default function CrearFull({
   );
 }
 
-function GuardadoUI({ guardado, listo, sucio }: {
+function GuardadoUI({ guardado, listo, sucio, iaEscribiendo }: {
   guardado: { cuando: string | null; quien: string | null; error?: string } | null; listo: boolean; sucio: boolean;
+  iaEscribiendo?: boolean;
 }) {
   if (!listo) return <span className="text-[11px] text-slate-400">leyendo el plan guardado…</span>;
   if (guardado?.error) return <span className="text-[11px] font-semibold text-rose-700">no se pudo guardar: {guardado.error}</span>;
+  if (sucio && iaEscribiendo) return <span className="text-[11px] text-violet-700">la IA está escribiendo: se guarda al terminar</span>;
   if (sucio) return <span className="text-[11px] text-slate-500">guardando…</span>;
   if (!guardado?.cuando) return <span className="text-[11px] text-slate-400">plan vacío: nada que guardar todavía</span>;
   return (
