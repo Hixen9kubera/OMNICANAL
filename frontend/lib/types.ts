@@ -2686,6 +2686,8 @@ export interface FilaChecklist {
   categoria_ruta: string | null;
   exigidos_total: number;
   exigidos_llenos: number;
+  /** De los llenos, cuántos solo los trae la publicación viva de ML (no kubera). */
+  exigidos_publicados: number;
   faltan_ml: { campo: string; etiqueta: string; nivel: NivelChecklist }[];
   opcionales_total: number;
   opcionales_llenos: number;
@@ -2719,6 +2721,10 @@ export interface TableroChecklist {
     total: number; completos: number; incompletos: number;
     sin_categoria: number; faltan_ml: number; faltan_almacen: number;
   };
+  /** La lectura de lo PUBLICADO en ML (multiget de 20 por cuenta). */
+  publicados: {
+    publicaciones: number; vivas: number; consultadas: number; error: string | null;
+  } | null;
 }
 
 export interface MatrizChecklist {

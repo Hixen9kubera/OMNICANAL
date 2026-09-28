@@ -17,6 +17,11 @@
    esté apagado en ese ambiente.
 7. **Sin el flag, nada cambia.**
 8. El vigilante de tokens rancios mira CADA cuenta en kubera.
+9. **El token se recuerda 60 s** (28-sep): una lectura a kubera por minuto y
+   cuenta, no una por aviso de ML. Renovar pisa el caché al instante, un None
+   no se recuerda, y la versión async no toca la base (ni un hilo) si ya lo
+   tiene. Uno a punto de vencer (> 5 h 50 min) no se recuerda, una lectura
+   lenta no pisa una renovación, y `releer_token` relee sin renovar.
 
 Sin red ni base de datos.
 
@@ -71,6 +76,9 @@ class _Candado:
 
 class _Base(unittest.TestCase):
     def setUp(self):
+        # Cada prueba parte sin el caché de 60 s (si no, la anterior contesta).
+        meli._token_cache.clear()
+        self.addCleanup(meli._token_cache.clear)
         mock.patch.object(meli, "_fernet", return_value=_F).start()
         mock.patch.object(meli.settings, "tokens_solo_kubera", True).start()
         mock.patch.object(meli.settings, "meli_app_id", _APP_NUESTRA).start()
@@ -286,6 +294,103 @@ class EspejoMysql(_Base):
              mock.patch.object(meli.db, "get_cursor", cursor):
             meli._espejar_mysql("BEKURA", "a", "r")
         self.assertEqual(tablas, ["ml_tokens_dashboard"])
+
+
+class CacheDelToken(_Base):
+    def _leer(self, token="tok-1"):
+        return mock.patch.object(tokens_read, "leer",
+                                 return_value={"access_token": enc(token)})
+
+    def test_la_segunda_lectura_no_va_a_la_base(self):
+        with self._leer() as leer:
+            self.assertEqual(meli._access_token("BEKURA"), "tok-1")
+            self.assertEqual(meli._access_token("bekura "), "tok-1")
+        leer.assert_called_once_with("BEKURA")
+
+    def test_vencido_se_vuelve_a_leer(self):
+        with self._leer() as leer, mock.patch.object(meli, "_TOKEN_TTL_S", 0.0):
+            meli._access_token("BEKURA")
+            meli._access_token("BEKURA")
+        self.assertEqual(leer.call_count, 2)
+
+    def test_las_cuentas_no_se_mezclan(self):
+        with self._leer("de-bekura"):
+            meli._access_token("BEKURA")
+        with self._leer("de-sancor"):
+            self.assertEqual(meli._access_token("SANCORFASHION"), "de-sancor")
+        self.assertEqual(meli._access_token("BEKURA"), "de-bekura")
+
+    def test_un_none_no_se_recuerda(self):
+        with mock.patch.object(tokens_read, "leer", return_value=None):
+            self.assertIsNone(meli._access_token("BEKURA"))
+        with self._leer("ya-hay") as leer:
+            self.assertEqual(meli._access_token("BEKURA"), "ya-hay")
+        leer.assert_called_once()
+
+    def test_renovar_pisa_el_cache(self):
+        with self._leer("viejo"):
+            meli._access_token("BEKURA")
+        with mock.patch.object(meli, "_refrescar_token_sin_cache", return_value="nuevo"):
+            self.assertEqual(meli.refrescar_token("bekura"), "nuevo")
+        with mock.patch.object(tokens_read, "leer",
+                               side_effect=AssertionError("fue a la base")):
+            self.assertEqual(meli._access_token("BEKURA"), "nuevo")
+
+    def test_renovacion_fallida_no_borra_el_vigente(self):
+        with self._leer("vigente"):
+            meli._access_token("BEKURA")
+        with mock.patch.object(meli, "_refrescar_token_sin_cache", return_value=None):
+            self.assertIsNone(meli.refrescar_token("BEKURA"))
+        self.assertEqual(meli._token_en_cache("BEKURA"), "vigente")
+
+    def test_async_con_cache_no_abre_hilo(self):
+        import asyncio
+        with self._leer("tok-async"):
+            meli._access_token("BEKURA")
+        with mock.patch.object(asyncio, "to_thread",
+                               side_effect=AssertionError("abrió un hilo")):
+            self.assertEqual(asyncio.run(meli.access_token_async("BEKURA")), "tok-async")
+
+    def _con_edad(self, token, horas):
+        from datetime import datetime, timedelta, timezone
+        cuando = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=horas)
+        return mock.patch.object(tokens_read, "leer", return_value={
+            "access_token": enc(token), "updated_at": cuando})
+
+    def test_a_punto_de_vencer_no_se_recuerda(self):
+        # 5 h 55 min: el renovador externo puede cambiarlo en cualquier momento.
+        with self._con_edad("casi-muerto", 5 + 55 / 60) as leer:
+            meli._access_token("BEKURA")
+            meli._access_token("BEKURA")
+        self.assertEqual(leer.call_count, 2)
+
+    def test_joven_si_se_recuerda(self):
+        with self._con_edad("joven", 1) as leer:
+            meli._access_token("BEKURA")
+            meli._access_token("BEKURA")
+        leer.assert_called_once()
+
+    def test_una_lectura_lenta_no_pisa_una_renovacion(self):
+        import time
+        desde = time.monotonic()
+        meli._recordar_token("BEKURA", "renovado")          # llega en medio
+        meli._recordar_token("BEKURA", "viejo", leido_desde=desde)
+        self.assertEqual(meli._token_en_cache("BEKURA"), "renovado")
+
+    def test_releer_olvida_el_recordado_y_no_renueva(self):
+        with self._leer("viejo"):
+            meli._access_token("BEKURA")
+        with self._leer("de-otro-proceso"), \
+             mock.patch.object(meli, "_refrescar_token_sin_cache",
+                               side_effect=AssertionError("renovó")):
+            self.assertEqual(meli.releer_token("BEKURA"), "de-otro-proceso")
+        self.assertEqual(meli._token_en_cache("BEKURA"), "de-otro-proceso")
+
+    def test_async_sin_cache_lee_en_un_hilo(self):
+        import asyncio
+        with self._leer("tok-hilo") as leer:
+            self.assertEqual(asyncio.run(meli.access_token_async("BEKURA")), "tok-hilo")
+        leer.assert_called_once_with("BEKURA")
 
 
 class VigilanteRancios(unittest.TestCase):

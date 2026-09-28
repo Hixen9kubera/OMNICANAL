@@ -27,9 +27,13 @@ Brandon del 17-sep: nada de WordPress)
   · Categoría ML del SKU ... `specs._categorias` (channel.product_category con
                              la precedencia panel > real > predictor, y si no
                              hay, la de la publicación viva).
-  · Qué pide la categoría .. `specs_editor._campos_ml` (API pública, 1 h de caché).
+  · Qué pide la categoría .. `specs_editor._campos_ml` (API pública, 6 h de caché).
   · Lo ya capturado ....... `enrich.channel_content` (cuenta ''), el MISMO sitio
                              que el Publicador y el editor de specs del cajón.
+  · Lo ya PUBLICADO ....... las publicaciones vivas de ML del SKU, leídas con el
+                             multiget (`/items?ids=`, 20 por llamada) y el token
+                             de la cuenta dueña. Cuenta como lleno; ver
+                             «Lo publicado» más abajo.
   · Nombre de la categoría  `channel.categories`.
   · Título del SKU ........ `core.products.name`.
 
@@ -80,6 +84,8 @@ import io
 import json
 import logging
 import re
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Iterable
 from zoneinfo import ZoneInfo
@@ -276,7 +282,9 @@ def _urls_ml(skus: list[str]) -> dict[str, str]:
     try:
         for r in sdb.fetch_all(
                 "select sku, url from channel.listings "
-                "where canal = %s and sku = any(%s) and url is not null "
+                # citext[]: con text[] Postgres compara text = text y una
+                # publicación guardada en minúsculas no aparecía.
+                "where canal = %s and sku = any(%s::citext[]) and url is not null "
                 "  and coalesce(status, '') <> 'error' "
                 # En channel.listings de ML el estado vivo se llama
                 # 'published' (medido el 24-sep: published 3,580, NULL 1,771,
@@ -285,7 +293,7 @@ def _urls_ml(skus: list[str]) -> dict[str, str]:
                 # 1,751 filas de ML con status NULL y url.
                 "order by coalesce(status = 'published', false) desc, updated_at desc",
                 (CANAL, skus)):
-            salida.setdefault(r["sku"], r["url"])
+            salida.setdefault(str(r["sku"]).upper(), r["url"])
     except Exception as exc:  # noqa: BLE001
         log.warning("checklist: publicaciones no disponibles: %s", exc)
     return salida
@@ -330,6 +338,203 @@ def _campos_por_categoria(cats: Iterable[str]) -> dict[str, list[dict[str, Any]]
         return {}
     with ThreadPoolExecutor(max_workers=min(_HILOS_ML, len(cats))) as ex:
         return dict(zip(cats, ex.map(specs_editor._campos_ml, cats)))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Lo PUBLICADO: los atributos que ya tienen las publicaciones vivas de ML
+# ══════════════════════════════════════════════════════════════════════════════
+# Brandon, 27-sep-2026: «puedes tomar de lo que tenemos publicado». Un atributo
+# que la publicación VIVA ya trae, Mercado Libre ya lo tiene: pedírselo otra vez
+# a almacén es trabajo tirado.
+#
+# Se lee con el MULTIGET de ML (`/items?ids=`, hasta 20 publicaciones por
+# llamada) y con el token de la cuenta DUEÑA de cada una: con el de la otra, ML
+# contesta 403 por cada item ajeno. Solo cuentan las `active` y `paused`: una
+# cerrada puede ser de un SKU RECICLADO (TEC-0492-MUL), otro producto.
+#
+# Cuenta como LLENO en el tablero y sale PRE-LLENADO (en verde) en el Excel,
+# pero NO se copia a kubera: si almacén deja la celda como venía, la carga no
+# lo cuenta como cambio. Copiarlo solo propagaría los errores de una
+# publicación clonada sin limpiar (ACC-0653: faros con atributos de binoculares).
+#
+# NUNCA levanta: sin ML, el tablero sigue con lo de kubera.
+_PUB_TTL_S = 30 * 60.0      # lo leído vale media hora; «Recargar» lo vuelve a pedir
+_PUB_POR_SKU = 3            # publicaciones por SKU: las más recientes bastan
+_PUB_MULTIGET = 20          # el tope de ML en /items?ids=
+_PUB_HILOS = 4
+_PUB_TIMEOUT_S = 15.0
+_PUB_PAUSA_S = 120.0        # si ML no contesta a una cuenta, no se le insiste en 2 min
+_PUB_CACHE_MAX = 20000
+_PUB_VIVAS = {"active": 0, "paused": 1}
+_pub_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_pub_candado = threading.Lock()
+_pub_pausa_hasta: dict[str, float] = {}     # por cuenta: una no frena a la otra
+
+
+def _publicaciones_de(skus: list[str]) -> dict[str, list[tuple[str, str]]]:
+    """{SKU EN MAYÚSCULAS: [(cuenta, item_id)]} de `channel.listings`, las
+    publicadas y más recientes primero."""
+    salida: dict[str, list[tuple[str, str]]] = {}
+    for r in sdb.fetch_all(
+            "select l.sku, l.listing_id, a.legacy_code as cuenta "
+            "from channel.listings l join core.accounts a on a.id = l.account_id "
+            # citext[]: con text[] la comparación distingue mayúsculas.
+            "where l.canal = %s and l.sku = any(%s::citext[]) "
+            "  and l.listing_id is not null "
+            "  and a.legacy_code is not null and coalesce(l.status, '') <> 'error' "
+            # coalesce: en DESC Postgres pone los NULL primero (ver _urls_ml).
+            "order by coalesce(l.status = 'published', false) desc, l.updated_at desc",
+            (CANAL, skus)):
+        lista = salida.setdefault(str(r["sku"]).upper(), [])
+        par = (str(r["cuenta"]).strip().upper(), str(r["listing_id"]).strip())
+        if len(lista) < _PUB_POR_SKU and par not in lista:
+            lista.append(par)
+    return salida
+
+
+def _atributos_item(body: dict[str, Any]) -> dict[str, str]:
+    """{ATRIBUTO: valor} de una publicación. `value_id = -1` es el «no aplica»
+    de ML: no es un dato, y para el checklist no cuenta como lleno."""
+    salida: dict[str, str] = {}
+    for a in body.get("attributes") or []:
+        clave, valor = a.get("id"), a.get("value_name")
+        if not clave or str(a.get("value_id") or "") == "-1" or _vacio(valor):
+            continue
+        salida[str(clave)] = str(valor).strip()
+    return salida
+
+
+def _multiget(cuenta: str, ids: list[str]) -> dict[str, dict[str, Any]]:
+    """UNA llamada de hasta 20 publicaciones de UNA cuenta:
+    {item_id: {"estado", "atributos"}}. Levanta si ML no contesta."""
+    import httpx
+    from services import meli
+
+    token = meli._access_token(cuenta)
+    if not token:
+        raise RuntimeError(f"sin token de ML para {cuenta}")
+    params = {"ids": ",".join(ids), "attributes": "id,status,attributes"}
+    r = httpx.get(f"{meli._API}/items", params=params,
+                  headers={"Authorization": f"Bearer {token}"}, timeout=_PUB_TIMEOUT_S)
+    if r.status_code == 401:
+        # El Checklist NO renueva tokens: es una pantalla de LECTURA, y cuatro
+        # hilos renovando a la vez es la carrera que acaba en invalid_grant (ML
+        # rota el refresh_token en cada uso). Se relee de la base por si otro
+        # proceso ya renovó; si no, lo renueva el aviso de la próxima venta.
+        nuevo = meli.releer_token(cuenta)
+        if not nuevo or nuevo == token:
+            raise RuntimeError(f"el token de ML de {cuenta} venció; lo renueva la "
+                               "próxima venta")
+        r = httpx.get(f"{meli._API}/items", params=params,
+                      headers={"Authorization": f"Bearer {nuevo}"},
+                      timeout=_PUB_TIMEOUT_S)
+    r.raise_for_status()
+    salida: dict[str, dict[str, Any]] = {}
+    for x in r.json() or []:
+        b = x.get("body") or {}
+        iid = str(b.get("id") or "")
+        if x.get("code") == 200 and iid:
+            salida[iid] = {"estado": b.get("status"), "atributos": _atributos_item(b)}
+    # Lo que ML no devolvió (403 de otra cuenta, borrada) también se recuerda,
+    # vacío: si no, cada recarga volvería a preguntar por él.
+    for iid in ids:
+        salida.setdefault(iid, {"estado": None, "atributos": {}})
+    return salida
+
+
+def _publicados(skus: list[str], fresco: bool = False
+                ) -> tuple[dict[str, dict[str, str]], dict[str, Any]]:
+    """({SKU EN MAYÚSCULAS: {ATRIBUTO: valor}}, resumen de la lectura).
+
+    Por SKU manda UNA publicación: la `active` (si no, la `paused`) más
+    reciente. No se mezclan atributos de varias: un SKU reciclado puede ser
+    OTRO producto en la otra cuenta (EST-0091: cómoda en BEKURA, repisa en
+    SANCORFASHION), y sus atributos llenarían huecos con datos ajenos.
+
+    Lo que no se pudo volver a pedir (ML caído, cuenta en pausa) se enseña con
+    lo ÚLTIMO que se leyó, aunque tenga más de 30 min: mejor viejo que borrado."""
+    info: dict[str, Any] = {"publicaciones": 0, "vivas": 0, "consultadas": 0,
+                            "error": None}
+    if not skus:
+        return {}, info
+    try:
+        pubs = _publicaciones_de(skus)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("checklist: publicaciones de kubera no disponibles: %s", exc)
+        info["error"] = "No se pudieron leer las publicaciones en kubera."
+        return {}, info
+
+    todas = sorted({par for lista in pubs.values() for par in lista})
+    info["publicaciones"] = len(todas)
+    ahora = time.monotonic()
+    with _pub_candado:
+        guardadas = {iid: _pub_cache.get(iid) for _, iid in todas}
+    leidas: dict[str, dict[str, Any]] = {
+        iid: hit[1] for iid, hit in guardadas.items()
+        if hit and not fresco and ahora - hit[0] < _PUB_TTL_S}
+
+    faltan: dict[str, list[str]] = {}
+    for cuenta, iid in todas:
+        if iid not in leidas:
+            faltan.setdefault(cuenta, []).append(iid)
+    en_pausa = sorted(c for c in faltan if ahora < _pub_pausa_hasta.get(c, 0.0))
+    lotes = [(c, ids[k:k + _PUB_MULTIGET]) for c, ids in faltan.items()
+             if c not in en_pausa for k in range(0, len(ids), _PUB_MULTIGET)]
+    avisos: list[str] = []
+    if en_pausa:
+        avisos.append(f"Mercado Libre no contestó hace un momento ({', '.join(en_pausa)}); "
+                      "se le vuelve a preguntar en unos minutos.")
+    if lotes:
+        def _uno(lote: tuple[str, list[str]]) -> tuple[dict[str, dict[str, Any]], str | None]:
+            try:
+                return _multiget(*lote), None
+            except Exception as exc:  # noqa: BLE001
+                log.warning("checklist: multiget de %s (%d) falló: %s",
+                            lote[0], len(lote[1]), exc)
+                return {}, str(exc)
+
+        with ThreadPoolExecutor(max_workers=min(_PUB_HILOS, len(lotes))) as ex:
+            resultados = list(ex.map(_uno, lotes))
+        info["consultadas"] = sum(len(ids) for _, ids in lotes)
+        fallidas = sorted({c for (c, _), (_, e) in zip(lotes, resultados) if e})
+        for c in fallidas:
+            _pub_pausa_hasta[c] = time.monotonic() + _PUB_PAUSA_S
+        n_fallos = sum(1 for _, e in resultados if e)
+        if n_fallos:
+            avisos.append(f"Mercado Libre no contestó {n_fallos} de {len(lotes)} consultas.")
+        with _pub_candado:
+            for res, _ in resultados:
+                for iid, v in res.items():
+                    _pub_cache[iid] = (time.monotonic(), v)
+                    leidas[iid] = v
+            if len(_pub_cache) > _PUB_CACHE_MAX:
+                viejo = time.monotonic() - _PUB_TTL_S
+                for k in [k for k, (ts, _) in _pub_cache.items() if ts < viejo]:
+                    del _pub_cache[k]
+
+    viejas = 0
+    for _, iid in todas:
+        if iid not in leidas and guardadas.get(iid):
+            leidas[iid] = guardadas[iid][1]
+            viejas += 1
+    if avisos:
+        info["error"] = " ".join(avisos) + (
+            f" De {viejas} publicaciones se muestra lo último que se leyó." if viejas else "")
+
+    salida: dict[str, dict[str, str]] = {}
+    for sku, lista in pubs.items():
+        vivas = [iid for _, iid in lista
+                 if (leidas.get(iid) or {}).get("estado") in _PUB_VIVAS]
+        if not vivas:
+            continue
+        # min() devuelve la PRIMERA de las mejores: respeta el orden de kubera.
+        gana = min(vivas, key=lambda i: _PUB_VIVAS[leidas[i]["estado"]])
+        atributos = dict(leidas[gana].get("atributos") or {})
+        if atributos:
+            salida[sku] = atributos
+    info["vivas"] = sum(1 for _, iid in todas
+                        if (leidas.get(iid) or {}).get("estado") in _PUB_VIVAS)
+    return salida, info
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -593,9 +798,13 @@ def _vacio(v: Any) -> bool:
     return v is None or (isinstance(v, str) and not v.strip())
 
 
-def _contexto(skus: list[str]) -> dict[str, Any]:
+def _contexto(skus: list[str], fresco: bool = False,
+              con_publicado: bool = True) -> dict[str, Any]:
     """Todo lo que hace falta para evaluar y exportar un grupo de SKUs, en
-    pocas consultas: categorías, campos, matriz, valores y almacén."""
+    pocas consultas: categorías, campos, matriz, valores, lo publicado y
+    almacén. `fresco` vuelve a pedirle a ML lo publicado (sin caché); la carga
+    de archivos no lo necesita (`con_publicado=False`): compara contra lo que
+    el propio archivo dice que se exportó."""
     info = specs._categorias(skus) if skus else {}
     cats_por_sku = {s: (info.get(s) or {}).get(CANAL) or {} for s in skus}
     cats = {v.get("categoria") for v in cats_por_sku.values() if v.get("categoria")}
@@ -604,28 +813,48 @@ def _contexto(skus: list[str]) -> dict[str, Any]:
     auto = _automaticos(cats)
     campos = {c: campos_de(c, crudos.get(c) or [], matriz.get(c) or {}, auto.get(c) or {})
               for c in cats}
+    publicados, publicados_info = (_publicados(skus, fresco) if con_publicado
+                                   else ({}, {}))
     return {
         "cats_por_sku": cats_por_sku,
         "campos": campos,
         "matriz": matriz,
         "nombres": _nombres_categoria(cats),
         "valores": _valores_ml(skus),
+        "publicados": publicados,
+        "publicados_info": publicados_info,
         "almacen": _almacen(skus),
         "titulos": _titulos(skus),
     }
+
+
+def _publicado(ctx: dict[str, Any], sku: str) -> dict[str, str]:
+    return (ctx.get("publicados") or {}).get(sku.upper()) or {}
+
+
+def _valor_efectivo(ctx: dict[str, Any], sku: str, campo: str) -> tuple[str, str]:
+    """(valor, origen) de un atributo: lo capturado en kubera manda; si no hay,
+    el de la publicación viva. origen ∈ {'kubera', 'publicacion', ''}."""
+    v = (ctx["valores"].get(sku) or {}).get(campo)
+    if not _vacio(v):
+        return str(v), "kubera"
+    p = _publicado(ctx, sku).get(campo)
+    if not _vacio(p):
+        return str(p), "publicacion"
+    return "", ""
 
 
 def _evaluar(sku: str, ctx: dict[str, Any]) -> dict[str, Any]:
     cat_info = ctx["cats_por_sku"].get(sku) or {}
     cat = cat_info.get("categoria")
     campos = (ctx["campos"].get(cat) or []) if cat else []
-    valores = ctx["valores"].get(sku) or {}
     alm = ctx["almacen"].get(sku) or {}
     nombre = (ctx["nombres"].get(cat) or {}) if cat else {}
+    origen = {c["campo"]: _valor_efectivo(ctx, sku, c["campo"])[1] for c in campos}
 
     exigidos = [c for c in campos if c["exigido"]]
     faltan_ml = [{"campo": c["campo"], "etiqueta": c["etiqueta"], "nivel": c["nivel"]}
-                 for c in exigidos if _vacio(valores.get(c["campo"]))]
+                 for c in exigidos if not origen[c["campo"]]]
     # Lo automático (BRAND → Ferrahome) ni se exige ni es opcional de almacén.
     opcionales = [c for c in campos if not c["exigido"] and c["nivel"] != "auto"]
     faltan_alm = [k for k in _LOG_CLAVES if alm.get(k) is None]
@@ -649,10 +878,12 @@ def _evaluar(sku: str, ctx: dict[str, Any]) -> dict[str, Any]:
         "categoria_ruta": nombre.get("ruta"),
         "exigidos_total": len(exigidos),
         "exigidos_llenos": len(exigidos) - len(faltan_ml),
+        # De los llenos, cuántos solo están en la publicación viva de ML.
+        "exigidos_publicados": sum(1 for c in exigidos
+                                   if origen[c["campo"]] == "publicacion"),
         "faltan_ml": faltan_ml,
         "opcionales_total": len(opcionales),
-        "opcionales_llenos": sum(1 for c in opcionales
-                                 if not _vacio(valores.get(c["campo"]))),
+        "opcionales_llenos": sum(1 for c in opcionales if origen[c["campo"]]),
         "almacen": {k: alm.get(k) for k in (*_LOG_CLAVES, "capturado_por",
                                              "capturado_en", "sistema")},
         "faltan_almacen": faltan_alm,
@@ -661,7 +892,7 @@ def _evaluar(sku: str, ctx: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def tablero_sync(semana_txt: str | None) -> dict[str, Any]:
+def tablero_sync(semana_txt: str | None, fresco: bool = False) -> dict[str, Any]:
     semana = semana_de(semana_txt)
     base = {"semana": semana.isoformat(),
             "semana_fin": (semana + dt.timedelta(days=6)).isoformat(),
@@ -678,17 +909,17 @@ def tablero_sync(semana_txt: str | None) -> dict[str, Any]:
                   "from ops.checklist_lote where semana = %s order by agregado_en, sku",
                   (semana,))
         skus = [r["sku"] for r in lote]
-        ctx = _contexto(skus)
+        ctx = _contexto(skus, fresco)
     except FaltaMigracion as exc:
         return {**base, "ok": False, "falta_migracion": True, "motivo": str(exc),
                 "semanas": [], "filas": [], "categorias": [],
-                "resumen": _resumen([])}
+                "resumen": _resumen([]), "publicados": None}
 
     urls = _urls_ml(skus)
     filas = []
     for r in lote:
         f = _evaluar(r["sku"], ctx)
-        f["url_ml"] = urls.get(r["sku"])
+        f["url_ml"] = urls.get(r["sku"].upper())
         f["comentario"] = r.get("comentario")
         f["agregado_por"] = r["agregado_por"]
         f["agregado_en"] = r["agregado_en"].isoformat() if r["agregado_en"] else None
@@ -707,7 +938,35 @@ def tablero_sync(semana_txt: str | None) -> dict[str, Any]:
 
     return {**base, "ok": True, "falta_migracion": False, "motivo": None,
             "semanas": semanas, "filas": filas, "categorias": categorias,
-            "resumen": _resumen(filas)}
+            "resumen": _resumen(filas), "publicados": ctx["publicados_info"]}
+
+
+def precalentar_sync(semana_txt: str | None = None) -> None:
+    """Pide a ML, en segundo plano, lo que la primera vista del tablero
+    esperaría: los atributos de cada categoría y lo publicado. Tras un deploy
+    los cachés arrancan vacíos y la primera carga pagaba todo junto.
+
+    Sin semana, las DOS últimas con lote: el lunes la nueva puede estar vacía
+    y almacén sigue con la anterior."""
+    try:
+        if semana_txt:
+            semanas = [semana_de(semana_txt)]
+        else:
+            semanas = [r["semana"] for r in _q(
+                "select distinct semana from ops.checklist_lote "
+                "order by semana desc limit 2")]
+        for semana in semanas:
+            skus = [r["sku"] for r in _q(
+                "select sku::text as sku from ops.checklist_lote where semana = %s",
+                (semana,))]
+            if not skus:
+                continue
+            ctx = _contexto(skus)
+            log.info("checklist: precalentado %s — %d SKUs, %d categorías, "
+                     "%d publicaciones", etiqueta(semana), len(skus),
+                     len(ctx["campos"]), ctx["publicados_info"]["publicaciones"])
+    except Exception as exc:  # noqa: BLE001 — precalentar nunca rompe nada
+        log.warning("checklist: no se pudo precalentar: %s", exc)
 
 
 def _resumen(filas: list[dict[str, Any]]) -> dict[str, int]:
@@ -968,6 +1227,8 @@ _COLOR = {
     "secundario": "F1F5F9", "almacen": "BFDBFE", "id": "E5E7EB",
 }
 _HUECO = {"ml": "FFF9C4", "matriz": "FFEDD5", "almacen": "DBEAFE"}
+# La celda que viene de la publicación viva de ML (no de kubera).
+_PUBLICADO = "DCFCE7"
 _NIVEL_TXT = {"ml": "Obligatorio ML", "matriz": "Obligatorio (matriz)",
               "auto": "Automático",
               "principal": "Opcional", "secundario": "Opcional · facturación"}
@@ -1058,6 +1319,12 @@ def excel_sync(semana_txt: str | None, sel: str | None) -> tuple[bytes, str]:
     listas = wb.create_sheet("_listas")
     listas.sheet_state = "hidden"
     col_lista = [0]
+    # Lo que salió en VERDE, tal cual: al cargar, una celda igual a esto es
+    # «no la tocaron». Se compara contra el archivo y no contra ML de nuevo:
+    # la publicación pudo cambiar (o ML no contestar) entre la descarga y la carga.
+    foto = wb.create_sheet("_publicado")
+    foto.sheet_state = "hidden"
+    foto.append(["sku", "campo", "valor"])
 
     fill = lambda c: PatternFill("solid", start_color=c, end_color=c)  # noqa: E731
     fino = Side(style="thin", color="CBD5E1")
@@ -1115,10 +1382,10 @@ def excel_sync(semana_txt: str | None, sel: str | None) -> tuple[bytes, str]:
 
         ultima = 3 + len(grupo)
         for i, sku in enumerate(grupo, start=4):
-            valores = ctx["valores"].get(sku) or {}
             alm = ctx["almacen"].get(sku) or {}
             for j, col in enumerate(columnas, start=1):
                 clave = col["clave"]
+                origen = ""
                 if clave == "sku":
                     v: Any = sku
                 elif clave == "titulo":
@@ -1128,12 +1395,16 @@ def excel_sync(semana_txt: str | None, sel: str | None) -> tuple[bytes, str]:
                 elif col["nivel"] == "almacen":
                     v = alm.get(clave)
                 else:
-                    v = valores.get(clave) or None
+                    v, origen = _valor_efectivo(ctx, sku, clave)
+                    v = v or None
                 celda = ws.cell(row=i, column=j, value=v)
                 celda.border = borde
                 if clave == "sku":
                     celda.font = negrita
-                if _vacio(v) and col["nivel"] in _HUECO:
+                if origen == "publicacion":
+                    celda.fill = fill(_PUBLICADO)
+                    foto.append([sku, clave, v])
+                elif _vacio(v) and col["nivel"] in _HUECO:
                     celda.fill = fill(_HUECO[col["nivel"]])
 
         # Validaciones: sugerencias con AVISO (ML acepta texto libre en casi
@@ -1174,8 +1445,9 @@ def excel_sync(semana_txt: str | None, sel: str | None) -> tuple[bytes, str]:
     _instrucciones(ins, semana, len(skus), indice, fill, negrita)
     if not col_lista[0]:
         listas.cell(row=1, column=1, value="")
-    # La hoja de listas al final: oculta, pero que no quede entre las de trabajo.
-    wb.move_sheet(listas, offset=len(wb.sheetnames) - 1 - wb.sheetnames.index("_listas"))
+    # Las hojas ocultas al final, que no queden entre las de trabajo.
+    for oculta in (listas, foto):
+        wb.move_sheet(oculta, offset=len(wb.sheetnames) - 1 - wb.sheetnames.index(oculta.title))
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -1214,6 +1486,8 @@ def _instrucciones(ws, semana: dt.date, n: int, indice: list, fill, negrita) -> 
         "qué es cada cosa al cargarlo.",
         "6. Una celda vacía NO borra nada. Lo que almacén ya capturó antes viene "
         "pre-llenado: corrígelo si está mal.",
+        "   VERDE = lo trae HOY la publicación viva de Mercado Libre. Si está bien, "
+        "déjalo como viene; si está mal, corrígelo y se guarda tu valor.",
         "7. Guarda y cárgalo en Omnicanal → Inventario → Checklist → «Cargar "
         "Excel». Antes de guardar te enseña qué va a cambiar.",
     ]
@@ -1223,13 +1497,15 @@ def _instrucciones(ws, semana: dt.date, n: int, indice: list, fill, negrita) -> 
     fila = 4 + len(pasos) + 1
     ws.cell(row=fila, column=1, value="Colores").font = negrita
     for k, t in (("almacen", "Almacén (medidas, cajas, piezas)"),
+                 ("publicado", "Ya lo tiene la publicación viva de Mercado Libre"),
                  ("ml", "Obligatorio de Mercado Libre"),
                  ("matriz", "Obligatorio por la matriz del equipo"),
                  ("auto", "Automático: el publicador lo llena si lo dejas vacío"),
                  ("principal", "Opcional del producto"),
                  ("secundario", "Opcional de facturación (plegado)")):
         fila += 1
-        ws.cell(row=fila, column=1, value="").fill = fill(_COLOR[k])
+        ws.cell(row=fila, column=1, value="").fill = fill(
+            _PUBLICADO if k == "publicado" else _COLOR[k])
         ws.cell(row=fila, column=2, value=t)
 
     fila += 2
@@ -1250,7 +1526,8 @@ def csv_sync(semana_txt: str | None, sel: str | None) -> tuple[bytes, str]:
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["sku", "producto", "categoria_id", "categoria", "campo", "etiqueta",
-                "nivel", "tipo", "unidades", "en_sistema", "valor"])
+                "nivel", "tipo", "unidades", "en_sistema", "valor", "origen",
+                "publicado"])
     # La referencia de costos_validados que corresponde a cada campo de almacén.
     ref_de = {"largo_cm": "largo", "ancho_cm": "ancho", "alto_cm": "alto",
               "peso_kg": "peso", "cajas": "cajas_pl",
@@ -1264,12 +1541,13 @@ def csv_sync(semana_txt: str | None, sel: str | None) -> tuple[bytes, str]:
             v = alm.get(k)
             ref = (alm.get("sistema") or {}).get(ref_de[k])
             w.writerow([sku, titulo, cat or "", nombre, k, e, "almacen", t, "",
-                        _texto(ref), "" if v is None else _texto(v)])
-        valores = ctx["valores"].get(sku) or {}
+                        _texto(ref), "" if v is None else _texto(v),
+                        "" if v is None else "kubera", ""])
         for c in ((ctx["campos"].get(cat) or []) if cat else []):
+            valor, origen = _valor_efectivo(ctx, sku, c["campo"])
             w.writerow([sku, titulo, cat, nombre, c["campo"], c["etiqueta"], c["nivel"],
                         c.get("tipo") or "", "/".join(c.get("unidades") or []), "",
-                        valores.get(c["campo"], "")])
+                        valor, origen, valor if origen == "publicacion" else ""])
     nombre = _nombre_archivo(semana, len(skus), "csv")
     # BOM: sin él, Excel en español abre los acentos como basura.
     return ("﻿" + buf.getvalue()).encode("utf-8"), nombre
@@ -1279,14 +1557,21 @@ def csv_sync(semana_txt: str | None, sel: str | None) -> tuple[bytes, str]:
 # La carga
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _celdas_xlsx(datos: bytes) -> tuple[list[tuple[str, str, str, str, int]], list[dict]]:
-    """[(sku, campo, valor, hoja, fila)], errores de estructura."""
+def _celdas_xlsx(datos: bytes, publicado: dict[tuple[str, str], str] | None = None
+                 ) -> tuple[list[tuple[str, str, str, str, int]], list[dict]]:
+    """[(sku, campo, valor, hoja, fila)], errores de estructura. Si se da
+    `publicado`, se llena con la foto de lo que salió en verde (hoja oculta
+    `_publicado`): {(sku, campo): valor}."""
     from openpyxl import load_workbook
 
     wb = load_workbook(io.BytesIO(datos), data_only=True, read_only=True)
     celdas, errores = [], []
+    if publicado is not None and "_publicado" in wb.sheetnames:
+        for n, fila in enumerate(wb["_publicado"].iter_rows(values_only=True)):
+            if n and fila and len(fila) >= 3 and _texto(fila[0]) and _texto(fila[1]):
+                publicado[(_texto(fila[0]), _texto(fila[1]))] = _texto(fila[2])
     for ws in wb.worksheets:
-        if ws.title.lower() in ("instrucciones", "_listas"):
+        if ws.title.lower() in ("instrucciones", "_listas", "_publicado"):
             continue
         filas = ws.iter_rows(values_only=True)
         claves: list[str] | None = None
@@ -1318,7 +1603,8 @@ def _celdas_xlsx(datos: bytes) -> tuple[list[tuple[str, str, str, str, int]], li
     return celdas, errores
 
 
-def _celdas_csv(datos: bytes) -> tuple[list[tuple[str, str, str, str, int]], list[dict]]:
+def _celdas_csv(datos: bytes, publicado: dict[tuple[str, str], str] | None = None
+                ) -> tuple[list[tuple[str, str, str, str, int]], list[dict]]:
     texto = datos.decode("utf-8-sig", errors="replace")
     muestra = texto[:4096]
     try:
@@ -1341,16 +1627,36 @@ def _celdas_csv(datos: bytes) -> tuple[list[tuple[str, str, str, str, int]], lis
         sku, campo, valor = r["sku"].strip(), r["campo"].strip(), r["valor"].strip()
         if sku and campo and valor:
             celdas.append((sku, campo, valor, "CSV", n))
+        if publicado is not None and sku and campo and r.get("publicado", "").strip():
+            publicado[(sku, campo)] = r["publicado"].strip()
     return celdas, []
+
+
+# «7.50123E+12»: lo que queda de un GTIN cuando el CSV se abre en Excel.
+_NOTACION_CIENTIFICA = re.compile(r"^\s*-?\d+(?:[.,]\d+)?[eE][+-]?\d+\s*$")
+
+
+def _mismo_valor(a: str, b: str) -> bool:
+    """¿Es el mismo valor? Sin espacios ni mayúsculas, y como número si los dos
+    lo son («1.50» y «1.5»: Excel reescribe los números al guardar un CSV)."""
+    a, b = a.strip(), b.strip()
+    if a.casefold() == b.casefold():
+        return True
+    try:
+        return float(a.replace(",", ".")) == float(b.replace(",", "."))
+    except ValueError:
+        return False
 
 
 def importar_sync(datos: bytes, nombre_archivo: str, aplicar: bool) -> dict[str, Any]:
     ext = (nombre_archivo or "").lower().rsplit(".", 1)[-1]
     try:
+        # La foto de lo que salió en verde, del PROPIO archivo.
+        foto: dict[tuple[str, str], str] = {}
         if ext in ("xlsx", "xlsm"):
-            celdas, errores = _celdas_xlsx(datos)
+            celdas, errores = _celdas_xlsx(datos, foto)
         elif ext == "csv":
-            celdas, errores = _celdas_csv(datos)
+            celdas, errores = _celdas_csv(datos, foto)
         else:
             return {"ok": False, "motivo": "Sube el Excel (.xlsx) o el CSV que "
                                            "descargaste del panel."}
@@ -1370,7 +1676,7 @@ def importar_sync(datos: bytes, nombre_archivo: str, aplicar: bool) -> dict[str,
                         "motivo": "SKU que kubera no conoce; se ignoró."})
     skus = [reales[s.upper()] for s in pegados if s.upper() in reales]
     try:
-        ctx = _contexto(skus)
+        ctx = _contexto(skus, con_publicado=False)
     except FaltaMigracion as exc:
         return {"ok": False, "falta_migracion": True, "motivo": str(exc)}
 
@@ -1419,9 +1725,19 @@ def importar_sync(datos: bytes, nombre_archivo: str, aplicar: bool) -> dict[str,
         antes = (ctx["valores"].get(sku) or {}).get(campo, "")
         # La celda que nadie tocó (viene pre-llenada) NO se normaliza: si el
         # valor guardado no trae unidad, «arreglarlo» aquí sería inventar un
-        # cambio que almacén no hizo.
-        if crudo == antes:
+        # cambio que almacén no hizo. Lo mismo con la que salió en VERDE (de la
+        # publicación viva): igual a la foto del archivo = «está bien», no
+        # «cópialo a kubera» (ver «Lo publicado»). Se compara contra la FOTO y
+        # no contra kubera: si alguien capturó otra cosa después de descargar,
+        # la celda verde intacta no debe pisarla.
+        verde = foto.get((pegado, campo))
+        if crudo == antes or (verde is not None and _mismo_valor(crudo, verde)):
             sin_cambios += 1
+            continue
+        if _NOTACION_CIENTIFICA.match(crudo):
+            errores.append({**donde, "motivo": f"{c['etiqueta']}: «{crudo}» es un número "
+                            "que Excel convirtió a notación científica y perdió "
+                            "dígitos. Escríbelo completo como texto."})
             continue
         valor, error, aviso = _normalizar_ml(c, crudo)
         if error:

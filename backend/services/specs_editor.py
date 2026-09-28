@@ -102,7 +102,10 @@ _AMAZON_NO_BODEGA = frozenset({
 _AMAZON_NO_BODEGA_PREFIJOS = ("merchant_", "main_", "other_", "swatch_",
                               "gpsr_", "ghs")
 
-_ML_TTL = 3600.0
+# 6 h (28-sep; era 1 h): lo que pide una categoría casi nunca cambia, y el
+# Checklist pide ~40 categorías de golpe — con 1 h, cada vuelta de almacén
+# después de comer las volvía a pedir todas.
+_ML_TTL = 6 * 3600.0
 _ml_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _ml_candado = threading.Lock()
 

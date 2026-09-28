@@ -243,7 +243,8 @@ async def _ajustar_woo(sku: str, delta: int) -> tuple[bool, str, int | None, int
     """
     from services import woocommerce, wp_db
     P = wp_db._prefix()
-    filas = wp_db._fetch_all(
+    filas = await asyncio.to_thread(   # regla 11: MySQL de WordPress
+        wp_db._fetch_all,
         f"""SELECT p.ID wc_id, p.post_type, p.post_parent, st.meta_value stock,
                    ms.meta_value gest
             FROM {P}postmeta s
@@ -273,6 +274,12 @@ async def _ajustar_woo(sku: str, delta: int) -> tuple[bool, str, int | None, int
     if r.status_code not in (200, 201):
         return False, f"WooCommerce HTTP {r.status_code}", antes, None
     return True, "ok", antes, despues
+
+
+async def _registrar_async(*args: Any) -> None:
+    """`_registrar` escribe en kubera y en MySQL: desde una corrutina va en un
+    hilo (regla 11). Corre en CADA aviso de FULL que no sea repetido."""
+    await asyncio.to_thread(_registrar, *args)
 
 
 # ── Núcleo: procesar una operación de FULL avisada por webhook ───────────────
@@ -339,8 +346,8 @@ async def procesar_operacion(operacion_id: str, cuenta: str) -> dict[str, Any]:
     efecto = EFECTO_EN_WOO.get(tipo)
 
     if not sku:
-        _registrar("?", operacion_id, cuenta, "full_sin_sku", None, None,
-                   f"{tipo} x{cantidad}: no se pudo resolver el SKU")
+        await _registrar_async("?", operacion_id, cuenta, "full_sin_sku", None, None,
+                               f"{tipo} x{cantidad}: no se pudo resolver el SKU")
         return {"ok": False, "motivo": "SKU no resuelto"}
 
     # Movimiento interno del marketplace: se registra y no se toca Woo.
@@ -353,8 +360,8 @@ async def procesar_operacion(operacion_id: str, cuenta: str) -> dict[str, Any]:
         else:
             aviso = "sin efecto en Woo"
             accion_reg = "full_ignorado"
-        _registrar(sku, operacion_id, cuenta, accion_reg, None, None,
-                   f"{tipo} x{cantidad}: {aviso}")
+        await _registrar_async(sku, operacion_id, cuenta, accion_reg, None, None,
+                               f"{tipo} x{cantidad}: {aviso}")
         return {"ok": True, "accion": accion_reg, "tipo": tipo, "sku": sku}
 
     # VERIFICACIÓN CRUZADA — reescrita tras la auditoría del 27-jul.
@@ -368,13 +375,13 @@ async def procesar_operacion(operacion_id: str, cuenta: str) -> dict[str, Any]:
     total_tras = resultado_op.get("total")
     if efecto == "resta":
         if total_tras is None:
-            _registrar(sku, operacion_id, cuenta, "full_sospechoso", None, None,
-                       f"{tipo} x{cantidad}: la operación no trae `result.total` — NO se tocó Woo")
+            await _registrar_async(sku, operacion_id, cuenta, "full_sospechoso", None, None,
+                                   f"{tipo} x{cantidad}: la operación no trae `result.total` — NO se tocó Woo")
             return {"ok": False, "accion": "sospechoso", "sku": sku}
         if int(total_tras) < abs(cantidad):
-            _registrar(sku, operacion_id, cuenta, "full_sospechoso", None, None,
-                       f"{tipo} x{cantidad}: incoherente (total tras la operación = "
-                       f"{total_tras}) — NO se tocó Woo")
+            await _registrar_async(sku, operacion_id, cuenta, "full_sospechoso", None, None,
+                                   f"{tipo} x{cantidad}: incoherente (total tras la operación = "
+                                   f"{total_tras}) — NO se tocó Woo")
             return {"ok": False, "accion": "sospechoso", "sku": sku}
 
     delta = -abs(cantidad) if efecto == "resta" else abs(cantidad)
@@ -382,11 +389,11 @@ async def procesar_operacion(operacion_id: str, cuenta: str) -> dict[str, Any]:
 
     # MODO OBSERVACIÓN: se anota lo que haría y se termina. Nada toca Woo.
     if solo_registro():
-        actual = fanout_stock._stock_drop(sku)
+        actual = await asyncio.to_thread(fanout_stock._stock_drop, sku)
         propuesto = max(0, (actual or 0) + delta) if actual is not None else None
-        _registrar(sku, operacion_id, cuenta, f"{accion}_sim", actual, propuesto,
-                   f"{tipo} x{cantidad}: SOLO-REGISTRO — restaría a Woo "
-                   f"{actual}→{propuesto} (no se escribió)")
+        await _registrar_async(sku, operacion_id, cuenta, f"{accion}_sim", actual, propuesto,
+                               f"{tipo} x{cantidad}: SOLO-REGISTRO — restaría a Woo "
+                               f"{actual}→{propuesto} (no se escribió)")
         log.info("FULL [solo-registro] %s %s: %s x%s → Woo %s→%s",
                  cuenta, sku, tipo, cantidad, actual, propuesto)
         return {"ok": True, "accion": f"{accion}_sim", "sku": sku, "tipo": tipo,
@@ -394,9 +401,9 @@ async def procesar_operacion(operacion_id: str, cuenta: str) -> dict[str, Any]:
                 "solo_registro": True}
 
     ok, det, antes, despues = await _ajustar_woo(sku, delta)
-    _registrar(sku, operacion_id, cuenta, accion, antes, despues,
-               f"{tipo} x{cantidad} → Woo {antes}→{despues} ({det})" if ok
-               else f"{tipo} x{cantidad}: {det}")
+    await _registrar_async(sku, operacion_id, cuenta, accion, antes, despues,
+                           f"{tipo} x{cantidad} → Woo {antes}→{despues} ({det})" if ok
+                           else f"{tipo} x{cantidad}: {det}")
     if ok:
         log.info("FULL %s %s: %s x%s → Woo %s→%s", cuenta, sku, tipo, cantidad, antes, despues)
         # El stock propio cambió: los canales DROP tienen que enterarse.
@@ -509,21 +516,21 @@ async def revisar_fba() -> dict[str, Any]:
             continue                      # sin ingreso (o SKU nuevo: se toma como base)
         subio = ahora - antes_fba
         if solo_registro():
-            actual = fanout_stock._stock_drop(sku)
+            actual = await asyncio.to_thread(fanout_stock._stock_drop, sku)
             propuesto = max(0, (actual or 0) - subio) if actual is not None else None
-            _registrar(sku, f"fba:{sku}:{ahora}", "AMAZON", "fba_ingreso_sim",
-                       actual, propuesto,
-                       f"FBA subió {antes_fba}→{ahora} (+{subio}): SOLO-REGISTRO — "
-                       f"restaría a Woo {actual}→{propuesto} (no se escribió)")
-            _marcar_agua_fba(sku, ahora)
+            await _registrar_async(sku, f"fba:{sku}:{ahora}", "AMAZON", "fba_ingreso_sim",
+                                   actual, propuesto,
+                                   f"FBA subió {antes_fba}→{ahora} (+{subio}): SOLO-REGISTRO — "
+                                   f"restaría a Woo {actual}→{propuesto} (no se escribió)")
+            await asyncio.to_thread(_marcar_agua_fba, sku, ahora)
             aplicados.append({"sku": sku, "piezas": subio, "woo": f"{actual}→{propuesto}",
                               "solo_registro": True})
             continue
         ok, det, antes, despues = await _ajustar_woo(sku, -subio)
-        _registrar(sku, f"fba:{sku}:{ahora}", "AMAZON",
-                   "fba_ingreso" if ok else "fba_error", antes, despues,
-                   f"FBA subió {antes_fba}→{ahora} (+{subio}) → Woo {antes}→{despues} ({det})")
-        _marcar_agua_fba(sku, ahora)          # avanza tambien con error: ver la nota
+        await _registrar_async(sku, f"fba:{sku}:{ahora}", "AMAZON",
+                               "fba_ingreso" if ok else "fba_error", antes, despues,
+                               f"FBA subió {antes_fba}→{ahora} (+{subio}) → Woo {antes}→{despues} ({det})")
+        await asyncio.to_thread(_marcar_agua_fba, sku, ahora)          # avanza tambien con error: ver la nota
         if ok:
             aplicados.append({"sku": sku, "piezas": subio, "woo": f"{antes}→{despues}"})
             fanout_stock.encolar(sku, motivo="ingreso a FBA")

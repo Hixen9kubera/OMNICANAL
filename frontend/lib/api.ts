@@ -1730,10 +1730,14 @@ export function guardarSpecsCanal(
 // ── Inventario · Checklist (validación de almacén) ──────────────────────────
 
 export function tableroChecklist(
-  semana: string | undefined, signal?: AbortSignal,
+  semana: string | undefined, signal?: AbortSignal, fresco = false,
 ): Promise<import("./types").TableroChecklist> {
-  const q = semana ? `?semana=${encodeURIComponent(semana)}` : "";
-  return getJSON(`/api/checklist${q}`, signal);
+  const p = new URLSearchParams();
+  if (semana) p.set("semana", semana);
+  // «fresco»: vuelve a leer las publicaciones de ML sin el caché de 30 min.
+  if (fresco) p.set("fresco", "true");
+  const q = p.toString();
+  return getJSON(`/api/checklist${q ? `?${q}` : ""}`, signal);
 }
 
 /** Agrega SKUs al lote de la semana. Acepta el texto pegado de Excel tal cual. */

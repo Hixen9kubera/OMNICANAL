@@ -178,7 +178,9 @@ async def _leer_ml_item(
         r = await cli.get(f"/items/{item_id}", headers={"Authorization": f"Bearer {token}"})
         # Token expirado (401): intentar renovarlo una vez y reintentar.
         if r.status_code == 401 and cuenta:
-            nuevo = meli.refrescar_token(cuenta)
+            # Renovar es HTTP a ML + escritura en la base: en un hilo y con el
+            # candado por cuenta (reutiliza lo renovado hace < 2 min en ráfaga).
+            nuevo = await meli._renovar_con_candado(cuenta)
             if nuevo:
                 r = await cli.get(f"/items/{item_id}", headers={"Authorization": f"Bearer {nuevo}"})
         if r.status_code != 200:
@@ -207,7 +209,7 @@ async def _leer_precio_venta(
     try:
         r = await cli.get(ruta, params=par, headers={"Authorization": f"Bearer {token}"})
         if r.status_code == 401 and cuenta:
-            nuevo_tok = meli.refrescar_token(cuenta)
+            nuevo_tok = await meli._renovar_con_candado(cuenta)   # ver _leer_ml_item
             if nuevo_tok:
                 r = await cli.get(ruta, params=par,
                                   headers={"Authorization": f"Bearer {nuevo_tok}"})
@@ -312,7 +314,7 @@ async def _lote_desde_ml(cli: httpx.AsyncClient, cuenta: str, token: str,
     vistos: dict[str, Any] = {}
     try:
         from services import channel_read
-        vistos = channel_read.vistos_ml(cuenta)
+        vistos = await asyncio.to_thread(channel_read.vistos_ml, cuenta)
     except Exception:  # noqa: BLE001 — sin cache de vistos el orden degrada, no rompe
         pass
     from datetime import datetime
@@ -334,7 +336,8 @@ async def _lote_desde_ml(cli: httpx.AsyncClient, cuenta: str, token: str,
     try:
         from services import channel_read
         universo = set(ids)
-        congeladas = [i for i in channel_read.vivas_ml(cuenta) if i not in universo]
+        vivas = await asyncio.to_thread(channel_read.vivas_ml, cuenta)
+        congeladas = [i for i in vivas if i not in universo]
         if congeladas:
             log.info("barrido de cierre %s: %d fila(s) viva(s) sin publicación "
                      "en el catálogo — se les lee el estado final", cuenta,
@@ -348,7 +351,7 @@ async def _lote_desde_ml(cli: httpx.AsyncClient, cuenta: str, token: str,
 
 async def sincronizar_ml(cuenta: str, limite: int = 60) -> dict[str, Any]:
     """Lee en vivo los items de una cuenta ML y los guarda en canal_inventario."""
-    token = meli._access_token(cuenta)
+    token = await meli.access_token_async(cuenta)
     if not token:
         return {"canal": "mercado_libre", "cuenta": cuenta, "ok": False, "motivo": "sin token"}
 
@@ -360,12 +363,9 @@ async def sincronizar_ml(cuenta: str, limite: int = 60) -> dict[str, Any]:
             listings = await _lote_desde_ml(cli, cuenta, token, limite)
             # Respaldo de identidad para items sin SKU legible en ML.
             # PASO 3 · BLOQUE 4 (19-ago).
-            respaldo = (channel_read.respaldo_identidad_ml(cuenta)
-                        if settings.supabase_read_publicaciones else {
-                str(r["ml_item_id"]): r["sku"] for r in db.fetch_all(
-                    "SELECT sku, ml_item_id FROM ml_progress "
-                    "WHERE cuenta=%s AND ml_item_id IS NOT NULL", (cuenta,))
-            })
+            # En un hilo (regla 11): el 26-sep esta lectura congeló el loop
+            # 5.3 s desde el scheduler, que corre en el loop principal.
+            respaldo = await asyncio.to_thread(_respaldo_identidad_ml, cuenta)
         else:
             # Camino histórico: la bitácora del publicador (ml_progress).
             # Progresivo: primero los SKUs que aún NO están en el cache, luego
@@ -381,26 +381,7 @@ async def sincronizar_ml(cuenta: str, limite: int = 60) -> dict[str, Any]:
             # arma aquí — son ~1,900 filas por cuenta.
             # PASO 3 · BLOQUE 4: el universo sale de channel.listings, que ademas
             # ya excluye las cerradas (ver la nota en channel_read).
-            listings = channel_read.universo_ml(cuenta) if settings.supabase_read_publicaciones else db.fetch_all(
-                """SELECT mp.sku, mp.ml_item_id
-                   FROM ml_progress mp
-                   WHERE mp.cuenta=%s AND mp.success=1 AND mp.ml_item_id IS NOT NULL""",
-                (cuenta,),
-            ) if settings.supabase_read_channel else db.fetch_all(
-                """SELECT mp.sku, mp.ml_item_id
-                   FROM ml_progress mp
-                   LEFT JOIN canal_inventario ci
-                          ON ci.sku = mp.sku AND ci.canal='mercado_libre' AND ci.cuenta = mp.cuenta
-                   WHERE mp.cuenta=%s AND mp.success=1 AND mp.ml_item_id IS NOT NULL
-                   ORDER BY (ci.sku IS NULL) DESC, ci.updated_at ASC
-                   LIMIT %s""",
-                (cuenta, limite),
-            )
-            if settings.supabase_read_channel:
-                vistos = channel_read.vistos_ml(cuenta)
-                listings.sort(key=lambda r: _turno(vistos.get(str(r["ml_item_id"]))))
-                listings = listings[:limite]
-                lecturas_fuente.anotar("channel", "kubera")
+            listings = await asyncio.to_thread(_listings_historico_ml, cuenta, limite)
             respaldo = {}
         for lst in listings:
             item = await _leer_ml_item(cli, lst["ml_item_id"], token, cuenta)
@@ -439,6 +420,43 @@ async def sincronizar_ml(cuenta: str, limite: int = 60) -> dict[str, Any]:
     if sin_sku:
         salida["sin_sku"] = sin_sku
     return salida
+
+
+def _respaldo_identidad_ml(cuenta: str) -> dict[str, str]:
+    """{item_id: sku} de respaldo para items sin SKU legible (PASO 3 · BLOQUE 4).
+    SÍNCRONA a propósito: se llama con asyncio.to_thread."""
+    if settings.supabase_read_publicaciones:
+        return channel_read.respaldo_identidad_ml(cuenta)
+    return {str(r["ml_item_id"]): r["sku"] for r in db.fetch_all(
+        "SELECT sku, ml_item_id FROM ml_progress "
+        "WHERE cuenta=%s AND ml_item_id IS NOT NULL", (cuenta,))}
+
+
+def _listings_historico_ml(cuenta: str, limite: int) -> list[dict[str, Any]]:
+    """El lote del camino histórico (ml_progress / channel.listings), ya en su
+    turno. SÍNCRONA a propósito: se llama con asyncio.to_thread (regla 11).
+    Ver la nota larga del PASO 0 en `sincronizar_ml`."""
+    listings = channel_read.universo_ml(cuenta) if settings.supabase_read_publicaciones else db.fetch_all(
+        """SELECT mp.sku, mp.ml_item_id
+           FROM ml_progress mp
+           WHERE mp.cuenta=%s AND mp.success=1 AND mp.ml_item_id IS NOT NULL""",
+        (cuenta,),
+    ) if settings.supabase_read_channel else db.fetch_all(
+        """SELECT mp.sku, mp.ml_item_id
+           FROM ml_progress mp
+           LEFT JOIN canal_inventario ci
+                  ON ci.sku = mp.sku AND ci.canal='mercado_libre' AND ci.cuenta = mp.cuenta
+           WHERE mp.cuenta=%s AND mp.success=1 AND mp.ml_item_id IS NOT NULL
+           ORDER BY (ci.sku IS NULL) DESC, ci.updated_at ASC
+           LIMIT %s""",
+        (cuenta, limite),
+    )
+    if settings.supabase_read_channel:
+        vistos = channel_read.vistos_ml(cuenta)
+        listings.sort(key=lambda r: _turno(vistos.get(str(r["ml_item_id"]))))
+        listings = listings[:limite]
+        lecturas_fuente.anotar("channel", "kubera")
+    return listings
 
 
 # ── LECTOR: Amazon (FBA bulk) ───────────────────────────────────────────────────
@@ -480,6 +498,21 @@ async def sincronizar_amazon(limite: int = 100) -> dict[str, Any]:
     # faltan en el cache, luego los más viejos.
     # PASO 0 (12-ago-2026): mismo caso que el turno de ML — el JOIN ordenaba,
     # no traía datos. Ver la nota larga en `_lote_ml`.
+    pubs = await asyncio.to_thread(_pubs_amazon, limite)
+    # Se le pregunta A AMAZON, no a nuestra bitácora (auditoría 29-jul).
+    # Una llamada por lote de 20 devuelve precio + ASIN + estado REAL + stock FBM.
+    # Antes: el precio venía de Pricing API v0 (cubría 40%), el ASIN y el estado se
+    # copiaban de `amazon_progress` (ASIN NULL en el 100%, y el estado era el de
+    # publicación: 293 listados dados de baja seguían diciendo PUBLISHED) y
+    # `stock_real` se mandaba NULL a propósito — por eso la tarjeta de Amazon
+    # mostraba "—" en stock aunque Amazon sí devuelve la cantidad.
+    skus_pub = [p["sku"] for p in pubs if p.get("sku")]
+    return await _sincronizar_amazon_resto(pubs, skus_pub, fba)
+
+
+def _pubs_amazon(limite: int) -> list[dict[str, Any]]:
+    """Qué publicaciones de Amazon se leen en esta vuelta, en su turno.
+    SÍNCRONA a propósito: se llama con asyncio.to_thread (regla 11)."""
     if settings.supabase_read_channel:
         # PASO 3 · BLOQUE 4.
         pubs = (channel_read.universo_amazon()
@@ -501,14 +534,12 @@ async def sincronizar_amazon(limite: int = 100) -> dict[str, Any]:
                LIMIT %s""",
             (limite,),
         )
-    # Se le pregunta A AMAZON, no a nuestra bitácora (auditoría 29-jul).
-    # Una llamada por lote de 20 devuelve precio + ASIN + estado REAL + stock FBM.
-    # Antes: el precio venía de Pricing API v0 (cubría 40%), el ASIN y el estado se
-    # copiaban de `amazon_progress` (ASIN NULL en el 100%, y el estado era el de
-    # publicación: 293 listados dados de baja seguían diciendo PUBLISHED) y
-    # `stock_real` se mandaba NULL a propósito — por eso la tarjeta de Amazon
-    # mostraba "—" en stock aunque Amazon sí devuelve la cantidad.
-    skus_pub = [p["sku"] for p in pubs if p.get("sku")]
+    return pubs
+
+
+async def _sincronizar_amazon_resto(pubs: list[dict[str, Any]], skus_pub: list[str],
+                                    fba: dict[str, int]) -> dict[str, Any]:
+    """La parte ASÍNCRONA de sincronizar_amazon, ya con las publicaciones."""
     vivo = await amazon.datos_por_sku(skus_pub)
 
     rows: list[dict[str, Any]] = []
@@ -579,18 +610,19 @@ async def sincronizar_woo(skus: list[str]) -> dict[str, Any]:
 async def _sync_ml_sku(sku: str) -> list[dict[str, Any]]:
     """Lee el SKU en ambas cuentas de ML. Tolerante a fallos."""
     # PASO 3 · BLOQUE 4.
-    if settings.supabase_read_publicaciones:
-        ml = [{"cuenta": p["cuenta"], "ml_item_id": p["item_id"]}
-              for p in channel_read.publicaciones_ml([sku]).get(sku, [])]
-    else:
-        try:
-            ml = db.fetch_all(
-                """SELECT cuenta, ml_item_id FROM ml_progress
-                   WHERE sku=%s AND ml_item_id IS NOT NULL""",
-                (sku,),
-            )
-        except Exception:  # noqa: BLE001
-            return []
+    def _publicaciones() -> list[dict[str, Any]]:
+        if settings.supabase_read_publicaciones:
+            return [{"cuenta": p["cuenta"], "ml_item_id": p["item_id"]}
+                    for p in channel_read.publicaciones_ml([sku]).get(sku, [])]
+        return db.fetch_all(
+            """SELECT cuenta, ml_item_id FROM ml_progress
+               WHERE sku=%s AND ml_item_id IS NOT NULL""",
+            (sku,),
+        )
+    try:
+        ml = await asyncio.to_thread(_publicaciones)   # regla 11
+    except Exception:  # noqa: BLE001
+        return []
     out: list[dict[str, Any]] = []
     try:
         async with httpx.AsyncClient(base_url=_ML_API, timeout=20.0) as cli:
@@ -600,7 +632,7 @@ async def _sync_ml_sku(sku: str) -> list[dict[str, Any]]:
                 if cta in vistos:
                     continue
                 vistos.add(cta)
-                token = meli._access_token(cta)
+                token = await meli.access_token_async(cta)
                 if not token:
                     continue
                 item = await _leer_ml_item(cli, r["ml_item_id"], token, cta)
@@ -625,10 +657,11 @@ async def _sync_ml_sku(sku: str) -> list[dict[str, Any]]:
 
 async def _sync_amazon_sku(sku: str) -> list[dict[str, Any]]:
     try:
-        existe = (channel_read.existe_en_amazon(sku)
-                  if settings.supabase_read_publicaciones
-                  else bool(db.fetch_one(
-                      "SELECT 1 FROM amazon_progress WHERE sku=%s LIMIT 1", (sku,))))
+        existe = await asyncio.to_thread(   # regla 11
+            lambda: channel_read.existe_en_amazon(sku)
+            if settings.supabase_read_publicaciones
+            else bool(db.fetch_one(
+                "SELECT 1 FROM amazon_progress WHERE sku=%s LIMIT 1", (sku,))))
         if not existe:
             return []
         a = await amazon.detalle_sku(sku)
@@ -695,20 +728,27 @@ async def refrescar_ml_item_id(item_id: str, *,
     """
     # PASO 3 · BLOQUE 4. Lo llama el webhook de ML: si aqui no se resuelve el
     # dueño, el aviso se descarta y esa publicacion no se refresca.
-    if settings.supabase_read_publicaciones:
-        row = channel_read.dueno_de_item_ml(item_id)
-    else:
+    #
+    # REGLA 11 (28-sep-2026): el dueño y el token van en un HILO. Aquí se leían
+    # de la base directo en la corrutina y, con una conexión colgada del pool,
+    # el backend ENTERO se congeló 40, 51, 111 y 66 s la noche del 27-sep
+    # (EVENT LOOP ATASCADO en webhooks.py:475 → este renglón). Era el 95% de
+    # todos los atascos registrados desde el 20-sep.
+    def _dueno() -> dict | None:
+        if settings.supabase_read_publicaciones:
+            return channel_read.dueno_de_item_ml(item_id)
         try:
-            row = db.fetch_one(
+            return db.fetch_one(
                 "SELECT sku, cuenta FROM ml_progress WHERE ml_item_id=%s LIMIT 1",
                 (item_id,),
             )
         except Exception:  # noqa: BLE001
-            row = None
+            return None
+    row = await asyncio.to_thread(_dueno)
     if not row:
         return {"ok": False, "motivo": "item_id no está en el catálogo"}
     sku, cuenta = row["sku"], row["cuenta"]
-    token = meli._access_token(cuenta)
+    token = await meli.access_token_async(cuenta)
     if not token:
         return {"ok": False, "motivo": "sin token"}
     precio_venta = None

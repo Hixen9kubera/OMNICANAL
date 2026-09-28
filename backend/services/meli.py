@@ -273,8 +273,100 @@ def _fernet():
         return None
 
 
+# ── Caché del token (28-sep-2026) ───────────────────────────────────────────
+# Cada llamada a ML leía el token de la BASE: con TOKENS_SOLO_KUBERA, una
+# consulta a kubera por cada aviso de ML, sin caché. Y el webhook lo hacía
+# DENTRO del event loop: la noche del 27-sep una conexión colgada del pool dejó
+# el backend ENTERO congelado 40, 51 y 111 s seguidos (EVENT LOOP ATASCADO en
+# webhooks.py:475 → refrescar_ml_item_id → _access_token → tokens_read.leer).
+#
+# 60 s de memoria bastan: el token de ML dura 6 h, y al RENOVAR (refrescar_token)
+# el caché se pisa con el nuevo en el mismo momento. Si otro proceso renovara
+# por fuera, el peor caso es un 401 que ya se auto-sana (obtener_orden y los
+# lectores renuevan con candado y reutilizan lo renovado hace < 2 min).
+_TOKEN_TTL_S = 60.0
+# El token de ML vive 6 h. Uno con más de 5 h 50 min NO se recuerda: el
+# renovador externo puede cambiarlo en cualquier momento y el viejo muere a
+# las 6 h — ahí se lee de la base en cada llamada, como antes del caché.
+_TOKEN_VIDA_S = 6 * 3600.0
+_TOKEN_MARGEN_S = 600.0
+_token_cache: dict[str, tuple[float, str]] = {}
+_token_cache_lock = threading.Lock()
+
+
+def _clave_cache(cuenta: str | None) -> str:
+    return (cuenta or "").strip().upper()
+
+
+def _recordar_token(cuenta: str | None, token: str,
+                    leido_desde: float | None = None) -> None:
+    """`leido_desde`: cuándo EMPEZÓ la lectura que trajo este token. Si en
+    medio se guardó otro (una renovación), la lectura lenta no lo pisa."""
+    import time as _time
+    clave = _clave_cache(cuenta)
+    with _token_cache_lock:
+        previo = _token_cache.get(clave)
+        if leido_desde is not None and previo and previo[0] > leido_desde:
+            return
+        _token_cache[clave] = (_time.monotonic(), token)
+
+
+def _edad_s(fecha: Any) -> float | None:
+    """Segundos desde `updated_at` (naive = UTC, como lo da tokens_read)."""
+    from datetime import datetime, timezone
+    if not isinstance(fecha, datetime):
+        return None
+    if fecha.tzinfo is not None:
+        fecha = fecha.astimezone(timezone.utc).replace(tzinfo=None)
+    return (datetime.now(timezone.utc).replace(tzinfo=None) - fecha).total_seconds()
+
+
+def _token_en_cache(cuenta: str | None) -> str | None:
+    import time as _time
+    with _token_cache_lock:
+        hit = _token_cache.get(_clave_cache(cuenta))
+    if hit and _time.monotonic() - hit[0] < _TOKEN_TTL_S:
+        return hit[1]
+    return None
+
+
 def _access_token(cuenta: str | None = None) -> str | None:
+    """El access_token vigente de la cuenta, con 60 s de memoria (ver arriba).
+    Solo se recuerdan tokens reales y lejos de vencer: un None, o uno de más de
+    5 h 50 min, se vuelve a preguntar."""
+    import time as _time
+    tok = _token_en_cache(cuenta)
+    if tok:
+        return tok
+    desde = _time.monotonic()
+    tok, fecha = _leer_token_y_fecha(cuenta)
+    edad = _edad_s(fecha)
+    if tok and (edad is None or edad < _TOKEN_VIDA_S - _TOKEN_MARGEN_S):
+        _recordar_token(cuenta, tok, leido_desde=desde)
+    return tok
+
+
+async def access_token_async(cuenta: str | None = None) -> str | None:
+    """Para las CORRUTINAS (regla 11): del caché sin tocar nada; si hay que ir a
+    la base, en un hilo. Nunca bloquea el event loop."""
+    tok = _token_en_cache(cuenta)
+    if tok:
+        return tok
+    import asyncio as _asyncio
+    return await _asyncio.to_thread(_access_token, cuenta)
+
+
+def _access_token_leer(cuenta: str | None = None) -> str | None:
+    """El token de la base, sin caché (ver `_leer_token_y_fecha`)."""
+    return _leer_token_y_fecha(cuenta)[0]
+
+
+def _leer_token_y_fecha(cuenta: str | None = None) -> tuple[str | None, Any]:
     """
+    (token, updated_at). La fecha solo viene del camino de kubera
+    (TOKENS_SOLO_KUBERA), que la da en UTC; el arbitraje con MySQL la da en la
+    zona del servidor de MySQL y ahí se devuelve None (se recuerda 60 s).
+
     Lee y DESENCRIPTA el access_token vigente: el MÁS RECIENTE entre
     `ml_tokens_dashboard` (fuente única de verdad — todos los proyectos de ML se
     conectan ahí; ese proceso renueva proactivamente cada ~6 h) y `ml_tokens`
@@ -285,6 +377,11 @@ def _access_token(cuenta: str | None = None) -> str | None:
     """
     if settings.tokens_solo_kubera:
         return _access_token_kubera(cuenta)
+    return _access_token_arbitrado(cuenta), None
+
+
+def _access_token_arbitrado(cuenta: str | None) -> str | None:
+    """Sin TOKENS_SOLO_KUBERA: el más reciente entre kubera y las dos de MySQL."""
     try:
         candidatos = []
         # PASO 6 (19-ago): kubera entra al MISMO arbitraje por recencia, no lo
@@ -341,21 +438,21 @@ def _clave(cuenta: str | None) -> str | None:
     return (cuenta or "").strip().upper() or None
 
 
-def _access_token_kubera(cuenta: str | None) -> str | None:
-    """TOKENS_SOLO_KUBERA: el access_token sale SOLO de `ops.ml_tokens`."""
+def _access_token_kubera(cuenta: str | None) -> tuple[str | None, Any]:
+    """TOKENS_SOLO_KUBERA: (access_token, updated_at) SOLO de `ops.ml_tokens`."""
     try:
         from services import tokens_read
         fila = tokens_read.leer(_clave(cuenta))
     except Exception as exc:  # noqa: BLE001
         log.warning("No se pudo leer token ML de kubera (%s): %s", cuenta, exc)
-        return None
+        return None, None
     if not fila or not fila.get("access_token"):
-        return None
+        return None, None
     try:
-        return _dec(_fernet(), fila["access_token"])
+        return _dec(_fernet(), fila["access_token"]), fila.get("updated_at")
     except Exception as exc:  # noqa: BLE001
         log.warning("No se pudo desencriptar token ML (%s): %s", cuenta, exc)
-        return None
+        return None, None
 
 
 # Anti-estampida del refresh: el renovador EXTERNO de tokens (dashboard) se
@@ -396,7 +493,7 @@ async def obtener_orden(order_id: str) -> dict | None:
     """
     import httpx as _httpx
     for cuenta in ("BEKURA", "SANCORFASHION"):
-        token = _access_token(cuenta)
+        token = await access_token_async(cuenta)
         if not token:
             continue
         try:
@@ -548,7 +645,26 @@ def _credenciales_refresh(cuenta: str) -> tuple[str, str, str] | None:
     return None
 
 
+def releer_token(cuenta: str | None) -> str | None:
+    """Olvida el token recordado y lo vuelve a leer de la base, SIN renovar.
+
+    Para quien recibe un 401 y NO debe rotar tokens (pantallas de lectura como
+    el Checklist): si otro proceso ya renovó, aquí aparece el nuevo."""
+    with _token_cache_lock:
+        _token_cache.pop(_clave_cache(cuenta), None)
+    return _access_token(cuenta)
+
+
 def refrescar_token(cuenta: str) -> str | None:
+    """Renueva y deja el token NUEVO en el caché de `_access_token`, para que
+    nadie siga usando el viejo durante los 60 s de memoria."""
+    nuevo = _refrescar_token_sin_cache(cuenta)
+    if nuevo:
+        _recordar_token(cuenta, nuevo)
+    return nuevo
+
+
+def _refrescar_token_sin_cache(cuenta: str) -> str | None:
     """
     Renueva el access_token de una cuenta ML. Ver `_credenciales_refresh` para de
     dónde salen app_id/secret/refresh_token. Al renovar, persiste el token nuevo
@@ -829,7 +945,7 @@ def _espejar_mysql(cuenta: str, enc_at: str, enc_rt: str) -> None:
 
 async def refrescar_item(item_id: str, cuenta: str | None = None) -> dict[str, Any] | None:
     """Consulta /items/{id} + categoría para obtener precio, stock, FULL y ruta."""
-    token = _access_token(cuenta)
+    token = await access_token_async(cuenta)
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     try:
         async with httpx.AsyncClient(base_url=_API, timeout=20.0) as cli:
@@ -871,7 +987,7 @@ async def titulo_y_foto(item_id: str, cuenta: str | None = None) -> dict[str, An
     Nunca levanta: un fallo aquí solo significa que ese SKU se queda sin ese
     peldaño, no que el análisis completo se caiga.
     """
-    token = _access_token(cuenta)
+    token = await access_token_async(cuenta)
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     salida: dict[str, Any] = {"titulo": "", "foto_url": None, "foto": None}
     try:

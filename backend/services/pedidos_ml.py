@@ -141,13 +141,17 @@ async def resolver_producto(sku: str) -> dict | None:
     # de core.products. Un miss aquí sigue cayendo a Woo, que es la autoridad.
     if settings.supabase_read_core:
         try:
-            fila = core_read.wc_de_sku(sku)
+            # En un hilo (regla 11): corre por cada renglón de CADA venta.
+            fila = await asyncio.to_thread(core_read.wc_de_sku, sku)
             lecturas_fuente.anotar("core", "kubera")
         except Exception as exc:  # noqa: BLE001
             lecturas_fuente.anotar("core", "fallback", str(exc))
-            alertas.avisar("lectura_fallback:core",
-                           f"⚠️ Lectura de CORE falló (resolver_producto), se "
-                           f"resuelve por Woo: {exc}")
+            # `avisar` lee y escribe `alertas_estado` en MySQL: también en un
+            # hilo, y justo cuando kubera está fallando.
+            await asyncio.to_thread(
+                alertas.avisar, "lectura_fallback:core",
+                f"⚠️ Lectura de CORE falló (resolver_producto), se "
+                f"resuelve por Woo: {exc}")
             log.warning("lectura kubera falló (resolver_producto) — sigue a Woo: %s", exc)
     if fila and fila.get("wc_id"):
         return {"wc_id": int(fila["wc_id"]),
@@ -336,7 +340,7 @@ async def _compensar_stock_protegido(wc_id: int, order_id: str, cuenta: str,
         # `filas` llega precargada en la reversión: ahí la foto se toma ANTES de
         # cancelar, porque Woo borra `_reduced_stock` al reponer.
         if filas is None:
-            filas = _leer_reducido(wc_id)
+            filas = await asyncio.to_thread(_leer_reducido, wc_id)   # regla 11
     except Exception as exc:  # noqa: BLE001
         log.warning("compensar %s: no se pudo leer _reduced_stock: %s", wc_id, exc)
         return {"ok": False, "motivo": str(exc)[:120]}
@@ -353,7 +357,8 @@ async def _compensar_stock_protegido(wc_id: int, order_id: str, cuenta: str,
             producto = f.get("producto")
             if n <= 0 or not producto:
                 continue
-            info = wp_db._fetch_all(
+            info = await asyncio.to_thread(   # regla 11: MySQL de WordPress
+                wp_db._fetch_all,
                 f"""SELECT p.ID wc_id, p.post_type, p.post_parent,
                            st.meta_value stock, sk.meta_value sku
                     FROM {P}posts p
@@ -376,8 +381,18 @@ async def _compensar_stock_protegido(wc_id: int, order_id: str, cuenta: str,
             devueltos.append({"sku": sku, "unidades": n, "woo": f"{actual}→{destino}", "ok": ok})
             log.info("FULL/FBA #%s: devueltas %d pza(s) de %s a Woo (%s→%s)",
                      wc_id, n, sku, actual, destino)
-    # Bitácora (misma tabla del panel; NO se crea tabla nueva)
-    from services import fanout_read
+    # Bitácora (misma tabla del panel; NO se crea tabla nueva). Las dos
+    # escrituras (kubera y MySQL) van en un hilo: regla 11.
+    await asyncio.to_thread(_bitacora_compensacion, devueltos, wc_id, order_id,
+                            cuenta, signo)
+    return {"ok": True, "compensado": sum(d["unidades"] for d in devueltos), "detalle": devueltos}
+
+
+def _bitacora_compensacion(devueltos: list[dict], wc_id: int, order_id: str,
+                           cuenta: str, signo: int) -> None:
+    """Registra la compensación en ops.fanout_log (kubera) y en fanout_log
+    (MySQL). SÍNCRONA a propósito: se llama con asyncio.to_thread."""
+    from services import fanout_read, fanout_stock
     for d in devueltos:
         fanout_read.espejar(
             ts=datetime.now(timezone.utc).replace(tzinfo=None), sku=d["sku"],
@@ -409,7 +424,6 @@ async def _compensar_stock_protegido(wc_id: int, order_id: str, cuenta: str,
                       f"→ devueltas ({d['woo']})")[:255]))
     except Exception as exc:  # noqa: BLE001
         log.warning("compensar %s: no se pudo registrar: %s", wc_id, exc)
-    return {"ok": True, "compensado": sum(d["unidades"] for d in devueltos), "detalle": devueltos}
 
 
 def _sellar_candado(que: str, cuenta: str, order_id: str) -> None:
@@ -524,7 +538,8 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
                                    proteger_stock: bool,
                                    orden: dict | None,
                                    reintentable: bool = False) -> dict:
-    _asegurar_schema()
+    if not _schema_ok:
+        await asyncio.to_thread(_asegurar_schema)
     orden = orden or await meli.obtener_orden(order_id)
     if not orden:
         return {"ok": False, "motivo": "orden no encontrada en ML"}
@@ -627,9 +642,11 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
                     # Que PROPAGUE si kubera falla es deliberado, igual que en el
                     # otro punto de llamada: aquí un "no sé" convertido en "no"
                     # se paga en inventario. No envolver esto en un try.
-                    if _ya_compensado(wc_id, orden.get("cuenta"), str(order_id)):
+                    # En un hilo (regla 11); la excepción sube igual.
+                    if await asyncio.to_thread(
+                            _ya_compensado, wc_id, orden.get("cuenta"), str(order_id)):
                         try:
-                            foto_previa = _leer_reducido(wc_id)
+                            foto_previa = await asyncio.to_thread(_leer_reducido, wc_id)
                         except Exception:  # noqa: BLE001
                             foto_previa = None
                 r = await cli.put(f"/orders/{wc_id}", json={"status": payload["status"]})
@@ -809,18 +826,23 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
             rev = await _compensar_stock_protegido(wc_id, str(order_id), orden["cuenta"],
                                                    signo=-1, filas=foto_previa)
             if rev.get("compensado"):
-                _sellar_candado("revertido", orden["cuenta"], str(order_id))
+                await asyncio.to_thread(
+                    _sellar_candado, "revertido", orden["cuenta"], str(order_id))
                 log.info("Pedido %s cancelado: revertidas %d pza(s) de la compensación",
                          order_id, rev["compensado"])
         except Exception as exc:  # noqa: BLE001
             log.warning("reversión de compensación de %s falló: %s", order_id, exc)
 
+    # La lectura del candado va a kubera: en un hilo (regla 11 — corre en CADA
+    # aviso de una venta FULL). Sigue PROPAGANDO si la base falla, a propósito.
     if (protegido and payload["status"] != "cancelled"
-            and not _ya_compensado(wc_id, orden["cuenta"], str(order_id))):
+            and not await asyncio.to_thread(
+                _ya_compensado, wc_id, orden["cuenta"], str(order_id))):
         try:
             comp = await _compensar_stock_protegido(wc_id, str(order_id), orden["cuenta"])
             if comp.get("compensado"):
-                _sellar_candado("compensado", orden["cuenta"], str(order_id))
+                await asyncio.to_thread(
+                    _sellar_candado, "compensado", orden["cuenta"], str(order_id))
                 log.info("Pedido %s (FULL/FBA): compensadas %d pza(s) que Woo había descontado",
                          order_id, comp["compensado"])
         except Exception as exc:  # noqa: BLE001 — nunca rompe la venta

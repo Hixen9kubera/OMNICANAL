@@ -579,7 +579,7 @@ async def _procesar_ml(evento_id: int | None, payload: dict[str, Any]) -> None:
         resultado = f"error: {exc}"
     _anotar_salud(topic, resultado, fallo=fallo, sin_accion=sin_accion)
     if evento_id:
-        _actualizar(evento_id, sku, resultado)
+        await asyncio.to_thread(_actualizar, evento_id, sku, resultado)
     es_venta = topic == "orders_v2" and "/orders/" in resource
     if es_venta and fallo and sb_id:
         # El pedido FALLÓ: el aviso queda pendiente, con su reintento. Hasta el
@@ -623,8 +623,14 @@ async def recibir_ml(request: Request, background: BackgroundTasks):
             payload = await request.json()
         except Exception:  # noqa: BLE001
             payload = {}
-        evento_id = _guardar("mercado_libre", payload.get("topic"),
-                             payload.get("resource"), payload.get("user_id"))
+        # MySQL en un hilo (regla 11), y SOLO si de verdad se guarda: hoy
+        # WEBHOOK_GUARDA_MYSQL está apagado y el salto de hilo solo retrasaría
+        # el 200 a ML si el pool de hilos estuviera ocupado.
+        evento_id = None
+        if settings.mysql_enabled and settings.webhook_guarda_mysql:
+            evento_id = await asyncio.to_thread(
+                _guardar, "mercado_libre", payload.get("topic"),
+                payload.get("resource"), payload.get("user_id"))
         # Procesar aparte para responder rápido (ML reintenta si tardas). El espejo
         # idempotente a Supabase ocurre dentro del background por la misma razón.
         background.add_task(_procesar_ml, evento_id, payload)
@@ -809,13 +815,17 @@ async def log_ml(limite: int = Query(50, ge=1, le=200)):
             return {"total": len(eventos), "eventos": eventos, "origen": "supabase"}
         except Exception as exc:  # noqa: BLE001
             log.warning("lectura Supabase falló, caigo a MySQL: %s", exc)
-    _asegurar_schema()
-    try:
-        eventos = db.fetch_all(
-            "SELECT * FROM webhook_eventos ORDER BY id DESC LIMIT %s", (limite,)
-        )
-    except Exception:  # noqa: BLE001
-        eventos = []
+
+    def _mysql() -> list:
+        _asegurar_schema()
+        try:
+            return db.fetch_all(
+                "SELECT * FROM webhook_eventos ORDER BY id DESC LIMIT %s", (limite,)
+            )
+        except Exception:  # noqa: BLE001
+            return []
+
+    eventos = await asyncio.to_thread(_mysql)
     return {"total": len(eventos), "eventos": eventos}
 
 
@@ -846,24 +856,29 @@ async def notificaciones(limite: int = Query(20, ge=1, le=100)):
     # Se descubrió probando en el sandbox: tras dejar `_CANALES_CAMPANA` en
     # ("alertas",) la API seguía devolviendo `stock_cambio`. El filtro estaba
     # bien; el problema es que lo leía la rama equivocada.
-    _asegurar_schema()
-    marcas = ", ".join(["%s"] * len(_CANALES_CAMPANA))
-    try:
-        eventos = db.fetch_all(
-            f"""SELECT id, canal, topic, resource, cuenta, sku, resultado, recibido
-                FROM webhook_eventos WHERE canal IN ({marcas})
-                ORDER BY id DESC LIMIT %s""",
-            (*_CANALES_CAMPANA, limite),
-        )
-        # El contador lleva el MISMO filtro que la lista, por lo mismo que en la
-        # rama de Supabase: contar todo y mostrar poco vuelve el número mentira.
-        total_hoy = db.fetch_scalar(
-            f"""SELECT COUNT(*) FROM webhook_eventos
-                 WHERE recibido >= CURDATE() AND canal IN ({marcas})""",
-            tuple(_CANALES_CAMPANA),
-        ) or 0
-    except Exception:  # noqa: BLE001
-        eventos, total_hoy = [], 0
+    def _campana_mysql() -> tuple[list, int]:
+        # SÍNCRONA a propósito (regla 11): la campana la pide todo el equipo
+        # cada pocos segundos y leer MySQL en la corrutina congelaba el loop.
+        _asegurar_schema()
+        marcas = ", ".join(["%s"] * len(_CANALES_CAMPANA))
+        try:
+            eventos = db.fetch_all(
+                f"""SELECT id, canal, topic, resource, cuenta, sku, resultado, recibido
+                    FROM webhook_eventos WHERE canal IN ({marcas})
+                    ORDER BY id DESC LIMIT %s""",
+                (*_CANALES_CAMPANA, limite),
+            )
+            # El contador lleva el MISMO filtro que la lista, por lo mismo que en la
+            # rama de Supabase: contar todo y mostrar poco vuelve el número mentira.
+            total_hoy = db.fetch_scalar(
+                f"""SELECT COUNT(*) FROM webhook_eventos
+                     WHERE recibido >= CURDATE() AND canal IN ({marcas})""",
+                tuple(_CANALES_CAMPANA),
+            ) or 0
+        except Exception:  # noqa: BLE001
+            eventos, total_hoy = [], 0
+        return eventos, total_hoy
+    eventos, total_hoy = await asyncio.to_thread(_campana_mysql)
     return {"eventos": eventos, "total_hoy": int(total_hoy)}
 
 

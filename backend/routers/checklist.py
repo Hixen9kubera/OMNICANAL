@@ -44,10 +44,14 @@ class _Almacen(BaseModel):
 
 
 @router.get("")
-async def tablero(semana: str | None = Query(
-        None, description="Cualquier día de la semana (YYYY-MM-DD). Sin nada, la de hoy.")):
-    """Los SKUs de la semana con su estado: atributos de ML y datos de almacén."""
-    return await asyncio.to_thread(ck.tablero_sync, semana)
+async def tablero(
+        semana: str | None = Query(
+            None, description="Cualquier día de la semana (YYYY-MM-DD). Sin nada, la de hoy."),
+        fresco: bool = Query(False, description="Vuelve a leer las publicaciones de ML "
+                                                "sin el caché de 30 min.")):
+    """Los SKUs de la semana con su estado: atributos de ML (lo capturado en
+    kubera y lo que ya trae la publicación viva) y datos de almacén."""
+    return await asyncio.to_thread(ck.tablero_sync, semana, fresco)
 
 
 @router.post("/lote")

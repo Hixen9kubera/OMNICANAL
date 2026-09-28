@@ -80,6 +80,16 @@ function masDias(iso: string, n: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+/** El lunes de la semana de HOY en CDMX (la del equipo). Solo para pintar el
+ *  selector mientras el tablero no ha contestado: la semana buena la dice el
+ *  backend. */
+function lunesHoy(): string {
+  const hoy = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Mexico_City" })
+    .format(new Date());
+  const d = new Date(`${hoy}T12:00:00Z`);
+  return masDias(hoy, -((d.getUTCDay() + 6) % 7));
+}
+
 function haceCuanto(iso: string | null): string {
   if (!iso) return "";
   const min = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
@@ -115,6 +125,8 @@ function medidas(f: FilaChecklist): string | null {
 export default function ChecklistPage() {
   const [semana, setSemana] = useState<string | undefined>(undefined);
   const [datos, setDatos] = useState<TableroChecklist | null>(null);
+  // La semana PEDIDA a la que pertenecen `datos` (undefined = «esta semana»).
+  const [datosDe, setDatosDe] = useState<string | undefined>(undefined);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [sel, setSel] = useState<Set<string>>(new Set());
@@ -136,22 +148,48 @@ export default function ChecklistPage() {
     return () => { vivo = false; };
   }, []);
 
-  const cargar = useCallback(() => {
+  // La lectura EN VUELO. Una nueva cancela la anterior (y su reintento): si
+  // no, una recarga lenta que llega después de cambiar de semana pintaría la
+  // semana vieja encima de la nueva.
+  const vuelo = useRef<{ ctrl: AbortController; espera?: ReturnType<typeof setTimeout> } | null>(null);
+
+  const cargar = useCallback((fresco = false) => {
+    if (vuelo.current) {
+      vuelo.current.ctrl.abort();
+      if (vuelo.current.espera) clearTimeout(vuelo.current.espera);
+    }
     const ctrl = new AbortController();
-    setCargando(true);
-    setError(null);
-    tableroChecklist(semana, ctrl.signal)
-      .then((d) => {
-        setDatos(d);
-        // La selección solo vale dentro del lote que se ve.
-        setSel((s) => new Set([...s].filter((k) => d.filas.some((f) => f.sku === k))));
-      })
-      .catch((e: unknown) => {
-        if ((e as { name?: string })?.name === "AbortError") return;
-        setError(mensajeDeError(e, "No se pudo leer el checklist."));
-      })
-      .finally(() => setCargando(false));
-    return () => ctrl.abort();
+    const este: { ctrl: AbortController; espera?: ReturnType<typeof setTimeout> } = { ctrl };
+    vuelo.current = este;
+    const pedir = (intento: number) => {
+      setCargando(true);
+      setError(null);
+      tableroChecklist(semana, ctrl.signal, fresco)
+        .then((d) => {
+          setDatos(d);
+          setDatosDe(semana);
+          // La selección solo vale dentro del lote que se ve.
+          setSel((s) => new Set([...s].filter((k) => d.filas.some((f) => f.sku === k))));
+          setCargando(false);
+        })
+        .catch((e: unknown) => {
+          if ((e as { name?: string })?.name === "AbortError") return;
+          // UN reintento, sin avisar: lo típico es el backend reiniciando tras
+          // un deploy (502) o una lectura que se atoró unos segundos.
+          if (intento === 0) {
+            este.espera = setTimeout(() => { if (!ctrl.signal.aborted) pedir(1); }, 4000);
+            return;
+          }
+          setError(mensajeDeError(e, "El servidor no contestó (puede estar reiniciando tras un deploy)."));
+          setCargando(false);
+        });
+    };
+    pedir(0);
+    return () => {
+      ctrl.abort();
+      if (este.espera) clearTimeout(este.espera);
+      if (vuelo.current === este) vuelo.current = null;
+    };
   }, [semana]);
 
   useEffect(() => cargar(), [cargar]);
@@ -162,8 +200,12 @@ export default function ChecklistPage() {
     return () => clearTimeout(t);
   }, [aviso]);
 
+  // Lo que se enseña es de la semana PEDIDA: si la nueva no cargó, no se
+  // pintan los renglones de la anterior como si fueran de esta.
+  const vigente = datos && datosDe === semana ? datos : null;
+
   const filas = useMemo(() => {
-    let items = datos?.filas ?? [];
+    let items = vigente?.filas ?? [];
     const pruebas: Record<Filtro, (f: FilaChecklist) => boolean> = {
       todos: () => true,
       pendientes: (f) => f.estado !== "completo",
@@ -180,9 +222,9 @@ export default function ChecklistPage() {
         || (f.categoria_nombre ?? "").toLowerCase().includes(q));
     }
     return items;
-  }, [datos, filtro, busqueda]);
+  }, [vigente, filtro, busqueda]);
 
-  const semanaVista = datos?.semana ?? semana ?? "";
+  const semanaVista = vigente?.semana ?? semana ?? lunesHoy();
   const bloqueado = !!datos?.falta_migracion;
   const elegidos = [...sel];
 
@@ -227,12 +269,18 @@ export default function ChecklistPage() {
       <AppNavbar />
       <main className="mx-auto max-w-[1400px] px-4 py-6">
         <InventarioPestanas />
-        <Banner datos={datos} cargando={cargando} onRecargar={cargar} />
+        <Banner datos={vigente} cargando={cargando} onRecargar={() => cargar(true)} />
 
-        {error && (
-          <div className="mt-4 flex items-start gap-2 rounded-xl bg-rose-50 p-3 text-sm text-rose-700 ring-1 ring-rose-200">
-            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-            <span>{error}</span>
+        {/* Si falló con datos de ESTA semana en pantalla (una recarga), se
+            quedan y se avisa arriba; sin datos, el aviso va en la tabla. */}
+        {error && vigente && (
+          <div className="mt-4 flex flex-wrap items-center gap-2 rounded-xl bg-rose-50 p-3 text-sm text-rose-700 ring-1 ring-rose-200">
+            <AlertTriangle className="h-4 w-4 shrink-0" />
+            <span>{error} Se muestra lo último que se leyó.</span>
+            <button type="button" onClick={() => cargar()} disabled={cargando}
+                    className="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-white px-2.5 py-1 text-xs font-semibold text-rose-700 ring-1 ring-rose-200 hover:bg-rose-50 disabled:opacity-50">
+              <RefreshCw className={`h-3.5 w-3.5 ${cargando ? "animate-spin" : ""}`} /> Reintentar
+            </button>
           </div>
         )}
         {bloqueado && (
@@ -247,11 +295,12 @@ export default function ChecklistPage() {
         )}
 
         <Semana
-          semana={semanaVista} etiqueta={datos?.etiqueta ?? ""} semanas={datos?.semanas ?? []}
+          semana={semanaVista} etiqueta={vigente?.etiqueta ?? ""} semanas={datos?.semanas ?? []}
           onCambiar={(s) => { setSemana(s); setSel(new Set()); setAbierto(null); }}
         />
 
-        {datos && <Kpis datos={datos} filtro={filtro} setFiltro={setFiltro} />}
+        {vigente && <Kpis datos={vigente} filtro={filtro} setFiltro={setFiltro} />}
+        {vigente?.publicados && <Publicado p={vigente.publicados} />}
 
         {/* ─── barra de herramientas ─── */}
         <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -269,7 +318,7 @@ export default function ChecklistPage() {
             Agregar SKUs
           </Boton>
           <Boton icono={SlidersHorizontal} deshabilitado={bloqueado}
-                 onClick={() => { setMatrizCat(datos?.categorias[0]?.categoria ?? null); setModal("matriz"); }}>
+                 onClick={() => { setMatrizCat(vigente?.categorias[0]?.categoria ?? null); setModal("matriz"); }}>
             Matriz de obligatorios
           </Boton>
 
@@ -281,12 +330,12 @@ export default function ChecklistPage() {
             </span>
             <Boton icono={bajando === "excel" ? Loader2 : FileSpreadsheet} primario
                    girar={bajando === "excel"}
-                   deshabilitado={bloqueado || !datos?.filas.length || !!bajando}
+                   deshabilitado={bloqueado || !vigente?.filas.length || !!bajando}
                    onClick={() => bajar("excel")}>
               Descargar Excel
             </Boton>
             <Boton icono={bajando === "csv" ? Loader2 : Download} girar={bajando === "csv"}
-                   deshabilitado={bloqueado || !datos?.filas.length || !!bajando}
+                   deshabilitado={bloqueado || !vigente?.filas.length || !!bajando}
                    onClick={() => bajar("csv")} titulo="Formato largo: un renglón por SKU y campo">
               CSV
             </Boton>
@@ -312,21 +361,24 @@ export default function ChecklistPage() {
           abierto={abierto} onAbrir={(sku) => setAbierto((a) => (a === sku ? null : sku))}
           puedeCapturar={puedeCapturar && !bloqueado}
           onGuardado={(msg) => { setAviso(msg); cargar(); }}
-          vacioLote={!datos?.filas.length}
+          vacioLote={!!vigente && !vigente.filas.length}
+          errorCarga={vigente ? null : error}
+          onReintentar={() => cargar()}
           onAgregar={() => setModal("agregar")}
           onMatriz={(cat) => { setMatrizCat(cat); setModal("matriz"); }}
         />
 
         <p className="mt-4 text-xs leading-relaxed text-slate-400">
-          Solo kubera y la API pública de Mercado Libre — nada de WordPress. Los
-          atributos se guardan donde los lee el Publicador; las medidas, cajas y
-          piezas alimentan el lado «Bodega» del cotejo de cajas del Catálogo
-          Maestro. Una celda vacía en el Excel no borra nada.
+          Solo kubera y la API de Mercado Libre — nada de WordPress. Los
+          atributos se guardan donde los lee el Publicador; los que ya trae la
+          publicación viva cuentan como llenos, pero no se copian solos. Las
+          medidas, cajas y piezas alimentan el lado «Bodega» del cotejo de cajas
+          del Catálogo Maestro. Una celda vacía en el Excel no borra nada.
         </p>
       </main>
 
       {modal === "agregar" && semanaVista && (
-        <ModalAgregar semana={semanaVista} etiqueta={datos?.etiqueta ?? ""}
+        <ModalAgregar semana={semanaVista} etiqueta={vigente?.etiqueta ?? ""}
                       onCerrar={() => setModal(null)}
                       onListo={(msg, otra) => {
                         setModal(null); setAviso(msg);
@@ -337,7 +389,7 @@ export default function ChecklistPage() {
       )}
       {modal === "matriz" && (
         <ModalMatriz
-          categorias={datos?.categorias ?? []} inicial={matrizCat}
+          categorias={vigente?.categorias ?? []} inicial={matrizCat}
           puedeCapturar={puedeCapturar}
           onCerrar={(cambio) => { setModal(null); if (cambio) cargar(); }}
         />
@@ -434,7 +486,7 @@ function Banner({
           )}
           <button
             type="button" onClick={onRecargar} disabled={cargando}
-            title="Volver a leer kubera y Mercado Libre"
+            title="Volver a leer kubera y Mercado Libre (también las publicaciones)"
             className="rounded-lg bg-white/15 p-2 text-white backdrop-blur-sm transition hover:bg-white/25 disabled:opacity-50"
           >
             <RefreshCw className={`h-4 w-4 ${cargando ? "animate-spin" : ""}`} />
@@ -527,11 +579,29 @@ function Kpis({
   );
 }
 
+/** Cuánto de lo exigido ya lo trae la publicación viva de ML, y si ML contestó. */
+function Publicado({ p }: { p: NonNullable<TableroChecklist["publicados"]> }) {
+  if (!p.publicaciones && !p.error) return null;
+  return (
+    <p className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500">
+      <span className="inline-block h-2.5 w-2.5 rounded-sm bg-emerald-200 ring-1 ring-emerald-300" />
+      {p.vivas > 0 && (
+        <span>
+          <b className="text-slate-700">{p.vivas}</b> publicaciones vivas de Mercado Libre
+          leídas{p.publicaciones > p.vivas ? ` (de ${p.publicaciones} en kubera)` : ""}: lo que
+          ya traen cuenta como lleno y sale en verde en el Excel.
+        </span>
+      )}
+      {p.error && <span className="font-semibold text-amber-700">{p.error}</span>}
+    </p>
+  );
+}
+
 /* ─────────────────────────────── la tabla ─────────────────────────────── */
 
 function Tabla({
   filas, cargando, sel, onSel, todos, onTodos, abierto, onAbrir, puedeCapturar,
-  onGuardado, vacioLote, onAgregar, onMatriz,
+  onGuardado, vacioLote, errorCarga, onReintentar, onAgregar, onMatriz,
 }: {
   filas: FilaChecklist[];
   cargando: boolean;
@@ -544,6 +614,9 @@ function Tabla({
   puedeCapturar: boolean;
   onGuardado: (msg: string) => void;
   vacioLote: boolean;
+  /** No se pudo leer la semana: se dice eso, no «no tiene SKUs». */
+  errorCarga: string | null;
+  onReintentar: () => void;
   onAgregar: () => void;
   onMatriz: (cat: string) => void;
 }) {
@@ -574,7 +647,19 @@ function Tabla({
           )}
           {!cargando && !filas.length && (
             <tr><td colSpan={8} className="px-3 py-12 text-center">
-              {vacioLote ? (
+              {errorCarga ? (
+                <div className="text-slate-500">
+                  <AlertTriangle className="mx-auto h-8 w-8 text-rose-300" />
+                  <p className="mt-2 font-semibold text-slate-700">No se pudo leer el checklist</p>
+                  <p className="mx-auto max-w-md text-xs">
+                    {errorCarga} Lo capturado no se perdió: es la lectura la que falló.
+                  </p>
+                  <button type="button" onClick={onReintentar}
+                          className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-700">
+                    <RefreshCw className="h-4 w-4" /> Reintentar
+                  </button>
+                </div>
+              ) : vacioLote ? (
                 <div className="text-slate-500">
                   <ClipboardCheck className="mx-auto h-8 w-8 text-slate-300" />
                   <p className="mt-2 font-semibold text-slate-700">Esta semana no tiene SKUs todavía</p>
@@ -667,6 +752,12 @@ function FilaTabla({
               {f.faltan_ml.length > 0 && (
                 <div className="mt-1 line-clamp-1 text-[11px] text-slate-500">
                   Falta: {f.faltan_ml.map((x) => x.etiqueta).join(", ")}
+                </div>
+              )}
+              {f.exigidos_publicados > 0 && (
+                <div className="mt-1 text-[11px] font-medium text-emerald-700"
+                     title="Los trae hoy la publicación viva de Mercado Libre; en kubera no están capturados">
+                  {f.exigidos_publicados} de la publicación ML
                 </div>
               )}
             </div>
@@ -775,8 +866,15 @@ function Detalle({
             <CheckCircle2 className="h-4 w-4" /> Todo lo exigido está capturado.
           </p>
         )}
+        {f.exigidos_publicados > 0 && (
+          <p className="mt-3 rounded-lg bg-emerald-50 px-2 py-1 text-[11px] text-emerald-800">
+            {f.exigidos_publicados} de los exigidos los trae hoy la publicación viva
+            de Mercado Libre (en verde en el Excel). Si alguno está mal, corrígelo
+            en el Excel y se guarda el tuyo.
+          </p>
+        )}
         <p className="mt-3 text-[11px] text-slate-400">
-          {f.opcionales_llenos} de {f.opcionales_total} opcionales capturados. Se
+          {f.opcionales_llenos} de {f.opcionales_total} opcionales llenos. Se
           llenan en el Excel o, uno por uno, en el cajón del SKU en el Catálogo Maestro.
         </p>
       </div>

@@ -1001,6 +1001,108 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.580.0 — El backend deja de congelarse con los avisos de ML, y el Checklist lee lo que ya está publicado
+
+Brandon, 27-sep, sobre el «No se pudo leer el checklist» y las opciones que se le dieron: *"dale con la A y con la E
+además de usar la metodología batch api para mandar en lotes"*; y sobre de dónde leer: *"puedes tomar de lo que
+tenemos publicados o simplemente hacer una consulta para ese sku"*.
+
+**El error no era del Checklist.** El 27 y 28-sep el backend entero se quedaba sin contestar 35, 40, 51, 66 y hasta
+111 s seguidos (`EVENT LOOP ATASCADO` en los logs). Casi todas esas pausas tenían la misma pila: el aviso de ML
+(`webhooks.py` → `inventario.refrescar_ml_item_id`) leía el token de ML de kubera **dentro del event loop**, una
+consulta por aviso y sin caché (`TOKENS_SOLO_KUBERA`). Con una conexión del pool colgada, esa lectura esperaba, y con
+ella todo el panel: el Checklist, que en ese momento pedía su tablero, recibía el error.
+
+#### A · regla 11 en el camino del aviso de ML
+
+- **El token se recuerda 60 s** por cuenta (`meli._access_token`): una lectura a kubera por minuto, no una por aviso.
+  - Al renovar (`refrescar_token`), el caché se pisa con el nuevo en el mismo momento.
+  - Un `None` no se recuerda, y uno de **más de 5 h 50 min** tampoco: el token vive 6 h y el renovador externo puede
+    cambiarlo en cualquier momento; ahí se lee de la base en cada llamada, como antes.
+  - Una lectura lenta que empezó antes de una renovación no la pisa.
+- `meli.access_token_async`, para las corrutinas: con el token en caché no abre ni un hilo; si hay que ir a la base,
+  en `asyncio.to_thread`. Lo usan `obtener_orden`, `refrescar_item`, `titulo_y_foto` y el sync de inventario.
+- `meli.releer_token`: olvida el recordado y relee **sin renovar**, para pantallas de lectura que reciben un 401.
+- **Pasan a un hilo:**
+  - **Aviso de ML:** el dueño de la publicación y el token en `refrescar_ml_item_id` (la pila de casi todas las
+    pausas).
+  - **Pedidos**, por cada renglón de cada venta:
+    - `resolver_producto`: la lectura de `core.products` y su alerta de respaldo;
+    - la lectura de `_reduced_stock`;
+    - la consulta a WordPress y la bitácora de la compensación FULL/FBA;
+    - el candado `_ya_compensado`, que corre en cada aviso de una venta FULL, y `_sellar_candado`.
+  - **Operaciones de FULL** (`stock_full.procesar_operacion` y `revisar_fba`): la bitácora `_registrar` (kubera +
+    MySQL), la lectura de stock de Woo, `_ajustar_woo` y la marca de agua de FBA.
+  - **Sync de inventario:** la identidad y el histórico de `sincronizar_ml`, la lista de Amazon, el lote de
+    `_lote_desde_ml` y las lecturas por SKU.
+  - **Webhooks:** la campana de MySQL, `/ml/log` y el guardado en `webhook_eventos`. Ese guardado está apagado hoy;
+    el salto de hilo solo se da si `WEBHOOK_GUARDA_MYSQL` se enciende, para no retrasar el 200 a ML.
+- **Lo que no cambió, a propósito:** `_ya_compensado` sigue **propagando** si kubera falla (un «no sé» convertido en
+  «no» se paga en inventario); ahora propaga desde un hilo.
+- **Queda pendiente (opción B):** un pool colgado ya no congela el loop, pero puede ocupar hilos del ejecutor por
+  omisión. Los topes de tiempo del pool siguen sin decidirse.
+
+#### E · Checklist
+
+- **Lo publicado cuenta.** El tablero lee los atributos de las publicaciones **vivas** de ML de cada SKU:
+  - con el **multiget** (`/items?ids=`: 20 por llamada, 4 en paralelo) y el token de la cuenta **dueña** (con el de
+    la otra, ML da 403 por cada item);
+  - de hasta 3 publicaciones por SKU de `channel.listings`, **sin distinguir mayúsculas**;
+  - solo `active` y `paused`: una cerrada puede ser de un SKU reciclado.
+- **Manda UNA publicación por SKU**: la activa más reciente. No se mezclan atributos de varias; un SKU reciclado
+  puede ser otro producto en la otra cuenta (EST-0091: cómoda en BEKURA, repisa en SANCORFASHION).
+- El «no aplica» de ML (`value_id = -1`) no cuenta.
+- **Medido contra producción**, en solo lectura, Week 39:
+  - 112 publicaciones, 103 vivas;
+  - **3.7 s** la primera vez y **0.2 s** con caché;
+  - los atributos exigidos llenos pasan de **1 de 135 a 93 de 135**;
+  - los SKUs con faltantes de ML bajan de **81 a 29**.
+- **Kubera manda**; lo publicado llena lo que kubera no tiene.
+  - En el **Excel** esas celdas salen en **verde** (explicado en Instrucciones).
+  - En el CSV van con `origen = publicacion`.
+- **Lo publicado no se copia a kubera.** Si almacén deja la celda verde como venía, la carga no lo cuenta como
+  cambio; si la corrige, se guarda su valor. Hay publicaciones de la Week 39 con marca «Allen & Heath» o «AKG»:
+  salen en verde justo para que alguien las confirme.
+- **La carga compara contra una FOTO que viaja en el propio archivo:** la hoja oculta `_publicado` del Excel y la
+  columna `publicado` del CSV.
+  - No se vuelve a preguntar a ML ni se compara contra kubera: entre la descarga y la carga, la publicación pudo
+    cambiar, ML no contestar, o alguien capturar otra cosa en el cajón, y una celda verde intacta no debe pisar eso.
+  - Un número que Excel reescribió («1.5» por «1.50») sigue siendo el mismo.
+  - Uno que pasó a notación científica (un GTIN como `7.50123E+12`) es **error**: perdió dígitos.
+  - Ida y vuelta medida contra la Week 39: el Excel y el CSV recién bajados, cargados tal cual, dan **0 cambios**
+    (259 sin cambio).
+- **El Checklist nunca renueva tokens.** Ante un 401 relee de la base y, si no hay uno nuevo, se rinde; lo renueva
+  la próxima venta. Cuatro hilos renovando a la vez es la carrera que acaba en `invalid_grant`.
+- **Caché de lo publicado:** 30 min por publicación, y el botón de recargar del encabezado lo vuelve a pedir
+  (`fresco`).
+  - Si ML no contesta, se pausa **solo esa cuenta** 2 min y se enseña **lo último que se leyó**, en vez de borrarlo.
+- **Primera carga más ligera:** los atributos de cada categoría se recuerdan 6 h (antes 1 h). En producción, 90 s
+  después de cada deploy, el backend los precalienta junto con lo publicado de las dos últimas semanas con lote.
+- **Si la lectura falla**, la pantalla ya no dice «Esta semana no tiene SKUs todavía».
+  - Conserva el selector de semana, reintenta sola una vez a los 4 s y luego enseña el error con **Reintentar**.
+  - Si ya había datos de esa semana en pantalla, se quedan y el aviso va arriba.
+  - Una lectura nueva cancela la que iba en vuelo, así que una recarga lenta ya no pinta la semana anterior encima de
+    la nueva.
+
+#### Revisión y pruebas
+
+- **Revisión adversarial** de A y de E antes de subir. Lo que encontró ya está corregido arriba:
+  - lecturas bloqueantes que faltaban en `resolver_producto` y en las operaciones de FULL;
+  - el caché del token cerca de su vencimiento;
+  - la carga que comparaba contra una lectura nueva de ML;
+  - renovaciones concurrentes del token;
+  - la mezcla de publicaciones;
+  - el `sku` sensible a mayúsculas;
+  - la carrera del frontend.
+- **Pruebas nuevas:**
+  - 26 del Checklist (`tests/test_checklist_publicado.py`);
+  - 12 del caché del token (`tests/test_tokens_solo_kubera.py`).
+- Suite completa en verde (812) y `tsc` limpio.
+- **Verificado en local en solo lectura**, con escrituras y renovación de tokens bloqueadas:
+  - el tablero de la Week 39 con lo publicado;
+  - el error con Reintentar, con el backend apagado;
+  - la recarga fallida, que conserva los renglones.
+
 ### v0.579.0 — El agente de planeación usa DeepSeek: cuesta centavos por turno (Claude ya no se ofrece)
 
 Brandon, 27-sep: *"¿es posible cambiar la IA para usar DeepSeek y que se nos cobre menos?… no uses Claude por favor,

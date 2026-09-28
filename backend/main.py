@@ -81,6 +81,18 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_ventas_warmup())
     else:
         log.info("Warmup de ventas omitido (MySQL off o refresco ML apagado).")
+    # Checklist de almacén (28-sep): tras cada deploy, los atributos de ~40
+    # categorías y lo publicado del lote se piden a ML ANTES de que almacén
+    # abra la pestaña; si no, la primera carga pagaba todo junto. Solo en
+    # producción: es donde almacén abre la pestaña (el Checklist nunca renueva
+    # tokens, solo los lee). En un hilo (regla 11) y 90 s después de arrancar,
+    # para no competir con el arranque por el pool de kubera.
+    if settings.app_env == "production":
+        async def _checklist_warmup():
+            from services import checklist
+            await asyncio.sleep(90)
+            await asyncio.to_thread(checklist.precalentar_sync, None)
+        app.state.checklist_warmup = asyncio.create_task(_checklist_warmup())
     # Contenido de Amazon al crear productos: se declara en el arranque porque
     # es la ÚNICA forma honesta de saber si está encendido. Leer el `.env` local
     # ya llevó a reportar el fan-out como apagado cuando llevaba dos semanas
@@ -171,7 +183,7 @@ app = FastAPI(
         "Temu, Shein)."
     ),
 
-    version="0.579.0",
+    version="0.580.0",
     lifespan=lifespan,
     # /docs, /redoc y /openapi.json publican el mapa COMPLETO de los 84
     # endpoints: rutas, parámetros y esquemas. Con la API abierta eso es un
@@ -272,7 +284,7 @@ def raiz():
     return {
         "app": "OMNICANAL Â· Kubera",
 
-        "version": "0.579.0",
+        "version": "0.580.0",
         "docs": "/docs",
         "canales": [c["id"] for c in lista_canales()],
     }

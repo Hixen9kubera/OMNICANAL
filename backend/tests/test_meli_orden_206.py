@@ -47,6 +47,8 @@ def _cliente(respuestas: dict):
 
 class Orden206(unittest.TestCase):
     def setUp(self):
+        meli._token_cache.clear()   # el caché de 60 s de otra prueba contestaría
+        self.addCleanup(meli._token_cache.clear)
         mock.patch.object(meli, "_access_token", side_effect=lambda c: f"tok-{c}").start()
         self.addCleanup(mock.patch.stopall)
 
