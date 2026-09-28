@@ -785,6 +785,18 @@ def campos_de(cat: str, crudos: list[dict[str, Any]],
         d["nivel"] = _nivel(c, promovidos, automaticos)
         d["exigido"] = d["nivel"] in _EXIGIDOS
         d["por_omision"] = (automaticos or {}).get(c["campo"])
+        # El valor por omisión va PRIMERO entre las sugerencias: ML sugiere
+        # marcas de terceros (Allen & Heath, Behringer…) y «Ferrahome» no está
+        # en ninguna de las 57 categorías de la Week 39. Así aparece en la
+        # pantalla, en la lista del Excel y lo reconoce `_normalizar_ml`.
+        # Lista NUEVA: la de `_campos_ml` es la caché compartida.
+        # MANUFACTURER no es automático para el Catálogo Maestro (specs._estado
+        # lo exige), así que aquí tampoco: solo se le SUGIERE la marca, que es
+        # lo que el publicador acaba poniendo ahí.
+        sugerida = d["por_omision"] or (
+            (automaticos or {}).get("BRAND") if c["campo"] == "MANUFACTURER" else None)
+        if sugerida:
+            d["valores"] = [sugerida, *(v for v in d["valores"] if v != sugerida)]
         salida.append(d)
     salida.sort(key=lambda x: NIVELES.index(x["nivel"]))
     return salida
@@ -933,12 +945,171 @@ def tablero_sync(semana_txt: str | None, fresco: bool = False) -> dict[str, Any]
         {"categoria": c, "nombre": (ctx["nombres"].get(c) or {}).get("nombre"),
          "skus": n,
          "obligatorios_ml": sum(1 for x in ctx["campos"].get(c) or [] if x["nivel"] == "ml"),
-         "promovidos": sum(1 for x in ctx["campos"].get(c) or [] if x["nivel"] == "matriz")}
+         "promovidos": sum(1 for x in ctx["campos"].get(c) or [] if x["nivel"] == "matriz"),
+         # Los opcionales DEL PRODUCTO que la matriz puede subir (los fiscales
+         # de jerarquía ITEM no cuentan: almacén no los conoce).
+         "opcionales": sum(1 for x in ctx["campos"].get(c) or [] if x["nivel"] == "principal")}
         for c, n in por_cat.items()), key=lambda x: (-x["skus"], x["nombre"] or ""))
 
     return {**base, "ok": True, "falta_migracion": False, "motivo": None,
             "semanas": semanas, "filas": filas, "categorias": categorias,
             "resumen": _resumen(filas), "publicados": ctx["publicados_info"]}
+
+
+def semana_valida(texto: str | None) -> dt.date | None:
+    """Como `semana_de`, pero un texto que no es fecha da None en vez de caer
+    en silencio a la semana de hoy: quien lo pide por URL merece un 400."""
+    if not texto or not texto.strip():
+        return None
+    try:
+        return lunes(dt.date.fromisoformat(texto.strip()[:10]))
+    except ValueError:
+        return None
+
+
+def skus_de_semana(semana: dt.date) -> list[str]:
+    """Los SKUs del lote de esa semana, en el orden en que almacén armó su hoja."""
+    return [r["sku"] for r in _q(
+        "select sku::text as sku from ops.checklist_lote where semana = %s "
+        "order by agregado_en, sku", (semana,))]
+
+
+def semanas_sync(anio: int | None = None) -> dict[str, Any]:
+    """Las semanas ISO de un año con cuántos SKUs cargados tiene cada una: la
+    PALOMITA del selector es «tiene lote» (derivado de ops.checklist_lote; no
+    hay otra tabla). Sin año, el de la semana de hoy."""
+    esta = lunes()
+    anio = anio or esta.isocalendar()[0]
+    primero = lunes_iso(anio, 1)
+    siguiente = lunes_iso(anio + 1, 1)
+    if not primero or not siguiente:
+        return {"ok": False, "motivo": f"Año {anio} fuera de rango."}
+    try:
+        cargadas = {r["semana"]: r["n"] for r in _q(
+            "select semana, count(*) n from ops.checklist_lote "
+            "where semana >= %s and semana < %s group by semana", (primero, siguiente))}
+        # Sin el año PEDIDO: si no, cada año nuevo que se mira se vuelve tope
+        # y el selector deja avanzar sin fin.
+        anios = sorted({esta.isocalendar()[0], *(
+            r["anio"] for r in _q(
+                "select distinct extract(isoyear from semana)::int anio "
+                "from ops.checklist_lote"))})
+        ultima = _q("select max(semana) s from ops.checklist_lote")
+    except FaltaMigracion as exc:
+        return {"ok": False, "falta_migracion": True, "motivo": str(exc)}
+    semanas = []
+    n = 1
+    while (l := lunes_iso(anio, n)) is not None and l < siguiente:
+        semanas.append({"numero": n, "semana": l.isoformat(), "etiqueta": etiqueta(l),
+                        "skus": int(cargadas.get(l, 0)), "cargada": l in cargadas,
+                        "actual": l == esta})
+        n += 1
+    ult = ultima[0]["s"] if ultima and ultima[0]["s"] else None
+    return {"ok": True, "anio": anio, "anios": anios, "semanas": semanas,
+            "hoy": esta.isoformat(),
+            "ultima_cargada": ult.isoformat() if ult else None}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Un SKU: sus atributos editables (el detalle de la fila)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _real(sku: str) -> str | None:
+    reales, _ = _canonicos([sku])
+    return reales.get((sku or "").strip().upper())
+
+
+def detalle_sync(sku: str) -> dict[str, Any]:
+    """Los campos de la categoría del SKU con lo que tiene cada uno: `valor`
+    (capturado en kubera) y `publicado` (lo que trae la publicación viva de
+    ML). Mismo cálculo que el tablero y el Excel: no se contradicen."""
+    real = _real(sku)
+    if not real:
+        return {"ok": False, "motivo": f"«{sku}» no existe en kubera."}
+    ctx = _contexto([real])
+    cat_info = ctx["cats_por_sku"].get(real) or {}
+    cat = cat_info.get("categoria")
+    guardado = ctx["valores"].get(real) or {}
+    publicado = _publicado(ctx, real)
+    campos = [{**c, "valor": "" if _vacio(guardado.get(c["campo"]))
+               else str(guardado[c["campo"]]).strip(),
+               "publicado": publicado.get(c["campo"]) or None}
+              for c in ((ctx["campos"].get(cat) or []) if cat else [])]
+    nombre = (ctx["nombres"].get(cat) or {}) if cat else {}
+    return {"ok": True, "sku": real, "categoria": cat,
+            "categoria_nombre": nombre.get("nombre"),
+            "campos": campos, "fila": _evaluar(real, ctx),
+            "motivo": None if cat else
+            "Sin categoría de ML no se sabe qué pide; se asigna en Crear Productos o "
+            "en el Publicador."}
+
+
+def guardar_atributos_sync(sku: str, valores: dict[str, Any]) -> dict[str, Any]:
+    """Guarda lo que almacén capturó en pantalla. Las MISMAS reglas que la
+    carga del Excel:
+      · se normaliza por tipo (`_normalizar_ml`) y se rechaza lo que no es de
+        la categoría o lo que Excel dejó en notación científica;
+      · un campo VACÍO no borra nada (para borrar está el cajón del Catálogo
+        Maestro);
+      · si algo no pasa, no se guarda nada y se dice qué campo y por qué.
+    Escribe con `specs_editor.guardar_sync`, donde escribe el importador."""
+    real = _real(sku)
+    if not real:
+        return {"ok": False, "motivo": f"«{sku}» no existe en kubera."}
+    ctx = _contexto([real], con_publicado=False)
+    cat = (ctx["cats_por_sku"].get(real) or {}).get("categoria")
+    if not cat:
+        return {"ok": False, "motivo": "El SKU no tiene categoría de Mercado Libre; "
+                                       "sin ella no se sabe qué pide."}
+    campos = {c["campo"]: c for c in ctx["campos"].get(cat) or []}
+    if not campos:
+        return {"ok": False, "motivo": "Mercado Libre no contestó qué pide la categoría "
+                                       f"{cat}; no se guarda a ciegas."}
+    antes = ctx["valores"].get(real) or {}
+    guardar: dict[str, str] = {}
+    etiquetas: dict[str, str] = {}
+    errores: list[dict[str, str]] = []
+    avisos: list[dict[str, str]] = []
+    for campo, crudo_v in (valores or {}).items():
+        crudo = _texto(crudo_v)
+        if not crudo:
+            continue
+        c = campos.get(campo)
+        if not c:
+            errores.append({"campo": campo, "etiqueta": campo,
+                            "motivo": f"no es un atributo de la categoría {cat}"})
+            continue
+        if _NOTACION_CIENTIFICA.match(crudo):
+            errores.append({"campo": campo, "etiqueta": c["etiqueta"],
+                            "motivo": f"«{crudo}» está en notación científica; escríbelo "
+                                      "completo"})
+            continue
+        valor, error, aviso = _normalizar_ml(c, crudo)
+        if error:
+            errores.append({"campo": campo, "etiqueta": c["etiqueta"], "motivo": error})
+            continue
+        if aviso:
+            avisos.append({"campo": campo, "etiqueta": c["etiqueta"], "motivo": aviso})
+        if valor == antes.get(campo):
+            continue
+        guardar[campo] = valor
+        etiquetas[campo] = c["etiqueta"]
+    if errores:
+        return {"ok": False, "errores": errores, "avisos": avisos,
+                "motivo": "Hay campos que no se pueden guardar así; no se guardó nada."}
+    if guardar:
+        res = specs_editor.guardar_sync(real, CANAL, guardar, etiquetas)
+        if not res.get("ok"):
+            return {"ok": False, "motivo": res.get("motivo") or "No se pudo guardar."}
+        log.info("checklist: %s guardó %d atributo(s) de %s: %s", actor.actual() or "?",
+                 len(guardar), real, sorted(guardar))
+    # La fila se re-evalúa con el contexto que ya se leyó más lo recién
+    # guardado: volver a armarlo entero repetía ~8 consultas a kubera. Lo
+    # publicado sale de la caché de 30 min que llenó el tablero.
+    ctx["valores"] = {real: {**antes, **guardar}}
+    ctx["publicados"], ctx["publicados_info"] = _publicados([real])
+    return {"ok": True, "guardados": len(guardar), "avisos": avisos,
+            "fila": _evaluar(real, ctx)}
 
 
 def precalentar_sync(semana_txt: str | None = None) -> None:

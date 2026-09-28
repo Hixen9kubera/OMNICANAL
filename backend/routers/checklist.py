@@ -43,6 +43,10 @@ class _Almacen(BaseModel):
     valores: dict[str, Any] = {}
 
 
+class _Atributos(BaseModel):
+    valores: dict[str, Any] = {}
+
+
 @router.get("")
 async def tablero(
         semana: str | None = Query(
@@ -52,6 +56,27 @@ async def tablero(
     """Los SKUs de la semana con su estado: atributos de ML (lo capturado en
     kubera y lo que ya trae la publicación viva) y datos de almacén."""
     return await asyncio.to_thread(ck.tablero_sync, semana, fresco)
+
+
+@router.get("/semanas")
+async def semanas(anio: int | None = Query(None, ge=2020, le=2100)):
+    """Las semanas ISO del año con cuántos SKUs cargados tiene cada una. Ligero:
+    no pregunta nada a Mercado Libre (el tablero sí)."""
+    return await asyncio.to_thread(ck.semanas_sync, anio)
+
+
+@router.get("/sku/{sku:path}")
+async def detalle(sku: str):
+    """Los atributos de ML de UN SKU, editables: lo capturado, lo que trae la
+    publicación viva y lo que pide su categoría (con su nivel)."""
+    return await asyncio.to_thread(ck.detalle_sync, sku)
+
+
+@router.put("/atributos/{sku:path}")
+async def guardar_atributos(sku: str, body: _Atributos):
+    """Guarda los atributos que almacén llenó en pantalla (normalizados; un
+    campo vacío no borra nada) y devuelve la fila ya re-evaluada."""
+    return await asyncio.to_thread(ck.guardar_atributos_sync, sku, body.valores)
 
 
 @router.post("/lote")

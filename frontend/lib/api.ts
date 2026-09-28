@@ -1675,9 +1675,12 @@ export function coberturaPublicaciones(
 export function listarInventario(
   skus?: string[],
   signal?: AbortSignal,
+  /** El lote del Checklist de esa semana. Los `skus` escritos mandan sobre él. */
+  semana?: string | null,
 ): Promise<InventarioResp> {
   const qs = new URLSearchParams();
   if (skus?.length) qs.set("skus", skus.join(","));
+  else if (semana) qs.set("semana", semana);
   const cola = qs.toString();
   return getJSON(`/api/inventario${cola ? `?${cola}` : ""}`, signal);
 }
@@ -1752,6 +1755,27 @@ export function quitarDelChecklist(semana: string, skus: string[]): Promise<{
   ok: boolean; quitados?: number; motivo?: string;
 }> {
   return postJSON("/api/checklist/lote/quitar", { semana, skus });
+}
+
+/** Las semanas ISO de un año con cuántos SKUs cargados tiene cada una. */
+export function semanasChecklist(
+  anio?: number, signal?: AbortSignal,
+): Promise<import("./types").SemanasChecklist> {
+  return getJSON(`/api/checklist/semanas${anio ? `?anio=${anio}` : ""}`, signal);
+}
+
+/** Los atributos editables de UN SKU (lo capturado y lo publicado). */
+export function detalleChecklist(
+  sku: string, signal?: AbortSignal,
+): Promise<import("./types").DetalleChecklist> {
+  return getJSON(`/api/checklist/sku/${encodeURIComponent(sku)}`, signal);
+}
+
+/** Guarda los atributos llenados en pantalla. Un campo vacío no borra nada. */
+export function guardarAtributosChecklist(
+  sku: string, valores: Record<string, string>,
+): Promise<import("./types").GuardadoAtributosChecklist> {
+  return putJSON(`/api/checklist/atributos/${encodeURIComponent(sku)}`, { valores });
 }
 
 export function matrizChecklist(

@@ -1001,6 +1001,125 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.581.0 — El lote del Checklist se ve en el Catálogo Maestro, y los atributos y la matriz se llenan en la misma pantalla
+
+Brandon, 28-sep: *"los skus que se carguen en el check list también se verán reflejados en el catálogo maestro… podré
+seleccionar el número de la week y cada week tendrá su check de que week ya tiene sus skus cargados"*; *"cada sku deberá
+de poderse seleccionar en todo el DIV… descargar el excel con TODOS LOS SKUS"*; *"deberá de ser editable como
+anteriormente lo teníamos en el catálogo maestro… cuando sea marca mostrar la opción para seleccionar como Ferrahome"*;
+*"la matriz en vez de ser un botón deberá de ser un [apartado] por categoría"*.
+
+**No hay tabla ni columna nueva.** Todo reutiliza lo que ya existía:
+
+| Qué | Dónde |
+|---|---|
+| El lote semanal y su palomita | `ops.checklist_lote` (una semana está «cargada» si tiene SKUs) |
+| Los atributos | `enrich.channel_content`, cuenta `''` (vía `specs_editor.guardar_sync`) |
+| La matriz | `channel.field_requirements` con `fuente='manual'`, por categoría |
+| Ferrahome | `channel.field_requirements.default_value` |
+| Medidas, cajas y piezas | `core.products.almacen_*` |
+
+#### 1 · El Catálogo Maestro ve el lote del Checklist
+
+- `GET /api/inventario?semana=YYYY-MM-DD` resuelve los SKUs del lote en el servidor, desde `ops.checklist_lote`.
+  - Así no se parten los SKUs con coma y se conserva el orden de la lista de almacén.
+  - Hasta 200 por consulta; si la semana trae más, el banner dice «se ven 200 de N».
+  - Una semana sin SKUs da cero filas, no el piloto. Una fecha inválida da 400.
+  - Los SKUs escritos a mano mandan sobre la semana.
+- Por omisión el Maestro abre la **última semana cargada**. «Volver al piloto» sigue ahí.
+- Acepta `?semana=` en la URL: el Checklist tiene un enlace «Ver en Catálogo Maestro».
+- `GET /api/checklist/semanas?anio=` devuelve las semanas ISO del año (2026 tiene 53) con cuántos SKUs tiene cada una.
+  Es ligero: no le pregunta nada a Mercado Libre.
+- **Selector por número de semana** (`components/SelectorSemana.tsx`), el mismo en el Checklist y en el Maestro:
+  - rejilla de la Week 1 a la 53, con **palomita verde** en las que tienen SKUs y la de hoy marcada;
+  - lista de «Cargadas en 2026»;
+  - en el Maestro solo se pueden elegir las cargadas.
+- El modal de «Agregar SKUs» marca con palomita las hojas «Week NN» cuya semana ya está cargada.
+
+#### 2 · La fila entera abre el detalle, y el Excel es del lote completo
+
+- Un clic en cualquier parte del renglón lo abre. La casilla, el enlace a ML, la categoría y la flecha siguen haciendo
+  lo suyo; si alguien está seleccionando texto para copiar el SKU, no se abre. También con Enter o Espacio.
+- «**Excel del lote (N)**» y «CSV» bajan siempre **todo el lote**, sin importar la selección ni el filtro de arriba.
+  Si hay algo seleccionado, aparece aparte «Excel de N seleccionados».
+
+#### 3 · Los atributos se llenan en el detalle
+
+- «Lo que falta para Mercado Libre» ya no son etiquetas de solo lectura: es el editor (`components/EditorAtributos.tsx`),
+  el mismo control que ahora usa el cajón del Catálogo Maestro.
+  - Primero los exigidos (ML + matriz).
+  - Luego los automáticos: la **Marca**, con «Usar Ferrahome».
+  - Después los opcionales del producto, plegados, y los de facturación, plegados.
+- `GET /api/checklist/sku/{sku}` trae, por campo:
+  - su nivel;
+  - lo capturado en kubera;
+  - **lo que trae la publicación viva de ML**, en verde, con un botón «usar».
+- `PUT /api/checklist/atributos/{sku}` guarda con **las mismas reglas que la carga del Excel**:
+  - normaliza por tipo («si» → «Sí», «30» → «30 cm» con la unidad que ML asume, mayúsculas de la lista);
+  - rechaza lo que no es de la categoría y lo que Excel dejó en notación científica;
+  - **un campo vacío no borra nada**;
+  - con un error no se guarda nada y se dice qué campo y por qué.
+
+  Escribe por `specs_editor.guardar_sync`, igual que el importador, y devuelve la fila re-evaluada: la pantalla la
+  parcha y recalcula los totales sin volver a leer el lote.
+- **Ferrahome se ofrece primero** entre las sugerencias de la Marca:
+  - vale para el Checklist, la lista del Excel y el cajón del Maestro;
+  - ML solo sugiere marcas de terceros: en MLM190081 la primera es «Allen & Heath», y Ferrahome no estaba en ninguna de
+    las 57 categorías de la Week 39;
+  - la lista se arma nueva, sin tocar la caché compartida de `_campos_ml`.
+- A **MANUFACTURER** solo se le **sugiere** la marca: sigue exigido, igual que en `specs._estado`, para que el Checklist
+  y el Maestro digan lo mismo.
+- El cajón del Maestro dejó de pintar la Marca en rojo cuando está vacía, porque la llena el publicador. Además:
+  - la unidad por omisión es la que ML asume (`unidad_default`), no «la primera de la lista»;
+  - una unidad elegida antes de escribir el número ya no se pierde;
+  - no deja guardar un número sin unidad cuando ML acepta varias.
+
+#### 4 · La matriz es un apartado por categoría
+
+- Adiós al modal. Debajo de la tabla, cada categoría de ML del lote (57 en la Week 39) es un renglón plegable con:
+  - sus obligatorios de ML y sus automáticos;
+  - las casillas de sus **opcionales del producto**, con los de facturación aparte.
+- Se guarda por **categoría**, no por semana, así que vale para los SKUs que caigan en ella después.
+- El nombre de la categoría en cada renglón lleva a su apartado. El tablero manda cuántos opcionales tiene cada
+  categoría (`categorias[].opcionales`).
+
+#### Revisión, pruebas y verificación
+
+- **Revisión adversarial** en cuatro dimensiones (backend, frontend, seguridad de datos y regresiones), con dos
+  verificadores por hallazgo. Se corrigieron:
+  - el resumen del Maestro, que consultaba kubera dentro del event loop (regla 11);
+  - lecturas canceladas que dejaban la tabla en «Sin resultados»;
+  - una recarga lenta que pintaba otra semana;
+  - el filtro de bodega, que sobrevivía al cambio de semana;
+  - el detalle, que ante un error decía «Sin categoría»; ahora dice el error y ofrece «Reintentar»;
+  - el detalle abierto, que no se refrescaba tras guardar la matriz o cargar un Excel;
+  - los valores con espacios, que contaban como cambios;
+  - los topes de año del selector;
+  - el popup del selector en teléfono;
+  - MANUFACTURER, que el Checklist y el Maestro contaban distinto.
+- **Pruebas:** 21 nuevas (`tests/test_checklist_semanas_editor.py`). Suite completa en verde (840), `tsc` limpio y
+  `next build` sin errores.
+- **Verificado en local en solo lectura contra producción**, con las escrituras bloqueadas:
+  - el selector con la palomita en la Week 39;
+  - la fila que se abre con un clic;
+  - el editor con «Usar Ferrahome»;
+  - la matriz por categoría;
+  - el Maestro abriendo en la Week 39 (100 SKUs) y volviendo al piloto;
+  - el error del detalle con «Reintentar».
+
+#### Lo que se revisó y NO se cambió
+
+- **Packing lists en Supabase:** el bucket privado `packing-lists` tiene los 107 originales y 78 Ferraforme (copia del
+  24-sep), y la ruta ya existe detrás de `PACKING_LEER_STORAGE`. Pero:
+  - encender esa variable no le da la cifra PL al lote: **0 de 100** SKUs de la Week 39 tienen `caja_compartida`
+    (**86** están en `costing.packing_ubicaciones`);
+  - la variable también cambia lo que escribe «Validar publicados»;
+  - la copia ya está vieja.
+
+  Queda como propuesta aparte.
+- **Marca de terceros en publicaciones nuevas:** el vendor publica la primera sugerencia de ML cuando BRAND es
+  requerido y el valor no empata. Queda como tarea aparte: adaptador, regla 3.
+
 ### v0.580.0 — El backend deja de congelarse con los avisos de ML, y el Checklist lee lo que ya está publicado
 
 Brandon, 27-sep, sobre el «No se pudo leer el checklist» y las opciones que se le dieron: *"dale con la A y con la E

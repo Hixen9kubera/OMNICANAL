@@ -19,26 +19,35 @@
  * Lo que se captura aquí va al MISMO sitio que el Publicador (los atributos) y
  * al lado «Bodega» del cotejo de cajas del Catálogo Maestro (medidas y cajas).
  * Ver la cabecera de backend/services/checklist.py.
+ *
+ * v0.581 (Brandon, 28-sep): la fila se abre con un clic en cualquier parte;
+ * los atributos se llenan AQUÍ (con las sugerencias de ML y Ferrahome para la
+ * marca); la matriz es un apartado por categoría en la misma página, y el
+ * selector de semanas marca con palomita las que ya tienen SKUs. El lote de la
+ * semana se ve también en el Catálogo Maestro (enlace junto a la semana).
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  AlertTriangle, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight,
+  AlertTriangle, ArrowUpRight, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight,
   ClipboardCheck, Download, ExternalLink, FileSpreadsheet, Loader2, Plus,
   RefreshCw, Ruler, Search, SlidersHorizontal, Trash2, Upload, X,
 } from "lucide-react";
 
 import AppNavbar from "@/components/AppNavbar";
+import { CamposAtributos, type CampoEditable } from "@/components/EditorAtributos";
 import InventarioPestanas from "@/components/InventarioPestanas";
+import SelectorSemana from "@/components/SelectorSemana";
 import {
-  agregarAlChecklist, cargarListaChecklist, descargarChecklist, guardarAlmacenChecklist,
-  guardarMatrizChecklist, importarChecklist, matrizChecklist, mensajeDeError,
-  quitarDelChecklist, tableroChecklist,
+  agregarAlChecklist, cargarListaChecklist, descargarChecklist, detalleChecklist,
+  guardarAlmacenChecklist, guardarAtributosChecklist, guardarMatrizChecklist,
+  importarChecklist, matrizChecklist, mensajeDeError, quitarDelChecklist, tableroChecklist,
 } from "@/lib/api";
 import { quienSoy } from "@/lib/sesion";
 import type {
-  CampoChecklist, EstadoChecklist, FilaChecklist, ImportacionChecklist,
-  ListaChecklist, MatrizChecklist, NivelChecklist, SistemaChecklist, TableroChecklist,
+  CampoChecklist, CampoDetalleChecklist, DetalleChecklist, EstadoChecklist, FilaChecklist,
+  FilaEvaluadaChecklist, ImportacionChecklist, ListaChecklist, MatrizChecklist,
+  NivelChecklist, SistemaChecklist, TableroChecklist,
 } from "@/lib/types";
 
 /* ─────────────────────────────── estilos ─────────────────────────────── */
@@ -133,10 +142,14 @@ export default function ChecklistPage() {
   const [filtro, setFiltro] = useState<Filtro>("todos");
   const [busqueda, setBusqueda] = useState("");
   const [abierto, setAbierto] = useState<string | null>(null);
-  const [modal, setModal] = useState<null | "agregar" | "matriz" | "cargar">(null);
-  const [matrizCat, setMatrizCat] = useState<string | null>(null);
+  const [modal, setModal] = useState<null | "agregar" | "cargar">(null);
+  // Las categorías abiertas en el apartado de la matriz.
+  const [matrizAbiertas, setMatrizAbiertas] = useState<Set<string>>(new Set());
   const [aviso, setAviso] = useState<string | null>(null);
   const [bajando, setBajando] = useState<null | "excel" | "csv">(null);
+  // Sube con cada lectura buena del tablero (tras guardar la matriz, cargar un
+  // Excel o las medidas): el detalle abierto se vuelve a leer con ella.
+  const [version, setVersion] = useState(0);
   // El rol solo esconde botones: la autoridad es el RBAC del backend.
   const [puedeCapturar, setPuedeCapturar] = useState(true);
 
@@ -168,6 +181,7 @@ export default function ChecklistPage() {
         .then((d) => {
           setDatos(d);
           setDatosDe(semana);
+          setVersion((v) => v + 1);
           // La selección solo vale dentro del lote que se ve.
           setSel((s) => new Set([...s].filter((k) => d.filas.some((f) => f.sku === k))));
           setCargando(false);
@@ -214,25 +228,28 @@ export default function ChecklistPage() {
       faltan_almacen: (f) => f.faltan_almacen.length > 0,
       sin_categoria: (f) => f.estado === "sin_categoria" || f.estado === "sin_lista",
     };
-    items = items.filter(pruebas[filtro]);
+    items = items.filter((f) => f.sku === abierto || pruebas[filtro](f));
     const q = busqueda.trim().toLowerCase();
     if (q) {
-      items = items.filter((f) => f.sku.toLowerCase().includes(q)
+      items = items.filter((f) => f.sku === abierto || f.sku.toLowerCase().includes(q)
         || (f.titulo ?? "").toLowerCase().includes(q)
         || (f.categoria_nombre ?? "").toLowerCase().includes(q));
     }
     return items;
-  }, [vigente, filtro, busqueda]);
+  }, [vigente, filtro, busqueda, abierto]);
 
   const semanaVista = vigente?.semana ?? semana ?? lunesHoy();
   const bloqueado = !!datos?.falta_migracion;
   const elegidos = [...sel];
 
-  const bajar = async (formato: "excel" | "csv") => {
+  // El Excel del LOTE COMPLETO no depende de la selección ni del filtro de
+  // arriba (Brandon: «con TODOS los SKUs, sin tener que seleccionarlos»). El de
+  // la selección es aparte y solo aparece si hay algo seleccionado.
+  const bajar = async (formato: "excel" | "csv", soloSeleccion = false) => {
     if (!semanaVista) return;
     setBajando(formato);
     try {
-      await descargarChecklist(formato, semanaVista, elegidos);
+      await descargarChecklist(formato, semanaVista, soloSeleccion ? elegidos : []);
     } catch (e) {
       setAviso(mensajeDeError(e, "No se pudo generar el archivo."));
     } finally {
@@ -252,6 +269,23 @@ export default function ChecklistPage() {
     } catch (e) {
       setAviso(mensajeDeError(e, "No se pudo quitar."));
     }
+  };
+
+  // Guardar atributos devuelve la fila re-evaluada: se parcha esa sola y se
+  // recalculan los totales, sin volver a leer todo el lote (~4 s).
+  const actualizarFila = (fila: FilaEvaluadaChecklist) => {
+    setDatos((d) => {
+      if (!d) return d;
+      const filas_ = d.filas.map((x) => (x.sku === fila.sku ? { ...x, ...fila } : x));
+      return { ...d, filas: filas_, resumen: resumenDe(filas_) };
+    });
+  };
+
+  const abrirMatriz = (cat: string) => {
+    setMatrizAbiertas((m) => new Set(m).add(cat));
+    // Después del render, para que el apartado ya esté abierto.
+    setTimeout(() => document.getElementById(`matriz-${cat}`)
+      ?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
   };
 
   const todosVisibles = filas.length > 0 && filas.every((f) => sel.has(f.sku));
@@ -295,7 +329,8 @@ export default function ChecklistPage() {
         )}
 
         <Semana
-          semana={semanaVista} etiqueta={vigente?.etiqueta ?? ""} semanas={datos?.semanas ?? []}
+          semana={semanaVista} etiqueta={vigente?.etiqueta ?? ""}
+          hayLote={!!vigente?.filas.length}
           onCambiar={(s) => { setSemana(s); setSel(new Set()); setAbierto(null); }}
         />
 
@@ -317,28 +352,34 @@ export default function ChecklistPage() {
                  titulo={puedeCapturar ? "Agregar los SKUs de la semana" : "Tu rol es de solo lectura"}>
             Agregar SKUs
           </Boton>
-          <Boton icono={SlidersHorizontal} deshabilitado={bloqueado}
-                 onClick={() => { setMatrizCat(vigente?.categorias[0]?.categoria ?? null); setModal("matriz"); }}>
-            Matriz de obligatorios
+          <Boton icono={SlidersHorizontal} deshabilitado={bloqueado || !vigente?.categorias.length}
+                 titulo="Ir al apartado de la matriz: por categoría, qué opcionales se vuelven obligatorios"
+                 onClick={() => document.getElementById("matriz")
+                   ?.scrollIntoView({ behavior: "smooth", block: "start" })}>
+            Matriz por categoría
           </Boton>
 
           <div className="ml-auto flex flex-wrap items-center gap-2">
-            <span className="text-xs text-slate-500">
-              {elegidos.length
-                ? <><b className="text-slate-800">{elegidos.length}</b> seleccionados</>
-                : "Sin selección: se baja todo el lote"}
-            </span>
             <Boton icono={bajando === "excel" ? Loader2 : FileSpreadsheet} primario
                    girar={bajando === "excel"}
                    deshabilitado={bloqueado || !vigente?.filas.length || !!bajando}
+                   titulo="Todos los SKUs del lote, sin importar la selección ni el filtro"
                    onClick={() => bajar("excel")}>
-              Descargar Excel
+              Excel del lote{vigente?.filas.length ? ` (${vigente.filas.length})` : ""}
             </Boton>
             <Boton icono={bajando === "csv" ? Loader2 : Download} girar={bajando === "csv"}
                    deshabilitado={bloqueado || !vigente?.filas.length || !!bajando}
-                   onClick={() => bajar("csv")} titulo="Formato largo: un renglón por SKU y campo">
+                   onClick={() => bajar("csv")}
+                   titulo="Todo el lote en formato largo: un renglón por SKU y campo">
               CSV
             </Boton>
+            {elegidos.length > 0 && (
+              <Boton icono={FileSpreadsheet} deshabilitado={bloqueado || !!bajando}
+                     titulo="Solo los SKUs seleccionados"
+                     onClick={() => bajar("excel", true)}>
+                Excel de {elegidos.length} seleccionado{elegidos.length === 1 ? "" : "s"}
+              </Boton>
+            )}
             <Boton icono={Upload} deshabilitado={bloqueado || !puedeCapturar}
                    onClick={() => setModal("cargar")}
                    titulo={puedeCapturar ? "Subir el Excel o CSV ya llenado" : "Tu rol es de solo lectura"}>
@@ -361,12 +402,28 @@ export default function ChecklistPage() {
           abierto={abierto} onAbrir={(sku) => setAbierto((a) => (a === sku ? null : sku))}
           puedeCapturar={puedeCapturar && !bloqueado}
           onGuardado={(msg) => { setAviso(msg); cargar(); }}
+          onFila={actualizarFila}
+          onAviso={setAviso}
+          version={version}
           vacioLote={!!vigente && !vigente.filas.length}
           errorCarga={vigente ? null : error}
           onReintentar={() => cargar()}
           onAgregar={() => setModal("agregar")}
-          onMatriz={(cat) => { setMatrizCat(cat); setModal("matriz"); }}
+          onMatriz={abrirMatriz}
         />
+
+        {vigente && vigente.categorias.length > 0 && (
+          <MatrizPorCategoria
+            categorias={vigente.categorias} abiertas={matrizAbiertas}
+            onAlternar={(cat) => setMatrizAbiertas((m) => {
+              const nuevo = new Set(m);
+              if (nuevo.has(cat)) nuevo.delete(cat); else nuevo.add(cat);
+              return nuevo;
+            })}
+            puedeCapturar={puedeCapturar && !bloqueado}
+            onGuardada={(msg) => { setAviso(msg); cargar(); }}
+          />
+        )}
 
         <p className="mt-4 text-xs leading-relaxed text-slate-400">
           Solo kubera y la API de Mercado Libre — nada de WordPress. Los
@@ -379,6 +436,7 @@ export default function ChecklistPage() {
 
       {modal === "agregar" && semanaVista && (
         <ModalAgregar semana={semanaVista} etiqueta={vigente?.etiqueta ?? ""}
+                      cargadas={Object.fromEntries((datos?.semanas ?? []).map((s) => [s.semana, s.skus]))}
                       onCerrar={() => setModal(null)}
                       onListo={(msg, otra) => {
                         setModal(null); setAviso(msg);
@@ -386,13 +444,6 @@ export default function ChecklistPage() {
                         if (otra && otra !== semanaVista) { setSemana(otra); setSel(new Set()); }
                         else cargar();
                       }} />
-      )}
-      {modal === "matriz" && (
-        <ModalMatriz
-          categorias={vigente?.categorias ?? []} inicial={matrizCat}
-          puedeCapturar={puedeCapturar}
-          onCerrar={(cambio) => { setModal(null); if (cambio) cargar(); }}
-        />
       )}
       {modal === "cargar" && (
         <ModalCargar onCerrar={(cambio) => { setModal(null); if (cambio) cargar(); }} />
@@ -498,15 +549,14 @@ function Banner({
 }
 
 function Semana({
-  semana, etiqueta, semanas, onCambiar,
+  semana, etiqueta, hayLote, onCambiar,
 }: {
   semana: string;
   etiqueta: string;
-  semanas: { semana: string; etiqueta: string; skus: number }[];
+  hayLote: boolean;
   onCambiar: (s: string | undefined) => void;
 }) {
   if (!semana) return null;
-  const otras = semanas.filter((s) => s.semana !== semana);
   return (
     <div className="mt-4 flex flex-wrap items-center gap-2">
       <div className="inline-flex items-center rounded-xl bg-white ring-1 ring-slate-200">
@@ -529,16 +579,14 @@ function Semana({
               className="rounded-lg px-2.5 py-1.5 text-xs font-semibold text-indigo-600 hover:bg-indigo-50">
         Esta semana
       </button>
-      {otras.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-400">
-          <span>Otros lotes:</span>
-          {otras.slice(0, 6).map((s) => (
-            <button key={s.semana} type="button" onClick={() => onCambiar(s.semana)}
-                    className="rounded-full bg-white px-2.5 py-1 font-semibold text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50">
-              {s.etiqueta} · {s.skus}
-            </button>
-          ))}
-        </div>
+      {/* Por número de semana, con palomita en las que ya tienen SKUs. */}
+      <SelectorSemana valor={semana} onElegir={(s) => onCambiar(s)} vacio="Elegir semana" />
+      {hayLote && (
+        <a href={`/inventario?semana=${semana}`}
+           className="ml-auto inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-indigo-600 hover:bg-indigo-50"
+           title="Los mismos SKUs en el Catálogo Maestro: existencias, ubicación y cotejo de cajas">
+          Ver en Catálogo Maestro <ArrowUpRight className="h-3.5 w-3.5" />
+        </a>
       )}
     </div>
   );
@@ -601,7 +649,7 @@ function Publicado({ p }: { p: NonNullable<TableroChecklist["publicados"]> }) {
 
 function Tabla({
   filas, cargando, sel, onSel, todos, onTodos, abierto, onAbrir, puedeCapturar,
-  onGuardado, vacioLote, errorCarga, onReintentar, onAgregar, onMatriz,
+  onGuardado, onFila, onAviso, version, vacioLote, errorCarga, onReintentar, onAgregar, onMatriz,
 }: {
   filas: FilaChecklist[];
   cargando: boolean;
@@ -613,6 +661,9 @@ function Tabla({
   onAbrir: (sku: string) => void;
   puedeCapturar: boolean;
   onGuardado: (msg: string) => void;
+  onFila: (fila: FilaEvaluadaChecklist) => void;
+  onAviso: (msg: string) => void;
+  version: number;
   vacioLote: boolean;
   /** No se pudo leer la semana: se dice eso, no «no tiene SKUs». */
   errorCarga: string | null;
@@ -678,6 +729,7 @@ function Tabla({
             <FilaTabla key={f.sku} f={f} marcada={sel.has(f.sku)} onSel={() => onSel(f.sku)}
                        abierta={abierto === f.sku} onAbrir={() => onAbrir(f.sku)}
                        puedeCapturar={puedeCapturar} onGuardado={onGuardado}
+                       onFila={onFila} onAviso={onAviso} version={version}
                        onMatriz={onMatriz} />
           ))}
         </tbody>
@@ -687,7 +739,8 @@ function Tabla({
 }
 
 function FilaTabla({
-  f, marcada, onSel, abierta, onAbrir, puedeCapturar, onGuardado, onMatriz,
+  f, marcada, onSel, abierta, onAbrir, puedeCapturar, onGuardado, onFila, onAviso, version,
+  onMatriz,
 }: {
   f: FilaChecklist;
   marcada: boolean;
@@ -696,6 +749,9 @@ function FilaTabla({
   onAbrir: () => void;
   puedeCapturar: boolean;
   onGuardado: (msg: string) => void;
+  onFila: (fila: FilaEvaluadaChecklist) => void;
+  onAviso: (msg: string) => void;
+  version: number;
   onMatriz: (cat: string) => void;
 }) {
   const pct = f.exigidos_total ? f.exigidos_llenos / f.exigidos_total : 0;
@@ -704,7 +760,22 @@ function FilaTabla({
   const e = ESTADO[f.estado];
   return (
     <>
-      <tr className={`border-b border-slate-100 align-top transition ${marcada ? "bg-indigo-50/40" : "hover:bg-slate-50/60"}`}>
+      {/* La fila entera abre el detalle (Brandon: «en todo el DIV, no solo con
+          el botón de desplegar»). Lo que ya es un control —casilla, enlace a
+          ML, categoría, flecha— sigue haciendo lo suyo; y si alguien está
+          seleccionando texto (para copiar el SKU) no se abre. */}
+      <tr tabIndex={0} aria-expanded={abierta}
+          onClick={(e) => {
+            if ((e.target as HTMLElement).closest("a,button,input,select,textarea,label")) return;
+            if (window.getSelection()?.toString()) return;
+            onAbrir();
+          }}
+          onKeyDown={(e) => {
+            if (e.target !== e.currentTarget) return;
+            if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onAbrir(); }
+          }}
+          className={`cursor-pointer border-b border-slate-100 align-top outline-none transition focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-300 ${
+            abierta ? "bg-indigo-50/60" : marcada ? "bg-indigo-50/40" : "hover:bg-slate-50/60"}`}>
         <td className="px-3 py-3">
           <input type="checkbox" checked={marcada} onChange={onSel}
                  className="h-4 w-4 rounded border-slate-300 accent-indigo-600" />
@@ -729,7 +800,7 @@ function FilaTabla({
         <td className="max-w-[220px] px-3 py-3">
           {f.categoria ? (
             <button type="button" onClick={() => onMatriz(f.categoria!)}
-                    className="text-left hover:underline" title="Abrir la matriz de esta categoría">
+                    className="text-left hover:underline" title="Ir a la matriz de esta categoría">
               <div className="text-xs font-semibold text-slate-700">{f.categoria_nombre ?? f.categoria}</div>
               <div className="font-mono text-[10px] text-slate-400">{f.categoria}</div>
             </button>
@@ -787,7 +858,8 @@ function FilaTabla({
           </span>
         </td>
         <td className="px-2 py-3">
-          <button type="button" onClick={onAbrir} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+          <button type="button" onClick={onAbrir} aria-expanded={abierta}
+                  className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
                   title={abierta ? "Cerrar" : "Ver qué falta y capturar"}>
             <ChevronDown className={`h-4 w-4 transition ${abierta ? "rotate-180" : ""}`} />
           </button>
@@ -797,7 +869,8 @@ function FilaTabla({
         <tr className="border-b border-slate-100 bg-slate-50/60">
           <td />
           <td colSpan={7} className="px-3 pb-4 pt-2">
-            <Detalle f={f} puedeCapturar={puedeCapturar} onGuardado={onGuardado} />
+            <Detalle f={f} puedeCapturar={puedeCapturar} onGuardado={onGuardado}
+                     onFila={onFila} onAviso={onAviso} version={version} />
           </td>
         </tr>
       )}
@@ -806,8 +879,15 @@ function FilaTabla({
 }
 
 function Detalle({
-  f, puedeCapturar, onGuardado,
-}: { f: FilaChecklist; puedeCapturar: boolean; onGuardado: (msg: string) => void }) {
+  f, puedeCapturar, onGuardado, onFila, onAviso, version,
+}: {
+  f: FilaChecklist;
+  puedeCapturar: boolean;
+  onGuardado: (msg: string) => void;
+  onFila: (fila: FilaEvaluadaChecklist) => void;
+  onAviso: (msg: string) => void;
+  version: number;
+}) {
   const campos: { k: keyof FilaChecklist["almacen"]; t: string; paso: string }[] = [
     { k: "largo_cm", t: "Largo (cm)", paso: "0.1" },
     { k: "ancho_cm", t: "Ancho (cm)", paso: "0.1" },
@@ -837,47 +917,8 @@ function Detalle({
 
   return (
     <div className="grid gap-4 lg:grid-cols-2">
-      <div className="rounded-xl bg-white p-3 ring-1 ring-slate-200">
-        <h4 className="text-[11px] font-bold uppercase tracking-[0.06em] text-slate-400">
-          Lo que falta para Mercado Libre
-        </h4>
-        {f.estado === "sin_categoria" ? (
-          <p className="mt-2 text-xs text-slate-500">
-            Sin categoría de ML no se sabe qué pide. Se asigna en Crear Productos o
-            en el Publicador (la del panel manda).
-          </p>
-        ) : f.estado === "sin_lista" ? (
-          <p className="mt-2 text-xs text-slate-500">
-            Mercado Libre no contestó qué exige la categoría {f.categoria}. Recarga en
-            un momento.
-          </p>
-        ) : f.faltan_ml.length ? (
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {f.faltan_ml.map((x) => (
-              <span key={x.campo} style={NIVEL[x.nivel].style}
-                    className={`rounded-md px-2 py-0.5 text-xs font-semibold ring-1 ${NIVEL[x.nivel].c}`}
-                    title={`${x.campo} · ${NIVEL[x.nivel].t}`}>
-                {x.etiqueta}
-              </span>
-            ))}
-          </div>
-        ) : (
-          <p className="mt-2 flex items-center gap-1.5 text-xs font-semibold text-emerald-700">
-            <CheckCircle2 className="h-4 w-4" /> Todo lo exigido está capturado.
-          </p>
-        )}
-        {f.exigidos_publicados > 0 && (
-          <p className="mt-3 rounded-lg bg-emerald-50 px-2 py-1 text-[11px] text-emerald-800">
-            {f.exigidos_publicados} de los exigidos los trae hoy la publicación viva
-            de Mercado Libre (en verde en el Excel). Si alguno está mal, corrígelo
-            en el Excel y se guarda el tuyo.
-          </p>
-        )}
-        <p className="mt-3 text-[11px] text-slate-400">
-          {f.opcionales_llenos} de {f.opcionales_total} opcionales llenos. Se
-          llenan en el Excel o, uno por uno, en el cajón del SKU en el Catálogo Maestro.
-        </p>
-      </div>
+      <AtributosML f={f} puedeCapturar={puedeCapturar} onFila={onFila} onAviso={onAviso}
+                   version={version} />
 
       <div className="rounded-xl bg-white p-3 ring-1 ring-sky-200">
         <h4 className="text-[11px] font-bold uppercase tracking-[0.06em] text-sky-700">
@@ -922,6 +963,454 @@ function Detalle({
   );
 }
 
+/** Los totales de arriba, como los calcula el backend (`_resumen`), para
+ *  recalcularlos al parchar UNA fila sin volver a leer el lote. */
+function resumenDe(filas: FilaChecklist[]): TableroChecklist["resumen"] {
+  return {
+    total: filas.length,
+    completos: filas.filter((f) => f.estado === "completo").length,
+    incompletos: filas.filter((f) => f.estado === "incompleto").length,
+    sin_categoria: filas.filter((f) => f.estado === "sin_categoria" || f.estado === "sin_lista").length,
+    faltan_ml: filas.filter((f) => f.faltan_ml.length > 0).length,
+    faltan_almacen: filas.filter((f) => f.faltan_almacen.length > 0).length,
+  };
+}
+
+/** Un campo del detalle, en la forma del editor compartido. «Obligatorio» =
+ *  lo que EXIGE el checklist (ML + matriz); lo automático no se exige. */
+function editable(c: CampoDetalleChecklist): CampoEditable {
+  return {
+    campo: c.campo, etiqueta: c.etiqueta, tipo: c.tipo, valores: c.valores,
+    unidades: c.unidades, unidad_default: c.unidad_default, por_omision: c.por_omision,
+    publicado: c.publicado, obligatorio: c.exigido,
+  };
+}
+
+/**
+ * Los atributos de Mercado Libre del SKU, EDITABLES (Brandon, 28-sep: «que sea
+ * editable como lo teníamos en el Catálogo Maestro»). Mismas reglas que el
+ * Excel: se normaliza en el backend, un campo vacío no borra nada, y lo que ya
+ * trae la publicación viva se enseña en verde pero no se copia hasta que
+ * alguien lo guarda.
+ */
+function AtributosML({
+  f, puedeCapturar, onFila, onAviso, version,
+}: {
+  f: FilaChecklist;
+  puedeCapturar: boolean;
+  onFila: (fila: FilaEvaluadaChecklist) => void;
+  onAviso: (msg: string) => void;
+  /** Sube con cada lectura del tablero: el detalle se re-lee con ella. */
+  version: number;
+}) {
+  const [d, setD] = useState<DetalleChecklist | null>(null);
+  const [valores, setValores] = useState<Record<string, string>>({});
+  // Lo que había en kubera la última vez que se leyó: al volver a leer se
+  // conserva lo que la persona ya había cambiado y no guardó.
+  const baseRef = useRef<Record<string, string> | null>(null);
+  const [reintento, setReintento] = useState(0);
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [errores, setErrores] = useState<Record<string, string>>({});
+  const [avisos, setAvisos] = useState<string[]>([]);
+  const [guardando, setGuardando] = useState(false);
+  const [verOpcionales, setVerOpcionales] = useState(false);
+  const [verFiscales, setVerFiscales] = useState(false);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    setCargando(true);
+    setError(null);
+    detalleChecklist(f.sku, ctrl.signal)
+      .then((r) => {
+        const campos = r.campos ?? [];
+        setD({ ...r, campos });
+        const base = baseRef.current;
+        setValores((antes) => Object.fromEntries(campos.map((c) => {
+          const local = antes[c.campo];
+          // Lo editado y no guardado se queda; lo demás toma lo de kubera.
+          const editado = base !== null && local !== undefined && local !== (base[c.campo] ?? "");
+          return [c.campo, editado ? local : c.valor];
+        })));
+        baseRef.current = Object.fromEntries(campos.map((c) => [c.campo, c.valor]));
+        if (!r.ok || r.motivo) setError(r.motivo ?? "No se pudieron leer los atributos.");
+      })
+      .catch((e: unknown) => {
+        if ((e as { name?: string })?.name === "AbortError") return;
+        setError(mensajeDeError(e, "No se pudieron leer los atributos."));
+      })
+      .finally(() => { if (!ctrl.signal.aborted) setCargando(false); });
+    return () => ctrl.abort();
+  // Al abrir otro SKU, al reintentar y con cada lectura del tablero (la matriz
+  // pudo subir un campo a exigido, o un Excel traer valores nuevos).
+  }, [f.sku, version, reintento]);
+
+  // Lo que se manda: solo lo que cambió y NO está vacío (vacío no borra).
+  const cambios = useMemo(() => {
+    const c: Record<string, string> = {};
+    for (const x of d?.campos ?? []) {
+      const v = (valores[x.campo] ?? "").trim();
+      if (v && v !== (x.valor ?? "").trim()) c[x.campo] = v;
+    }
+    return c;
+  }, [d, valores]);
+  const nCambios = Object.keys(cambios).length;
+  const vaciados = (d?.campos ?? []).filter((x) => x.valor && !(valores[x.campo] ?? "").trim()).length;
+
+  const guardar = async () => {
+    if (!d || !nCambios) return;
+    setGuardando(true);
+    setErrores({});
+    setAvisos([]);
+    try {
+      const r = await guardarAtributosChecklist(d.sku, cambios);
+      if (!r.ok) {
+        setErrores(Object.fromEntries((r.errores ?? []).map((e) => [e.campo, e.motivo])));
+        setAvisos([r.motivo ?? "No se pudo guardar."]);
+        return;
+      }
+      // Lo guardado es la nueva base (normalizado por el backend: «12» → «12 cm»
+      // se ve al volver a abrir; aquí se conserva lo escrito).
+      setD({ ...d, campos: d.campos.map((c) => (c.campo in cambios ? { ...c, valor: cambios[c.campo] } : c)) });
+      baseRef.current = { ...(baseRef.current ?? {}), ...cambios };
+      setAvisos((r.avisos ?? []).map((a) => `${a.etiqueta}: ${a.motivo}`));
+      if (r.fila) onFila(r.fila);
+      onAviso(`${d.sku}: ${r.guardados ?? 0} atributo(s) guardados.`);
+    } catch (e) {
+      setAvisos([mensajeDeError(e, "No se pudo guardar.")]);
+    } finally {
+      setGuardando(false);
+    }
+  };
+
+  const campos = d?.campos ?? [];
+  const exigidos = campos.filter((c) => c.exigido);
+  const auto = campos.filter((c) => c.nivel === "auto");
+  const opcionales = campos.filter((c) => c.nivel === "principal");
+  const fiscales = campos.filter((c) => c.nivel === "secundario");
+  const llenosOpc = opcionales.filter((c) => (valores[c.campo] ?? "").trim() || c.publicado).length;
+
+  return (
+    <div className="rounded-xl bg-white p-3 ring-1 ring-slate-200">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h4 className="text-[11px] font-bold uppercase tracking-[0.06em] text-slate-400">
+          Atributos para Mercado Libre
+        </h4>
+        {f.faltan_ml.length > 0 ? (
+          <span className="text-xs font-bold text-rose-600">
+            faltan {f.faltan_ml.length} de {f.exigidos_total} exigidos
+          </span>
+        ) : f.exigidos_total > 0 ? (
+          <span className="inline-flex items-center gap-1 text-xs font-bold text-emerald-700">
+            <CheckCircle2 className="h-3.5 w-3.5" /> exigidos completos
+          </span>
+        ) : null}
+      </div>
+
+      {cargando && !d ? (
+        <div className="flex items-center gap-2 py-6 text-xs text-slate-400">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" /> Leyendo lo que pide la categoría…
+        </div>
+      ) : !d || !d.ok ? (
+        <div className="mt-2">
+          <p className="text-xs text-rose-600">
+            {error ?? "No se pudieron leer los atributos."} Lo capturado no se perdió.
+          </p>
+          {f.faltan_ml.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {f.faltan_ml.map((x) => (
+                <span key={x.campo} style={NIVEL[x.nivel].style}
+                      className={`rounded-md px-2 py-0.5 text-xs font-semibold ring-1 ${NIVEL[x.nivel].c}`}
+                      title={`${x.campo} · ${NIVEL[x.nivel].t}`}>
+                  {x.etiqueta}
+                </span>
+              ))}
+            </div>
+          )}
+          <button type="button" onClick={() => setReintento((n) => n + 1)}
+                  className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50">
+            <RefreshCw className="h-3.5 w-3.5" /> Reintentar
+          </button>
+        </div>
+      ) : f.estado === "sin_categoria" || !d.categoria ? (
+        <p className="mt-2 text-xs text-slate-500">
+          Sin categoría de ML no se sabe qué pide. Se asigna en Crear Productos o en
+          el Publicador (la del panel manda).
+        </p>
+      ) : !campos.length ? (
+        <p className="mt-2 text-xs text-slate-500">
+          {error ?? `Mercado Libre no contestó qué exige la categoría ${f.categoria}. Recarga en un momento.`}
+        </p>
+      ) : (
+        <>
+          {error && <p className="mt-2 text-xs text-rose-600">{error}</p>}
+          {exigidos.length > 0 && (
+            <CamposAtributos titulo={`Exigidos · ${exigidos.length}`}
+                             campos={exigidos.map(editable)} valores={valores} setValores={setValores}
+                             soloLectura={!puedeCapturar} errores={errores} />
+          )}
+          {auto.length > 0 && (
+            <CamposAtributos titulo="Automáticos · si se dejan vacíos los llena el publicador"
+                             campos={auto.map(editable)} valores={valores} setValores={setValores}
+                             soloLectura={!puedeCapturar} errores={errores} />
+          )}
+          {opcionales.length > 0 && (
+            <div className="mt-3">
+              <button type="button" onClick={() => setVerOpcionales((v) => !v)}
+                      className="text-[11px] font-bold uppercase tracking-[0.06em] text-slate-400 hover:text-slate-600">
+                {verOpcionales ? "▾" : "▸"} Opcionales del producto · {llenosOpc} de {opcionales.length} llenos
+              </button>
+              {verOpcionales && (
+                <CamposAtributos campos={opcionales.map(editable)} valores={valores}
+                                 setValores={setValores} soloLectura={!puedeCapturar} errores={errores} />
+              )}
+            </div>
+          )}
+          {fiscales.length > 0 && (
+            <div className="mt-2">
+              <button type="button" onClick={() => setVerFiscales((v) => !v)}
+                      className="text-[11px] font-bold uppercase tracking-[0.06em] text-slate-300 hover:text-slate-500">
+                {verFiscales ? "▾" : "▸"} Facturación (clave SAT, IVA…) · {fiscales.length}
+              </button>
+              {verFiscales && (
+                <CamposAtributos campos={fiscales.map(editable)} valores={valores}
+                                 setValores={setValores} soloLectura={!puedeCapturar} errores={errores} />
+              )}
+            </div>
+          )}
+
+          {avisos.length > 0 && (
+            <ul className="mt-2 space-y-0.5 text-[11px] text-amber-800">
+              {avisos.map((a) => <li key={a}>{a}</li>)}
+            </ul>
+          )}
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-2">
+            <span className="text-[10px] text-slate-400">
+              {vaciados > 0
+                ? `Vaciar un campo no lo borra (${vaciados}); para borrar, el cajón del Catálogo Maestro.`
+                : "Se guarda donde lo lee el Publicador. En verde: lo que ya trae la publicación de ML."}
+            </span>
+            {puedeCapturar && (
+              <button type="button" onClick={guardar} disabled={guardando || !nCambios}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-indigo-700 disabled:opacity-40">
+                {guardando && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                {nCambios ? `Guardar ${nCambios} cambio(s)` : "Sin cambios"}
+              </button>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * LA MATRIZ, en la página (Brandon, 28-sep: «en vez de un botón, un apartado
+ * por categoría»): por cada categoría del lote, sus opcionales con una casilla
+ * para volverlos obligatorios. Se guarda por CATEGORÍA (no por semana) en
+ * channel.field_requirements, así que vale para los SKUs que caigan después en
+ * esa categoría.
+ */
+function MatrizPorCategoria({
+  categorias, abiertas, onAlternar, puedeCapturar, onGuardada,
+}: {
+  categorias: TableroChecklist["categorias"];
+  abiertas: Set<string>;
+  onAlternar: (cat: string) => void;
+  puedeCapturar: boolean;
+  onGuardada: (msg: string) => void;
+}) {
+  const [filtro, setFiltro] = useState("");
+  const q = filtro.trim().toLowerCase();
+  const visibles = categorias.filter((c) => !q
+    || (c.nombre ?? "").toLowerCase().includes(q) || c.categoria.toLowerCase().includes(q));
+  return (
+    <section id="matriz" className="mt-6 scroll-mt-24 rounded-2xl border border-slate-200 bg-white">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
+        <div>
+          <h2 className="flex items-center gap-2 text-base font-extrabold text-slate-900">
+            <SlidersHorizontal className="h-4 w-4 text-orange-500" />
+            Matriz de obligatorios · por categoría
+          </h2>
+          <p className="mt-0.5 text-xs text-slate-500">
+            Las {categorias.length} categorías de Mercado Libre de este lote. Marca los
+            opcionales que almacén debe llenar: queda guardado para esa categoría y
+            aplica también a los SKUs que caigan en ella las semanas siguientes.
+          </p>
+        </div>
+        <input value={filtro} onChange={(e) => setFiltro(e.target.value)} placeholder="Buscar categoría"
+               className="w-56 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs outline-none focus:border-indigo-300" />
+      </div>
+      <div className="divide-y divide-slate-100">
+        {visibles.map((c) => (
+          <div key={c.categoria} id={`matriz-${c.categoria}`} className="scroll-mt-24">
+            <button type="button" onClick={() => onAlternar(c.categoria)}
+                    aria-expanded={abiertas.has(c.categoria)}
+                    className="flex w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-slate-50">
+              <ChevronDown className={`h-4 w-4 shrink-0 text-slate-400 transition ${
+                abiertas.has(c.categoria) ? "" : "-rotate-90"}`} />
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-semibold text-slate-800">{c.nombre ?? c.categoria}</div>
+                <div className="text-[11px] text-slate-400">
+                  <span className="font-mono">{c.categoria}</span> · {c.skus} SKU(s) del lote
+                </div>
+              </div>
+              <span className="rounded-md px-2 py-0.5 text-[10px] font-bold text-[#2d3277]" style={{ background: ML }}>
+                {c.obligatorios_ml} ML
+              </span>
+              <span className={`rounded-md px-2 py-0.5 text-[10px] font-bold ${
+                c.promovidos ? "bg-orange-200 text-orange-900" : "bg-slate-100 text-slate-400"}`}>
+                {c.promovidos} matriz
+              </span>
+              <span className="w-24 text-right text-[11px] text-slate-500">{c.opcionales} opcionales</span>
+            </button>
+            {abiertas.has(c.categoria) && (
+              <MatrizCategoria cat={c.categoria} puedeCapturar={puedeCapturar} onGuardada={onGuardada} />
+            )}
+          </div>
+        ))}
+        {!visibles.length && <p className="px-4 py-6 text-center text-xs text-slate-400">Ninguna categoría con ese nombre.</p>}
+      </div>
+    </section>
+  );
+}
+
+function MatrizCategoria({
+  cat, puedeCapturar, onGuardada,
+}: { cat: string; puedeCapturar: boolean; onGuardada: (msg: string) => void }) {
+  const [m, setM] = useState<MatrizChecklist | null>(null);
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [marcas, setMarcas] = useState<Record<string, boolean>>({});
+  const [guardando, setGuardando] = useState(false);
+  const [verFiscales, setVerFiscales] = useState(false);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    setCargando(true);
+    setError(null);
+    matrizChecklist(cat, ctrl.signal)
+      .then((d) => {
+        setM(d);
+        setMarcas(Object.fromEntries(d.campos.map((c) => [c.campo, c.nivel === "matriz"])));
+        if (!d.ok || d.motivo) setError(d.motivo);
+      })
+      .catch((e: unknown) => {
+        if ((e as { name?: string })?.name === "AbortError") return;
+        setError(mensajeDeError(e, "No se pudo leer la categoría."));
+      })
+      .finally(() => setCargando(false));
+    return () => ctrl.abort();
+  }, [cat]);
+
+  const cambios = useMemo(() => {
+    const c: Record<string, boolean> = {};
+    for (const x of m?.campos ?? []) {
+      if (x.nivel === "ml" || x.nivel === "auto") continue;
+      if (!!marcas[x.campo] !== (x.nivel === "matriz")) c[x.campo] = !!marcas[x.campo];
+    }
+    return c;
+  }, [m, marcas]);
+  const nCambios = Object.keys(cambios).length;
+
+  const guardar = async () => {
+    if (!nCambios) return;
+    setGuardando(true);
+    setError(null);
+    try {
+      const r = await guardarMatrizChecklist(cat, cambios);
+      if (!r.ok) { setError(r.motivo ?? "No se pudo guardar."); return; }
+      const d = await matrizChecklist(cat);
+      setM(d);
+      setMarcas(Object.fromEntries(d.campos.map((c) => [c.campo, c.nivel === "matriz"])));
+      onGuardada(`Matriz de ${d.nombre ?? cat}: ${r.guardados ?? 0} cambio(s) guardados.`);
+    } catch (e) {
+      setError(mensajeDeError(e, "No se pudo guardar."));
+    } finally {
+      setGuardando(false);
+    }
+  };
+
+  if (cargando) {
+    return (
+      <div className="flex items-center gap-2 px-11 pb-4 text-xs text-slate-400">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" /> Leyendo los atributos de la categoría…
+      </div>
+    );
+  }
+  const campos = m?.campos ?? [];
+  const fijos = campos.filter((x) => x.nivel === "ml" || x.nivel === "auto");
+  const producto = campos.filter((x) => x.nivel !== "ml" && x.nivel !== "auto" && x.jerarquia !== "ITEM");
+  const fiscales = campos.filter((x) => x.nivel !== "ml" && x.nivel !== "auto" && x.jerarquia === "ITEM");
+
+  const casilla = (x: CampoChecklist) => (
+    <label key={x.campo}
+           className={`flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs ring-1 ${
+             marcas[x.campo] ? "bg-orange-50 ring-orange-200" : "ring-slate-200 hover:bg-slate-50"} ${
+             puedeCapturar ? "cursor-pointer" : "cursor-default"}`}
+           title={`${x.campo}${x.tipo ? ` · ${x.tipo}` : ""}${x.valores.length ? ` · ${x.valores.length} valores sugeridos` : ""}`}>
+      <input type="checkbox" checked={!!marcas[x.campo]} disabled={!puedeCapturar}
+             onChange={(e) => setMarcas((mm) => ({ ...mm, [x.campo]: e.target.checked }))}
+             className="h-3.5 w-3.5 rounded accent-orange-500" />
+      <span className="min-w-0 truncate font-semibold text-slate-700">{x.etiqueta}</span>
+    </label>
+  );
+
+  return (
+    <div className="px-4 pb-4 sm:pl-11">
+      {error && <p className="mb-2 rounded-lg bg-amber-50 p-2 text-xs text-amber-900 ring-1 ring-amber-200">{error}</p>}
+      {fijos.length > 0 && (
+        <div className="mb-2 flex flex-wrap items-center gap-1.5 text-[11px]">
+          <span className="font-bold uppercase tracking-[0.06em] text-slate-400">Ya exigidos:</span>
+          {fijos.map((x) => x.nivel === "auto" ? (
+            <span key={x.campo} className="rounded-md bg-emerald-50 px-2 py-0.5 font-semibold text-emerald-700 ring-1 ring-emerald-200"
+                  title="El publicador lo llena solo si se deja vacío">
+              {x.etiqueta}{x.por_omision ? ` · ${x.por_omision}` : ""}
+            </span>
+          ) : (
+            <span key={x.campo} style={{ background: ML }} className="rounded-md px-2 py-0.5 font-semibold text-[#2d3277]">
+              {x.etiqueta}
+            </span>
+          ))}
+        </div>
+      )}
+      {producto.length > 0 ? (
+        <>
+          <div className="text-[11px] font-bold uppercase tracking-[0.06em] text-slate-400">
+            Opcionales del producto · marca los que almacén debe llenar
+          </div>
+          <div className="mt-1.5 grid gap-1.5 sm:grid-cols-2 lg:grid-cols-3">{producto.map(casilla)}</div>
+        </>
+      ) : (
+        <p className="text-xs text-slate-400">Esta categoría no tiene opcionales del producto.</p>
+      )}
+      {fiscales.length > 0 && (
+        <div className="mt-2">
+          <button type="button" onClick={() => setVerFiscales((v) => !v)}
+                  className="text-[11px] font-bold uppercase tracking-[0.06em] text-slate-300 hover:text-slate-500">
+            {verFiscales ? "▾" : "▸"} Facturación (clave SAT, IVA…) · {fiscales.length}
+          </button>
+          {verFiscales && (
+            <div className="mt-1.5 grid gap-1.5 sm:grid-cols-2 lg:grid-cols-3">{fiscales.map(casilla)}</div>
+          )}
+        </div>
+      )}
+      {puedeCapturar && (
+        <div className="mt-3 flex items-center justify-end gap-3">
+          <span className="text-xs text-slate-500">
+            {nCambios ? `${nCambios} cambio(s) sin guardar` : "Sin cambios"}
+          </span>
+          <button type="button" onClick={guardar} disabled={!nCambios || guardando || !m?.ok}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-orange-500 px-3 py-1.5 text-xs font-bold text-white hover:bg-orange-600 disabled:opacity-50">
+            {guardando && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+            Guardar matriz
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ─────────────────────────────── modales ─────────────────────────────── */
 
 function Modal({
@@ -954,10 +1443,12 @@ function Modal({
 }
 
 function ModalAgregar({
-  semana, etiqueta, onCerrar, onListo,
+  semana, etiqueta, cargadas, onCerrar, onListo,
 }: {
   semana: string;
   etiqueta: string;
+  /** {lunes: SKUs} de las semanas que ya tienen lote. */
+  cargadas: Record<string, number>;
   onCerrar: () => void;
   /** `otra` = la semana a la que se agregó, si la lista traía la suya. */
   onListo: (msg: string, otra?: string) => void;
@@ -1075,6 +1566,11 @@ function ModalAgregar({
                               ? "bg-indigo-600 text-white ring-indigo-600"
                               : "bg-white text-slate-600 ring-slate-200 hover:bg-slate-50"}`}>
                     {h.hoja} · {h.skus}
+                    {cargadas[h.semana] ? (
+                      <span className="ml-1 inline-flex items-center gap-0.5" title={`${h.etiqueta} ya tiene ${cargadas[h.semana]} SKUs cargados`}>
+                        <Check className="inline h-3 w-3" />{cargadas[h.semana]}
+                      </span>
+                    ) : null}
                   </button>
                 ))}
               </div>
@@ -1150,207 +1646,6 @@ function ModalAgregar({
             </button>
           )}
         </div>
-      </div>
-    </Modal>
-  );
-}
-
-function ModalMatriz({
-  categorias, inicial, puedeCapturar, onCerrar,
-}: {
-  categorias: TableroChecklist["categorias"];
-  inicial: string | null;
-  puedeCapturar: boolean;
-  onCerrar: (cambio: boolean) => void;
-}) {
-  const [cat, setCat] = useState<string | null>(inicial ?? categorias[0]?.categoria ?? null);
-  const [otra, setOtra] = useState("");
-  const [m, setM] = useState<MatrizChecklist | null>(null);
-  const [cargando, setCargando] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [marcas, setMarcas] = useState<Record<string, boolean>>({});
-  const [filtro, setFiltro] = useState("");
-  const [guardando, setGuardando] = useState(false);
-  const huboCambio = useRef(false);
-
-  useEffect(() => {
-    if (!cat) return;
-    const ctrl = new AbortController();
-    setCargando(true);
-    setError(null);
-    matrizChecklist(cat, ctrl.signal)
-      .then((d) => {
-        setM(d);
-        setMarcas(Object.fromEntries(d.campos.map((c) => [c.campo, c.nivel === "matriz"])));
-        if (!d.ok) setError(d.motivo);
-      })
-      .catch((e: unknown) => {
-        if ((e as { name?: string })?.name === "AbortError") return;
-        setError(mensajeDeError(e, "No se pudo leer la categoría."));
-      })
-      .finally(() => setCargando(false));
-    return () => ctrl.abort();
-  }, [cat]);
-
-  const cambios = useMemo(() => {
-    if (!m) return {};
-    const c: Record<string, boolean> = {};
-    for (const x of m.campos) {
-      if (x.nivel === "ml") continue;
-      const antes = x.nivel === "matriz";
-      if (!!marcas[x.campo] !== antes) c[x.campo] = !!marcas[x.campo];
-    }
-    return c;
-  }, [m, marcas]);
-  const nCambios = Object.keys(cambios).length;
-
-  const guardar = async () => {
-    if (!cat || !nCambios) return;
-    setGuardando(true);
-    setError(null);
-    try {
-      const r = await guardarMatrizChecklist(cat, cambios);
-      if (!r.ok) { setError(r.motivo ?? "No se pudo guardar."); return; }
-      huboCambio.current = true;
-      const d = await matrizChecklist(cat);
-      setM(d);
-      setMarcas(Object.fromEntries(d.campos.map((c) => [c.campo, c.nivel === "matriz"])));
-    } catch (e) {
-      setError(mensajeDeError(e, "No se pudo guardar."));
-    } finally {
-      setGuardando(false);
-    }
-  };
-
-  const visibles = (m?.campos ?? []).filter((x) => {
-    const q = filtro.trim().toLowerCase();
-    return !q || x.etiqueta.toLowerCase().includes(q) || x.campo.toLowerCase().includes(q);
-  });
-  const grupos: { t: string; items: CampoChecklist[] }[] = [
-    { t: "Obligatorios de Mercado Libre", items: visibles.filter((x) => x.nivel === "ml") },
-    { t: "Automáticos · los llena el publicador", items: visibles.filter((x) => x.nivel === "auto") },
-    { t: "Opcionales · del producto", items: visibles.filter((x) => x.nivel !== "ml" && x.nivel !== "auto" && x.jerarquia !== "ITEM") },
-    { t: "Opcionales · facturación (clave SAT, IVA…)", items: visibles.filter((x) => x.nivel !== "ml" && x.nivel !== "auto" && x.jerarquia === "ITEM") },
-  ];
-
-  return (
-    <Modal titulo="Matriz de obligatorios"
-           sub="Por categoría de Mercado Libre: qué opcionales se vuelven obligatorios para almacén. Los de ML no se pueden bajar."
-           onCerrar={() => onCerrar(huboCambio.current)} ancho="max-w-5xl">
-      <div className="grid gap-4 md:grid-cols-[260px_1fr]">
-        <aside>
-          <div className="text-[11px] font-bold uppercase tracking-[0.06em] text-slate-400">
-            Categorías del lote
-          </div>
-          <div className="mt-2 max-h-[52vh] space-y-1 overflow-y-auto pr-1">
-            {categorias.length === 0 && (
-              <p className="text-xs text-slate-400">El lote no tiene categorías todavía.</p>
-            )}
-            {categorias.map((c) => (
-              <button key={c.categoria} type="button" onClick={() => setCat(c.categoria)}
-                      className={`w-full rounded-lg px-2.5 py-2 text-left transition ${
-                        cat === c.categoria ? "bg-indigo-50 ring-1 ring-indigo-200" : "hover:bg-slate-50"}`}>
-                <div className="text-xs font-semibold text-slate-800">{c.nombre ?? c.categoria}</div>
-                <div className="mt-0.5 text-[10px] text-slate-400">
-                  <span className="font-mono">{c.categoria}</span> · {c.skus} SKU(s) · {c.obligatorios_ml} ML
-                  {c.promovidos > 0 && <span className="font-semibold text-orange-600"> · +{c.promovidos} matriz</span>}
-                </div>
-              </button>
-            ))}
-          </div>
-          <div className="mt-3 flex gap-1.5">
-            <input value={otra} onChange={(e) => setOtra(e.target.value.toUpperCase())}
-                   placeholder="Otra: MLM1234"
-                   className="w-full rounded-lg border border-slate-200 px-2 py-1.5 font-mono text-xs outline-none focus:border-indigo-300" />
-            <button type="button" disabled={!/^MLM\d+$/.test(otra)} onClick={() => setCat(otra)}
-                    className="rounded-lg bg-slate-800 px-2.5 text-xs font-semibold text-white disabled:opacity-40">
-              Ver
-            </button>
-          </div>
-        </aside>
-
-        <section className="min-w-0">
-          {!cat ? (
-            <p className="text-sm text-slate-400">Elige una categoría.</p>
-          ) : (
-            <>
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <div className="text-sm font-bold text-slate-900">{m?.nombre ?? cat}</div>
-                  <div className="text-[11px] text-slate-400">{m?.ruta ?? cat}</div>
-                </div>
-                <input value={filtro} onChange={(e) => setFiltro(e.target.value)} placeholder="Filtrar atributos"
-                       className="w-48 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs outline-none focus:border-indigo-300" />
-              </div>
-              {error && (
-                <p className="mt-2 rounded-lg bg-amber-50 p-2 text-xs text-amber-900 ring-1 ring-amber-200">{error}</p>
-              )}
-              <div className="mt-3 max-h-[52vh] overflow-y-auto rounded-xl ring-1 ring-slate-200">
-                {cargando ? (
-                  <div className="p-8 text-center"><Loader2 className="mx-auto h-5 w-5 animate-spin text-slate-400" /></div>
-                ) : grupos.map((g) => g.items.length > 0 && (
-                  <div key={g.t}>
-                    <div className="sticky top-0 z-10 bg-slate-50 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.06em] text-slate-500">
-                      {g.t} · {g.items.length}
-                    </div>
-                    {g.items.map((x) => {
-                      // Los de ML y los automáticos no se tocan: los primeros
-                      // los exige el canal, los segundos los llena el publicador.
-                      const esMl = x.nivel === "ml" || x.nivel === "auto";
-                      const on = esMl || !!marcas[x.campo];
-                      return (
-                        <label key={x.campo}
-                               className={`flex cursor-pointer items-center gap-3 border-t border-slate-100 px-3 py-2 ${
-                                 esMl ? "cursor-default" : "hover:bg-slate-50"}`}>
-                          <input type="checkbox" checked={on} disabled={esMl || !puedeCapturar}
-                                 onChange={(e) => setMarcas((mm) => ({ ...mm, [x.campo]: e.target.checked }))}
-                                 className="h-4 w-4 rounded accent-orange-500 disabled:opacity-60" />
-                          <div className="min-w-0 flex-1">
-                            <div className="text-sm font-semibold text-slate-800">{x.etiqueta}</div>
-                            <div className="text-[10px] text-slate-400">
-                              <span className="font-mono">{x.campo}</span>
-                              {x.tipo && <> · {x.tipo}</>}
-                              {x.unidades.length > 0 && <> · {x.unidades.slice(0, 4).join("/")}</>}
-                              {x.valores.length > 0 && <> · {x.valores.length} valores sugeridos</>}
-                            </div>
-                          </div>
-                          {x.nivel === "auto" ? (
-                            <span className="rounded-md bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700 ring-1 ring-emerald-200"
-                                  title="El publicador lo llena solo si se deja vacío">
-                              Automático{x.por_omision ? `: ${x.por_omision}` : ""}
-                            </span>
-                          ) : esMl ? (
-                            <span style={{ background: ML }} className="rounded-md px-2 py-0.5 text-[10px] font-bold text-[#2d3277]">
-                              Obligatorio ML
-                            </span>
-                          ) : on ? (
-                            <span className="rounded-md bg-orange-200 px-2 py-0.5 text-[10px] font-bold text-orange-900">
-                              Obligatorio (matriz)
-                            </span>
-                          ) : (
-                            <span className="text-[10px] font-semibold text-slate-400">Opcional</span>
-                          )}
-                        </label>
-                      );
-                    })}
-                  </div>
-                ))}
-              </div>
-              <div className="mt-3 flex items-center justify-between">
-                <span className="text-xs text-slate-500">
-                  {nCambios ? `${nCambios} cambio(s) sin guardar` : "Sin cambios"}
-                </span>
-                {puedeCapturar && (
-                  <button type="button" onClick={guardar} disabled={!nCambios || guardando || !m?.ok}
-                          className="inline-flex items-center gap-1.5 rounded-lg bg-orange-500 px-4 py-2 text-sm font-semibold text-white hover:bg-orange-600 disabled:opacity-50">
-                    {guardando && <Loader2 className="h-4 w-4 animate-spin" />}
-                    Guardar matriz
-                  </button>
-                )}
-              </div>
-            </>
-          )}
-        </section>
       </div>
     </Modal>
   );

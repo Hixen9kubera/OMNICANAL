@@ -31,7 +31,7 @@
  * cuando las dos fuentes discrepan.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle, ArrowLeftRight, ArrowUpDown, Boxes, Camera, CheckCircle2,
   ChevronRight, ClipboardList, Clock, Container, Database, Download,
@@ -42,15 +42,17 @@ import {
 } from "lucide-react";
 
 import AppNavbar from "@/components/AppNavbar";
+import { CamposAtributos, faltaCampo, sinUnidad } from "@/components/EditorAtributos";
 import InventarioPestanas from "@/components/InventarioPestanas";
+import SelectorSemana from "@/components/SelectorSemana";
 import {
   guardarSpecsCanal, listarInventario, mensajeDeError, movimientosInventario,
-  specsCanal,
+  semanasChecklist, specsCanal,
 } from "@/lib/api";
 import type {
   ClaveEtapa, ClavePunto, ContenedorTabla, Cuadre, EstadoEtapa, EstadoPunto, FilaInventario,
   InventarioResp, Movimiento, MovimientosResp, OrdenCompra,
-  RecepcionPendiente, SpecCanal, CampoSpec, EditorSpecs,
+  RecepcionPendiente, SpecCanal, EditorSpecs,
 } from "@/lib/types";
 
 /**
@@ -274,31 +276,83 @@ export default function InventarioPage() {
   // la primera, o desde el botón «Movimiento» de la ficha.
   const [abierto, setAbierto] = useState<FilaInventario | null>(null);
   const [traza, setTraza] = useState<FilaInventario | null>(null);
+  // El LOTE del Checklist de almacén que se está viendo (el lunes de su
+  // semana). undefined = todavía no se decide (se lee la URL o la última
+  // semana cargada); null = el piloto de siempre.
+  const [semana, setSemana] = useState<string | null | undefined>(undefined);
+
+  useEffect(() => {
+    // `?semana=` en la URL (el enlace «Ver en Catálogo Maestro» del Checklist).
+    // Se lee de window y no con useSearchParams: así la página no necesita un
+    // límite de Suspense.
+    const deUrl = new URLSearchParams(window.location.search).get("semana");
+    if (deUrl && /^\d{4}-\d{2}-\d{2}$/.test(deUrl)) { setSemana(deUrl); return; }
+    // Sin nada en la URL, la última semana que almacén cargó: los SKUs del
+    // Checklist son los que se trabajan esa semana. Si no hay, el piloto.
+    // Solo si nadie eligió mientras tanto: la respuesta puede llegar después
+    // de que la persona ya escogió otra semana o volvió al piloto.
+    let vivo = true;
+    semanasChecklist()
+      .then((d) => {
+        if (vivo) setSemana((s) => (s === undefined ? (d.ok ? d.ultima_cargada : null) : s));
+      })
+      .catch(() => { if (vivo) setSemana((s) => (s === undefined ? null : s)); });
+    return () => { vivo = false; };
+  }, []);
+
+  const elegirSemana = (s: string | null) => {
+    setSemana(s);
+    setSkusInput("");
+    setPagina(1);
+    setAlerta(null);
+    // La bodega elegida en otra semana puede no existir en ésta: el select la
+    // enseñaría como «todas» y la tabla quedaría vacía sin razón visible.
+    setBodega("");
+    const url = s ? `${window.location.pathname}?semana=${s}` : window.location.pathname;
+    window.history.replaceState(null, "", url);
+  };
 
   useEffect(() => {
     const t = setTimeout(() => {
       const l = skusInput.split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
       setFiltroSkus(l.length ? l : undefined);
       setPagina(1);
+      setBodega("");
     }, 500);
     return () => clearTimeout(t);
   }, [skusInput]);
 
+  // Al cambiar QUÉ se pide (otra semana, otros SKUs) la tabla se vacía mientras
+  // llega: 100 SKUs tardan segundos y los renglones de antes no son de lo que
+  // se eligió. Recargar lo mismo sí deja los de antes a la vista.
+  const pedido = useRef<string | null>(null);
+  // La lectura EN VUELO: una nueva (otra semana, o el botón de recargar) la
+  // cancela. Sin esto una recarga lenta de la semana A pintaba sus renglones
+  // encima de la semana B que se eligió después.
+  const vuelo = useRef<AbortController | null>(null);
+
   const cargar = useCallback(() => {
+    if (semana === undefined && !filtroSkus) return;   // aún se decide la semana
+    const clave = filtroSkus ? `skus:${filtroSkus.join("|")}` : `semana:${semana ?? ""}`;
+    if (pedido.current !== clave) { setDatos(null); pedido.current = clave; }
+    vuelo.current?.abort();
     const ctrl = new AbortController();
+    vuelo.current = ctrl;
     setCargando(true);
     setError(null);
-    listarInventario(filtroSkus, ctrl.signal)
-      .then(setDatos)
+    listarInventario(filtroSkus, ctrl.signal, semana)
+      .then((d) => { if (!ctrl.signal.aborted) setDatos(d); })
       .catch((e: unknown) => {
         if ((e as { name?: string })?.name === "AbortError") return;
         // /costos se traga los errores y la tabla queda vacía sin decir por qué
         // — el síntoma exacto de los tres 403 de RBAC. Aquí se muestran.
         setError(mensajeDeError(e, "No se pudo leer el inventario."));
       })
-      .finally(() => setCargando(false));
+      // Solo la lectura vigente apaga el «cargando»: la cancelada llegaba
+      // tarde y dejaba la tabla vacía diciendo «Sin resultados».
+      .finally(() => { if (!ctrl.signal.aborted) setCargando(false); });
     return () => ctrl.abort();
-  }, [filtroSkus]);
+  }, [filtroSkus, semana]);
 
   useEffect(() => cargar(), [cargar]);
 
@@ -351,7 +405,10 @@ export default function InventarioPage() {
       <AppNavbar />
       <main className="mx-auto max-w-[1400px] px-4 py-6">
         <InventarioPestanas />
-        <Banner resumen={r} esPiloto={datos?.es_piloto ?? true}
+        <Banner resumen={r} esPiloto={datos?.es_piloto ?? false}
+                semana={datos?.semana ? {
+                  etiqueta: datos.etiqueta ?? "", total: datos.semana_total ?? datos.total,
+                  mostrados: datos.total } : null}
                 cargando={cargando} onRecargar={cargar} />
 
         {error && (
@@ -374,6 +431,7 @@ export default function InventarioPage() {
           bodegas={r?.bodegas ?? []}
           orden={orden} setOrden={setOrden}
           hayFiltroSkus={!!filtroSkus}
+          semana={semana ?? null} onSemana={elegirSemana}
         />
 
         <Tabla filas={visibles} cargando={cargando} onAbrir={setAbierto}
@@ -400,10 +458,12 @@ export default function InventarioPage() {
 /* ────────────────────────────── el banner (1b) ────────────────────────────── */
 
 function Banner({
-  resumen, esPiloto, cargando, onRecargar,
+  resumen, esPiloto, semana, cargando, onRecargar,
 }: {
   resumen?: InventarioResp["resumen"];
   esPiloto: boolean;
+  /** El lote del Checklist que se está viendo. */
+  semana: { etiqueta: string; total: number; mostrados: number } | null;
   cargando: boolean;
   onRecargar: () => void;
 }) {
@@ -423,6 +483,13 @@ function Banner({
             {esPiloto && (
               <span className="rounded-full bg-white/20 px-2.5 py-1 text-xs font-bold">
                 piloto · 10 SKUs
+              </span>
+            )}
+            {semana && (
+              <span className="rounded-full bg-white/20 px-2.5 py-1 text-xs font-bold"
+                    title="Los SKUs que el Checklist de almacén cargó esa semana (ops.checklist_lote)">
+                Checklist · {semana.etiqueta} · {semana.total} SKUs
+                {semana.mostrados < semana.total && ` (se ven ${semana.mostrados})`}
               </span>
             )}
           </h1>
@@ -577,13 +644,16 @@ function BandaAlertas({
 
 function Herramientas({
   busqueda, setBusqueda, skusInput, setSkusInput, bodega, setBodega, bodegas,
-  orden, setOrden, hayFiltroSkus,
+  orden, setOrden, hayFiltroSkus, semana, onSemana,
 }: {
   busqueda: string; setBusqueda: (v: string) => void;
   skusInput: string; setSkusInput: (v: string) => void;
   bodega: string; setBodega: (v: string) => void; bodegas: string[];
   orden: string; setOrden: (v: string) => void;
   hayFiltroSkus: boolean;
+  /** El lunes del lote del Checklist que se ve; null = el piloto. */
+  semana: string | null;
+  onSemana: (s: string | null) => void;
 }) {
   const campo =
     "rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-600 outline-none focus:border-indigo-300";
@@ -597,10 +667,14 @@ function Herramientas({
           className={`${campo} w-56 pl-9`}
         />
       </div>
+      {/* La semana del Checklist de almacén: trae su lote completo. Solo se
+          pueden elegir las semanas con palomita (las que tienen SKUs). */}
+      <SelectorSemana valor={hayFiltroSkus ? null : semana} soloCargadas
+                      vacio="Semana del checklist" onElegir={(s) => onSemana(s)} />
       <input
         value={skusInput} onChange={(e) => setSkusInput(e.target.value)}
         placeholder="Filtrar SKUs: TEC-0001, ORG-0885…"
-        title="Trae del backend exactamente estos SKUs. Vacío = los 10 del piloto."
+        title="Trae del backend exactamente estos SKUs (manda sobre la semana). Vacío = la semana elegida."
         className={`${campo} w-72`}
       />
       {/* Solo se ofrecen las bodegas que APARECEN en las filas que se estan
@@ -615,9 +689,9 @@ function Herramientas({
       <select value={orden} onChange={(e) => setOrden(e.target.value)} className={campo}>
         {ORDENES.map((o) => <option key={o.v} value={o.v}>{o.t}</option>)}
       </select>
-      {hayFiltroSkus && (
+      {(hayFiltroSkus || semana) && (
         <button
-          type="button" onClick={() => setSkusInput("")}
+          type="button" onClick={() => { setSkusInput(""); onSemana(null); }}
           className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-500 hover:bg-slate-50"
         >
           Volver al piloto
@@ -1765,8 +1839,14 @@ function EditorCanal({ sku, resumen }: { sku: string; resumen: SpecCanal }) {
     return ed.campos.filter((c) => (valores[c.campo] ?? "") !== (c.valor ?? "")).length;
   }, [ed, valores]);
 
+  // BRAND vacío NO falta: lo llena el publicador con Ferrahome (`por_omision`).
   const faltanOblig = useMemo(
-    () => (ed?.campos ?? []).filter((c) => c.obligatorio && !(valores[c.campo] ?? "").trim()),
+    () => (ed?.campos ?? []).filter((c) => faltaCampo(c, valores[c.campo])),
+    [ed, valores]);
+  // Este guardado escribe tal cual (no normaliza como el Checklist): un
+  // «20» sin unidad llegaría así a Mercado Libre, que lo rechaza.
+  const sinUnidades = useMemo(
+    () => (ed?.campos ?? []).filter((c) => sinUnidad(c, valores[c.campo])),
     [ed, valores]);
 
   async function guardar() {
@@ -1838,8 +1918,8 @@ function EditorCanal({ sku, resumen }: { sku: string; resumen: SpecCanal }) {
       {ed.aviso && <p className="mt-2 text-xs text-slate-500">{ed.aviso}</p>}
 
       {oblig.length > 0 && (
-        <CamposSpec titulo={`Obligatorios · ${oblig.length}`} campos={oblig}
-                    valores={valores} setValores={setValores} />
+        <CamposAtributos titulo={`Obligatorios · ${oblig.length}`} campos={oblig}
+                         valores={valores} setValores={setValores} />
       )}
 
       {opc.length > 0 && (
@@ -1849,7 +1929,7 @@ function EditorCanal({ sku, resumen }: { sku: string; resumen: SpecCanal }) {
             {verOpcionales ? "▾" : "▸"} Opcionales · {opc.length}
           </button>
           {verOpcionales && (
-            <CamposSpec titulo="" campos={opc} valores={valores} setValores={setValores} />
+            <CamposAtributos campos={opc} valores={valores} setValores={setValores} />
           )}
         </div>
       )}
@@ -1865,7 +1945,9 @@ function EditorCanal({ sku, resumen }: { sku: string; resumen: SpecCanal }) {
                 {aviso.texto}
               </span>
             )}
-            <button type="button" onClick={guardar} disabled={guardando || cambiados === 0}
+            <button type="button" onClick={guardar}
+                    disabled={guardando || cambiados === 0 || sinUnidades.length > 0}
+                    title={sinUnidades.length ? `Falta la unidad en: ${sinUnidades.map((c) => c.etiqueta).join(", ")}` : undefined}
                     className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-indigo-700 disabled:opacity-40">
               {guardando && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
               {cambiados ? `Guardar ${cambiados} cambio(s)` : "Sin cambios"}
@@ -1873,85 +1955,6 @@ function EditorCanal({ sku, resumen }: { sku: string; resumen: SpecCanal }) {
           </div>
         </div>
       )}
-    </div>
-  );
-}
-
-/** Una fila por atributo. El control depende del tipo: sí/no, número con su
- *  unidad, o texto con sugerencias (en ML los valores son sugerencias casi
- *  siempre, así que se deja escribir otro). */
-function CamposSpec({
-  titulo, campos, valores, setValores,
-}: {
-  titulo: string;
-  campos: CampoSpec[];
-  valores: Record<string, string>;
-  setValores: React.Dispatch<React.SetStateAction<Record<string, string>>>;
-}) {
-  const poner = (campo: string, v: string) => setValores((p) => ({ ...p, [campo]: v }));
-  const campoCss = "w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-700 outline-none focus:border-indigo-300";
-  return (
-    <div className="mt-2">
-      {titulo && (
-        <div className="text-[11px] font-bold uppercase tracking-[0.06em] text-slate-400">{titulo}</div>
-      )}
-      <div className="mt-1 space-y-1.5">
-        {campos.map((c) => {
-          const v = valores[c.campo] ?? "";
-          const vacio = c.obligatorio && !v.trim();
-          const lista = `lista-${c.campo}`;
-          let control: React.ReactNode;
-          if (c.tipo === "boolean") {
-            const ops = c.valores.length ? c.valores : ["Sí", "No"];
-            control = (
-              <select value={v} onChange={(e) => poner(c.campo, e.target.value)} className={campoCss}>
-                <option value="">—</option>
-                {ops.map((o) => <option key={o} value={o}>{o}</option>)}
-              </select>
-            );
-          } else if (c.tipo === "number_unit" && c.unidades.length) {
-            // Se guarda como «120 kg», que es como ML espera el value_name.
-            const [num, ...resto] = v.split(" ");
-            const unidad = resto.join(" ") || c.unidades[0];
-            control = (
-              <div className="flex gap-1.5">
-                <input type="number" value={num ?? ""} className={campoCss}
-                       onChange={(e) => poner(c.campo, e.target.value ? `${e.target.value} ${unidad}` : "")} />
-                <select value={unidad} className={`${campoCss} w-24`}
-                        onChange={(e) => poner(c.campo, num ? `${num} ${e.target.value}` : "")}>
-                  {c.unidades.map((u) => <option key={u} value={u}>{u}</option>)}
-                </select>
-              </div>
-            );
-          } else {
-            control = (
-              <>
-                <input value={v} onChange={(e) => poner(c.campo, e.target.value)}
-                       list={c.valores.length ? lista : undefined}
-                       type={c.tipo === "number" ? "number" : "text"} className={campoCss} />
-                {c.valores.length > 0 && (
-                  <datalist id={lista}>
-                    {c.valores.map((o) => <option key={o} value={o} />)}
-                  </datalist>
-                )}
-              </>
-            );
-          }
-          return (
-            <div key={c.campo} className="grid grid-cols-[minmax(0,11rem)_1fr] items-center gap-2">
-              <label className="min-w-0" title={c.campo}>
-                <span className={`block truncate text-xs font-semibold ${vacio ? "text-rose-700" : "text-slate-600"}`}>
-                  {c.etiqueta}{c.obligatorio && <span className="text-rose-500"> *</span>}
-                </span>
-                {c.etiqueta !== c.campo && (
-                  <span className="block truncate font-mono text-[9px] text-slate-300">{c.campo}</span>
-                )}
-              </label>
-              {control}
-            </div>
-          );
-        })}
-      </div>
     </div>
   );
 }

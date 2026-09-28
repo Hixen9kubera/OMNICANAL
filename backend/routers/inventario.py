@@ -46,12 +46,19 @@ def _skus(crudo: str | None) -> list[str] | None:
     return [s.strip() for s in crudo.replace("\n", ",").split(",") if s.strip()]
 
 
+_MAX_FILAS = 200
+
+
 @router.get("")
 async def listar(
     skus: str | None = Query(
         None,
         description="SKUs separados por coma. Sin esto se devuelven los 10 del "
                     "piloto que Brandon fijó como sonda."),
+    semana: str | None = Query(
+        None,
+        description="Cualquier día de una semana (YYYY-MM-DD): trae los SKUs que el "
+                    "Checklist de almacén cargó esa semana (ops.checklist_lote)."),
 ):
     """
     La tabla del catálogo maestro: imagen, empaque, existencias y las cinco
@@ -62,22 +69,53 @@ async def listar(
     junto con el criterio de orden, no antes.
     """
     pedidos = _skus(skus)
-    if pedidos and len(pedidos) > 200:
+    lunes = None
+    if semana and not pedidos:
+        # Los SKUs los decide el Checklist (ops.checklist_lote): se resuelven
+        # aquí y no en el navegador para no partir SKUs con coma (…-1,6L) y
+        # conservar el orden en que almacén armó su lista.
+        from services import checklist as ck
+        lunes = ck.semana_valida(semana)
+        if lunes is None:
+            raise HTTPException(400, f"«{semana}» no es una fecha (YYYY-MM-DD).")
+    if pedidos and len(pedidos) > _MAX_FILAS:
         raise HTTPException(
             400, "Máximo 200 SKUs por consulta: cada fila cruza Woo, Odoo y kubera "
                  "en vivo, y un lote mayor tarda más de lo que aguanta el proxy.")
+
+    def _trabajo() -> tuple[list, dict, int]:
+        lista = pedidos
+        total_semana = 0
+        if lunes is not None:
+            from services import checklist as ck
+            lista = ck.skus_de_semana(lunes)
+            total_semana = len(lista)
+            # Una semana SIN SKUs devuelve cero filas, no el piloto.
+            lista = lista[:_MAX_FILAS]
+            if not lista:
+                return [], inv.resumen([]), 0
+        filas_ = inv.filas(lista)
+        # El resumen también aquí: consulta kubera (el último empuje) y fuera
+        # del hilo detenía el backend entero mientras contestaba (regla 11).
+        return filas_, inv.resumen(filas_), total_semana
+
     try:
-        filas = await asyncio.to_thread(inv.filas, pedidos)
+        filas, resumen, total_semana = await asyncio.to_thread(_trabajo)
     except Exception as exc:  # noqa: BLE001
         log.exception("inventario.listar falló")
         raise HTTPException(502, f"No se pudo leer el inventario: {exc}") from exc
-    return {
+    salida = {
         "items": filas,
         "total": len(filas),
         "piloto": list(inv.PILOTO),
-        "es_piloto": pedidos is None,
-        "resumen": inv.resumen(filas),
+        "es_piloto": pedidos is None and lunes is None,
+        "resumen": resumen,
     }
+    if lunes is not None:
+        from services import checklist as ck
+        salida.update(semana=lunes.isoformat(), etiqueta=ck.etiqueta(lunes),
+                      semana_total=total_semana)
+    return salida
 
 
 # -- Flujo del SKU -------------------------------------------------------------

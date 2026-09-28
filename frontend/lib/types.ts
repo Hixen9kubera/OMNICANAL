@@ -2095,6 +2095,12 @@ export interface CampoSpec {
   valores: string[];
   /** Unidades permitidas (kg, cm, W…) para los `number_unit`. */
   unidades: string[];
+  /** La unidad que ML asume si llega un número solo (NO la primera de la lista). */
+  unidad_default?: string | null;
+  /** Jerarquía de ML. `ITEM` = dato fiscal (clave SAT, IVA…). */
+  jerarquia?: string | null;
+  /** Lo que el publicador pone si se deja vacío (BRAND → Ferrahome). */
+  por_omision?: string | null;
   /** Lo que ya está guardado en `enrich.channel_content`. */
   valor: string;
 }
@@ -2321,6 +2327,11 @@ export interface InventarioResp {
   piloto: string[];
   es_piloto: boolean;
   resumen: ResumenInventario;
+  /** Con `?semana=`: el lunes del lote del Checklist que se está viendo. */
+  semana?: string;
+  etiqueta?: string;
+  /** Cuántos SKUs tiene el lote (se muestran hasta 200). */
+  semana_total?: number;
 }
 
 /* ── Flujo del SKU: el vocabulario común ───────────────────────────────────
@@ -2716,6 +2727,8 @@ export interface TableroChecklist {
   categorias: {
     categoria: string; nombre: string | null; skus: number;
     obligatorios_ml: number; promovidos: number;
+    /** Opcionales del producto que se pueden subir a obligatorios. */
+    opcionales: number;
   }[];
   resumen: {
     total: number; completos: number; incompletos: number;
@@ -2725,6 +2738,61 @@ export interface TableroChecklist {
   publicados: {
     publicaciones: number; vivas: number; consultadas: number; error: string | null;
   } | null;
+}
+
+/** Una semana ISO en el selector: la palomita es «tiene SKUs cargados». */
+export interface SemanaChecklist {
+  numero: number;
+  /** El lunes (YYYY-MM-DD). */
+  semana: string;
+  etiqueta: string;
+  skus: number;
+  cargada: boolean;
+  actual: boolean;
+}
+
+export interface SemanasChecklist {
+  ok: boolean;
+  motivo?: string;
+  falta_migracion?: boolean;
+  anio: number;
+  /** Los años que tienen lotes (y el de hoy). */
+  anios: number[];
+  semanas: SemanaChecklist[];
+  hoy: string;
+  ultima_cargada: string | null;
+}
+
+/** La fila ya re-evaluada que devuelve el backend tras guardar: sin los datos
+ *  del lote (comentario, quién lo agregó), que no cambian. */
+export type FilaEvaluadaChecklist = Omit<
+  FilaChecklist, "url_ml" | "comentario" | "agregado_por" | "agregado_en">;
+
+/** Un atributo editable del detalle: su nivel, lo capturado y lo publicado. */
+export interface CampoDetalleChecklist extends CampoChecklist {
+  /** Lo guardado en kubera (enrich.channel_content). */
+  valor: string;
+  /** Lo que trae HOY la publicación viva de ML (no está en kubera). */
+  publicado: string | null;
+}
+
+export interface DetalleChecklist {
+  ok: boolean;
+  motivo: string | null;
+  sku: string;
+  categoria: string | null;
+  categoria_nombre: string | null;
+  campos: CampoDetalleChecklist[];
+  fila: FilaEvaluadaChecklist;
+}
+
+export interface GuardadoAtributosChecklist {
+  ok: boolean;
+  motivo?: string | null;
+  guardados?: number;
+  avisos?: { campo: string; etiqueta: string; motivo: string }[];
+  errores?: { campo: string; etiqueta: string; motivo: string }[];
+  fila?: FilaEvaluadaChecklist;
 }
 
 export interface MatrizChecklist {

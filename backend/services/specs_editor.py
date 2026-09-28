@@ -261,10 +261,31 @@ def editor_sync(sku: str, canal: str) -> dict[str, Any]:
         # obligatorio se enseña obligatorio en el cajón. Y se COPIA cada campo:
         # la lista de `_campos_ml` es la caché compartida entre peticiones y
         # abajo se le escribe el valor de este SKU.
-        promovidos = {r["campo"] for r in specs.matriz(canal, cat)
+        reqs = specs.matriz(canal, cat)
+        promovidos = {r["campo"] for r in reqs
                       if r.get("fuente") == "manual" and r.get("obligatorio")}
-        campos = [dict(c, obligatorio=c["obligatorio"] or c["campo"] in promovidos)
-                  for c in _campos_ml(cat)]
+        # Lo que el PUBLICADOR llena solo si se deja vacío (BRAND → Ferrahome).
+        # Se ofrece PRIMERO entre las sugerencias
+        # —ML solo sugiere marcas de terceros— y el cajón deja de pintarlo en
+        # rojo cuando está vacío. `valores` se arma NUEVA: la de `_campos_ml`
+        # es la caché compartida entre peticiones.
+        por_omision: dict[str, str] = {}
+        for r in reqs:
+            d = r.get("default")
+            if d not in (None, ""):
+                por_omision.setdefault(r["campo"], d if isinstance(d, str) else str(d))
+        campos = []
+        for c in _campos_ml(cat):
+            omi = por_omision.get(c["campo"])
+            # MANUFACTURER no es automático (specs._estado lo exige): solo se le
+            # SUGIERE la marca, que es lo que el publicador pone ahí.
+            sugerida = omi or (por_omision.get("BRAND") if c["campo"] == "MANUFACTURER"
+                               else None)
+            campos.append(dict(
+                c, obligatorio=c["obligatorio"] or c["campo"] in promovidos,
+                por_omision=omi,
+                valores=[sugerida, *(v for v in c.get("valores") or [] if v != sugerida)]
+                if sugerida else list(c.get("valores") or [])))
         campos.sort(key=lambda x: not x["obligatorio"])
         fuente = "API pública de Mercado Libre"
     else:
