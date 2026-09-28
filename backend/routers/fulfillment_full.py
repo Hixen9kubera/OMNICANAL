@@ -85,6 +85,7 @@ async def propuesta(ventana: int = Query(30), refrescar: bool = Query(False)) ->
                                                 refrescar=refrescar)
     interruptor = await asyncio.to_thread(fulfillment_full.estado_interruptor)
     return {**datos, "interruptor": interruptor, "ia_disponible": fulfillment_ia.disponible(),
+            "ia_modelos": fulfillment_ia.modelos_disponibles(), "ia_modelo": fulfillment_ia.modelo_por_omision(),
             "_cache": {"edad_s": edad, "ttl_s": cache_lectura.TTL_S}}
 
 

@@ -16,12 +16,14 @@ import { useState } from "react";
 import { CheckCircle2, MessageSquarePlus, Send, Sparkles, X } from "lucide-react";
 import type { Renglon } from "./proponer";
 import { Ceja, num } from "./ui";
-import type { ParametrosFull, PropuestaFull, RevisionIA as Revision, Tienda } from "./tipos";
+import type { ModeloIA, ParametrosFull, PropuestaFull, RevisionIA as Revision, Tienda } from "./tipos";
 
 export interface TurnoIA {
   id: number;
   /** Lo que escribió la persona. Vacío = revisión con el prompt estándar. */
   instruccion: string;
+  /** El nombre del modelo con que se pidió. */
+  modelo?: string;
   estado: "corriendo" | "listo" | "error";
   segundos?: number;
   resultado?: Revision;
@@ -78,20 +80,26 @@ export function datosParaIA(renglones: Renglon[], cantidad: (r: Renglon) => numb
   };
 }
 
+/** US$ con los decimales que hacen falta: los turnos de DeepSeek cuestan centavos. */
+const dolares = (n: number) => `US$${n < 0.01 ? n.toFixed(4) : n.toFixed(2)}`;
+
 export default function PanelIA({ turnos, datos, onEnviar, onAplicar, onAgregarReemplazo, onNueva, onCerrar }: {
   turnos: TurnoIA[];
   datos: PropuestaFull;
-  onEnviar: (instruccion: string) => void;
+  onEnviar: (instruccion: string, modelo: string) => void;
   onAplicar: (ajustes: Revision["ajustes"]) => void;
   onAgregarReemplazo: (tienda: Tienda, sku: string, de: string) => void;
   onNueva: () => void;
   onCerrar: () => void;
 }) {
   const [texto, setTexto] = useState("");
+  const modelos: ModeloIA[] = datos.ia_modelos ?? [];
+  const [modelo, setModelo] = useState<string>(datos.ia_modelo ?? modelos[0]?.id ?? "deepseek-v4-pro");
   const corriendo = turnos.some((t) => t.estado === "corriendo");
+  const gastado = turnos.reduce((a, t) => a + (t.resultado?.costo_usd ?? 0), 0);
   const enviar = () => {
     if (corriendo) return;
-    onEnviar(texto.trim());
+    onEnviar(texto.trim(), modelo);
     setTexto("");
   };
   return (
@@ -154,9 +162,22 @@ export default function PanelIA({ turnos, datos, onEnviar, onAplicar, onAgregarR
             {corriendo ? "La IA está pensando…" : turnos.length ? "Enviar" : texto.trim() ? "Enviar a la IA" : "Revisar sin instrucciones"}
           </button>
         </div>
+        {modelos.length > 0 && (
+          <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px]">
+            <span className="font-bold uppercase tracking-[.06em] text-slate-400">Modelo</span>
+            {modelos.map((m) => (
+              <button key={m.id} type="button" onClick={() => setModelo(m.id)} disabled={!m.disponible}
+                      aria-pressed={modelo === m.id} title={m.disponible ? m.nota : "No está configurado en este ambiente"}
+                      className={`rounded-full border px-2.5 py-0.5 font-semibold disabled:opacity-40 ${
+                        modelo === m.id ? "border-violet-400 bg-violet-600 text-white" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`}>
+                {m.nombre} <span className="font-normal opacity-80">· {m.nota}</span>
+              </button>
+            ))}
+            {gastado > 0 && <span className="ml-auto text-slate-500">Esta conversación: ≈ {dolares(gastado)}</span>}
+          </div>
+        )}
         <p className="mt-1.5 text-[10.5px] text-slate-500">
-          La primera respuesta tarda unos 3 minutos; las siguientes, menos de uno. Ctrl+Enter envía. Los ajustes no
-          se aplican solos: tú los aceptas.
+          La respuesta puede tardar unos minutos. Ctrl+Enter envía. Los ajustes no se aplican solos: tú los aceptas.
         </p>
       </div>
     </section>
@@ -185,6 +206,7 @@ function Turno({ turno, ultimo, datos, onAplicar, onAgregarReemplazo }: {
     <div className="flex flex-col gap-2">
       <div className="self-end rounded-2xl rounded-br-sm bg-violet-600 px-3.5 py-2 text-[12.5px] text-white shadow-sm sm:max-w-[75%]">
         {turno.instruccion || "Revisa la planeación con el prompt estándar."}
+        {turno.modelo && <span className="mt-0.5 block text-[10.5px] text-violet-200">con {turno.modelo}</span>}
       </div>
 
       {turno.estado === "corriendo" && (
@@ -319,8 +341,10 @@ function Turno({ turno, ultimo, datos, onAplicar, onAgregarReemplazo }: {
               )}
 
               <p className="text-[10.5px] text-slate-500">
-                {r.modelo ?? "Claude"} · {num(r.tokens?.entrada ?? null)} tokens de entrada
-                {r.tokens?.cache ? ` (${num(r.tokens.cache)} releídos de la caché)` : ""}, {num(r.tokens?.salida ?? null)} de salida.
+                {r.modelo_nombre ?? r.modelo ?? "IA"} · {num(r.tokens?.entrada ?? null)} tokens de entrada
+                {r.tokens?.cache ? ` (${num(r.tokens.cache)} releídos de la caché)` : ""}, {num(r.tokens?.salida ?? null)} de salida
+                {r.tokens?.razonamiento ? ` (${num(r.tokens.razonamiento)} de razonamiento)` : ""}
+                {r.costo_usd !== undefined && r.costo_usd !== null ? ` · costó ≈ ${dolares(r.costo_usd)}` : ""}.
                 {" "}Lo que la IA propone se valida contra la planeación: fuera de ella o por encima de lo libre no pasa.
               </p>
             </>

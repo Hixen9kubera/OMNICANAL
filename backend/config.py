@@ -141,6 +141,10 @@ class Settings(BaseSettings):
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-chat"
+    # El agente de planeación de FULL (FULLFILMENT · Crear FULL): el modelo con que
+    # arranca. La persona puede elegir otro en la pantalla. Brandon, 27-sep-2026:
+    # DeepSeek "para que se nos cobre menos"; Claude Opus 5 queda como opción.
+    fulfillment_ia_modelo: str = "deepseek-v4-pro"
     # ¿El alta de productos (pestaña Crear) genera además el contenido de Amazon
     # y lo deja guardado en enrich.channel_content? Nace APAGADO: encenderlo
     # cambia lo que hace un flujo vivo (cada alta gasta 1-2 llamadas de IA y

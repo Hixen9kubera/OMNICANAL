@@ -286,7 +286,7 @@ export default function CrearFull({ stock, rol, recarga, onEstado, onPlan, reemp
   };
   const ponTurno = (id: number, cambios: Partial<TurnoIA>) =>
     setTurnos((ts) => ts.map((t) => (t.id === id ? { ...t, ...cambios } : t)));
-  const pedirIA = async (instruccion: string) => {
+  const pedirIA = async (instruccion: string, modelo: string) => {
     if (!datos || !params) return;
     const vuelta = iaVivo.current;
     const id = Date.now();
@@ -296,12 +296,12 @@ export default function CrearFull({ stock, rol, recarga, onEstado, onPlan, reemp
       respuesta: { respuesta: t.resultado!.respuesta, resumen: t.resultado!.resumen,
                    ajustes: t.resultado!.ajustes.map((a) => ({ tienda: a.tienda, sku: a.sku, cantidad: a.cantidad })) },
     }));
-    setTurnos((ts) => [...ts, { id, instruccion, estado: "corriendo", segundos: 0 }]);
+    setTurnos((ts) => [...ts, { id, instruccion, modelo: datos.ia_modelos?.find((m) => m.id === modelo)?.nombre ?? modelo, estado: "corriendo", segundos: 0 }]);
     try {
       const r = await fetchSesion(`${API_BASE}/api/fulfillment/crear-full/ia`, {
         method: "POST",
         body: JSON.stringify({ datos: datosParaIA(renglones, cantidad, params, datos, tiendasActivas),
-                               instrucciones: instruccion, historial }),
+                               instrucciones: instruccion, historial, modelo }),
       }, { "Content-Type": "application/json" });
       const d = await r.json() as { ok: boolean; id?: string; motivo?: string };
       if (!r.ok || !d.ok || !d.id) throw new Error(d.motivo ?? `HTTP ${r.status}`);
@@ -459,7 +459,7 @@ export default function CrearFull({ stock, rol, recarga, onEstado, onPlan, reemp
       )}
 
       {agente && datos && (
-        <PanelIA turnos={turnos} datos={datos} onAplicar={aplicarIA} onEnviar={(t) => void pedirIA(t)}
+        <PanelIA turnos={turnos} datos={datos} onAplicar={aplicarIA} onEnviar={(t, m) => void pedirIA(t, m)}
                  onAgregarReemplazo={(t, s, de) => marcarReemplazo(t, s, de)}
                  onNueva={() => { iaVivo.current++; setTurnos([]); }}
                  onCerrar={() => setAgente(false)} />

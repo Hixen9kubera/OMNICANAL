@@ -380,6 +380,9 @@ export interface PropuestaFull {
   en_camino: Record<Tienda, { piezas: number; skus: number }>;
   interruptor: Interruptor;
   ia_disponible: boolean;
+  /** Los modelos que se pueden elegir (sólo DeepSeek) y el que arranca. */
+  ia_modelos?: ModeloIA[];
+  ia_modelo?: string;
   fuente: string;
   _cache?: { edad_s: number; ttl_s: number };
 }
@@ -416,7 +419,9 @@ export interface ResultadoGuia {
   ok: boolean; accion: string; motivo?: string; orden?: string; referencia?: string | null; pdf?: string | null;
 }
 
-/** Un turno del agente de planeación (Claude), ya validado por el backend. */
+export interface ModeloIA { id: string; proveedor: string; nombre: string; nota: string; disponible: boolean }
+
+/** Un turno del agente de planeación (DeepSeek), ya validado por el backend. */
 export interface RevisionIA {
   /** Lo que la IA le contesta a la persona sobre su instrucción. */
   respuesta: string;
@@ -430,7 +435,11 @@ export interface RevisionIA {
   descartados: Record<string, unknown>[];
   modelo?: string;
   /** `cache` = tokens de entrada que se releyeron de la caché (turnos de seguimiento). */
-  tokens?: { entrada: number; salida: number; cache?: number };
+  tokens?: { entrada: number; salida: number; cache?: number; razonamiento?: number };
+  modelo_id?: string;
+  modelo_nombre?: string;
+  /** Lo que costó el turno con los precios de lista (US$). */
+  costo_usd?: number | null;
 }
 
 // ── La ficha del SKU ────────────────────────────────────────────────────────

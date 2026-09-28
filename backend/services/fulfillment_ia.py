@@ -35,6 +35,17 @@ filas: ~40 mil tokens por las dos cuentas, contra ~120 mil que costaba mandar s�
 una parte como objetos). La planeación va primero y marcada para la caché del
 servidor: en un turno de seguimiento con la misma planeación se relee de la caché.
 El servidor no guarda conversaciones: la pantalla manda el historial en cada turno.
+
+SÓLO DEEPSEEK (v0.579.0, Brandon, 27-sep: "¿es posible cambiar la IA para usar DeepSeek
+y que se nos cobre menos?… no uses Claude, es muy caro"). Por omisión DeepSeek V4 Pro;
+en la pantalla se elige DeepSeek Flash, el más barato. Claude NO se puede elegir: su
+llamada (`_llamar_claude`) se conserva para volver a ofrecerlo si algún día se pide,
+agregándolo a MODELOS. DeepSeek va por su API
+compatible con OpenAI, como el resto del backend (`ia_generadores`): modo JSON
+(`response_format: json_object`, sin esquema que lo ate, por eso el prompt lleva el
+ejemplo exacto y `validar` sigue siendo la última palabra) y su caché automática por
+prefijo. Si DeepSeek falla NO se cae a Claude sin decir nada: el error se enseña y
+la persona decide. Cada turno dice cuánto costó, con los precios de lista.
 """
 from __future__ import annotations
 
@@ -43,18 +54,38 @@ import logging
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from config import settings
 
 log = logging.getLogger("omnicanal.fulfillment_ia")
 
-MODELO = "claude-opus-5"
+MODELO = "claude-opus-5"      # el modelo de Claude (`_llamar_claude`)
 MAX_TRABAJOS = 2          # a la vez: cada corrida cuesta (~1 dólar la primera) y tarda
 MAX_INSTRUCCION = 2000    # caracteres por instrucción
 ESFUERZO = "medium"       # low | medium | high | xhigh | max (ver _llamar)
 MAX_TURNOS = 6            # turnos anteriores que se le recuerdan a la IA
 VIDA_TRABAJO_S = 3600
+
+# Los modelos que se pueden elegir en la pantalla.
+MODELOS: dict[str, dict[str, str]] = {
+    "deepseek-v4-pro": {"proveedor": "deepseek", "nombre": "DeepSeek V4 Pro",
+                        "nota": "bueno y barato: la opción por omisión"},
+    "deepseek-flash": {"proveedor": "deepseek", "nombre": "DeepSeek Flash", "nota": "el más barato"},
+    # Claude Opus 5 fuera por decisión de Brandon (27-sep: "es muy caro"). Para volver a
+    # ofrecerlo: {"proveedor": "claude", "nombre": "Claude Opus 5", ...} y su precio abajo.
+}
+
+# Precios de LISTA por millón de tokens (US$), consultados el 27-sep-2026 en las páginas de
+# precios de DeepSeek. Sirven para ESTIMAR el costo de un turno; la factura manda. Son los
+# de hora pico (01:00-04:00 y 06:00-10:00 UTC, entre semana); fuera de ella cobra la mitad.
+# (Claude Opus 5, que ya no se ofrece, cuesta 5.00 de entrada y 25.00 de salida.)
+PRECIOS: dict[str, dict[str, float]] = {
+    "deepseek-v4-pro": {"entrada": 1.32, "cache_leida": 0.044, "salida": 3.96},
+    "deepseek-flash": {"entrada": 0.30, "cache_leida": 0.006, "salida": 1.20},
+}
+
 
 # El prompt TAL CUAL lo pasaron (24-sep-2026). Lo que cambió en el panel se dice
 # aparte (AJUSTES_DEL_PANEL) en vez de reescribirlo: así se puede comparar.
@@ -194,8 +225,48 @@ _trabajos: dict[str, dict[str, Any]] = {}
 _candado = threading.Lock()
 
 
+def _hay_llave(proveedor: str) -> bool:
+    return bool(settings.deepseek_api_key if proveedor == "deepseek" else settings.anthropic_api_key)
+
+
 def disponible() -> bool:
-    return bool(settings.anthropic_api_key)
+    return any(_hay_llave(m["proveedor"]) for m in MODELOS.values())
+
+
+def modelos_disponibles() -> list[dict[str, Any]]:
+    """Los modelos para el selector de la pantalla, con si hay llave para usarlos."""
+    return [{"id": k, **v, "disponible": _hay_llave(v["proveedor"])} for k, v in MODELOS.items()]
+
+
+def modelo_por_omision() -> str:
+    """El de la configuración si se puede usar; si no, el primero que tenga llave."""
+    elegido = settings.fulfillment_ia_modelo
+    if elegido in MODELOS and _hay_llave(MODELOS[elegido]["proveedor"]):
+        return elegido
+    return next((k for k, v in MODELOS.items() if _hay_llave(v["proveedor"])), elegido)
+
+
+def es_hora_pico(cuando: datetime) -> bool:
+    """Las horas pico de DeepSeek: 01:00-04:00 y 06:00-10:00 UTC, de lunes a viernes."""
+    u = cuando.astimezone(timezone.utc)
+    return u.weekday() < 5 and (1 <= u.hour < 4 or 6 <= u.hour < 10)
+
+
+def costo_usd(modelo: str, tokens: dict[str, Any], cuando: datetime) -> float | None:
+    """
+    Lo que costó un turno, en dólares, con los precios de lista. `tokens` trae
+    `entrada` (sin caché), `cache` (leídos de caché), `cache_escrita` y `salida`.
+    """
+    p = PRECIOS.get(modelo)
+    if not p:
+        return None
+    total = (int(tokens.get("entrada_sin_cache") or 0) * p["entrada"]
+             + int(tokens.get("cache") or 0) * p["cache_leida"]
+             + int(tokens.get("cache_escrita") or 0) * p.get("cache_escrita", p["entrada"])
+             + int(tokens.get("salida") or 0) * p["salida"]) / 1_000_000
+    if MODELOS.get(modelo, {}).get("proveedor") == "deepseek" and not es_hora_pico(cuando):
+        total /= 2
+    return round(total, 4)
 
 
 _SINONIMOS = {"kubera": "meli:Kubera", "bekura": "meli:Kubera", "ml kubera": "meli:Kubera",
@@ -331,8 +402,103 @@ def mensajes(datos: dict[str, Any], instrucciones: str = "",
     return salida
 
 
-def _llamar(datos: dict[str, Any], instrucciones: str = "",
-            historial: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def mensajes_openai(datos: dict[str, Any], instrucciones: str = "",
+                    historial: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """
+    La misma conversación en el formato de DeepSeek (el de OpenAI). Función pura.
+    La planeación va al PRINCIPIO del primer mensaje: DeepSeek guarda en caché los
+    prefijos repetidos, así que un seguimiento sobre la misma planeación la relee de ahí.
+    """
+    turnos = historial or []
+    primera = turnos[0]["instruccion"] if turnos else instrucciones
+    salida: list[dict[str, Any]] = [{"role": "user", "content": (
+        json.dumps(datos, ensure_ascii=False, separators=(",", ":")) + "\n\n" + _instruccion(primera))}]
+    for i, t in enumerate(turnos):
+        salida.append({"role": "assistant",
+                       "content": json.dumps(t["respuesta"], ensure_ascii=False, separators=(",", ":"))})
+        siguiente = turnos[i + 1]["instruccion"] if i + 1 < len(turnos) else instrucciones
+        salida.append({"role": "user", "content": _instruccion(siguiente)})
+    return salida
+
+
+# DeepSeek no ata la salida a un esquema: el modo JSON pide que el prompt diga "json" y
+# traiga un ejemplo de la forma. `validar` descarta lo que no cuadre.
+FORMATO_JSON = """FORMATO DE SALIDA: responde con UN solo objeto JSON válido (json), sin texto antes ni
+después, con exactamente estas llaves (las listas pueden ir vacías):
+{"respuesta": "…", "confirmacion": "…",
+ "ajustes": [{"tienda": "meli:Kubera", "sku": "SKU-DE-LA-TABLA", "cantidad": 0, "motivo": "…"}],
+ "reemplazos": [{"tienda": "meli:Kubera", "agotado": "SKU-AGOTADO", "reemplazo": "SKU-CANDIDATO",
+                 "tipo_match": "mismo modelo", "motivo": "…"}],
+ "alertas": [{"tienda": "meli:San Corpe", "sku": "SKU-DE-LA-TABLA", "tipo": "reciclado", "detalle": "…"}],
+ "recomendaciones": ["…"], "resumen": "…"}
+"tienda" es siempre una de: "meli:Kubera", "meli:San Corpe", "amazon", "walmart". "cantidad" es un entero.
+Los SKU son los de la tabla (o los candidatos de un ganador agotado), nunca los de este ejemplo."""
+
+
+def _json_de(texto: str) -> dict[str, Any]:
+    t = (texto or "").strip()
+    if t.startswith("```"):
+        t = t.strip("`")
+        t = t[4:] if t.lower().startswith("json") else t
+    return json.loads(t)
+
+
+def _llamar_deepseek(datos: dict[str, Any], instrucciones: str, historial: list[dict[str, Any]] | None,
+                     modelo: str) -> dict[str, Any]:
+    """
+    La llamada a DeepSeek. BLOQUEA (corre en su hilo). Su documentación no dice si el
+    razonamiento (encendido por omisión) convive con el modo JSON, y reconoce que a
+    veces contesta vacío: en cualquiera de los dos casos se reintenta UNA vez sin
+    razonamiento.
+    """
+    import httpx
+
+    url = f"{settings.deepseek_base_url.rstrip('/')}/chat/completions"
+    cuerpo_base = {"model": modelo, "max_tokens": 64000, "response_format": {"type": "json_object"},
+                   "messages": [{"role": "system", "content": PROMPT_ESTANDAR + "\n\n" + AJUSTES_DEL_PANEL
+                                 + "\n\n" + FORMATO_JSON}] + mensajes_openai(datos, instrucciones, historial)}
+    ultimo_error = "la IA no devolvió texto"
+    for intento, extra in enumerate(({}, {"thinking": {"type": "disabled"}})):
+        r = httpx.post(url, headers={"Authorization": f"Bearer {settings.deepseek_api_key}"},
+                       json={**cuerpo_base, **extra}, timeout=httpx.Timeout(900.0, connect=30.0))
+        if r.status_code == 400 and intento == 0:
+            ultimo_error = f"DeepSeek rechazó la petición: {r.text[:200]}"
+            log.warning("planeación IA: %s; reintento sin razonamiento", ultimo_error)
+            continue
+        if r.status_code >= 400:
+            raise RuntimeError(f"DeepSeek contestó {r.status_code}: {r.text[:300]}")
+        cuerpo = r.json()
+        eleccion = (cuerpo.get("choices") or [{}])[0]
+        texto = ((eleccion.get("message") or {}).get("content") or "").strip()
+        uso = cuerpo.get("usage") or {}
+        if eleccion.get("finish_reason") == "length":
+            raise RuntimeError("la respuesta de la IA se cortó (demasiados renglones): prueba con menos tiendas")
+        if not texto:
+            ultimo_error = "DeepSeek devolvió la respuesta vacía"
+            log.warning("planeación IA: %s (intento %s)", ultimo_error, intento + 1)
+            continue
+        hit = int(uso.get("prompt_cache_hit_tokens") or 0)
+        entrada = int(uso.get("prompt_tokens") or 0)
+        razon = int(((uso.get("completion_tokens_details") or {}).get("reasoning_tokens")) or 0)
+        log.info("planeación IA: %s · entrada %s (%s de caché) · salida %s (%s de razonamiento)%s", modelo,
+                 entrada, hit, uso.get("completion_tokens"), razon, " · sin razonamiento" if extra else "")
+        return {"respuesta": _json_de(texto), "modelo": cuerpo.get("model") or modelo,
+                "tokens": {"entrada": entrada, "entrada_sin_cache": max(0, entrada - hit), "cache": hit,
+                           "salida": int(uso.get("completion_tokens") or 0), "razonamiento": razon}}
+    raise RuntimeError(ultimo_error)
+
+
+def _llamar(datos: dict[str, Any], instrucciones: str = "", historial: list[dict[str, Any]] | None = None,
+            modelo: str | None = None) -> dict[str, Any]:
+    """Un turno con el modelo elegido. BLOQUEA (corre en su hilo)."""
+    modelo = modelo if modelo in MODELOS else modelo_por_omision()
+    if MODELOS[modelo]["proveedor"] == "deepseek":
+        return _llamar_deepseek(datos, instrucciones, historial, modelo)
+    return _llamar_claude(datos, instrucciones, historial)
+
+
+def _llamar_claude(datos: dict[str, Any], instrucciones: str = "",
+                   historial: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """La llamada a Claude. BLOQUEA (corre en su hilo)."""
     import anthropic
 
@@ -372,6 +538,7 @@ def _llamar(datos: dict[str, Any], instrucciones: str = "",
         raise RuntimeError("la IA no devolvió texto")
     return {"respuesta": json.loads(texto), "modelo": cuerpo.get("model"),
             "tokens": {"entrada": int(uso.get("input_tokens") or 0) + leidos + escritos,
+                       "entrada_sin_cache": int(uso.get("input_tokens") or 0), "cache_escrita": escritos,
                        "salida": uso.get("output_tokens"), "cache": leidos}}
 
 
@@ -388,7 +555,12 @@ def iniciar(cuerpo: dict[str, Any], quien: str = "") -> dict[str, Any]:
     sigue aceptando (una pantalla vieja abierta durante el despliegue).
     """
     if not disponible():
-        return {"ok": False, "motivo": "La IA no está configurada en este ambiente (falta ANTHROPIC_API_KEY)."}
+        return {"ok": False, "motivo": "La IA no está configurada en este ambiente (falta DEEPSEEK_API_KEY)."}
+    modelo = str(cuerpo.get("modelo") or "") or modelo_por_omision()
+    if modelo not in MODELOS:
+        return {"ok": False, "motivo": f"No conozco el modelo «{modelo}»."}
+    if not _hay_llave(MODELOS[modelo]["proveedor"]):
+        return {"ok": False, "motivo": f"{MODELOS[modelo]['nombre']} no está configurado en este ambiente."}
     datos = cuerpo.get("datos") if isinstance(cuerpo.get("datos"), dict) else cuerpo
     instrucciones = str(cuerpo.get("instrucciones") or "").strip()[:MAX_INSTRUCCION]
     historial = historial_limpio(cuerpo.get("historial"))
@@ -402,14 +574,15 @@ def iniciar(cuerpo: dict[str, Any], quien: str = "") -> dict[str, Any]:
             return {"ok": False, "motivo": "Ya hay revisiones de IA corriendo; espera a que terminen."}
         tid = uuid.uuid4().hex[:12]
         _trabajos[tid] = {"estado": "corriendo", "inicio": time.time(), "quien": quien,
-                          "instrucciones": instrucciones, "turno": len(historial) + 1}
+                          "instrucciones": instrucciones, "turno": len(historial) + 1, "modelo": modelo}
 
     def correr() -> None:
         try:
-            r = _llamar(datos, instrucciones, historial)
+            r = _llamar(datos, instrucciones, historial, modelo)
             revisado = validar(r["respuesta"], datos)
-            _trabajos[tid].update(estado="listo", resultado={**revisado, "modelo": r["modelo"],
-                                                              "tokens": r["tokens"]})
+            _trabajos[tid].update(estado="listo", resultado={
+                **revisado, "modelo": r["modelo"], "modelo_id": modelo, "modelo_nombre": MODELOS[modelo]["nombre"],
+                "tokens": r["tokens"], "costo_usd": costo_usd(modelo, r["tokens"], datetime.now(timezone.utc))})
         except Exception as exc:  # noqa: BLE001 — el error se enseña, no se esconde
             log.warning("planeación IA: falló (%s)", exc)
             _trabajos[tid].update(estado="error", error=str(exc)[:400])
@@ -417,8 +590,8 @@ def iniciar(cuerpo: dict[str, Any], quien: str = "") -> dict[str, Any]:
             _trabajos[tid]["fin"] = time.time()
 
     threading.Thread(target=correr, name=f"planeacion-ia-{tid}", daemon=True).start()
-    log.info("planeación IA: %s arrancó (%s, turno %s%s)", tid, (quien or "?").split("@")[0], len(historial) + 1,
-             f", «{instrucciones[:80]}»" if instrucciones else "")
+    log.info("planeación IA: %s arrancó con %s (%s, turno %s%s)", tid, modelo, (quien or "?").split("@")[0],
+             len(historial) + 1, f", «{instrucciones[:80]}»" if instrucciones else "")
     return {"ok": True, "id": tid}
 
 

@@ -1001,6 +1001,38 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.579.0 — El agente de planeación usa DeepSeek: cuesta centavos por turno (Claude ya no se ofrece)
+
+Brandon, 27-sep: *"¿es posible cambiar la IA para usar DeepSeek y que se nos cobre menos?… no uses Claude por favor,
+es muy caro, usa DeepSeek"*.
+
+**Qué cambia.** «Planear con IA» (FULLFILMENT · Crear FULL) corre ahora con **DeepSeek V4 Pro** por omisión. En la caja
+de instrucciones se puede elegir **DeepSeek Flash**, el más barato. Claude Opus 5 ya no aparece: su llamada
+(`_llamar_claude`) se conserva, pero no se puede elegir; para volver a ofrecerlo basta con agregarlo a `MODELOS`.
+El modelo por omisión sale de la variable `FULFILLMENT_IA_MODELO` (`deepseek-v4-pro`).
+
+**Cómo se llama a DeepSeek.** Con la misma API compatible con OpenAI y la misma llave (`DEEPSEEK_API_KEY`) que ya usan
+los generadores de contenido (`ia_generadores`), sin SDK nuevo. DeepSeek no ata la salida a un esquema como Claude:
+se usa su modo JSON (`response_format: json_object`). Por eso el prompt lleva el ejemplo exacto de la respuesta y
+`validar` sigue siendo la última palabra: descarta lo que no esté en la planeación o pase de lo libre. La
+planeación va al principio del primer mensaje; DeepSeek guarda en caché los prefijos repetidos, así que una
+pregunta de seguimiento sobre la misma tabla se relee de ahí. Su documentación no aclara si el razonamiento
+(encendido por omisión) convive con el modo JSON, y reconoce que a veces contesta vacío. En cualquiera de los dos
+casos se reintenta UNA vez sin razonamiento. **Si DeepSeek falla no se cae a Claude sin avisar**: el error se
+enseña y la persona decide.
+
+**Cuánto cuesta cada turno, en pantalla.** Cada respuesta dice sus tokens de entrada (y cuántos salieron de caché),
+los de salida (y cuántos fueron de razonamiento), y **cuánto costó** con los precios de lista del 27-sep: V4 Pro,
+US$1.32 / 0.044 / 3.96 por millón de tokens (entrada / caché / salida); Flash, 0.30 / 0.006 / 1.20. Son los de hora
+pico (01:00-04:00 y 06:00-10:00 UTC, entre semana); fuera de ella DeepSeek cobra la mitad, y el cálculo lo toma en
+cuenta. La caja suma lo que va costando la conversación. Como referencia, Claude Opus 5 costaba ~US$1 el primer
+turno (5.00 / 25.00 por millón).
+
+**Pruebas:** 54 de fulfillment. Las nuevas cubren: la conversación en formato DeepSeek con la planeación primero; el
+costo en hora pico y fuera de ella; el reintento sin razonamiento cuando contesta vacío; que sin elegir modelo va
+V4 Pro; que Claude ya no se puede pedir aunque haya su llave, y que un modelo desconocido no arranca. Suite completa
+en verde; `tsc` limpio. La llave de DeepSeek vive sólo en Railway: la prueba de verdad es en producción.
+
 ### v0.578.0 — Una orden de ML que llega incompleta (206) ya no se tira
 
 Alerta del 26-sep (la de reintentos agotados de la v0.572.0): la orden

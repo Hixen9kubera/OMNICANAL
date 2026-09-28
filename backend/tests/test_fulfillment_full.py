@@ -29,7 +29,7 @@ import json
 import sys
 import time
 import unittest
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone  # noqa: F401
 from pathlib import Path
 from unittest import mock
 
@@ -531,13 +531,14 @@ class ValidarIA(unittest.TestCase):
     def test_arranca_con_instrucciones_y_acepta_el_cuerpo_viejo(self):
         vistos = []
 
-        def llamar(datos, instrucciones="", historial=None):
-            vistos.append((instrucciones, len(historial or [])))
+        def llamar(datos, instrucciones="", historial=None, modelo=None):
+            vistos.append((instrucciones, len(historial or []), modelo))
             return {"respuesta": {"respuesta": "ok", "ajustes": [], "reemplazos": [], "alertas": [],
                                   "recomendaciones": [], "confirmacion": "", "resumen": ""},
-                    "modelo": "claude-opus-5", "tokens": {"entrada": 1, "salida": 1, "cache": 0}}
+                    "modelo": modelo, "tokens": {"entrada": 1, "salida": 1, "cache": 0}}
 
-        with mock.patch.object(fia, "disponible", lambda: True), mock.patch.object(fia, "_llamar", llamar):
+        with mock.patch.object(fia, "_hay_llave", lambda p: True), mock.patch.object(fia, "_llamar", llamar), \
+             mock.patch.object(fia.settings, "fulfillment_ia_modelo", "deepseek-v4-pro"):
             nuevo = fia.iniciar({"datos": self.DATOS, "instrucciones": "  sólo < 300  ", "historial": []}, "b@k.mx")
             viejo = fia.iniciar(self.DATOS, "b@k.mx")
             for r in (nuevo, viejo):
@@ -547,11 +548,70 @@ class ValidarIA(unittest.TestCase):
                         break
                     time.sleep(0.01)
                 self.assertEqual(fia.estado(r["id"])["estado"], "listo")
-        self.assertEqual(sorted(vistos), [("", 0), ("sólo < 300", 0)])
+        self.assertEqual(sorted(vistos), [("", 0, "deepseek-v4-pro"), ("sólo < 300", 0, "deepseek-v4-pro")],
+                         "sin elegir modelo va el de la configuración: DeepSeek V4 Pro")
 
     def test_sin_clave_no_arranca(self):
-        with mock.patch.object(fia.settings, "anthropic_api_key", ""):
+        with mock.patch.object(fia.settings, "anthropic_api_key", ""), \
+             mock.patch.object(fia.settings, "deepseek_api_key", ""):
             self.assertFalse(fia.iniciar(self.DATOS)["ok"])
+
+    def test_modelo_desconocido_o_sin_llave_no_arranca(self):
+        with mock.patch.object(fia.settings, "anthropic_api_key", ""), \
+             mock.patch.object(fia.settings, "deepseek_api_key", "x"):
+            self.assertIn("No conozco", fia.iniciar({"datos": self.DATOS, "modelo": "gpt-9"})["motivo"])
+            self.assertIn("No conozco", fia.iniciar({"datos": self.DATOS, "modelo": "claude-opus-5"})["motivo"],
+                          "Claude ya no se ofrece: es caro (Brandon, 27-sep)")
+
+    def test_solo_deepseek_aunque_haya_llave_de_claude(self):
+        with mock.patch.object(fia.settings, "fulfillment_ia_modelo", "deepseek-v4-pro"), \
+             mock.patch.object(fia.settings, "deepseek_api_key", ""), \
+             mock.patch.object(fia.settings, "anthropic_api_key", "x"):
+            self.assertFalse(fia.disponible(), "con llave de Claude pero sin DeepSeek, no hay agente")
+            self.assertEqual([m["id"] for m in fia.modelos_disponibles()], ["deepseek-v4-pro", "deepseek-flash"])
+
+    def test_la_conversacion_en_formato_deepseek(self):
+        historial = fia.historial_limpio([{"instruccion": "sólo < 300",
+                                           "respuesta": {"respuesta": "Listo.", "ajustes": []}}])
+        m = fia.mensajes_openai({"tiendas": {}}, "¿qué compro?", historial)
+        self.assertEqual([x["role"] for x in m], ["user", "assistant", "user"])
+        self.assertTrue(m[0]["content"].startswith('{"tiendas"'), "la planeación al principio: prefijo en caché")
+        self.assertIn("sólo < 300", m[0]["content"])
+        self.assertIn("qué compro", m[2]["content"])
+
+    def test_costo_del_turno_con_hora_pico(self):
+        tokens = {"entrada_sin_cache": 80_000, "cache": 0, "salida": 10_000}
+        pico = datetime(2026, 9, 28, 7, 0, tzinfo=timezone.utc)          # lunes 07:00 UTC
+        valle = datetime(2026, 9, 28, 18, 0, tzinfo=timezone.utc)        # lunes 18:00 UTC
+        self.assertEqual(fia.costo_usd("deepseek-v4-pro", tokens, pico), round((80_000 * 1.32 + 10_000 * 3.96) / 1e6, 4))
+        self.assertEqual(fia.costo_usd("deepseek-v4-pro", tokens, valle),
+                         round((80_000 * 1.32 + 10_000 * 3.96) / 1e6 / 2, 4), "fuera de pico, la mitad")
+        flash = fia.costo_usd("deepseek-flash", {"entrada_sin_cache": 20_000, "cache": 60_000, "salida": 5_000}, pico)
+        self.assertEqual(flash, round((20_000 * 0.30 + 60_000 * 0.006 + 5_000 * 1.20) / 1e6, 4))
+
+    def test_deepseek_reintenta_sin_razonamiento_si_contesta_vacio(self):
+        llamadas = []
+
+        class Resp:
+            def __init__(self, contenido):
+                self.status_code, self.text, self._c = 200, "", contenido
+
+            def json(self):
+                return {"model": "deepseek-v4-pro",
+                        "choices": [{"finish_reason": "stop", "message": {"content": self._c}}],
+                        "usage": {"prompt_tokens": 100, "prompt_cache_hit_tokens": 60, "completion_tokens": 20}}
+
+        def post(url, headers=None, json=None, timeout=None):
+            llamadas.append(json)
+            return Resp("" if len(llamadas) == 1 else '{"respuesta": "ok", "ajustes": []}')
+
+        with mock.patch("httpx.post", post), mock.patch.object(fia.settings, "deepseek_api_key", "x"):
+            r = fia._llamar_deepseek({"tiendas": {}}, "", None, "deepseek-v4-pro")
+        self.assertEqual(r["respuesta"]["respuesta"], "ok")
+        self.assertNotIn("thinking", llamadas[0], "la primera va con el razonamiento por omisión")
+        self.assertEqual(llamadas[1]["thinking"], {"type": "disabled"}, "la segunda, sin razonamiento")
+        self.assertEqual(llamadas[0]["response_format"], {"type": "json_object"})
+        self.assertEqual((r["tokens"]["cache"], r["tokens"]["entrada_sin_cache"]), (60, 40))
 
 
 class Precio(unittest.TestCase):
