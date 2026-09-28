@@ -59,17 +59,29 @@ async def listar(
         None,
         description="Cualquier día de una semana (YYYY-MM-DD): trae los SKUs que el "
                     "Checklist de almacén cargó esa semana (ops.checklist_lote)."),
+    pagina: int = Query(1, ge=1, description="Sin skus ni semana: la página del catálogo."),
+    por_pagina: int = Query(inv.POR_PAGINA, ge=1, le=inv.POR_PAGINA_MAX),
+    q: str | None = Query(None, max_length=80,
+                          description="Sin skus ni semana: busca en TODO el catálogo "
+                                      "por SKU o nombre."),
+    piloto: bool = Query(False, description="La sonda de 14 SKUs de siempre."),
 ):
     """
     La tabla del catálogo maestro: imagen, empaque, existencias y las cinco
     etapas, un renglón por SKU de WooCommerce (padres y variaciones).
 
-    Sin paginación a propósito: hoy la sonda son 10 SKUs y cada fila cuesta una
-    consulta a Odoo. Cuando se abra al catálogo completo, la paginación entra
-    junto con el criterio de orden, no antes.
+    Cuatro modos, en este orden: `skus` (exactamente esos), `semana` (el lote
+    del Checklist), `piloto` (la sonda de 14) y, sin nada, el CATÁLOGO
+    COMPLETO paginado aquí (`pagina`, `por_pagina`, `q`): cada fila cruza
+    Odoo, Woo y kubera en vivo, así que solo se arman las de la página. El
+    resumen es de las filas devueltas.
     """
     pedidos = _skus(skus)
     lunes = None
+    # Sin SKUs escritos, sin semana y sin pedir el piloto: el CATÁLOGO COMPLETO
+    # (Brandon, 28-sep), una página a la vez. Ver `inv.catalogo`.
+    modo = ("skus" if pedidos else "semana" if semana else
+            "piloto" if piloto else "catalogo")
     if semana and not pedidos:
         # Los SKUs los decide el Checklist (ops.checklist_lote): se resuelven
         # aquí y no en el navegador para no partir SKUs con coma (…-1,6L) y
@@ -86,6 +98,10 @@ async def listar(
     def _trabajo() -> tuple[list, dict, int]:
         lista = pedidos
         total_semana = 0
+        if modo == "catalogo":
+            lista, total_semana = inv.catalogo(pagina, por_pagina, q)
+            if not lista:
+                return [], inv.resumen([]), total_semana
         if lunes is not None:
             from services import checklist as ck
             lista = ck.skus_de_semana(lunes)
@@ -108,9 +124,14 @@ async def listar(
         "items": filas,
         "total": len(filas),
         "piloto": list(inv.PILOTO),
-        "es_piloto": pedidos is None and lunes is None,
+        "es_piloto": modo == "piloto",
+        "modo": modo,
         "resumen": resumen,
     }
+    if modo == "catalogo":
+        tam = max(1, min(por_pagina, inv.POR_PAGINA_MAX))
+        salida.update(catalogo_total=total_semana, pagina=pagina, por_pagina=tam,
+                      paginas=max(1, -(-total_semana // tam)), q=(q or "").strip())
     if lunes is not None:
         from services import checklist as ck
         salida.update(semana=lunes.isoformat(), etiqueta=ck.etiqueta(lunes),

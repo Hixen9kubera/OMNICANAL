@@ -1001,6 +1001,48 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.582.0 — El Catálogo Maestro enseña TODOS los SKUs; la semana del Checklist es solo un filtro
+
+Brandon, 28-sep, corrigiendo la v0.581: *"en el catálogo maestro aparecerán TODOS LOS SKUS… el filtro solo aplica si
+quieren ver una week en especial pero sin filtro aparecerá todos los SKUS"*.
+
+**Qué cambia:**
+
+- **Sin filtro se ve el catálogo completo:** **14,767 SKUs**, que son los padres y variaciones de WooCommerce según kubera
+  (`core.products` con `wc_id`). Es el universo que la cabecera de `inventario_maestro` ya había medido: «la fila es el
+  SKU». Quedan fuera 1,401 fantasmas `packing_list_only`/`marketplace_only`, que no existen en Woo.
+- **Se pagina en el servidor**, 40 por página (`inventario_maestro.catalogo`, `GET /api/inventario?pagina=`). Cada fila
+  cruza Odoo, Woo y kubera en vivo, así que solo se arman las de la página que se ve.
+  - La lista de SKUs sale de kubera en menos de medio segundo.
+  - Armar las 40 filas tarda lo que ya tardaban las de la semana.
+- **La búsqueda «Buscar en todo el catálogo…»** corre en el servidor sobre los 14,767 SKUs, por SKU o nombre, con los
+  comodines de LIKE escapados. Por ejemplo, «cafetera» encuentra 16.
+- **La semana del Checklist** (el selector con palomita, o el enlace `?semana=` desde el Checklist) es un filtro. «Ver
+  todos los SKUs» lo quita, y los SKUs escritos a mano siguen mandando sobre todo.
+- La v0.581 abría sola la última semana cargada; eso se quitó. El piloto de 14 SKUs ya no está en la pantalla. Sigue en
+  `?piloto=true`, y `inventario_flujo` lo sigue usando como su universo de validación: eso es decisión aparte de Eduardo
+  y no cambia.
+- **Las cifras de arriba** (disponible, reservado, alertas) son de las filas de la página. La pantalla lo dice: «Las
+  cifras y alertas de abajo son de los 40 SKUs de esta página; el catálogo tiene 14,767». Calcularlas sobre todo el
+  catálogo costaría armar las 14,767 filas.
+- La carga de packing lists ya estaba pensada para paginar: un solo hilo, cola, y un tope de archivos por pasada.
+
+**Pruebas:** 9 nuevas en `tests/test_checklist_semanas_editor.py`:
+- el catálogo es el modo por omisión;
+- la página y la búsqueda llegan al servidor;
+- una página vacía no arma filas;
+- la semana y los SKUs mandan sobre el catálogo;
+- los topes, el offset y el escape de LIKE;
+- el piloto se pide aparte.
+
+Suite completa en verde (846) y `tsc` limpio.
+
+**Verificado en local** en solo lectura contra producción:
+- catálogo de 14,767 SKUs en 370 páginas;
+- búsqueda de «cafetera»;
+- página 2;
+- `?semana=2026-09-21` (Week 39, 100 SKUs) y «Ver todos los SKUs».
+
 ### v0.581.0 — El lote del Checklist se ve en el Catálogo Maestro, y los atributos y la matriz se llenan en la misma pantalla
 
 Brandon, 28-sep: *"los skus que se carguen en el check list también se verán reflejados en el catálogo maestro… podré

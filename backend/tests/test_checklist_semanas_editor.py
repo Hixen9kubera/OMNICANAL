@@ -283,10 +283,85 @@ class MaestroPorSemana(unittest.TestCase):
         r = self.c.get("/api/inventario", params={"semana": "2026-09-21"}).json()
         self.assertEqual((len(r["items"]), r["semana_total"]), (200, 250))
 
-    def test_sin_nada_sigue_el_piloto(self):
-        r = self.c.get("/api/inventario").json()
+    def test_el_piloto_se_pide_aparte(self):
+        r = self.c.get("/api/inventario", params={"piloto": "true"}).json()
         self.assertTrue(r["es_piloto"])
+        self.assertEqual(r["modo"], "piloto")
         self.lote.assert_not_called()
+
+
+class MaestroCatalogo(unittest.TestCase):
+    """Sin filtro, el Maestro enseña TODOS los SKUs (Brandon, 28-sep), una
+    página a la vez: solo se arman en vivo las filas de la página."""
+
+    def setUp(self):
+        from routers import inventario as ruta
+        app = FastAPI()
+        app.include_router(ruta.router)
+        self.c = TestClient(app)
+        self.filas = mock.patch.object(
+            ruta.inv, "filas", side_effect=lambda skus: [{"sku": s} for s in skus]).start()
+        mock.patch.object(ruta.inv, "resumen", return_value={}).start()
+        self.cat = mock.patch.object(ruta.inv, "catalogo",
+                                     return_value=(["A-1", "B-2", "C-3"], 95)).start()
+        self.lote = mock.patch.object(ck, "skus_de_semana").start()
+        self.addCleanup(mock.patch.stopall)
+
+    def test_sin_nada_es_el_catalogo_completo(self):
+        r = self.c.get("/api/inventario").json()
+        self.assertEqual((r["modo"], r["es_piloto"]), ("catalogo", False))
+        self.assertEqual([f["sku"] for f in r["items"]], ["A-1", "B-2", "C-3"])
+        self.assertEqual((r["catalogo_total"], r["pagina"], r["por_pagina"], r["paginas"]),
+                         (95, 1, 40, 3))
+        self.cat.assert_called_once_with(1, 40, None)
+        self.lote.assert_not_called()
+
+    def test_pagina_y_busqueda_viajan_al_servidor(self):
+        r = self.c.get("/api/inventario", params={"pagina": 3, "q": " cafetera "}).json()
+        self.cat.assert_called_once_with(3, 40, " cafetera ")
+        self.assertEqual((r["pagina"], r["q"]), (3, "cafetera"))
+
+    def test_pagina_vacia_no_arma_filas(self):
+        self.cat.return_value = ([], 95)
+        r = self.c.get("/api/inventario", params={"pagina": 99}).json()
+        self.assertEqual(r["items"], [])
+        self.filas.assert_not_called()
+
+    def test_la_semana_y_los_skus_mandan_sobre_el_catalogo(self):
+        self.lote.return_value = ["W-1"]
+        self.c.get("/api/inventario", params={"semana": "2026-09-21"})
+        self.c.get("/api/inventario", params={"skus": "Z-9"})
+        self.cat.assert_not_called()
+
+
+class CatalogoSql(unittest.TestCase):
+    def test_pagina_busqueda_y_comodines(self):
+        from services import inventario_maestro as inv
+        consultas = []
+
+        def uno(sql, params=None):
+            consultas.append((sql, params))
+            return {"n": 81}
+
+        def todos(sql, params=None):
+            consultas.append((sql, params))
+            return [{"sku": "ORG-1"}]
+
+        with mock.patch.object(inv.sdb, "fetch_one", side_effect=uno),              mock.patch.object(inv.sdb, "fetch_all", side_effect=todos):
+            skus, total = inv.catalogo(3, 40, "50%_x")
+        self.assertEqual((skus, total), (["ORG-1"], 81))
+        (sql_n, p_n), (sql_s, p_s) = consultas
+        self.assertIn("wc_id is not null", sql_n)
+        # El «%» y el «_» que escribió la persona no son comodines.
+        self.assertEqual(p_n, (r"%50\%\_x%", r"%50\%\_x%"))
+        self.assertEqual(p_s[-2:], (40, 80))                 # página 3 = offset 80
+        self.assertIn("order by sku", sql_s)
+
+    def test_topes(self):
+        from services import inventario_maestro as inv
+        with mock.patch.object(inv.sdb, "fetch_one", return_value={"n": 0}),              mock.patch.object(inv.sdb, "fetch_all", return_value=[]) as todos:
+            inv.catalogo(0, 5000, None)
+        self.assertEqual(todos.call_args.args[1][-2:], (inv.POR_PAGINA_MAX, 0))
 
 
 if __name__ == "__main__":

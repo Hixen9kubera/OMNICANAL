@@ -47,7 +47,7 @@ import InventarioPestanas from "@/components/InventarioPestanas";
 import SelectorSemana from "@/components/SelectorSemana";
 import {
   guardarSpecsCanal, listarInventario, mensajeDeError, movimientosInventario,
-  semanasChecklist, specsCanal,
+  specsCanal,
 } from "@/lib/api";
 import type {
   ClaveEtapa, ClavePunto, ContenedorTabla, Cuadre, EstadoEtapa, EstadoPunto, FilaInventario,
@@ -277,8 +277,9 @@ export default function InventarioPage() {
   const [abierto, setAbierto] = useState<FilaInventario | null>(null);
   const [traza, setTraza] = useState<FilaInventario | null>(null);
   // El LOTE del Checklist de almacén que se está viendo (el lunes de su
-  // semana). undefined = todavía no se decide (se lee la URL o la última
-  // semana cargada); null = el piloto de siempre.
+  // semana), o null: SIN FILTRO SE VE EL CATÁLOGO COMPLETO (Brandon, 28-sep:
+  // «sin filtro aparecerá todos los SKUS»). undefined = todavía no se lee la
+  // URL (un instante, al montar).
   const [semana, setSemana] = useState<string | null | undefined>(undefined);
 
   useEffect(() => {
@@ -286,19 +287,17 @@ export default function InventarioPage() {
     // Se lee de window y no con useSearchParams: así la página no necesita un
     // límite de Suspense.
     const deUrl = new URLSearchParams(window.location.search).get("semana");
-    if (deUrl && /^\d{4}-\d{2}-\d{2}$/.test(deUrl)) { setSemana(deUrl); return; }
-    // Sin nada en la URL, la última semana que almacén cargó: los SKUs del
-    // Checklist son los que se trabajan esa semana. Si no hay, el piloto.
-    // Solo si nadie eligió mientras tanto: la respuesta puede llegar después
-    // de que la persona ya escogió otra semana o volvió al piloto.
-    let vivo = true;
-    semanasChecklist()
-      .then((d) => {
-        if (vivo) setSemana((s) => (s === undefined ? (d.ok ? d.ultima_cargada : null) : s));
-      })
-      .catch(() => { if (vivo) setSemana((s) => (s === undefined ? null : s)); });
-    return () => { vivo = false; };
+    setSemana(deUrl && /^\d{4}-\d{2}-\d{2}$/.test(deUrl) ? deUrl : null);
   }, []);
+
+  // En el catálogo completo la búsqueda corre en el SERVIDOR, sobre los
+  // ~14,800 SKUs; en una semana o con SKUs escritos filtra lo ya cargado.
+  const modoCatalogo = !filtroSkus && semana === null;
+  const [busquedaServidor, setBusquedaServidor] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setBusquedaServidor(busqueda.trim()), 400);
+    return () => clearTimeout(t);
+  }, [busqueda]);
 
   const elegirSemana = (s: string | null) => {
     setSemana(s);
@@ -331,16 +330,23 @@ export default function InventarioPage() {
   // encima de la semana B que se eligió después.
   const vuelo = useRef<AbortController | null>(null);
 
+  // Lo que decide QUÉ se pide al servidor. En el catálogo, la página y la
+  // búsqueda; fuera de él, fijos (ahí se pagina y se busca en el navegador).
+  const paginaServidor = modoCatalogo ? pagina : 1;
+  const qServidor = modoCatalogo ? busquedaServidor : "";
+
   const cargar = useCallback(() => {
-    if (semana === undefined && !filtroSkus) return;   // aún se decide la semana
-    const clave = filtroSkus ? `skus:${filtroSkus.join("|")}` : `semana:${semana ?? ""}`;
+    if (semana === undefined && !filtroSkus) return;   // aún no se lee la URL
+    const clave = filtroSkus ? `skus:${filtroSkus.join("|")}`
+      : semana ? `semana:${semana}` : `catalogo:${paginaServidor}:${qServidor}`;
     if (pedido.current !== clave) { setDatos(null); pedido.current = clave; }
     vuelo.current?.abort();
     const ctrl = new AbortController();
     vuelo.current = ctrl;
     setCargando(true);
     setError(null);
-    listarInventario(filtroSkus, ctrl.signal, semana)
+    listarInventario(filtroSkus, ctrl.signal, semana,
+                     { pagina: paginaServidor, q: qServidor })
       .then((d) => { if (!ctrl.signal.aborted) setDatos(d); })
       .catch((e: unknown) => {
         if ((e as { name?: string })?.name === "AbortError") return;
@@ -352,7 +358,7 @@ export default function InventarioPage() {
       // tarde y dejaba la tabla vacía diciendo «Sin resultados».
       .finally(() => { if (!ctrl.signal.aborted) setCargando(false); });
     return () => ctrl.abort();
-  }, [filtroSkus, semana]);
+  }, [filtroSkus, semana, paginaServidor, qServidor]);
 
   useEffect(() => cargar(), [cargar]);
 
@@ -374,7 +380,7 @@ export default function InventarioPage() {
       };
       items = items.filter(pruebas[alerta] ?? (() => true));
     }
-    if (busqueda.trim()) {
+    if (busqueda.trim() && datos?.modo !== "catalogo") {
       const q = busqueda.trim().toLowerCase();
       items = items.filter(
         (f) => f.sku.toLowerCase().includes(q) || f.nombre.toLowerCase().includes(q));
@@ -395,9 +401,15 @@ export default function InventarioPage() {
     return [...items].sort(orden_[orden] ?? orden_.piezas);
   }, [datos, alerta, busqueda, bodega, orden]);
 
-  const totalPaginas = Math.max(1, Math.ceil(filtradas.length / POR_PAGINA));
-  const pag = Math.min(pagina, totalPaginas);
-  const visibles = filtradas.slice((pag - 1) * POR_PAGINA, pag * POR_PAGINA);
+  // En el catálogo las páginas son del SERVIDOR (cada una trae sus 40 filas);
+  // en una semana o con SKUs escritos, de lo ya cargado.
+  const esCatalogo = datos?.modo === "catalogo";
+  const totalPaginas = esCatalogo
+    ? Math.max(1, datos?.paginas ?? 1)
+    : Math.max(1, Math.ceil(filtradas.length / POR_PAGINA));
+  const pag = esCatalogo ? (datos?.pagina ?? pagina) : Math.min(pagina, totalPaginas);
+  const visibles = esCatalogo ? filtradas
+    : filtradas.slice((pag - 1) * POR_PAGINA, pag * POR_PAGINA);
   const r = datos?.resumen;
 
   return (
@@ -409,6 +421,8 @@ export default function InventarioPage() {
                 semana={datos?.semana ? {
                   etiqueta: datos.etiqueta ?? "", total: datos.semana_total ?? datos.total,
                   mostrados: datos.total } : null}
+                catalogoTotal={esCatalogo ? datos?.catalogo_total ?? null : null}
+                buscando={esCatalogo ? datos?.q ?? "" : ""}
                 cargando={cargando} onRecargar={cargar} />
 
         {error && (
@@ -418,6 +432,13 @@ export default function InventarioPage() {
           </div>
         )}
 
+        {r && esCatalogo && (
+          <p className="mt-4 text-xs text-slate-500">
+            Las cifras y alertas de abajo son de los <b>{num(datos?.total ?? 0)}</b> SKUs de
+            esta página; el catálogo tiene <b>{num(datos?.catalogo_total ?? 0)}</b>
+            {datos?.q ? <> que coinciden con «{datos.q}»</> : null}.
+          </p>
+        )}
         {r && <Kpis resumen={r} />}
         {r && (
           <BandaAlertas resumen={r} activa={alerta}
@@ -431,14 +452,16 @@ export default function InventarioPage() {
           bodegas={r?.bodegas ?? []}
           orden={orden} setOrden={setOrden}
           hayFiltroSkus={!!filtroSkus}
+          buscaEnCatalogo={modoCatalogo}
           semana={semana ?? null} onSemana={elegirSemana}
         />
 
         <Tabla filas={visibles} cargando={cargando} onAbrir={setAbierto}
                onTraza={setTraza} />
 
-        <Paginacion pagina={pag} total={totalPaginas} skus={filtradas.length}
-                    onPagina={setPagina} />
+        <Paginacion pagina={pag} total={totalPaginas}
+                    skus={esCatalogo ? datos?.catalogo_total ?? 0 : filtradas.length}
+                    onPagina={(p) => { setPagina(p); if (esCatalogo) window.scrollTo({ top: 0 }); }} />
 
         <p className="mt-4 text-xs leading-relaxed text-slate-400">
           Todo se lee en vivo de WooCommerce, Odoo y kubera en cada carga — nada
@@ -458,12 +481,15 @@ export default function InventarioPage() {
 /* ────────────────────────────── el banner (1b) ────────────────────────────── */
 
 function Banner({
-  resumen, esPiloto, semana, cargando, onRecargar,
+  resumen, esPiloto, semana, catalogoTotal, buscando, cargando, onRecargar,
 }: {
   resumen?: InventarioResp["resumen"];
   esPiloto: boolean;
   /** El lote del Checklist que se está viendo. */
   semana: { etiqueta: string; total: number; mostrados: number } | null;
+  /** Sin filtro: cuántos SKUs tiene el catálogo completo. */
+  catalogoTotal: number | null;
+  buscando: string;
   cargando: boolean;
   onRecargar: () => void;
 }) {
@@ -483,6 +509,13 @@ function Banner({
             {esPiloto && (
               <span className="rounded-full bg-white/20 px-2.5 py-1 text-xs font-bold">
                 piloto · 10 SKUs
+              </span>
+            )}
+            {catalogoTotal !== null && (
+              <span className="rounded-full bg-white/20 px-2.5 py-1 text-xs font-bold"
+                    title="Todos los SKUs de WooCommerce (padres y variaciones) según kubera">
+                {buscando ? `«${buscando}» · ${num(catalogoTotal)} SKUs`
+                  : `Catálogo completo · ${num(catalogoTotal)} SKUs`}
               </span>
             )}
             {semana && (
@@ -644,14 +677,16 @@ function BandaAlertas({
 
 function Herramientas({
   busqueda, setBusqueda, skusInput, setSkusInput, bodega, setBodega, bodegas,
-  orden, setOrden, hayFiltroSkus, semana, onSemana,
+  orden, setOrden, hayFiltroSkus, buscaEnCatalogo, semana, onSemana,
 }: {
   busqueda: string; setBusqueda: (v: string) => void;
   skusInput: string; setSkusInput: (v: string) => void;
   bodega: string; setBodega: (v: string) => void; bodegas: string[];
   orden: string; setOrden: (v: string) => void;
   hayFiltroSkus: boolean;
-  /** El lunes del lote del Checklist que se ve; null = el piloto. */
+  /** Sin filtro, la búsqueda corre sobre TODO el catálogo (en el servidor). */
+  buscaEnCatalogo: boolean;
+  /** El lunes del lote del Checklist que se ve; null = todo el catálogo. */
   semana: string | null;
   onSemana: (s: string | null) => void;
 }) {
@@ -663,7 +698,9 @@ function Herramientas({
         <PackageSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
         <input
           value={busqueda} onChange={(e) => setBusqueda(e.target.value)}
-          placeholder="SKU o nombre…"
+          placeholder={buscaEnCatalogo ? "Buscar en todo el catálogo…" : "SKU o nombre…"}
+          title={buscaEnCatalogo ? "Busca por SKU o nombre en los ~14,800 SKUs del catálogo"
+            : "Filtra por SKU o nombre lo que se está viendo"}
           className={`${campo} w-56 pl-9`}
         />
       </div>
@@ -674,7 +711,7 @@ function Herramientas({
       <input
         value={skusInput} onChange={(e) => setSkusInput(e.target.value)}
         placeholder="Filtrar SKUs: TEC-0001, ORG-0885…"
-        title="Trae del backend exactamente estos SKUs (manda sobre la semana). Vacío = la semana elegida."
+        title="Trae del backend exactamente estos SKUs (manda sobre la semana). Vacío = todo el catálogo, o la semana elegida."
         className={`${campo} w-72`}
       />
       {/* Solo se ofrecen las bodegas que APARECEN en las filas que se estan
@@ -693,8 +730,9 @@ function Herramientas({
         <button
           type="button" onClick={() => { setSkusInput(""); onSemana(null); }}
           className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-500 hover:bg-slate-50"
+          title="Quitar el filtro de semana o de SKUs"
         >
-          Volver al piloto
+          Ver todos los SKUs
         </button>
       )}
 

@@ -2327,6 +2327,15 @@ export interface InventarioResp {
   piloto: string[];
   es_piloto: boolean;
   resumen: ResumenInventario;
+  /** Qué se pidió: el catálogo completo (paginado), una semana del Checklist,
+   *  unos SKUs exactos o la sonda del piloto. */
+  modo?: "catalogo" | "semana" | "skus" | "piloto";
+  /** Modo catálogo: el total del catálogo (con la búsqueda aplicada) y la página. */
+  catalogo_total?: number;
+  pagina?: number;
+  por_pagina?: number;
+  paginas?: number;
+  q?: string;
   /** Con `?semana=`: el lunes del lote del Checklist que se está viendo. */
   semana?: string;
   etiqueta?: string;

@@ -139,6 +139,51 @@ REFERENCIA: tuple[str, ...] = ("MUE-0135-NEG", "TEC-0008-AMR", "TEC-0370-NEG",
                               "ORG-0863-ROS")
 
 # ─────────────────────────────────────────────────────────────────────────────
+# EL CATÁLOGO COMPLETO (Brandon, 28-sep: «aparecerán TODOS LOS SKUS»)
+# ─────────────────────────────────────────────────────────────────────────────
+# Sin filtro, la pestaña enseña el catálogo entero y la semana del Checklist es
+# solo un filtro. El universo es el de la cabecera —«la fila es el SKU»: padres
+# y variaciones de WooCommerce— y se lee de kubera: `core.products` con `wc_id`
+# (14,767 el 28-sep; sin `wc_id` quedan 1,401 fantasmas `packing_list_only` y
+# `marketplace_only` que no existen en Woo ni como producto activo en Odoo).
+#
+# SE PAGINA EN EL SERVIDOR: cada fila cruza Odoo, Woo y kubera en vivo, así que
+# solo se arman las de la página que se ve. La búsqueda por SKU o nombre corre
+# aquí, sobre el catálogo entero; el orden es por SKU.
+POR_PAGINA = 40
+POR_PAGINA_MAX = 100
+
+
+def _patron_like(texto: str) -> str:
+    """«%texto%» con los comodines de LIKE escapados: buscar «50%» o «ORG_1»
+    no debe volverse un comodín."""
+    limpio = texto.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{limpio}%"
+
+
+def catalogo(pagina: int = 1, por_pagina: int = POR_PAGINA,
+             q: str | None = None) -> tuple[list[str], int]:
+    """(SKUs de la página, total del catálogo con la búsqueda aplicada)."""
+    por_pagina = max(1, min(int(por_pagina or POR_PAGINA), POR_PAGINA_MAX))
+    pagina = max(1, int(pagina or 1))
+    donde = "wc_id is not null"
+    params: list[Any] = []
+    q = (q or "").strip()
+    if q:
+        donde += " and (sku::text ilike %s or name ilike %s)"
+        patron = _patron_like(q)
+        params += [patron, patron]
+    total = int((sdb.fetch_one(
+        f"select count(*) as n from core.products where {donde}", tuple(params)) or {}
+    ).get("n") or 0)
+    skus = [r["sku"] for r in sdb.fetch_all(
+        f"select sku::text as sku from core.products where {donde} "
+        f"order by sku limit %s offset %s",
+        tuple(params) + (por_pagina, (pagina - 1) * por_pagina))]
+    return skus, total
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # LA TABLA
 # ─────────────────────────────────────────────────────────────────────────────
 

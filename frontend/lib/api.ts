@@ -1677,10 +1677,16 @@ export function listarInventario(
   signal?: AbortSignal,
   /** El lote del Checklist de esa semana. Los `skus` escritos mandan sobre él. */
   semana?: string | null,
+  /** Sin skus ni semana: la página del CATÁLOGO COMPLETO y su búsqueda. */
+  catalogo?: { pagina: number; q?: string },
 ): Promise<InventarioResp> {
   const qs = new URLSearchParams();
   if (skus?.length) qs.set("skus", skus.join(","));
   else if (semana) qs.set("semana", semana);
+  else if (catalogo) {
+    qs.set("pagina", String(catalogo.pagina));
+    if (catalogo.q?.trim()) qs.set("q", catalogo.q.trim());
+  }
   const cola = qs.toString();
   return getJSON(`/api/inventario${cola ? `?${cola}` : ""}`, signal);
 }
