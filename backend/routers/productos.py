@@ -1154,6 +1154,14 @@ async def _categoria_del_canal(sku: str, canal: str) -> str | None:
             # equivocada devuelve cero filas SIN dar error.
             from services import tiktok_panel
             return await asyncio.to_thread(tiktok_panel.categoria_de, sku)
+        if canal == "walmart":
+            # La MISMA resolución que el botón de publicar (panel > reglas). Sin
+            # esta rama el semáforo de Walmart recibía None y medía solo los
+            # campos comunes: nunca los del bloque `Visible` de su categoría,
+            # que son los que tumban el artículo.
+            from services import publicar_walmart
+            r = await publicar_walmart.categoria_de_sku(sku)
+            return r.get("category_id") or None
     except Exception as exc:  # noqa: BLE001
         log.warning("No se pudo resolver la categoría de %s en %s: %s", sku, canal, exc)
     return None
@@ -1379,6 +1387,55 @@ def leer_categoria_temu(sku: str):
                        "where channel_id='temu' and category_id=%s", (cid,)) or [{}])[0]
     return {"origen": "canal", "category_id": cid,
             "name": f.get("name"), "path": f.get("path")}
+
+
+# ── Y para WALMART ───────────────────────────────────────────────────────────
+# Mismo contrato que Temu y TikTok, con dos diferencias que viven en
+# `walmart_panel`: no hay recomendador del canal (la IA elige entre las 75
+# categorías del feed, descritas por sus campos propios) y una categoría SIN
+# exención se puede elegir —es la verdad sobre el producto— pero no se publica.
+
+@router.get("/categorias/walmart")
+def buscar_categorias_walmart(q: str = Query(..., min_length=2),
+                              limite: int = Query(25, ge=1, le=80)):
+    """Categorías del feed de Walmart por nombre o por lo que venden."""
+    from services import walmart_panel
+    return {"canal": "walmart",
+            "resultados": walmart_panel.buscar_categorias(q, limite)}
+
+
+@router.post("/{sku:path}/canal/walmart/categoria")
+def guardar_categoria_walmart(sku: str, req: CategoriaCanalReq):
+    """Guarda la categoría de Walmart elegida en el panel. Manda sobre las reglas."""
+    from services import walmart_panel
+    r = walmart_panel.guardar_categoria(sku, req.categoria_id.strip())
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("motivo") or "No se pudo guardar.")
+    return r
+
+
+@router.get("/{sku:path}/canal/walmart/categoria/sugerida")
+async def sugerir_categoria_walmart(sku: str, titulo: str = Query("")):
+    """
+    Categoría RECOMENDADA para el SKU. Sugerencia: NO se guarda sola.
+
+    La IA elige entre las 75 categorías del feed —con permiso de decir que
+    ninguna— sin saber cuáles tienen exención: tiene que decir qué ES el
+    producto. La respuesta trae si la sugerida se puede publicar hoy.
+    """
+    from services import publicar_walmart
+    return await publicar_walmart.sugerir_categoria_de_sku(sku, titulo)
+
+
+@router.get("/{sku:path}/canal/walmart/categoria")
+async def leer_categoria_walmart(sku: str):
+    """
+    Qué categoría usaría HOY el publicador para este SKU y de dónde sale
+    (`panel` / `reglas` / ninguna, con el motivo). Es la misma función que el
+    botón de publicar: el Estudio no puede prometer una y el feed salir con otra.
+    """
+    from services import publicar_walmart
+    return await publicar_walmart.categoria_de_sku(sku)
 
 
 @router.get("/{sku:path}/canales/contenido")

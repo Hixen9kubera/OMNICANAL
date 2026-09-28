@@ -213,10 +213,324 @@ def categoria_esquema(nombre: str | None, categoria_woo: str | None = None,
     # es una regla que se desincroniza.
     if not f"{nombre or ''} {categoria_woo or ''}".strip() and not sku:
         return None
+    # Ahora con la elección del panel primero, igual que el botón de publicar:
+    # `resolver_categoria` es la precedencia completa, `clasificar` solo la
+    # mitad automática.
     try:
-        from services.publicar_walmart import clasificar
+        from services.publicar_walmart import resolver_categoria
     except Exception as exc:  # noqa: BLE001
         log.warning("walmart_panel: no se pudo leer la config del publicador: %s", exc)
         return None
-    _clave, cfg, _motivo = clasificar(sku or "", nombre or "", categoria_woo or "")
+    _clave, cfg, _motivo, _origen = resolver_categoria(
+        sku or "", nombre or "", categoria_woo or "")
     return cfg.get("clave_visible") if cfg else None
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# EL SELECTOR DE CATEGORÍA — el que Walmart no tenía (28-sep-2026)
+# ═════════════════════════════════════════════════════════════════════════════
+# Amazon, TikTok y Temu tenían su selector en el Estudio. Walmart decidía la
+# categoría A CIEGAS al publicar, con patrones de título y prefijos de SKU: lo
+# que no casaba con ninguna regla se rechazaba con "ninguna categoría con
+# exención aplica", aunque la hubiera. Con 16 categorías autorizadas eso deja
+# de escalar — y las reglas ya fallaban donde el prefijo miente (ORG-0245-MUL
+# es un inflable de Halloween).
+#
+# MISMO CONTRATO QUE TEMU Y TIKTOK, con una diferencia de fondo:
+#   · Allá el CANAL propone candidatas (`category.recommend`) y la IA elige
+#     entre ellas. **Walmart MX no tiene recomendador**: la taxonomía y el spec
+#     por API son "US only". Pero sus categorías de feed son solo 75, así que
+#     la IA elige entre TODAS — descritas por los campos que cada una pide
+#     ("Firmeza del colchón", "Tipo de equipaje"), que es lo que dice qué se
+#     vende ahí. Con el nombre a secas, "Accesorios para bebés" parecía
+#     «Portadores y Accesorios»… que es de maletas.
+#   · La IA NO sabe cuáles tienen exención, a propósito: tiene que decir qué ES
+#     el producto, no dónde hay permiso. Si lo que es no tiene exención, el
+#     panel lo dice y no publica — en vez de meterlo en otra categoría.
+#   · La sugerencia NO se guarda sola (regla 2): se propone, y una persona la
+#     acepta. Recién entonces se escribe con `source='panel'`, y desde ahí
+#     manda sobre las reglas en el publicador, la IA y el semáforo.
+
+import time as _time  # noqa: E402
+
+_CACHE: dict[str, Any] = {}
+_TTL = 3600   # el catálogo solo cambia cuando corre el cargador del esquema
+
+
+def _estado_exencion() -> dict[str, dict[str, Any]]:
+    """Por etiqueta: si se puede publicar, con qué evidencia y folio. Sale del
+    CÓDIGO (`CATEGORIAS_AUTORIZADAS`), no de `channel.categories.disponibilidad`,
+    que se escribió una sola vez y se queda vieja en cuanto llega un ticket."""
+    from scripts.publicar_walmart import (CATEGORIAS_AUTORIZADAS,
+                                          CATEGORIAS_POR_CONFIRMAR)
+    out: dict[str, dict[str, Any]] = {}
+    for clave, c in CATEGORIAS_POR_CONFIRMAR.items():
+        out[c["clave_visible"]] = {
+            "autorizada": False, "sub_category": clave,
+            "estado": ("negada" if str(c.get("evidencia", "")).startswith("❌")
+                       else "sin_exencion"),
+            "nota": c.get("que_falta")}
+    for clave, c in CATEGORIAS_AUTORIZADAS.items():
+        out[c["clave_visible"]] = {
+            "autorizada": True, "sub_category": clave,
+            "estado": "probada" if c.get("prueba") == "feed" else "por_ticket",
+            "folio": c.get("folio_exencion"), "nota": None}
+    return out
+
+
+def _filas_esquema() -> list[dict[str, Any]]:
+    """Las filas del bloque `Visible` de las 75 categorías (cacheadas)."""
+    ahora = _time.time()
+    if _CACHE.get("filas") and ahora - _CACHE.get("filas_t", 0) < _TTL:
+        return _CACHE["filas"]
+    filas = sdb.fetch_all(
+        """select categoria_id as cat, campo,
+                  coalesce(valores_permitidos->>'etiqueta_es', '') as et
+             from channel.field_requirements
+            where canal = %(c)s and categoria_id <> '*'
+              and coalesce(valores_permitidos->>'bloque', 'Visible') = 'Visible'""",
+        {"c": CANAL})
+    _CACHE["filas"], _CACHE["filas_t"] = filas, ahora
+    return filas
+
+
+def catalogo_categorias() -> list[dict[str, Any]]:
+    """
+    Las categorías del feed de Walmart, cada una con su estado de exención y
+    los campos PROPIOS que la describen. Misma fuente que el semáforo
+    (`channel.field_requirements`): si el selector ofreciera una categoría sin
+    requisitos cargados, el semáforo no tendría con qué medirla.
+    """
+    from collections import Counter, defaultdict
+    try:
+        filas = _filas_esquema()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("walmart_panel.catalogo_categorias falló: %s", exc)
+        return []
+    por: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    frec: Counter = Counter()
+    for f in filas:
+        por[f["cat"]].append((f["campo"], (f["et"] or "").strip()))
+        frec[f["campo"]] += 1
+    # "Propio" = aparece en pocas categorías. `color` o `countPerPack` están en
+    # casi todas y no dicen nada; "Firmeza del colchón" dice exactamente qué es.
+    umbral = max(3, int(len(por) * 0.12))
+    estado = _estado_exencion()
+    out = []
+    for cat in sorted(por):
+        propios = sorted(((c, e) for c, e in por[cat] if e and frec[c] <= umbral),
+                         key=lambda x: frec[x[0]])
+        info = estado.get(cat, {"autorizada": False, "estado": "sin_exencion"})
+        out.append({"category_id": cat, "name": cat, "path": cat,
+                    "describe": ", ".join(e for _, e in propios[:7]),
+                    **info})
+    return out
+
+
+def buscar_categorias(q: str, limite: int = 25) -> list[dict[str, Any]]:
+    """Por nombre o por lo que vende, sin acentos. Las autorizadas primero."""
+    import unicodedata
+
+    def plano(t: str) -> str:
+        return "".join(c for c in unicodedata.normalize("NFD", (t or "").lower())
+                       if unicodedata.category(c) != "Mn")
+    q = plano((q or "").strip())
+    if len(q) < 2:
+        return []
+    hits = [c for c in catalogo_categorias()
+            if q in plano(c["name"]) or q in plano(c.get("describe") or "")]
+    hits.sort(key=lambda c: (not c.get("autorizada"),
+                             q not in plano(c["name"]), c["name"]))
+    return hits[:limite]
+
+
+def categoria_elegida(sku: str) -> str | None:
+    """La categoría que eligió una PERSONA en el panel para ese SKU, o None."""
+    try:
+        filas = sdb.fetch_all(
+            """select category_id from channel.product_category
+                where channel_id = %s and sku = %s::citext""", (CANAL, sku))
+        elegida = (filas or [{}])[0].get("category_id")
+        return str(elegida) if elegida else None
+    except Exception as exc:  # noqa: BLE001 — sin elección legible, deciden las reglas
+        log.warning("walmart_panel.categoria_elegida(%s): %s", sku, exc)
+        return None
+
+
+def guardar_categoria(sku: str, etiqueta: str) -> dict[str, Any]:
+    """
+    La categoría de Walmart ELEGIDA EN EL PANEL. Manda sobre las reglas.
+
+    Se acepta aunque no tenga exención: la persona está diciendo qué ES el
+    producto, y eso es cierto con o sin ticket. El publicador se niega a
+    mandarla y dice qué falta — pero no la cambia por otra.
+    """
+    etiqueta = (etiqueta or "").strip()
+    cats = {c["category_id"]: c for c in catalogo_categorias()}
+    if etiqueta not in cats:
+        return {"ok": False,
+                "motivo": f"«{etiqueta}» no es una categoría del feed de Walmart. "
+                          f"Ojo con los acentos: la etiqueta tiene que ser literal."}
+    try:
+        sdb.execute(
+            """insert into channel.product_category
+                 (sku, channel_id, category_id, source, updated_at)
+               values (%s::citext, %s, %s, 'panel', now())
+               on conflict (sku, channel_id) do update set
+                 category_id = excluded.category_id, source = 'panel',
+                 updated_at = now()""",
+            (sku, CANAL, etiqueta))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("walmart_panel.guardar_categoria(%s): %s", sku, exc)
+        return {"ok": False, "motivo": str(exc)}
+    c = cats[etiqueta]
+    return {"ok": True, "sku": sku, "categoria_id": etiqueta, "nombre": etiqueta,
+            "path": etiqueta, "autorizada": c.get("autorizada", False),
+            "aviso": (None if c.get("autorizada") else
+                      f"Guardada, pero «{etiqueta}» NO tiene exención de UPC: el "
+                      f"publicador no la va a mandar hasta que llegue el ticket.")}
+
+
+def categoria_actual(sku: str, nombre: str = "", categorias_woo: str = ""
+                     ) -> dict[str, Any]:
+    """
+    Qué categoría usaría HOY el publicador para este SKU, y de dónde sale:
+    `panel` (alguien la eligió), `reglas` (patrones / prefijo) o ninguna — y en
+    ese caso, por qué. Es la MISMA función que usa el botón de publicar, así
+    que el Estudio no puede prometer una categoría y el feed salir con otra.
+    """
+    from services.publicar_walmart import resolver_categoria
+    elegida = categoria_elegida(sku)
+    _clave, cfg, motivo, origen = resolver_categoria(sku, nombre, categorias_woo)
+    etiqueta = cfg["clave_visible"] if cfg else elegida
+    info = _estado_exencion().get(etiqueta or "", {})
+    return {"origen": origen or None, "category_id": etiqueta, "name": etiqueta,
+            "path": etiqueta, "autorizada": bool(cfg),
+            "estado": info.get("estado"), "folio": info.get("folio"),
+            "motivo": motivo}
+
+
+_PROMPT_CAT = """Eres catalogador de productos para Walmart México.
+
+Clasifica el producto en UNA de las categorías del feed de Walmart. Junto a
+cada categoría van los atributos que Walmart pide SOLO en ella: eso dice qué se
+vende ahí. Úsalos para decidir, no solo el nombre.
+
+PRODUCTO
+  Título: {titulo}
+  Categorías en la tienda propia: {cats}
+  Categoría en Mercado Libre: {ml}
+  Descripción: {desc}
+
+CATEGORÍAS (nombre exacto — lo que la distingue)
+{lista}
+
+REGLAS
+1. Decide por QUÉ ES el producto, no por palabras sueltas del título. Una
+   refacción no va en la categoría del aparato completo. Un disfraz "de bebé"
+   es un disfraz. Una colchoneta de ejercicio no es un colchón.
+2. Copia el nombre EXACTO de la lista, con sus acentos y mayúsculas.
+3. Si ninguna encaja de verdad, devuelve categoria vacía: publicar en la
+   categoría equivocada no da error, el producto queda donde nadie lo busca.
+
+SALIDA — solo JSON:
+{{"categoria": "<nombre exacto o vacío>", "alternativa": "<segunda opción o vacío>",
+  "confianza": 0.0, "motivo": "<una frase>"}}"""
+
+
+def _match_etiqueta(texto: str, cats: dict[str, dict[str, Any]]) -> str | None:
+    """El nombre que devolvió la IA → una categoría REAL, o None.
+
+    LA GARANTÍA NO ES EL PROMPT: un nombre inventado o mal copiado no da error
+    en Walmart — publica en el spec genérico. Se acepta el exacto y, si no, el
+    mismo sin acentos ni mayúsculas; nada más difuso que eso."""
+    import unicodedata
+
+    def plano(t: str) -> str:
+        return "".join(c for c in unicodedata.normalize("NFD", (t or "").strip().lower())
+                       if unicodedata.category(c) != "Mn")
+    texto = (texto or "").strip()
+    if not texto:
+        return None
+    if texto in cats:
+        return texto
+    por_plano = {plano(k): k for k in cats}
+    return por_plano.get(plano(texto))
+
+
+async def sugerir_categoria(sku: str, titulo: str, categorias_woo: str = "",
+                            descripcion: str = "") -> dict[str, Any]:
+    """
+    Una categoría RECOMENDADA para el SKU — sugerencia, no se guarda.
+
+    Devuelve la forma de Temu (`ok`, `sugerida`, `razon`, `ninguna`) para que el
+    Estudio pinte las tres igual, más si la sugerida tiene exención.
+    """
+    import asyncio
+
+    from services import ia_generadores
+
+    titulo = (titulo or "").strip()
+    if not titulo:
+        return {"ok": False, "motivo": "Sin título con el cual clasificar."}
+    catalogo = await asyncio.to_thread(catalogo_categorias)
+    if not catalogo:
+        return {"ok": False, "motivo": "No se pudo leer el catálogo de categorías "
+                                       "de Walmart (channel.field_requirements)."}
+    cats = {c["category_id"]: c for c in catalogo}
+
+    # La categoría de ML es una ELECCIÓN HUMANA de la mayoría del catálogo
+    # (5,536 con `source='panel'`): es la mejor pista que hay sobre qué es el
+    # producto, y no cuesta una llamada.
+    ml = ""
+    try:
+        from services import studio
+        cm = await asyncio.to_thread(studio._categoria_mysql, sku)  # noqa: SLF001
+        if cm:
+            # `_armar_categoria` da `ruta` (a veces vacía) y `niveles`.
+            ml = str(cm.get("ruta") or " > ".join(cm.get("niveles") or []) or "")
+    except Exception as exc:  # noqa: BLE001
+        log.info("walmart_panel.sugerir_categoria(%s): sin categoría de ML (%s)", sku, exc)
+
+    lista = "\n".join(f"- {c['name']}" + (f" — {c['describe']}" if c.get("describe") else "")
+                      for c in catalogo)
+    prompt = _PROMPT_CAT.format(
+        titulo=titulo[:200], cats=(categorias_woo or "—")[:200], ml=ml or "—",
+        desc=(descripcion or "—")[:400], lista=lista)
+    try:
+        r = await asyncio.to_thread(
+            ia_generadores._completar,  # noqa: SLF001
+            "Devuelve SOLO JSON válido.", prompt, 500)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "motivo": f"La IA no contestó: {exc}"}
+    if not r.get("ok"):
+        return {"ok": False, "motivo": r.get("motivo") or "La IA no contestó."}
+    d = ia_generadores._parse_json(r.get("texto", "")) or {}  # noqa: SLF001
+
+    elegida = _match_etiqueta(str(d.get("categoria") or ""), cats)
+    alterna = _match_etiqueta(str(d.get("alternativa") or ""), cats)
+    if alterna == elegida:
+        alterna = None
+    try:
+        confianza = float(d.get("confianza")) if d.get("confianza") is not None else None
+    except (TypeError, ValueError):
+        confianza = None
+
+    def ficha(et: str | None) -> dict[str, Any] | None:
+        if not et:
+            return None
+        c = cats[et]
+        return {"category_id": et, "name": et, "path": et,
+                "autorizada": bool(c.get("autorizada")), "estado": c.get("estado"),
+                "folio": c.get("folio"), "describe": c.get("describe")}
+
+    return {"ok": True, "sku": sku,
+            "sugerida": ficha(elegida), "alternativa": ficha(alterna),
+            "razon": d.get("motivo"), "confianza": confianza,
+            "ninguna": elegida is None,
+            "origen": f"IA ({r.get('proveedor') or r.get('modelo') or 'modelo'}) "
+                      f"sobre las {len(cats)} categorías del feed",
+            # Si la IA contestó un nombre que no existe, se dice — es la señal
+            # de que el prompt o el catálogo necesitan atención.
+            "descartada": (str(d.get("categoria") or "") if (d.get("categoria") and not elegida)
+                           else None)}

@@ -95,6 +95,20 @@ HOST = "https://marketplace.walmartapis.com"
 #                   factura sí, así que vale ponerla bien.
 #   pide_genero   : Disfraces exige `gender`; "Cocina, Decoración y Otros" no.
 #   campos_visible: BLANCA de campos del bloque `Visible`. Ver LA PODA abajo.
+#   prueba        : "feed" = un artículo de esa categoría ya llegó a SUCCESS;
+#                   "ticket" = Walmart lo autorizó POR ESCRITO pero ningún feed
+#                   lo ha confirmado. Son dos certezas distintas: el ticket dice
+#                   que la puerta está abierta, no qué campos exige producción.
+#                   El panel avisa en la vista previa cuando es "ticket".
+#   sat_por_patron: (opcional) pares (regex del título, clave SAT) que afinan
+#                   la clave dentro de una categoría que mezcla productos: en
+#                   «Blancos» un colchón y una sábana no llevan la misma.
+#   excluir       : (opcional) regex sobre el TÍTULO. Si casa, esa categoría NO
+#                   aplica aunque sus patrones sí — el título dice qué ES el
+#                   producto, y las categorías de Woo (heredadas de ML) mienten:
+#                   "Pañales" también agrupa pañales para perro. La aplica
+#                   `clasificar()`, y por él las DOS rutas: el botón del panel y
+#                   la tanda (`candidatos()` decide con la misma función).
 #
 # ═════════════════════════════════════════════════════════════════════════════
 # LA PODA — por qué cada categoría lleva su propia lista de campos
@@ -134,6 +148,7 @@ CATEGORIAS_AUTORIZADAS: dict[str, dict] = {
         # "Uniformes", no ropa genérica: verificado contra el catálogo oficial
         # del SAT (catCFDI_V_4, 52,513 claves).
         "clave_sat": 60141401,
+        "prueba": "feed",                 # SUCCESS desde el 4-ago
         "pide_genero": True,
         "patron_categoria": "isfra|osplay",
         "patron_titulo": "isfra|osplay|allowee",
@@ -147,6 +162,7 @@ CATEGORIAS_AUTORIZADAS: dict[str, dict] = {
         "clave_visible": "Cocina, Decoración y Otros",
         "folio_exencion": "15751007",     # 5-ago-2026
         "clave_sat": 52151600,            # "Utensilios de cocina domésticos"
+        "prueba": "feed",                 # SUCCESS desde el 5-ago
         # OJO — el esquema PUBLICADO (3.19) dice que esta categoría NO pide
         # `gender` ni `size`: su `required` son 7 campos. PRODUCCIÓN DICE OTRA
         # COSA. Con version=3.11 (la que mandamos y funciona), los tres SKUs de
@@ -196,6 +212,7 @@ CATEGORIAS_AUTORIZADAS: dict[str, dict] = {
         # frena la publicación —Walmart solo valida el formato— pero el CFDI
         # sale mal. Afinarla por familia de SKU es trabajo de facturación.
         "clave_sat": 52161500,
+        "prueba": "feed",                 # 182 artículos publicaron el 7-ago
         # `gender` es OPCIONAL aquí y así se mandó en los 182 que publicaron.
         "pide_genero": True,
         "prefijos_sku": ("TEC", "VEH", "VAR", "CORR", "ELEC"),
@@ -230,6 +247,11 @@ CATEGORIAS_AUTORIZADAS: dict[str, dict] = {
         # 60141000 = "Juguetes", clase 6014 del segmento 60 del c_ClaveProdServ
         # (el mismo segmento que 60141401 "Disfraces o accesorios").
         "clave_sat": 60141000,
+        # FEED, no solo ticket: los pilotos del 4-sep (JUGU-0264-ROS, -0201-MUL,
+        # -0035-MUL, -0200-VER) están PUBLISHED en Walmart (medido por
+        # /v3/items el 28-sep). `ops.channel_submissions` los sigue diciendo
+        # "ENVIADO" porque los veredictos de feed no se escriben de vuelta.
+        "prueba": "feed",
         "pide_genero": True,
         # `gender` SÍ es obligatorio aquí — está en el `required` oficial— y es
         # lista CERRADA: Unisex / Niño / Niña / Mujer / Hombre. `_genero()` ya
@@ -268,6 +290,12 @@ CATEGORIAS_AUTORIZADAS: dict[str, dict] = {
         # 53102600 = "Ropa de dormir", clase del segmento 53. Es la clase de
         # 53102601 (pijamas de niño) y 53102602 (de hombre).
         "clave_sat": 53102600,
+        # FEED: la pijama ROP-0417-ROS está PUBLISHED (productType "Pijamas",
+        # /v3/items, 28-sep). Ojo con la razón que se dio el 4-sep —"no trajo
+        # el error de UPC sino uno de atributo"—: un error de atributo sale
+        # ANTES de la etapa de UPC, así que eso no probaba nada. Lo que prueba
+        # es que hoy esté publicada.
+        "prueba": "feed",
         "pide_genero": True,
         "patron_categoria": "ijama|amis[oó]n|ropa de dormir",
         "patron_titulo": "ijama|amis[oó]n|ropa de dormir",
@@ -280,6 +308,329 @@ CATEGORIAS_AUTORIZADAS: dict[str, dict] = {
             "countPerPack", "material", "colorCategory", "modelNumber",
             "gender", "activity"),
     },
+
+    # ═════════════════════════════════════════════════════════════════════
+    # LAS DE SEPTIEMBRE — tickets de cinthya garcia, resueltos 16 al 18-sep
+    # ═════════════════════════════════════════════════════════════════════
+    # Cómo se armó la LISTA BLANCA de cada una, y por qué es la MÍNIMA:
+    #
+    #   obligatorios del esquema  +  `size`/`gender` cuando el bloque los tiene
+    #   +  lo MEDIDO en producción  −  lo que producción RECHAZA.  Nada opcional.
+    #
+    # `size` y `gender` van aunque el 3.19 no los pida porque producción ya los
+    # exigió en TRES categorías que el archivo no marcaba (Cocina el 5-ago,
+    # Muebles y Blancos el 19-ago). Y NADA opcional porque un opcional de más no
+    # gana nada y puede tumbar el lote: `modelNumber` existe en el esquema de
+    # casi todas y producción lo rechazó en dos (85/85 muertos el 7-ago).
+    #
+    # Ninguna de estas tiene todavía un feed con SUCCESS (`prueba: "ticket"`):
+    # el primer envío de cada una es un piloto, y la vista previa lo dice.
+    #
+    # ⚠️ DOS TICKETS QUE NO SE MAPEAN POR SU NOMBRE — misma trampa que colchones:
+    #   · "ACCESORIOS PARA BEBÉS" (16296043) NO es «Portadores y Accesorios»:
+    #     ese bloque es de EQUIPAJE (luggageType, bagStyle, isWheeled,
+    #     zipperMaterial). Lo que Walmart autorizó por escrito son las SEIS
+    #     categorías de bebé que nombra el aviso del 17-sep. Esas entran.
+    #   · "COLCHONES" (15822204) no existe como categoría del feed: vive en
+    #     «Blancos». Probado con SUCCESS, ver abajo.
+
+    # ── BLANCOS / COLCHONES (folio 15822204) — PROBADA ───────────────────
+    # Cinthya pidió "COLCHONES" y Walmart contestó "activado para la categoría _
+    # y subcategoría _": los dos campos EN BLANCO, porque "Colchones" es un
+    # departamento de la TIENDA y no una `subCategory` del feed. Sonda del
+    # 19-ago, un SKU por puerta: «Muebles» -> "not authorized" en 3 minutos;
+    # «Blancos» -> SUCCESS. CAM-0030-MAT y CAM-0030-QUE publicaron y Walmart los
+    # estanteó en "Colchones y Blancos > Colchones > Matrimoniales / Queen
+    # Size". Este renglón se escribió ese día y se perdió en una sincronización:
+    # no había llegado a `main` hasta ahora.
+    "bedding": {
+        "clave_visible": "Blancos",
+        "folio_exencion": "15822204",     # 11-ago-2026, pedido: COLCHONES
+        # 52121500 = "Ropa de cama" (catCFDI_V_4). OJO: en agosto se anotó como
+        # "Colchones y somieres" y es falso — por eso `sat_por_patron`.
+        "clave_sat": 52121500,
+        "sat_por_patron": (
+            # 56101508 = "Colchones o sets para dormir".
+            (r"colch[oó]n", 56101508),
+        ),
+        "prueba": "feed",
+        "pide_genero": True,
+        "material_default": "Poliéster",
+        # "colchoneta" (de ejercicio) NO es colchón: `colch[oó]n` tiene que ir
+        # seguido de espacio, plural, coma o fin — la colchoneta cae en Deportes.
+        # "colcha" va entre espacios: suelta casaba dentro de "a-colcha-da" y
+        # se llevaba sillas de campamento y fundas de laptop "acolchadas".
+        "patron_categoria": ("colch[oó]n( |es|,|$)|almohada|s[aá]bana|edred[oó]n|"
+                             "cobija|(^| )colchas?( |,|$)|cubrecama"),
+        "patron_titulo": ("colch[oó]n( |es|,|$)|almohada|s[aá]bana|edred[oó]n|"
+                          "cobija|(^| )colchas?( |,|$)|cubrecama"),
+        # "Bolsas al vacío para ropa y edredones" es almacenamiento; la
+        # colchoneta "para acampar" es de campismo; el juguete "palma calmante"
+        # que Woo archiva en "Almohadas para Bebés" es un juguete.
+        "excluir": ("al vac[ií]o|organizador|almacenamiento|juguete|acampar|camping|"
+                    "perro|gato|mascota"),
+        # Exactamente lo que llevaba CAM-0030-QUE, que publicó. `size` y `gender`
+        # los exige producción aunque el 3.19 no los marque: sin ellos la primera
+        # sonda murió en "`Talla` y `Género` son obligatorios".
+        "campos_visible": (
+            "countPerPack", "material", "colorCategory", "modelNumber",
+            "assembledProductLength", "assembledProductWidth",
+            "assembledProductHeight", "assembledProductWeight",
+            "size", "gender"),
+    },
+
+    # ── BEBÉ — las SEIS del aviso del 17-sep ─────────────────────────────
+    # Autorizadas por escrito en un solo aviso ("ya cuenta con la autorización
+    # para realizar cargas sin UPC para las categorías: …"). El ticket que las
+    # pidió fue "ACCESORIOS PARA BEBÉS" (16296043).
+    #
+    # Los patrones de TÍTULO son estrechos a propósito: "bebé" solo no dice
+    # nada ("Disfraz de bebé dinosaurio" es un disfraz), y una categoría de bebé
+    # mal elegida publica sin dar error. Lo que los patrones no alcancen lo
+    # resuelve el selector del Estudio, que sugiere con IA y guarda cuando una
+    # persona acepta.
+    "child_car_seats": {
+        "clave_visible": "Transporte del bebé",
+        "folio_exencion": "aviso 17-sep-2026 (ticket 16296043)",
+        "clave_sat": 56101800,            # "Accesorios y muebles de bebé y niño"
+        "prueba": "ticket",
+        "pide_genero": True,
+        "patron_categoria": "carriola|carreola|portabeb[eé]",
+        # Sin "andadera": su bloque es de carriolas, portabebés y autoasientos
+        # (Estilo del Transporte, sistema LATCH), y una andadera no es nada de
+        # eso. Si alguien la quiere aquí, la elige en el selector.
+        "patron_titulo": ("carriola|carreola|cochecito|portabeb[eé]|autoasiento|"
+                          "asiento (de|para) (auto|carro|coche) (para|de) beb|"
+                          "arn[eé]s para (caminar|beb|ni[ñn])"),
+        "excluir": ("triciclo|bicicleta|montable|patineta|scooter|"
+                    "mu[ñn]ec[oa]|perro|gato|mascota"),
+        "campos_visible": (
+            "countPerPack", "material", "colorCategory",
+            "assembledProductLength", "assembledProductWidth",
+            "assembledProductHeight", "assembledProductWeight",
+            "size", "gender"),
+    },
+    "baby_furniture": {
+        "clave_visible": "Muebles del bebé",
+        "folio_exencion": "aviso 17-sep-2026 (ticket 16296043)",
+        "clave_sat": 56101800,            # "Accesorios y muebles de bebé y niño"
+        "prueba": "ticket",
+        "pide_genero": True,
+        "patron_categoria": "muebles? (para|de) beb",
+        "patron_titulo": ("(^| )cunas?( |,|$)|corral (para|de) beb|cambiador de pa[ñn]al|"
+                          "mois[eé]s|periquera|silla alta (para|de) beb|"
+                          "mecedora (para|de) beb"),
+        "excluir": "mu[ñn]ec[oa]|perro|gato|mascota",
+        "campos_visible": (
+            "countPerPack", "material", "colorCategory",
+            "assembledProductLength", "assembledProductWidth",
+            "assembledProductHeight", "assembledProductWeight",
+            "size", "gender"),
+    },
+    "baby_toys": {
+        "clave_visible": "Juguetes de bebé",
+        "folio_exencion": "aviso 17-sep-2026 (ticket 16296043)",
+        "clave_sat": 60141000,            # "Juguetes"
+        "prueba": "ticket",
+        "pide_genero": True,
+        # `educationalFocus` es OBLIGATORIO en este bloque (y SOLO en este):
+        # texto libre, lista de al menos uno. Sin él cada artículo rebotaría con
+        # "`Enfoque Educativo` is a required attribute". El valor sale del
+        # ejemplo del propio esquema y la IA lo afina al generar el contenido.
+        "educational_focus_default": "Habilidades motoras",
+        "patron_categoria": "juguetes? (para|de) beb",
+        "patron_titulo": ("mordedera|mordedor|sonaja|gimnasio (para|de) beb|"
+                          "m[oó]vil (para|de) cuna|juguetes? (para|de) beb"),
+        # "Set 7 juguetes para perro cuerda mordedor": el mordedor es de perro.
+        "excluir": "perro|gato|mascota",
+        "campos_visible": (
+            "countPerPack", "material", "colorCategory",
+            "assembledProductLength", "assembledProductWidth",
+            "assembledProductHeight", "assembledProductWeight",
+            "size", "gender", "educationalFocus"),
+    },
+    "baby_clothing": {
+        "clave_visible": "Ropa de Bebé",     # "Bebé" con MAYÚSCULA: así la escribe el esquema
+        "folio_exencion": "aviso 17-sep-2026 (ticket 16296043)",
+        # 53101605 = "Camisas o blusas para bebé". El SAT no tiene una clase de
+        # "ropa de bebé": reparte por prenda, y esta es la más general.
+        "clave_sat": 53101605,
+        "prueba": "ticket",
+        "pide_genero": True,
+        "patron_categoria": "ropa (para|de) beb",
+        "patron_titulo": ("mameluco|pa[ñn]alero|body (para|de) beb|ropa (para|de) beb|"
+                          "conjunto (para|de) beb|pelele"),
+        "excluir": "mu[ñn]ec[oa]|perro|gato|mascota",
+        # El bloque es CORTO: no tiene medidas, ni `size`, ni `material`. Sus
+        # obligatorios son tres. (La talla de bebé vive en `babyClothingSize`,
+        # opcional y con su propia lista.)
+        "campos_visible": ("countPerPack", "colorCategory", "gender"),
+    },
+    "baby_other": {
+        "clave_visible": "Pañale cuidado del bebé y otro",   # literal del esquema, errata incluida
+        "folio_exencion": "aviso 17-sep-2026 (ticket 16296043)",
+        "clave_sat": 53102305,            # "Pañales para bebé"
+        "prueba": "ticket",
+        "pide_genero": True,
+        "patron_categoria": "pa[ñn]al|cuidado del beb",
+        "patron_titulo": ("pa[ñn]al(es)? (desechable|de tela|para beb)|monitor (para|de) beb|"
+                          "toallitas h[uú]medas|cambiador port[aá]til|aspirador nasal|"
+                          "term[oó]metro (para|de) beb|cortau[ñn]as (para|de) beb|"
+                          "ba[ñn]era (para|de) beb|tina (para|de) beb"),
+        # Woo agrupa en "Pañales" también los pañales para perro.
+        "excluir": "mu[ñn]ec[oa]|perro|gato|mascota",
+        "campos_visible": (
+            "countPerPack", "material", "colorCategory", "size", "gender"),
+    },
+    # Es COMIDA de bebé (sabor, porciones, calorías, nutrientes), no accesorios
+    # para alimentar. Queda autorizada porque lo está, pero SIN patrones: el
+    # catálogo de Kubera no vende alimentos, y un biberón clasificado aquí
+    # saldría con la ficha de un alimento. Solo entra si una persona la elige.
+    "baby_food": {
+        "clave_visible": "Alimentacion del bebé",   # sin acento en "Alimentacion": literal del esquema
+        "folio_exencion": "aviso 17-sep-2026 (ticket 16296043)",
+        "clave_sat": 50193000,            # "Bebidas y Comidas Infantiles"
+        "prueba": "ticket",
+        "pide_genero": False,
+        # Su único obligatorio. Sin `size`: aquí "Unitalla" sería un disparate
+        # publicado en la ficha de un alimento.
+        "campos_visible": ("countPerPack",),
+    },
+
+    # ── ALMACENAMIENTO (ticket 16292474, 16-sep) ─────────────────────────
+    # Los 83 del 7-ago murieron en `'gender' is not a valid field` — el bloque
+    # no lo tiene y producción lo rechaza. Nunca llegaron a la etapa de UPC, así
+    # que hasta este ticket la exención no estaba ni probada ni negada.
+    "storage": {
+        "clave_visible": "Almacenamiento",
+        "folio_exencion": "16292474",     # 16-sep-2026
+        "clave_sat": 24112400,            # "Cofres, armarios y baúles de almacenaje"
+        "prueba": "ticket",
+        "pide_genero": True,              # arma `size`; `gender` lo poda la lista
+        # Por PATRÓN y no por prefijo `ORG`: dentro de ORG hay SKUs reciclados
+        # (ORG-0245-MUL es un inflable de Halloween). Lo que no case con estas
+        # palabras lo resuelve el selector del Estudio.
+        "patron_categoria": "rganizaci[oó]n|lmacenamiento|rganizador",
+        "patron_titulo": ("organizador|cajas? organizadora|cajas? de almacenamiento|"
+                          "contenedor(es)? de almacenamiento|zapatera|bolsas? al vac[ií]o|"
+                          "canastas? organizadora|cesto organizador"),
+        # Su bloque SÍ es de estantes y cajones —"Estilo de estantería",
+        # "Número de Anaqueles", "Número de cajones"—, así que un estante
+        # organizador cabe aquí. Lo que es mueble de sala, cama o asiento es
+        # «Muebles» (sin exención), y el organizador de coche es de autos.
+        #
+        # La categoría de Woo "Organizadores de …" la pone ML a los ACCESORIOS
+        # de cada cosa, no a lo que organiza: medido el 28-sep, por ahí entraban
+        # un fregadero ("Organizadores de Fregaderos"), una bandeja para volante,
+        # un protector de cable, una carpeta de argollas y un estuche de
+        # estetoscopio. El título los saca.
+        "excluir": ("para (tv|televisi[oó]n)|aparador|vajillero|librero|(^| )camas?( |,|$)|"
+                    "cabecera|sof[aá]|sill[oó]n|silla|taburete|"
+                    "carro|coche|cajuela|volante|autom[oó]vil|(^| )auto( |,|$)|"
+                    "^fregadero|tarja|vaso|carpeta|cable|cargador|estetoscopio|"
+                    "funda para|bolsa[^,]{0,25}herramientas|perro|gato|mascota"),
+        "campos_visible": (
+            "countPerPack", "material", "colorCategory",
+            "assembledProductLength", "assembledProductWidth",
+            "assembledProductHeight", "assembledProductWeight", "size"),
+    },
+
+    # ── ELECTRODOMÉSTICOS (ticket 16295669, 16-sep) ───────────────────────
+    # El 7-ago esta puerta dijo "not authorized". Pero esa misma sonda dejó un
+    # dato útil: LLEGÓ a la etapa de UPC, o sea que su juego de campos
+    # (material, colorCategory, medidas, size) ya pasó la validación de campos.
+    # Es el mismo juego que va aquí, sin `modelNumber`.
+    #
+    # Va DESPUÉS de «Electrónicos» a propósito: lo `TEC-*` sigue saliendo por la
+    # puerta probada (182 publicados). Esta cubre lo que no es TEC.
+    "large_appliances": {
+        "clave_visible": "Electrodomésticos",
+        "folio_exencion": "16295669",     # 16-sep-2026
+        "clave_sat": 52141800,            # "Otros electrodomésticos"
+        "sat_por_patron": (
+            (r"refrigerador|congelador|frigobar|minibar|lavavajillas|lavaplatos|"
+             r"estufa|horno|microondas|campana", 52141500),   # "Electrodomésticos para cocina"
+        ),
+        "prueba": "ticket",
+        "pide_genero": True,              # arma `size`; no hay `gender` en el bloque
+        "patron_categoria": "lectrodom[eé]stico|l[ií]nea blanca",
+        # El aparato tiene que ABRIR el título. Con el patrón suelto, 7 de 8
+        # aciertos eran accesorios: "Base rodante para lavadora", "Manguera
+        # para hidrolavadora", "Imán para refrigerador", "Lonchera … apta para
+        # microondas". El bloque pide BTU, carga y etiqueta energética: es de
+        # aparatos, no de lo que se les pone.
+        "patron_titulo": ("^(mini |nuev[oa] |port[aá]til )?(refrigerador|lavadora|"
+                          "secadora de ropa|centro de lavado|estufa|horno de microondas|"
+                          "microondas|lavavajillas|lavaplatos|congelador|frigobar|"
+                          "minibar|campana extractora|calentador de agua|boiler|"
+                          "aire acondicionado|minisplit|calefactor|deshumidificador|"
+                          "purificador de aire)"),
+        "excluir": ("para (lavadora|refrigerador|microondas|estufa)|hidrolavadora|"
+                    "im[aá]n|funda|cubierta|refacci[oó]n|repuesto|filtro|manguera|"
+                    "juguete|camping|acampar"),
+        "campos_visible": (
+            "material", "colorCategory",
+            "assembledProductLength", "assembledProductWidth",
+            "assembledProductHeight", "assembledProductWeight", "size"),
+    },
+
+    # ── ACCESORIOS ELECTRÓNICOS (ticket 16296156, 16-sep) ─────────────────
+    # La puerta que PARECÍA la buena en agosto y nunca se probó: sus 5 feeds de
+    # 85 murieron en `modelNumber` antes de la etapa de UPC. `modelNumber` sigue
+    # FUERA (rechazo medido). No hay `countPerPack` ni `gender` en el bloque.
+    #
+    # Igual que Electrodomésticos: lo `TEC-*` sigue yendo a «Electrónicos» por
+    # prefijo. Esta toma los accesorios que NO son TEC, y los TEC que alguien
+    # mande aquí a mano desde el selector.
+    "electronics_accessories": {
+        "clave_visible": "Accesorios Electrónicos",
+        "folio_exencion": "16296156",     # 16-sep-2026
+        "clave_sat": 52161500,            # "Equipos audiovisuales"
+        "prueba": "ticket",
+        "pide_genero": True,              # arma `size`; `gender` lo poda la lista
+        "patron_categoria": "ccesorios (para )?(celular|electr)|porta ?celular",
+        "patron_titulo": ("funda para (celular|tel[eé]fono|tablet|laptop)|"
+                          "soporte para (celular|tel[eé]fono|tablet)|protector de pantalla|"
+                          "(vidrio|cristal) templado (para|de) (celular|tel[eé]fono|pantalla|"
+                          "iphone|samsung|tablet)|mica (para|de) (celular|tel[eé]fono)|"
+                          "cargador (inal[aá]mbrico|usb|para celular)|"
+                          "protector(es)? de cable|organizador(es)? de cables?|"
+                          "funda[^,]{0,30}(para|de) (laptop|tablet)|"
+                          "cable (usb|tipo c|lightning)|power ?bank|bater[ií]a port[aá]til|"
+                          "hub usb|adaptador usb"),
+        "campos_visible": (
+            "material", "colorCategory",
+            "assembledProductLength", "assembledProductWidth",
+            "assembledProductHeight", "assembledProductWeight", "size"),
+    },
+
+    # ── OTROS DEPORTES Y RECREACIÓN (aviso 17-sep, Paola) ────────────────
+    # La única de septiembre que Walmart nombró literal en la respuesta.
+    "sport_and_recreation_other": {
+        "clave_visible": "Otros Deportes y Recreación",
+        "folio_exencion": "aviso 17-sep-2026 (Seller Support)",
+        "clave_sat": 49221500,            # "Accesorios para deporte"
+        "prueba": "ticket",
+        "pide_genero": True,
+        "patron_categoria": "eportes?|itness|jercicio|ampismo|camping",
+        "patron_titulo": ("yoga|pilates|mancuerna|pesa rusa|kettlebell|"
+                          "(liga|banda)s? de resistencia|cuerda para saltar|colchoneta|"
+                          "tapete (de yoga|de ejercicio)|guantes de box|costal de box|"
+                          "tienda de campa[ñn]a|casa de campa[ñn]a|bolsa de dormir|"
+                          "hamaca|ca[ñn]a de pescar|barra de dominadas|ejercitador|"
+                          "acampar|camping"),
+        # La ropa y el calzado "de yoga" son ropa (su bloque pide talla de
+        # prenda); el masajeador y la faja lumbar, salud. Woo los archiva en
+        # "Ejercitadores" y "Fajas … Abdominales", y el patrón los alcanzaba.
+        "excluir": ("chamarra|sudadera|playera|camiseta|pantal[oó]n|leggings?|"
+                    "calcetas?|calcetines|brasier|sost[eé]n|zapatos?|zapatillas|"
+                    "masajeador|faja|lumbar|beb[eé]|perro|gato|mascota"),
+        "campos_visible": (
+            "countPerPack", "material", "colorCategory",
+            "assembledProductLength", "assembledProductWidth",
+            "assembledProductHeight", "assembledProductWeight",
+            "size", "gender"),
+    },
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -289,33 +640,29 @@ CATEGORIAS_AUTORIZADAS: dict[str, dict] = {
 # como "sí tenemos la exención". Cada renglón dice qué evidencia hay y cuál
 # falta. Un piloto de UN SKU la resuelve; el lote completo NO es un piloto.
 #
-# Los folios 15776196 y 15822204 llegaron SIN categoría especificada en el
-# mensaje, y COLCHONES (cinthya garcia) sigue pendiente. Cualquiera de ellos
-# podría cubrir a los de abajo — pero eso se confirma en Seller Center o con un
-# piloto, no suponiendo.
+# El folio 15822204 (COLCHONES) quedó resuelto con una sonda: abre «Blancos», no
+# «Muebles». El 15776196 sigue sin categoría conocida. Lo de abajo se confirma
+# en Seller Center o con un piloto de un SKU, nunca suponiendo.
 CATEGORIAS_POR_CONFIRMAR: dict[str, dict] = {
     "furniture_other": {
         "clave_visible": "Muebles",
-        "evidencia": "❌ NEGATIVA — 39 SKUs con 'not authorized' el 7-ago 11:25",
-        "que_falta": "ticket de exención para 'Muebles' (¿folio 15822204?)",
+        "evidencia": "❌ NEGATIVA — 39 SKUs con 'not authorized' el 7-ago, y "
+                     "RECONFIRMADA el 19-ago (sonda de colchones: rebotó en 3 min)",
+        "que_falta": "ticket de exención propio para 'Muebles'. El 15822204 NO la "
+                     "cubre: ese abrió «Blancos». Los muebles de BEBÉ sí tienen "
+                     "la suya («Muebles del bebé»)",
         "skus_esperando": 96,
     },
-    "storage": {
-        "clave_visible": "Almacenamiento",
-        "evidencia": "❓ NINGUNA — los 83 murieron en 'gender', antes del UPC",
-        "que_falta": "piloto de 1 SKU sin `gender` (ver campos_visible abajo)",
-        "campos_visible": (
-            "countPerPack", "material", "colorCategory", "modelNumber",
-            "assembledProductLength", "assembledProductWidth",
-            "assembledProductHeight", "assembledProductWeight", "size"),
-        "skus_esperando": 129,
-    },
-    "electronics_accessories": {
-        "clave_visible": "Accesorios Electrónicos",
-        "evidencia": "❓ NINGUNA — 5 feeds de 85 murieron en 'modelNumber'. "
-                     "Es la puerta que PARECÍA la buena y nunca se probó",
-        "que_falta": "no urge: el volumen de electrónica ya entra por "
-                     "'Electrónicos' (health_and_beauty_electronics)",
+    # «Almacenamiento» y «Accesorios Electrónicos» SALIERON de aquí el 28-sep:
+    # tickets 16292474 y 16296156. Ver CATEGORIAS_AUTORIZADAS.
+    #
+    # NO confundir con el ticket "ACCESORIOS PARA BEBÉS" (16296043): esta es la
+    # de EQUIPAJE y bolsos (luggageType, bagStyle, isWheeled). Emparejarla por
+    # el nombre habría publicado maletas con la exención de las de bebé.
+    "carriers_and_accessories_other": {
+        "clave_visible": "Portadores y Accesorios",
+        "evidencia": "❓ NINGUNA — ningún ticket la nombra",
+        "que_falta": "ticket de exención propio si se van a publicar maletas o bolsos",
         "skus_esperando": 0,
     },
     "office_other": {
@@ -528,8 +875,16 @@ def candidatos(cfg: dict | None = None) -> list[str]:
     from services import db, wp_db
 
     cfg = cfg or CATEGORIAS_AUTORIZADAS["costumes"]
-    PATRON_CATEGORIA = cfg["patron_categoria"]
-    PATRON_TITULO = cfg["patron_titulo"]
+    sin_reglas = not (cfg.get("patron_categoria") or cfg.get("patron_titulo")
+                      or cfg.get("prefijos_sku"))
+    if sin_reglas:
+        # «Alimentacion del bebé» no tiene patrones A PROPÓSITO: solo entra lo
+        # que una persona eligió en el selector del Estudio. La tanda no adivina.
+        print(f"«{cfg['clave_visible']}» no tiene reglas: solo entran los SKUs "
+              f"elegidos en el selector del Estudio (o los que pases con --skus).")
+    # Un patrón vacío casaría con TODO en REGEXP; el que falte se neutraliza.
+    PATRON_CATEGORIA = cfg.get("patron_categoria") or "a^"
+    PATRON_TITULO = cfg.get("patron_titulo") or "a^"
 
     # El prefijo del SKU es una vía ALTERNA al texto, no un filtro encima. Un
     # sartén puede estar en la categoría "Sartenes" y titularse "Sartén
@@ -540,15 +895,28 @@ def candidatos(cfg: dict | None = None) -> list[str]:
     patron_sku = ("^(" + "|".join(prefijos) + ")-") if prefijos else None
 
     P = wp_db._prefix()
-    cond = "(t.name REGEXP %s OR p.post_title REGEXP %s"
-    params: list = [PATRON_CATEGORIA, PATRON_TITULO]
+    # ⚠️ EL SQL NO DECIDE: trae un SUPERCONJUNTO (cualquier patrón de la
+    # categoría, en el título o en cualquiera de sus categorías de Woo, o el
+    # prefijo) y decide `resolver_categoria()` — la MISMA función del botón del
+    # panel: elección del panel > reglas, con el ORDEN de la tabla y `excluir`.
+    # Medido el 28-sep: decidiendo por SQL, la tanda de «Accesorios
+    # Electrónicos» se llevaba 25 `TEC-*` que el botón manda a «Electrónicos»;
+    # la de Deportes, 33 (pelotas `JUGU-*`, linternas `TEC-*`).
+    cond = "(t.name REGEXP %s OR t.name REGEXP %s OR p.post_title REGEXP %s"
+    params: list = [PATRON_CATEGORIA, PATRON_TITULO, PATRON_TITULO]
     if patron_sku:
         cond += " OR m2.meta_value REGEXP %s"
         params.append(patron_sku)
     cond += ")"
 
-    filas = wp_db._fetch_all(f"""
-        SELECT MAX(m2.meta_value) AS sku
+    filas = [] if sin_reglas else wp_db._fetch_all(f"""
+        SELECT MAX(m2.meta_value) AS sku, MAX(p.post_title) AS nombre,
+               (SELECT GROUP_CONCAT(t2.name SEPARATOR ' ')
+                  FROM {P}term_relationships tr2
+                  JOIN {P}term_taxonomy tt2 ON tt2.term_taxonomy_id = tr2.term_taxonomy_id
+                                           AND tt2.taxonomy = 'product_cat'
+                  JOIN {P}terms t2 ON t2.term_id = tt2.term_id
+                 WHERE tr2.object_id = p.ID) AS cats
         FROM {P}posts p
         JOIN {P}postmeta m2 ON m2.post_id = p.ID AND m2.meta_key = '_sku'
                            AND m2.meta_value <> ''
@@ -560,11 +928,27 @@ def candidatos(cfg: dict | None = None) -> list[str]:
           AND {cond}
         GROUP BY p.ID
         HAVING sku IS NOT NULL""", tuple(params))
-    skus = sorted({f["sku"] for f in filas if f["sku"]})
-    # Si hay prefijos declarados, ninguno de otra familia entra aunque el texto
-    # haya coincidido.
-    if prefijos:
-        skus = [s for s in skus if s.split("-")[0].upper() in prefijos]
+    # Las elecciones del panel, TODAS en una consulta (no una por SKU). Si
+    # kubera no contesta se decide solo por reglas — igual que el botón — y se
+    # dice, porque una elección ignorada es justo lo que la regla 2 prohíbe.
+    from services.publicar_walmart import resolver_categoria
+    elecciones: dict[str, str] = {}
+    try:
+        from services import supabase_db as sdb
+        elecciones = {str(r["sku"]): str(r["category_id"]) for r in sdb.fetch_all(
+            """select sku::text as sku, category_id from channel.product_category
+                where channel_id = 'walmart'""")}
+    except Exception as exc:  # noqa: BLE001
+        print(f"   ⚠ sin las elecciones del panel ({exc}): decido solo por reglas")
+    etiqueta = cfg["clave_visible"]
+    # El prefijo ya no se filtra aquí: lo aplica `clasificar()` en su orden, y
+    # un SKU que una persona mandó a esta categoría desde el selector entra
+    # aunque su prefijo sea de otra familia (regla 2 de la casa).
+    skus = sorted(
+        {f["sku"] for f in filas if f["sku"] and (resolver_categoria(
+            f["sku"], f["nombre"] or "", f["cats"] or "",
+            elegida=elecciones.get(f["sku"]))[1] or {}).get("clave_visible") == etiqueta}
+        | {sku for sku, cat in elecciones.items() if cat == etiqueta})
     if not skus:
         return []
     ph = ",".join(["%s"] * len(skus))
@@ -648,6 +1032,19 @@ def _sobre(categoria: str, items: list[dict]) -> dict:
     }
 
 
+def _clave_sat(cfg: dict, nombre: str) -> int:
+    """
+    La clave SAT de ESTE producto: la de la categoría, salvo que un patrón de
+    `sat_por_patron` la afine. Walmart solo valida el formato, pero la factura
+    la usa tal cual — en «Blancos» un colchón no es "Ropa de cama".
+    """
+    import re
+    for patron, clave in cfg.get("sat_por_patron") or ():
+        if re.search(patron, nombre or "", re.I):
+            return clave
+    return cfg["clave_sat"]
+
+
 def _item(p: dict, imgs: list[str], categoria: str, cfg: dict) -> dict:
     """Una entrada de `MPItem` a partir de lo que Woo ya tiene."""
     clave = cfg["clave_visible"]
@@ -708,6 +1105,12 @@ def _item(p: dict, imgs: list[str], categoria: str, cfg: dict) -> dict:
         visible["productLine"] = (atrs.get("BRAND")
                                   or cfg.get("product_line_default")
                                   or "Ferrahome")[:400]
+    if "educationalFocus" in blanca_cfg:
+        # «Juguetes de bebé» lo exige (array de texto, minItems 1). Mismo caso
+        # que `activity` en Juguetes: sin armarlo aquí, la lista blanca lo
+        # declara y el feed sale sin él — y cada artículo rebota.
+        visible["educationalFocus"] = [(cfg.get("educational_focus_default")
+                                        or "Habilidades motoras")[:600]]
 
     # LA PODA. Un solo campo de más tumba el artículo y arrastra el lote (85/85
     # por `modelNumber`, 83/83 por `gender`, 33/33 por `countPerPack`). Si la
@@ -729,7 +1132,7 @@ def _item(p: dict, imgs: list[str], categoria: str, cfg: dict) -> dict:
                 # Precio de LISTA, ya resuelto en ficha() (los variables traen
                 # el padre vacío y caían al precio con descuento).
                 "price": num(p.get("_precio_lista"), 1.0),
-                "ProductTaxCode": cfg["clave_sat"],
+                "ProductTaxCode": _clave_sat(cfg, p.get("name") or ""),
                 "msiEligible": "No",
                 "shortDescription": desc,
                 "keyFeatures": [k for k in [

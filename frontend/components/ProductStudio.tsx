@@ -31,6 +31,7 @@ import type { LucideIcon } from "lucide-react";
 import type { FaltantesCanal } from "@/lib/api";
 import CategoriaTikTokPicker from "./CategoriaTikTokPicker";
 import CategoriaTemuPicker from "@/components/CategoriaTemuPicker";
+import CategoriaWalmartPicker from "@/components/CategoriaWalmartPicker";
 import TipoAmazonPicker from "./TipoAmazonPicker";
 import type {
   AtributoProducto,
@@ -726,6 +727,9 @@ export default function ProductStudio({
 
   // El semáforo: qué le falta a este SKU para publicarse en el canal abierto.
   const [faltantes, setFaltantes] = useState<FaltantesCanal | null>(null);
+  // Sube cada vez que se elige una categoría de Walmart: el semáforo mide los
+  // campos de ESA categoría, así que tiene que volver a pedirse.
+  const [catWalmartVer, setCatWalmartVer] = useState(0);
 
   // ── Cargar campos editables (borrador local > servidor > Woo) ───────
   useEffect(() => {
@@ -1070,7 +1074,7 @@ export default function ProductStudio({
       .then((r) => { if (vivo) setFaltantes(r); })
       .catch(() => { /* sin requisitos o BD caída: no se pinta nada */ });
     return () => { vivo = false; };
-  }, [sku, canal, cuentaSel, esML, canalMsg]);
+  }, [sku, canal, cuentaSel, esML, canalMsg, catWalmartVer]);
   // ML y Amazon: botón siempre disponible → "Publicar" si NO está publicado
   // (crea nuevo), "Actualizar" si ya está.
   const amazonPublicado = amazonPublicadoReal || amazonPublicadoOk;
@@ -2127,7 +2131,7 @@ export default function ProductStudio({
                   un <fieldset disabled>, que apaga sus botones e inputs sin
                   tocar los componentes. Sólo se monta si hay picker: vacío,
                   sumaría un hueco de `space-y` en ML y en General. */}
-              {((esAmazon && wcId != null) || (esTikTok && sku) || (esTemu && sku)) && (
+              {((esAmazon && wcId != null) || (esTikTok && sku) || (esTemu && sku) || (esWalmart && sku)) && (
               <fieldset disabled={soloVistaAgrupada} title={soloVistaAgrupada ? TITULO_SOLO_VISTA : undefined}
                 className={soloVistaAgrupada ? "min-w-0 opacity-60" : "min-w-0"}>
               {esAmazon && wcId != null && (
@@ -2142,6 +2146,13 @@ export default function ProductStudio({
                   existen, así que sin elegirla no hay contenido ni alta. */}
               {esTemu && sku && (
                 <CategoriaTemuPicker sku={sku} titulo={titulo || data?.nombre} />
+              )}
+              {/* En Walmart la categoría decide dos cosas: qué campos exige el
+                  bloque `Visible` y si hay EXENCIÓN DE UPC para publicar. Sin
+                  selector, el publicador decidía solo con patrones de título. */}
+              {esWalmart && sku && (
+                <CategoriaWalmartPicker sku={sku} titulo={titulo || data?.nombre}
+                  onCambio={() => setCatWalmartVer((v) => v + 1)} />
               )}
               </fieldset>
               )}

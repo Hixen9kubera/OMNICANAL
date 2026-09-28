@@ -162,6 +162,12 @@ def clasificar(sku: str, nombre: str, categorias_woo: str
             if familia in prefijos:
                 return clave, cfg, None
             continue
+        # Lo que el TÍTULO dice que no es, no entra aunque sus patrones casen:
+        # las categorías de Woo vienen de ML y mezclan ("Pañales" agrupa los
+        # de perro). Mismo filtro que `candidatos()` aplica por SQL.
+        ex = cfg.get("excluir")
+        if ex and re.search(ex, nombre, re.I):
+            continue
         pc, pt = cfg.get("patron_categoria"), cfg.get("patron_titulo")
         if (pc and re.search(pc, cats, re.I)) or (pt and re.search(pt, texto, re.I)):
             return clave, cfg, None
@@ -181,6 +187,66 @@ def clasificar(sku: str, nombre: str, categorias_woo: str
         f"Esperando su ticket en Seller Center: {pendientes or 'ninguna'}.")
 
 
+
+
+def cfg_de_etiqueta(etiqueta: str | None) -> tuple[str | None, dict | None]:
+    """(subCategory, cfg) de una categoría AUTORIZADA por su etiqueta en español,
+    o (None, None) si esa etiqueta no tiene exención."""
+    from scripts.publicar_walmart import CATEGORIAS_AUTORIZADAS
+    for clave, cfg in CATEGORIAS_AUTORIZADAS.items():
+        if cfg["clave_visible"] == (etiqueta or ""):
+            return clave, cfg
+    return None, None
+
+
+_LEER = object()   # centinela: "la elección del panel no se ha leído todavía"
+
+
+def resolver_categoria(sku: str, nombre: str, categorias_woo: str,
+                       elegida: Any = _LEER
+                       ) -> tuple[str | None, dict | None, str | None, str]:
+    """
+    (subCategory, cfg, motivo del no, origen) — LA precedencia con la que se
+    decide dónde se publica un artículo en Walmart.
+
+      1. **La elección del PANEL** para ESTE SKU (`channel.product_category`).
+         Manda sobre cualquier detector (regla 2 de la casa).
+      2. **Las reglas** de `clasificar()` (prefijo / patrones), solo si nadie
+         eligió.
+
+    ⚠️ HASTA EL 28-SEP EL PUBLICADOR SE SALTABA EL PASO 1. `walmart_ia` sí leía
+    la elección del panel y este módulo clasificaba por su cuenta: una persona
+    elegía «Juguetes», la IA generaba atributos para «Juguetes», el feed salía
+    como «Cocina» por las reglas — y el candado de `_aplicar_ia` tiraba los
+    atributos en silencio. Tres piezas, tres respuestas distintas.
+
+    Si la elegida NO tiene exención, NO se cae a las reglas: la persona dijo
+    qué es el producto, y mandarlo a otra categoría por tener permiso ahí sería
+    desobedecerla — además de publicar un artículo mal clasificado que Walmart
+    acepta sin dar error. Se bloquea y se dice qué ticket falta.
+
+    La del PADRE no cuenta aquí (`ia_variante.aviso_heredada`): heredar sirve
+    para generar el borrador, no para decidir dónde se publica una variante.
+
+    `elegida`: la tanda (`scripts/publicar_walmart.candidatos`) decide cientos
+    de SKUs de golpe; lee TODAS las elecciones en una consulta y las pasa aquí,
+    en vez de una consulta a kubera por SKU. None = "nadie eligió".
+    """
+    if elegida is _LEER:
+        from services import walmart_panel
+        elegida = walmart_panel.categoria_elegida(sku) if sku else None
+    if elegida:
+        clave, cfg = cfg_de_etiqueta(elegida)
+        if cfg:
+            return clave, cfg, None, "panel"
+        return None, None, (
+            f"En el panel se eligió «{elegida}» para {sku}, y esa categoría NO "
+            f"tiene exención de UPC en Walmart. No se publica en otra: el producto "
+            f"quedaría mal clasificado sin que Walmart lo marque. Opciones: pedir "
+            f"el ticket de «{elegida}» en Seller Center, o cambiar la categoría "
+            f"en el Estudio si la elección fue un error."), "panel"
+    clave, cfg, motivo = clasificar(sku, nombre, categorias_woo)
+    return clave, cfg, motivo, ("reglas" if cfg else "")
 
 # ═════════════════════════════════════════════════════════════════════════════
 # EL CONTENIDO GENERADO CON IA ENTRA AL FEED
@@ -333,9 +399,50 @@ def _aplicar_ia(item: dict[str, Any], doc: dict[str, Any] | None, categoria: str
     return item, comparativa, avisos
 
 
-def _categoria_cfg(p: dict[str, Any]) -> tuple[str | None, dict | None, str | None]:
-    """`clasificar()` con lo que trae un producto de WooCommerce."""
-    return clasificar(
+def _texto_woo(p: dict[str, Any] | None) -> tuple[str, str, str]:
+    """(nombre, categorías de Woo, descripción corta sin HTML) de un producto."""
+    import re
+    p = p or {}
+    desc = re.sub(r"<[^>]+>", " ", p.get("short_description") or p.get("description") or "")
+    return (p.get("name") or "",
+            " ".join(c.get("name") or "" for c in (p.get("categories") or [])),
+            re.sub(r"\s+", " ", desc).strip())
+
+
+async def categoria_de_sku(sku: str) -> dict[str, Any]:
+    """
+    Lo que el botón de publicar decidiría HOY para este SKU, y de dónde sale.
+
+    Lee el producto con `_producto()` —la MISMA lectura que usa `_armar`— para
+    que el selector del Estudio y el semáforo no puedan contestar distinto que
+    el feed: las reglas miran el nombre y TODAS las categorías de Woo, y un
+    helper que trajera solo la primera categoría clasificaría diferente.
+    """
+    import asyncio
+    from services import walmart_panel
+    p = await _producto(sku)
+    nombre, cats, _desc = _texto_woo(p)
+    r = await asyncio.to_thread(walmart_panel.categoria_actual, sku, nombre, cats)
+    return {**r, "sku": sku, "existe_en_woo": bool(p)}
+
+
+async def sugerir_categoria_de_sku(sku: str, titulo: str = "") -> dict[str, Any]:
+    """
+    La categoría SUGERIDA por la IA para este SKU, armada con los mismos datos
+    que lee `_armar`: el título (o el que trae el Estudio, si la persona lo
+    acaba de mejorar), TODAS las categorías de Woo y la descripción corta.
+    Sugerencia: no se guarda sola (ver `walmart_panel.sugerir_categoria`).
+    """
+    from services import walmart_panel
+    p = await _producto(sku)
+    nombre, cats, desc = _texto_woo(p)
+    return await walmart_panel.sugerir_categoria(sku, titulo or nombre, cats, desc)
+
+
+def _categoria_cfg(p: dict[str, Any]
+                   ) -> tuple[str | None, dict | None, str | None, str]:
+    """`resolver_categoria()` con lo que trae un producto de WooCommerce."""
+    return resolver_categoria(
         p.get("sku") or "", p.get("name") or "",
         " ".join(c.get("name") or "" for c in (p.get("categories") or [])))
 
@@ -359,7 +466,7 @@ async def _armar(req: dict[str, Any]) -> dict[str, Any]:
         from services.publicar_ready import MSG_PADRE
         raise RuntimeError(MSG_PADRE)
 
-    clave, cfg, motivo = await asyncio.to_thread(_categoria_cfg, p)
+    clave, cfg, motivo, origen = await asyncio.to_thread(_categoria_cfg, p)
     if not cfg:
         raise RuntimeError(motivo or "Sin categoría autorizada.")
 
@@ -421,10 +528,22 @@ async def _armar(req: dict[str, Any]) -> dict[str, Any]:
     if not any((dims.get("length"), dims.get("width"), dims.get("height"))):
         avisos.append("Sin medidas en Woo: Walmart cobra volumétrico y el flete "
                       "saldría de un valor por omisión.")
-    avisos.append(f"Categoría «{cfg['clave_visible']}» · exención "
-                  f"{cfg.get('folio_exencion') or 'sin folio'} · SAT "
-                  f"{cfg.get('clave_sat')}.")
-    return {"payload": payload, "clave": clave, "cfg": cfg,
+    de_donde = ("elegida en el panel" if origen == "panel"
+                else "por reglas: nadie la eligió en el panel — revísala en el "
+                     "selector del Estudio")
+    item0 = (payload.get("MPItem") or [{}])[0]
+    sat = (item0.get("Orderable") or {}).get("ProductTaxCode") or cfg.get("clave_sat")
+    avisos.append(f"Categoría «{cfg['clave_visible']}» ({de_donde}) · exención "
+                  f"{cfg.get('folio_exencion') or 'sin folio'} · SAT {sat}.")
+    # UN TICKET NO ES UN FEED. El ticket dice que la puerta está abierta; no
+    # dice qué campos exige PRODUCCIÓN (3.11), que ya contradijo al esquema en
+    # cuatro categorías. El primer artículo de cada una es un piloto.
+    if cfg.get("prueba") == "ticket":
+        avisos.append(f"PILOTO: «{cfg['clave_visible']}» está autorizada por "
+                      f"escrito pero ningún feed la ha confirmado todavía. Manda "
+                      f"este artículo solo, revisa su veredicto y hasta entonces "
+                      f"no mandes más de esta categoría.")
+    return {"payload": payload, "clave": clave, "cfg": cfg, "origen": origen,
             "avisos": avisos, "presupuesto": pres, "imagenes": len(imgs),
             "comparativa": comparativa,
             "con_ia": bool([c for c in comparativa if c.get("usado")])}
@@ -448,6 +567,8 @@ async def preview(req: dict[str, Any]) -> dict[str, Any]:
     return {
         "ok": True, "canal": CANAL, "sku": sku,
         "categoria": armado["cfg"]["clave_visible"],
+        "categoria_origen": armado.get("origen"),
+        "categoria_prueba": armado["cfg"].get("prueba"),
         "product_type": armado["clave"],
         "titulo": (item.get("Orderable") or {}).get("productName")
                   or (item.get("Visible") or {}).get("productName"),

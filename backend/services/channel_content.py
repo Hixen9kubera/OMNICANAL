@@ -362,9 +362,23 @@ def _faltantes_sync(sku: str, canal: str, cuenta: str,
 
     if canal == "walmart":
         etiquetas = {f[0]: (f[3] or f[0]) for f in filas}
+        # Medidas, peso, `countPerPack`, modelo y talla los arma `_item()` del
+        # publicador DESDE WOO: la IA no los genera a propósito (inventarlos es
+        # la clase de dato que Walmart publica sin dar error). Hasta el 28-sep
+        # esto no importaba porque el semáforo de Walmart nunca recibía
+        # categoría; ahora que la recibe, sin esta línea pintaría en rojo lo que
+        # siempre viaja en el feed — y `walmart_ia` ya los cuenta como
+        # cubiertos: las dos pantallas tienen que decir lo mismo.
+        try:
+            from services.walmart_ia import _DEL_PUBLICADOR as _wm_de_woo
+        except Exception:  # noqa: BLE001
+            _wm_de_woo = frozenset()
         for campo in sorted(wm_obligatorios):
             if campo in wm_atrs:
                 cubiertos_fuera.append({"campo": campo, "canonico": "atributos"})
+            elif campo in _wm_de_woo:
+                automaticos.append({"campo": campo,
+                                    "valor": "lo arma el publicador desde Woo"})
             else:
                 faltan.append({"campo": campo, "canonico": None,
                                "label": etiquetas.get(campo, campo)})

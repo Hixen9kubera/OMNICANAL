@@ -87,17 +87,15 @@ def _categoria(sku: str, nombre: str, cats_woo: str
 
 
 def _elegida_en_panel(sku: str) -> str | None:
-    """La categoría que eligió una persona en el panel para ese SKU, o None."""
-    from services import supabase_db as sdb
-    try:
-        filas = sdb.fetch_all(
-            """select category_id from channel.product_category
-                where channel_id = %s and sku = %s::citext""", (CANAL, sku))
-        elegida = (filas or [{}])[0].get("category_id")
-        return str(elegida) if elegida else None
-    except Exception as exc:  # noqa: BLE001 — sin elección guardada, se clasifica
-        log.debug("walmart_ia: sin categoría elegida para %s: %s", sku, exc)
+    """La categoría que eligió una persona en el panel para ese SKU, o None.
+
+    Delegado en `walmart_panel.categoria_elegida`, que es la que lee también el
+    publicador: dos consultas iguales escritas dos veces es como empiezan a
+    contestar distinto."""
+    if not sku:
         return None
+    from services import walmart_panel
+    return walmart_panel.categoria_elegida(sku)
 
 
 def _categoria_para_ia(producto: dict[str, Any], nombre: str, cats_woo: str
@@ -111,8 +109,9 @@ def _categoria_para_ia(producto: dict[str, Any], nombre: str, cats_woo: str
     La del padre va antes que el clasificador por la regla 2 de la casa: una
     elección humana para la familia pesa más que un detector de palabras.
 
-    ⚠️ El publicador no pasa por aquí (`publicar_walmart` clasifica por su
-    cuenta): heredar sirve para escribir el borrador, no decide dónde se publica.
+    ⚠️ El publicador no pasa por aquí: usa `publicar_walmart.resolver_categoria`
+    (elección del panel PARA ESE SKU > reglas) y NO hereda la del padre.
+    Heredar sirve para escribir el borrador, no decide dónde se publica.
     """
     from services import ia_variante
     sku = str(producto.get("sku") or "").strip()

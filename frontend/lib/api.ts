@@ -1134,6 +1134,97 @@ export function guardarCategoriaTemu(
   );
 }
 
+/* ── Categoría de WALMART ────────────────────────────────────────────────────
+ * Mismo contrato que Temu y TikTok, con dos diferencias que pone el canal:
+ *  · Walmart MX NO tiene recomendador: la IA elige entre las 75 categorías del
+ *    feed, descritas por los campos que cada una pide.
+ *  · La exención de UPC es POR CATEGORÍA: no todas se pueden publicar. Cada
+ *    una trae su `estado`, que sale del código del publicador (no de una tabla
+ *    que se escribió una vez y se quedó vieja).
+ * El `category_id` ES la etiqueta en español del esquema ("Blancos"), literal.
+ */
+
+/** `probada`: un feed ya llegó a SUCCESS · `por_ticket`: autorizada por escrito,
+ *  el primer artículo es piloto · `negada`: Walmart contestó "not authorized" ·
+ *  `sin_exencion`: nadie la ha pedido. */
+export type EstadoExencionWalmart = "probada" | "por_ticket" | "negada" | "sin_exencion";
+
+export interface CategoriaWalmart {
+  category_id: string;
+  name?: string | null;
+  path?: string | null;
+  /** Los campos que SOLO esa categoría pide: dicen qué se vende ahí. */
+  describe?: string | null;
+  autorizada?: boolean;
+  estado?: EstadoExencionWalmart | null;
+  folio?: string | null;
+  nota?: string | null;
+}
+
+export interface CategoriaWalmartActual extends Omit<CategoriaWalmart, "category_id"> {
+  category_id: string | null;
+  /** `panel`: alguien la eligió · `reglas`: la deciden los patrones del
+   *  publicador · null: ninguna regla la reconoce. */
+  origen: "panel" | "reglas" | null;
+  /** Por qué NO se publica (sin categoría, o la elegida no tiene exención). */
+  motivo?: string | null;
+  existe_en_woo?: boolean;
+}
+
+export function buscarCategoriasWalmart(
+  q: string,
+  signal?: AbortSignal,
+): Promise<{ canal: string; resultados: CategoriaWalmart[] }> {
+  return getJSON(`/api/productos/categorias/walmart?q=${encodeURIComponent(q)}`, signal);
+}
+
+/** La que usaría HOY el botón de publicar: misma función en el backend. */
+export function categoriaWalmartActual(
+  sku: string,
+  signal?: AbortSignal,
+): Promise<CategoriaWalmartActual> {
+  return getJSON(
+    `/api/productos/${encodeURIComponent(sku)}/canal/walmart/categoria`,
+    signal,
+  );
+}
+
+export interface SugerenciaWalmart {
+  ok: boolean;
+  motivo?: string | null;
+  sugerida?: CategoriaWalmart | null;
+  alternativa?: CategoriaWalmart | null;
+  razon?: string | null;
+  confianza?: number | null;
+  ninguna?: boolean;
+  origen?: string | null;
+  /** Lo que la IA contestó y NO existe en el feed: se descarta y se avisa. */
+  descartada?: string | null;
+}
+
+export function sugerirCategoriaWalmart(
+  sku: string,
+  titulo?: string,
+  signal?: AbortSignal,
+): Promise<SugerenciaWalmart> {
+  const q = titulo ? `?titulo=${encodeURIComponent(titulo)}` : "";
+  return getJSON(
+    `/api/productos/${encodeURIComponent(sku)}/canal/walmart/categoria/sugerida${q}`,
+    signal,
+  );
+}
+
+export function guardarCategoriaWalmart(
+  sku: string,
+  categoriaId: string,
+): Promise<{ ok: boolean; categoria_id: string; nombre?: string; path?: string;
+             autorizada?: boolean; aviso?: string | null }> {
+  return postJSON(
+    `/api/productos/${encodeURIComponent(sku)}/canal/walmart/categoria`,
+    { categoria_id: categoriaId },
+  );
+}
+
 // ── Competencia (Mercado Libre) ──────────────────────────────────────
 // Los GET leen la foto guardada del mes (SQLite local). La corrida real la
 // dispara el cron mensual de Railway; correrCompetencia() es para probar a mano

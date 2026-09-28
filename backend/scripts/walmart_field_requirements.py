@@ -86,6 +86,13 @@ CORRECCIONES_MEDIDAS: dict[tuple[str, str], tuple[str, str]] = {
     # `productLine` NO existe en este bloque; solo `activity`.
     ("Ropa", "activity"):
         ("OBLIGATORIO", "`Actividad` is a required attribute — piloto ROP-0417-ROS, 4-sep"),
+    # MEDIDO EN LA SONDA DE COLCHONES DEL 19-AGO: el 3.19 no los marca y
+    # producción los exige. Sin ellos, CAM-0030 murió en "`Talla` y `Género`
+    # son obligatorios"; con ellos, publicó.
+    ("Blancos", "size"):
+        ("OBLIGATORIO", "`Talla` is a required attribute — sonda CAM-0030, 19-ago"),
+    ("Blancos", "gender"):
+        ("OBLIGATORIO", "`Género` is a required attribute — sonda CAM-0030, 19-ago"),
 }
 
 # Categorías con exención de UPC PROBADA (un SKU llegó a SUCCESS por ahí).
@@ -94,9 +101,19 @@ CORRECCIONES_MEDIDAS: dict[tuple[str, str], tuple[str, str]] = {
 # atributo faltante — llegó MÁS ALLÁ de la etapa donde muere una categoría sin
 # exención. Es justo el tipo de evidencia que el encabezado de este archivo
 # exige y que "no apareció el error de UPC" por sí solo no da.
+#
+# 28-sep: "Ropa" se QUEDA, pero por otra razón. Un error de atributo sale ANTES
+# de la etapa de UPC, así que el feed del 4-sep no probaba nada; lo que prueba
+# es que ROP-0417-ROS hoy está PUBLISHED. "Juguetes" entra igual (JUGU-0264-ROS
+# y otros tres, publicados) y "Blancos" por CAM-0030 (19-ago).
+#
+# "Electrodomésticos" SALE de las negadas: el "not authorized" del 7-ago lo
+# resolvió el ticket 16295669 (16-sep). Queda SIN EVIDENCIA de feed hasta el
+# primer piloto — la lista viva de lo que se puede publicar es
+# `CATEGORIAS_AUTORIZADAS` en `scripts/publicar_walmart.py`, no esta.
 EXENCION_PROBADA = {"Disfraces", "Cocina, Decoración y Otros", "Electrónicos",
-                    "Ropa"}
-EXENCION_NEGADA = {"Muebles", "Eléctricas", "Cables", "Electrodomésticos"}
+                    "Ropa", "Juguetes", "Blancos"}
+EXENCION_NEGADA = {"Muebles", "Eléctricas", "Cables"}
 
 
 def _spec() -> dict:

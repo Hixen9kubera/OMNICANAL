@@ -1001,6 +1001,98 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.590.0 — Walmart: 11 categorías nuevas con exención de UPC y selector de categoría con IA en el Estudio
+
+Tickets de Cinthya García (16–18-sep) y avisos de Seller Support (17-sep). Hasta hoy el publicador de Walmart solo
+conocía 5 categorías, y la decidía **a ciegas**: patrones de título y prefijos de SKU, sin selector en el Estudio. Lo que
+no casaba con ninguna regla se rechazaba con "ninguna categoría con exención aplica", aunque la hubiera.
+
+**Las 11 que se abren** (etiquetas LITERALES del esquema — con su errata, que es la que Walmart reconoce):
+
+| Categoría | Folio / aviso | Clave SAT | Prueba |
+|---|---|---|---|
+| Blancos | 15822204 (pedido "COLCHONES") | 52121500 · colchón → 56101508 | **feed** (CAM-0030, 19-ago) |
+| Almacenamiento | 16292474 | 24112400 | ticket |
+| Electrodomésticos | 16295669 | 52141800 · cocina → 52141500 | ticket |
+| Accesorios Electrónicos | 16296156 | 52161500 | ticket |
+| Otros Deportes y Recreación | aviso 17-sep (Seller Support) | 49221500 | ticket |
+| Transporte del bebé · Muebles del bebé · Juguetes de bebé · Ropa de Bebé · Pañale cuidado del bebé y otro · Alimentacion del bebé | aviso 17-sep (ticket 16296043) | por categoría | ticket |
+
+Con las 5 anteriores son **16 categorías publicables**. "ACCESORIOS PARA BEBÉS" **no** es «Portadores y Accesorios»: ese
+bloque es de maletas (Tipo de equipaje, Estilo de bolso) y sigue sin exención.
+
+- **Selector de categoría en el Estudio** (`CategoriaWalmartPicker`), mismo contrato que Temu y TikTok: muestra la
+  categoría que usaría HOY el botón de publicar y de dónde sale (*elegida aquí* / *por reglas* / ninguna), con su estado
+  de exención (**publicable** · **publicable · piloto** · **sin exención** · **negada**) y folio.
+  - **Sugiere al abrir** si nadie la eligió (también cuando la puso una regla: es la segunda opinión). Walmart MX **no
+    tiene recomendador** (taxonomía y spec por API son "US only"), así que la IA elige entre las **75 categorías del
+    feed**, cada una descrita por los campos que SOLO ella pide ("Firmeza del colchón", "Tipo de equipaje"). La IA **no
+    sabe** cuáles tienen exención, a propósito: dice qué ES el producto. Devuelve sugerida + alternativa + razón +
+    confianza, o "ninguna"; un nombre que no existe se descarta y se avisa (`_match_etiqueta`: exacto o sin
+    acentos/mayúsculas, nada más difuso).
+  - **La sugerencia NO se guarda sola** (regla 2): "Usar esta" escribe `channel.product_category` con `source='panel'`.
+    Se puede elegir una categoría SIN exención —es la verdad sobre el producto— y el publicador **se niega** a mandarla
+    y dice qué ticket falta, en vez de meterla en otra categoría que sí tenga permiso.
+  - Búsqueda manual por nombre o por lo que pide cada categoría («firmeza» encuentra Blancos y Muebles del bebé),
+    autorizadas primero.
+  - Rutas: `GET /api/productos/categorias/walmart`, `GET|POST /api/productos/{sku}/canal/walmart/categoria` y
+    `GET …/categoria/sugerida`. Caen en las reglas RBAC por prefijo de `/api/productos` (lectura / operador), igual que
+    Temu y TikTok.
+- **UNA sola precedencia para las cuatro piezas** (`publicar_walmart.resolver_categoria`): elección del panel PARA ESE
+  SKU > reglas. **Hasta hoy el publicador se saltaba el paso 1**: `walmart_ia` leía la elección del panel y el feed
+  clasificaba por su cuenta — una persona elegía «Juguetes», la IA generaba atributos de Juguetes y el feed salía como
+  «Cocina», y el candado de `_aplicar_ia` tiraba los atributos en silencio. Ahora el botón, la IA de contenido, el
+  semáforo y la tanda leen lo mismo. La del PADRE sigue sin decidir dónde se publica una variante.
+- **El semáforo de Walmart por fin mide su categoría**: `_categoria_del_canal` no tenía rama de Walmart, así que medía
+  solo los campos comunes, nunca los del bloque `Visible`. Y medidas/peso/`countPerPack`/modelo/talla —que arma `_item()`
+  desde Woo— pasan a *automáticos* en vez de *faltan* (como ya los contaba `walmart_ia`).
+- **Reglas afinadas contra el catálogo real** (1,997 productos publicados en Woo, solo lectura): **0 regresiones** (ningún
+  producto que ya tenía categoría cambió) y **+110 productos padre/simples clasificables** (sin categoría: 851 → 741; sus
+  variantes suben más). Almacenamiento 46 · Deportes 26 · Blancos 12 · Accesorios Electrónicos 9 · bebé 15 ·
+  Electrodomésticos 2. La primera versión de los patrones se llevaba **juguetes y pañales PARA PERRO** a bebé, "manguera
+  para hidrolavadora" e "imán para refrigerador" a Electrodomésticos (7 de 8 falsos), un **fregadero** a Almacenamiento
+  (Woo lo archiva en "Organizadores de Fregaderos") y sillas "a*colcha*das" a Blancos. Nueva clave **`excluir`** (regex
+  sobre el TÍTULO: el título dice qué es; las categorías de Woo vienen de ML y mezclan) y el aparato tiene que ABRIR el
+  título en Electrodomésticos. «Alimentacion del bebé» va SIN patrones a propósito: es comida (sabor, porciones), y un
+  biberón clasificado ahí saldría con ficha de alimento; solo entra si una persona la elige.
+- **La tanda decide igual que el botón.** `candidatos()` (el publicador por tandas, `scripts/publicar_walmart.py`)
+  decidía por SQL, sin el orden de la tabla ni la elección del panel: la de «Accesorios Electrónicos» se llevaba 25
+  productos que el botón manda a otra categoría (casi todos `TEC-*` → «Electrónicos»), la de Deportes 33. Ahora el SQL trae un superconjunto y decide
+  `resolver_categoria` (las elecciones del panel se leen en UNA consulta): **0 diferencias en las 16 categorías**.
+- **Correcciones de datos**:
+  - SAT de Blancos: 52121500 es "Ropa de cama", no "Colchones y somieres" como se anotó en agosto →
+    `sat_por_patron` pone 56101508 a los colchones.
+  - `educationalFocus` (obligatorio SOLO en «Juguetes de bebé») lo arma `_item()`: la lista blanca poda, no crea.
+  - «Juguetes» y «Ropa» pasan a prueba **feed**: los pilotos del 4-sep (JUGU-0264-ROS, -0201-MUL, -0035-MUL, -0200-VER y
+    la pijama ROP-0417-ROS) están PUBLISHED en `/v3/items`. Ojo: la razón que se dio el 4-sep para Ropa ("no trajo el
+    error de UPC sino uno de atributo") no probaba nada —un error de atributo sale ANTES de la etapa de UPC—; lo que
+    prueba es que hoy esté publicada.
+  - Cargador de requisitos (`walmart_field_requirements.py`): Blancos `size`/`gender` OBLIGATORIOS (medido 19-ago),
+    Juguetes y Blancos a PROBADA, Electrodomésticos fuera de NEGADA. Solo afecta la PRÓXIMA carga del catálogo.
+- **El primer artículo de cada categoría "ticket" es un PILOTO**: la vista previa lo dice ("autorizada por escrito pero
+  ningún feed la ha confirmado… manda este artículo solo"). Un ticket abre la puerta; no dice qué campos exige
+  producción (3.11), que ya contradijo al esquema en cuatro categorías.
+
+**Verificado:** 938 pruebas del backend (`python -m unittest discover -s tests`), incluida la de regla 11 sobre
+`routers/productos.py` (atrapó un helper síncrono en una ruta `async`; se movió a `sugerir_categoria_de_sku`);
+`tsc --noEmit` y `next build` limpios; 40 pruebas de integración contra datos reales en solo lectura (reglas,
+precedencia, catálogo de kubera, vista previa de CAM-0030-QUE con SAT 56101508); sugerencia de IA medida en 10 SKUs
+(bicicleta de equilibrio → Juguetes, mueble de TV → Muebles *negada*, inflable de Halloween → Adornos *sin exención*);
+el selector probado en el navegador contra un mock que llama a las funciones reales y **intercepta las escrituras**
+(las dos elecciones de prueba no llegaron a kubera).
+
+**Costo a vigilar:** la sugerencia usa `ia_generadores._completar`. Sin `DEEPSEEK_API_KEY` en Railway cae a Claude
+(`claude-opus-4-8`), una llamada (~4k tokens de entrada) cada vez que se abre el Estudio de Walmart de un SKU sin
+elección — igual que Temu hoy.
+
+**Reversa:** revert de este commit. No hay migraciones, flags ni variables. Las elecciones guardadas en
+`channel.product_category` (canal `walmart`) sobreviven al revert; sin este código no las lee nadie.
+
+**Pendiente:** los veredictos de feed no se escriben de vuelta a `ops.channel_submissions` desde agosto (108 filas
+"ENVIADO"; los juguetes publicados siguen así); `channel.listings` de Walmart está congelado (235 filas contra 285
+artículos reales); pedir la exención de «Muebles» (mueble de TV, colchón inflable según la IA) y de «Adornos y
+Decoraciones» (inflables de Halloween).
+
 ### v0.589.0 — Radar de precios (F1): pestaña oculta que compara el precio de ML contra el mercado, sin tocar ningún precio
 
 Eduardo, 28-sep: el costo real es UNA cifra por contenedor; el precio de cada SKU ya no se deriva de su costo sino del
