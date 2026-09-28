@@ -1946,3 +1946,205 @@ export function investigarTemu(
 ): Promise<InvestigacionTemuResp> {
   return postJSON<InvestigacionTemuResp>("/api/investigacion/temu", { type, params });
 }
+
+// ── Radar de precios (F1: solo Mercado Libre, solo lectura) ─────────────────
+//
+// Las dos llamadas son GET y pasan por `getJSON` (o sea, por `fetchSesion`,
+// con el token). Nada de aquí escribe un precio: el radar sólo COMPARA. El
+// backend exige admin con sesión (`solo_admin`) y rechaza la X-API-Key; un
+// 401/403 aquí significa "no te toca", y la pantalla lo pinta como
+// "No disponible" en vez de como error.
+//
+// Toda la aritmética —contribución, piso, techo, referencia, dirección y
+// precio sugerido— vive en `backend/services/radar_precios.py`. El frontend
+// FORMATEA lo que llega; no recalcula nada. Los campos que pueden faltar
+// llegan como `null`, y `null` es "sin dato", nunca cero.
+
+export type RadarDireccion =
+  | "subir"
+  | "bajar"
+  | "mantener"
+  | "caro_justificado"
+  | "no_competir"
+  | "sin_referencia";
+
+export type RadarClase = "exceso" | "normal" | "recompra";
+
+/** real = comisión y envío medidos · parcial = uno de los dos · estimado = ninguno. */
+export type RadarEstadoContribucion = "real" | "parcial" | "estimado";
+
+export type RadarExperiencia = "verde" | "amarilla" | "roja" | "sin_datos";
+
+export interface RadarDesglose {
+  precio_sin_iva: number | null;
+  comision: number | null;
+  comision_estado: "real" | "estimado" | "sin_dato" | null;
+  envio: number | null;
+  envio_estado: "real" | "estimado" | "sin_dato" | null;
+  /** Almacenaje Full: sin dato en F1 (llega en F2). */
+  full: number | null;
+  /** Publicidad: sin dato en F1 (llega en F2). */
+  publicidad: number | null;
+  devolucion: number | null;
+  devolucion_tasa_pct: number | null;
+}
+
+export interface RadarContribucion {
+  valor: number | null;
+  estado: RadarEstadoContribucion | null;
+  desglose: RadarDesglose | null;
+}
+
+export interface RadarCuenta {
+  /** `legacy_code` de la cuenta de ML: BEKURA, SANCORFASHION. */
+  cuenta: string;
+  item_id: string | null;
+  precio: number | null;
+  precio_cobrado: number | null;
+  full: boolean | null;
+  experiencia: RadarExperiencia | null;
+  calidad: number | null;
+  visitas_30d: number | null;
+  unidades_30d: number | null;
+  contribucion: RadarContribucion | null;
+  /** Otras publicaciones del mismo SKU en esta cuenta; decide la que más vende. */
+  gemelas?: string[];
+}
+
+export interface RadarReferencia {
+  precio: number | null;
+  fuente: "busqueda" | "categoria" | null;
+  n: number | null;
+  termino: string | null;
+  capturado_en: string | null;
+  /** Sin referencia: por qué (sin_termino · pocos_rivales · captura_vieja · rivales_dispersos). */
+  motivo?: string | null;
+  /** Rivales capturados en total, frescos o no. */
+  n_total?: number | null;
+}
+
+export interface RadarItem {
+  sku: string;
+  titulo: string | null;
+  contenedor: string | null;
+  contenedor_multi: boolean;
+  clase: RadarClase | null;
+  cuenta_principal: string | null;
+  cuentas: RadarCuenta[];
+  referencia: RadarReferencia | null;
+  /** Precio cobrado de la cuenta principal contra la referencia, en %. */
+  posicion_pct: number | null;
+  /** ML cobra menos que la ficha: en promoción el radar no sugiere precio (regla de ML). */
+  en_promocion?: boolean;
+  contribucion: number | null;
+  contribucion_estado: RadarEstadoContribucion | null;
+  piso: number | null;
+  techo: number | null;
+  premio_calidad_pct: number | null;
+  stock: number | null;
+  stock_detalle?: { propio: number | null; full: number | null } | null;
+  ventas_dia: number | null;
+  /** null con ventas_dia 0: no hay ritmo con qué medirla (no es "sin dato"). */
+  cobertura_dias: number | null;
+  direccion: RadarDireccion;
+  precio_sugerido: number | null;
+  razones: string[];
+  /** Otros SKUs que comparten la misma publicación de ML. */
+  comparte_item_con?: string[];
+}
+
+export interface RadarCompletitud {
+  /** % de publicaciones con comisión medida (0–100). */
+  comision_real_pct: number | null;
+  /** % de publicaciones con envío medido (0–100). */
+  envio_real_pct: number | null;
+  /** % sin envío medido NI estimable (sin peso). */
+  envio_sin_dato_pct?: number | null;
+  publicidad: string | null;
+  full: string | null;
+  devolucion: string | null;
+  cota_superior?: boolean;
+}
+
+export type RadarConteos = Record<RadarDireccion, number>;
+
+/** Los PARAMS del servicio: decisiones de negocio, no mediciones. */
+export type RadarParametros = Record<string, number | string | boolean | null>;
+
+export interface RadarListaResp {
+  generado_en: string | null;
+  ambiente: string | null;
+  parametros: RadarParametros | null;
+  completitud: RadarCompletitud | null;
+  conteos: Partial<RadarConteos> | null;
+  total: number;
+  con_referencia: number | null;
+  pagina: number;
+  limite: number;
+  contenedores: string[];
+  items: RadarItem[];
+  /** Qué tablas encontró el backend (las opcionales se consultan con to_regclass). */
+  tablas?: Record<string, unknown>;
+  notas?: Record<string, unknown>;
+}
+
+export interface RadarComparable {
+  posicion: number | null;
+  precio: number | null;
+  vendedor: string | null;
+  rating: number | null;
+  reviews: number | null;
+  visitas_30d: number | null;
+  es_nuestro: boolean;
+  titulo?: string | null;
+  capturado_en?: string | null;
+}
+
+export interface RadarDiaVenta {
+  fecha: string;
+  unidades: number;
+}
+
+export interface RadarDetalle extends RadarItem {
+  comparables: RadarComparable[];
+  serie_90d: RadarDiaVenta[];
+  /** Mediana del top de la categoría: SOLO contexto, nunca decide. */
+  contexto_categoria: {
+    mediana: number | null;
+    n: number | null;
+    categoria_id?: string | null;
+    capturado_en?: string | null;
+  } | null;
+  generado_en?: string | null;
+  ambiente?: string | null;
+  parametros?: RadarParametros | null;
+}
+
+export interface RadarParams {
+  cuenta?: string | null;
+  clase?: RadarClase | null;
+  direccion?: RadarDireccion | null;
+  contenedor?: string | null;
+  q?: string | null;
+  limite?: number;
+  pagina?: number;
+}
+
+/** Una página del radar, ya ordenada por el servidor (stock × contribución). */
+export function radarPrecios(p: RadarParams, signal?: AbortSignal): Promise<RadarListaResp> {
+  const qs = new URLSearchParams();
+  // Vacíos fuera: un `cuenta=` sin valor ensuciaría la llave de caché del backend.
+  if (p.cuenta) qs.set("cuenta", p.cuenta);
+  if (p.clase) qs.set("clase", p.clase);
+  if (p.direccion) qs.set("direccion", p.direccion);
+  if (p.contenedor) qs.set("contenedor", p.contenedor);
+  if (p.q?.trim()) qs.set("q", p.q.trim());
+  qs.set("limite", String(p.limite ?? 200));
+  qs.set("pagina", String(p.pagina ?? 1));
+  return getJSON<RadarListaResp>(`/api/radar-precios?${qs.toString()}`, signal);
+}
+
+/** El detalle de un SKU. 404 = sin publicación activa de Mercado Libre. */
+export function radarPreciosSku(sku: string, signal?: AbortSignal): Promise<RadarDetalle> {
+  return getJSON<RadarDetalle>(`/api/radar-precios/${encodeURIComponent(sku)}`, signal);
+}

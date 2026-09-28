@@ -1001,6 +1001,51 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.589.0 — Radar de precios (F1): pestaña oculta que compara el precio de ML contra el mercado, sin tocar ningún precio
+
+Eduardo, 28-sep: el costo real es UNA cifra por contenedor; el precio de cada SKU ya no se deriva de su costo sino del
+mercado y de la calidad del canal. Este es el primer tramo (F1): **ver**, no mover.
+
+- **Pestaña nueva «Radar»** (`/radar` y `/radar/[sku]`), **solo admin** (Brandon, José y Eduardo). Es `oculta`: a una
+  KAM o a lectura no se le asoma ni el instante en que el rol todavía no carga.
+- **Por cada SKU con publicación activa en Mercado Libre** (las dos cuentas juntas, decide la que más vende):
+  - **contribución por pieza** = precio cobrado sin IVA − comisión (real de sus pedidos a 60 d, si no estimada) − envío
+    (real, si no estimado por peso) − devolución esperada. **El costo del producto no entra.** Full y publicidad van
+    «sin dato» (llegan en F2): la cifra es **cota superior**;
+  - **clase** (exceso / normal / recompra) y **piso** por clase (exceso: que la venta deje algo; normal: margen de
+    seguridad; recompra: margen de reposición);
+  - **referencia de mercado** = mediana de la búsqueda del SKU (≥3 rivales, ≤45 días, sin nuestras cuentas); el top de la
+    categoría solo como contexto;
+  - **premio de calidad** por Full y experiencia verde (tope 10 %);
+  - **dirección**: subir / bajar / mantener / caro justificado / no competir en precio / sin referencia, con precio
+    sugerido (paso máximo ±10 %, terminación 9, nunca bajo el piso) y sus razones.
+- **Tres candados de calidad** (medidos en el sandbox):
+  - rivales muy dispersos (cuartil alto > 3× el bajo) o brecha > 60 % contra la mediana → *sin referencia, revisar el
+    término* (un SKU de $2,797 salía «282 % arriba» contra rivales de $160 a $22,500);
+  - **en promoción** (ML cobra ≥5 % menos que la ficha; 64 % de los SKUs en el sandbox) → el cambio va por la
+    promoción, **nunca por la ficha** (moverla la quita, regla de ML).
+- **Todos los umbrales** viven en `services/radar_precios.py::PARAMS`, rotulados «decisión, no medición», y la pantalla
+  los muestra.
+- **Solo lectura, de punta a punta:** dos `GET`; sin jobs, sin crons, sin migraciones, sin flags, sin escrituras. La BD
+  va por `asyncio.to_thread` (regla 11) y el resultado se guarda 10 min en memoria.
+- **Acceso:** cada ruta con `Depends(solo_admin)` (persona con sesión y rol admin; la X-API-Key recibe 403) y la regla
+  explícita `("GET", "/api/radar-precios", "admin")` en `core/rbac.py`; además, guard en la propia página.
+- **Contenedor:** `costing.sku_contenedor` (0060) solo existe en el sandbox; en producción la columna sale vacía hasta
+  que se aplique (se consulta con `to_regclass`, no revienta).
+- **Informe por contenedor** (`scripts/radar_estado_contenedores.py`, a mano): Excel con recuperado, falta y palancas sin
+  precio por contenedor. Lee SOLO el sandbox y escribe fuera del repo; X se captura en un CSV fuera del repo (el repo es
+  público).
+
+**Verificado:** 63 pruebas (`python -m unittest tests.test_radar_precios tests.test_radar_estado_contenedores`), entre
+ellas 401 sin sesión y 403 para KAM y para la X-API-Key; `auditar_rbac.py` deja las dos rutas en ADMIN explícito;
+`next build` limpio; en vivo contra el sandbox (505 SKUs) detrás de un proxy de solo GET que bloqueó cualquier escritura.
+
+**Reversa:** revert de este commit. No hay datos ni variables que limpiar.
+
+**Pendiente:** recapturar las búsquedas de Competencia (solo 27 % de los SKUs activos tiene referencia vigente), capturar
+X por contenedor, y decidir los parámetros (hoy «exceso» abarca ~69 % de los SKUs por el stock en bodega propia; el premio
+por Full es igual a la banda de mantener).
+
 ### v0.588.0 — Checklist: la matriz por categoría vuelve a ser un popup
 
 Brandon, 28-sep: *"mejor si manda la matriz por categoría como un POP"*.

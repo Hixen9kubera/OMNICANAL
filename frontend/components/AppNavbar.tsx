@@ -28,6 +28,7 @@ import {
   Truck,
   Warehouse,
   ClipboardCheck,
+  Radar,
 } from "lucide-react";
 import NotificationBell from "./NotificationBell";
 import IndicadorIA from "./fulfillment/IndicadorIA";
@@ -67,7 +68,19 @@ interface NavItem {
   submenu?: SubItem[];    // despliega al pasar el cursor (VARIANTE B)
   /** Solo para admin. Sin esto, la pestaña la ve todo el mundo. */
   soloAdmin?: boolean;
+  /**
+   * OCULTA: más estricto que `soloAdmin`. `soloAdmin` muestra la pestaña
+   * mientras el rol es `null` ("todavía no sé quién eres"), para no esconderle
+   * nada al equipo antes de tiempo. Una pantalla oculta no puede asomarse ni
+   * ese instante: solo aparece con rol `admin` CONFIRMADO, o en el sandbox sin
+   * login (`NEXT_PUBLIC_AUTH_OFF`). Sigue siendo cosmética — la autoridad es
+   * el backend (`solo_admin` + core/rbac.py) y el guard de la propia página.
+   */
+  oculta?: boolean;
 }
+
+// Sandbox sin login (ver SesionGuard): ahí no hay rol que confirmar.
+const SIN_LOGIN = process.env.NEXT_PUBLIC_AUTH_OFF === "true";
 
 // Navegación principal de la app. OMNICANAL, PRODUCTOS y CREAR PRODUCTOS están
 // implementados; el resto se marca "próximamente".
@@ -176,6 +189,11 @@ const ITEMS: NavItem[] = [
         descripcion: "Qué webhooks existen, si están vivos y qué han recibido" },
     ],
   },
+  // RADAR DE PRECIOS (F1, 28-sep-2026): precio por mercado en Mercado Libre,
+  // SOLO LECTURA — la pantalla no cambia ningún precio. Oculta: solo admin
+  // (Brandon, José y Eduardo). BETA mientras sea v0 (solo ML).
+  { id: "radar", label: "Radar", icon: Radar, href: "/radar",
+    soloAdmin: true, beta: true, oculta: true },
   { id: "facturas", label: "Facturas", icon: FileText, proximamente: true,
     soloAdmin: true },
   // "Reportes" se retiró del navbar (Eduardo, 29-jul): ahora vive dentro de
@@ -202,8 +220,11 @@ export default function AppNavbar() {
   // `rol === null` es "todavía no sé quién eres" (o sesión sin autenticar): se
   // muestra todo, igual que antes. La autoridad real es core/rbac.py.
   const puedeAdmin = rol === null || rol === "admin";
+  // Para las OCULTAS no basta "no sé": hace falta el admin confirmado.
+  const adminConfirmado = SIN_LOGIN || rol === "admin";
   const visibles = ITEMS
     .filter((i) => !i.soloAdmin || puedeAdmin)
+    .filter((i) => !i.oculta || adminConfirmado)
     .map((i) => {
       if (!i.submenu) return i;
       const submenu = i.submenu.filter((s) => !s.soloAdmin || puedeAdmin);

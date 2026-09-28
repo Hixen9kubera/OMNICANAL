@@ -27,7 +27,7 @@ from routers import (alertas as r_alertas, auth, automatizacion, canales, checkl
                      costos_publicados, flujo, monitoreo,
                      crear, fanout,
                      fba, fulfillment, fulfillment_envios, fulfillment_full, ia, imagenes, inventario, investigacion, metricas, migracion,
-                     productos, publicaciones, publicar, resolver, sync, ventas,
+                     productos, publicaciones, publicar, radar_precios, resolver, sync, ventas,
                      tiktok, webhooks)
 from services import db, odoo, scheduler, woocommerce
 
@@ -183,7 +183,7 @@ app = FastAPI(
         "Temu, Shein)."
     ),
 
-    version="0.588.0",
+    version="0.589.0",
     lifespan=lifespan,
     # /docs, /redoc y /openapi.json publican el mapa COMPLETO de los 84
     # endpoints: rutas, parámetros y esquemas. Con la API abierta eso es un
@@ -277,6 +277,10 @@ app.include_router(checklist.router)
 # única que Temu acepta). Sólo admin con sesión, candado de escritura y
 # respuesta redactada — ver la cabecera de routers/investigacion.py.
 app.include_router(investigacion.router)
+# Radar de precios (F1, oculto): precio de ML contra la mediana de la búsqueda
+# y el piso por clase. SOLO LECTURA y sólo admin con sesión — ver la
+# cabecera de routers/radar_precios.py.
+app.include_router(radar_precios.router)
 
 
 @app.get("/", tags=["meta"])
@@ -284,7 +288,7 @@ def raiz():
     return {
         "app": "OMNICANAL Â· Kubera",
 
-        "version": "0.588.0",
+        "version": "0.589.0",
         "docs": "/docs",
         "canales": [c["id"] for c in lista_canales()],
     }

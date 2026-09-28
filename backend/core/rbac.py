@@ -103,6 +103,10 @@ REGLAS: tuple[tuple[str, str, str], ...] = (
     # escrita y el auditor no lo cuente como olvido.
     ("GET", "/api/investigacion", "admin"),
     ("POST", "/api/investigacion", "admin"),
+    # RADAR DE PRECIOS (28-sep-2026, F1): lectura pura, pero oculta — sólo
+    # admin. El router exige además admin CON SESIÓN por su cuenta
+    # (`solo_admin`), igual que investigación.
+    ("GET", "/api/radar-precios", "admin"),
     # Estas cuatro familias YA pedían admin —por omisión, no por decisión— y
     # está bien que lo pidan: sus pestañas son soloAdmin y traen datos del
     # comprador o tokens. Se listan para que el auditor pueda llegar a CERO;
