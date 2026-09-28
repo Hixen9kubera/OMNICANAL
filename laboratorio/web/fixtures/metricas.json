@@ -1,0 +1,1268 @@
+{
+ "generado_at": "2026-09-28T12:40:00Z",
+ "por_cuenta": {
+  "BEKURA": {
+   "publicaciones": 2679,
+   "activas": 255,
+   "activas_full": 255,
+   "pausadas_full": 787,
+   "pausadas_full_sin_stock": 766,
+   "pausadas_full_con_stock_odoo": 431,
+   "visitas_dia": 18420,
+   "unidades_dia": 641.3,
+   "conversion": 0.0348,
+   "ingreso_30d": 3912400,
+   "margen_mediano": 0.142,
+   "perdiendo_dinero": 38,
+   "con_costo": 2211,
+   "con_competencia": 1386
+  },
+  "SANCORFASHION": {
+   "publicaciones": 2695,
+   "activas": 344,
+   "activas_full": 260,
+   "pausadas_full": 625,
+   "pausadas_full_sin_stock": 624,
+   "pausadas_full_con_stock_odoo": 352,
+   "visitas_dia": 15230,
+   "unidades_dia": 522.7,
+   "conversion": 0.0343,
+   "ingreso_30d": 3104900,
+   "margen_mediano": 0.118,
+   "perdiendo_dinero": 51,
+   "con_costo": 2140,
+   "con_competencia": 1204
+  }
+ },
+ "por_canal": {
+  "amazon": {
+   "publicaciones": 1693,
+   "activas": 1188,
+   "frescura": "2026-09-18T19:02:00Z"
+  },
+  "walmart": {
+   "publicaciones": 235,
+   "activas": 171,
+   "frescura": "2026-08-17T15:44:00Z"
+  },
+  "tiktok": {
+   "publicaciones": 1297,
+   "activas": 846,
+   "frescura": "2026-09-28T11:30:00Z"
+  },
+  "temu": {
+   "publicaciones": 517,
+   "activas": 402,
+   "frescura": "2026-09-28T11:30:00Z"
+  }
+ },
+ "embudo": {
+  "visitas_30d": 1009500,
+  "unidades_30d": 34920
+ },
+ "elasticidad": {
+  "global": -1.62,
+  "por_categoria": [
+   {
+    "categoria": "MLM1574",
+    "nombre": "Hogar, Muebles y Jardín",
+    "beta": -1.84,
+    "n": 212
+   },
+   {
+    "categoria": "MLM1000",
+    "nombre": "Electrónica, Audio y Video",
+    "beta": -2.31,
+    "n": 97
+   },
+   {
+    "categoria": "MLM1276",
+    "nombre": "Deportes y Fitness",
+    "beta": -1.41,
+    "n": 64
+   },
+   {
+    "categoria": "MLM1631",
+    "nombre": "Organización del hogar",
+    "beta": -1.72,
+    "n": 188
+   },
+   {
+    "categoria": "MLM1246",
+    "nombre": "Belleza y Cuidado Personal",
+    "beta": -1.18,
+    "n": 71
+   },
+   {
+    "categoria": "MLM1747",
+    "nombre": "Accesorios para Vehículos",
+    "beta": -1.95,
+    "n": 58
+   },
+   {
+    "categoria": "MLM1430",
+    "nombre": "Ropa, Bolsas y Calzado",
+    "beta": -0.92,
+    "n": 83
+   },
+   {
+    "categoria": "MLM1227",
+    "nombre": "Equipaje y bolsos",
+    "beta": -1.37,
+    "n": 22
+   },
+   {
+    "categoria": "MLM1051",
+    "nombre": "Celulares y Teléfonos",
+    "beta": -2.66,
+    "n": 41
+   },
+   {
+    "categoria": "MLM1644",
+    "nombre": "Muebles",
+    "beta": -1.49,
+    "n": 36
+   }
+  ],
+  "histograma": [
+   {
+    "desde": -6,
+    "hasta": -5.5,
+    "n": 0
+   },
+   {
+    "desde": -5.5,
+    "hasta": -5,
+    "n": 2
+   },
+   {
+    "desde": -5,
+    "hasta": -4.5,
+    "n": 7
+   },
+   {
+    "desde": -4.5,
+    "hasta": -4,
+    "n": 23
+   },
+   {
+    "desde": -4,
+    "hasta": -3.5,
+    "n": 62
+   },
+   {
+    "desde": -3.5,
+    "hasta": -3,
+    "n": 138
+   },
+   {
+    "desde": -3,
+    "hasta": -2.5,
+    "n": 244
+   },
+   {
+    "desde": -2.5,
+    "hasta": -2,
+    "n": 358
+   },
+   {
+    "desde": -2,
+    "hasta": -1.5,
+    "n": 422
+   },
+   {
+    "desde": -1.5,
+    "hasta": -1,
+    "n": 406
+   },
+   {
+    "desde": -1,
+    "hasta": -0.5,
+    "n": 318
+   },
+   {
+    "desde": -0.5,
+    "hasta": -0.3,
+    "n": 200
+   }
+  ]
+ },
+ "palancas": [
+  {
+   "tipo": "reactivar_full",
+   "id": "mercado_libre:SANCORFASHION:MLM2707620248",
+   "sku": "COC-0961-CAF",
+   "titulo": "Termo de acero inoxidable 1 L doble pared",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2707620248",
+   "ventas_perdidas_dia": 12.48,
+   "stock_odoo": 334,
+   "motivo": "pausada por falta de stock en FULL con piezas libres en Odoo"
+  },
+  {
+   "tipo": "reactivar_full",
+   "id": "mercado_libre:BEKURA:MLM2714448212",
+   "sku": "MAN-1456-BLN",
+   "titulo": "Almohada ortopédica memory foam cervical",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2714448212",
+   "ventas_perdidas_dia": 11.94,
+   "stock_odoo": 74,
+   "motivo": "pausada por falta de stock en FULL con piezas libres en Odoo"
+  },
+  {
+   "tipo": "reactivar_full",
+   "id": "mercado_libre:SANCORFASHION:MLM2717082479",
+   "sku": "TEC-0477-BLN",
+   "titulo": "Cámara de seguridad WiFi 1080p visión nocturna",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2717082479",
+   "ventas_perdidas_dia": 11.58,
+   "stock_odoo": 138,
+   "motivo": "pausada por falta de stock en FULL con piezas libres en Odoo"
+  },
+  {
+   "tipo": "reactivar_full",
+   "id": "mercado_libre:SANCORFASHION:MLM2703869528",
+   "sku": "ORG-1214-AZU",
+   "titulo": "Organizador de cajones 6 piezas plástico transparente",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2703869528",
+   "ventas_perdidas_dia": 10.29,
+   "stock_odoo": 167,
+   "motivo": "pausada por falta de stock en FULL con piezas libres en Odoo"
+  },
+  {
+   "tipo": "reactivar_full",
+   "id": "mercado_libre:SANCORFASHION:MLM2713013535",
+   "sku": "TEC-1791-GRS",
+   "titulo": "Soporte de celular para auto magnético",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2713013535",
+   "ventas_perdidas_dia": 9.37,
+   "stock_odoo": 47,
+   "motivo": "pausada por falta de stock en FULL con piezas libres en Odoo"
+  },
+  {
+   "tipo": "reactivar_full",
+   "id": "mercado_libre:BEKURA:MLM2711762333",
+   "sku": "TEC-1588-PLA",
+   "titulo": "Reloj despertador digital con espejo LED",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2711762333",
+   "ventas_perdidas_dia": 8.27,
+   "stock_odoo": 207,
+   "motivo": "pausada por falta de stock en FULL con piezas libres en Odoo"
+  },
+  {
+   "tipo": "reactivar_full",
+   "sku": "COC-1472-MUL",
+   "titulo": null,
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2724572767",
+   "ventas_perdidas_dia": 6.8,
+   "stock_odoo": 44,
+   "motivo": "pausada por falta de stock en FULL con piezas libres en Odoo"
+  },
+  {
+   "tipo": "reactivar_full",
+   "sku": "ACC-1081-BLN",
+   "titulo": null,
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2723711239",
+   "ventas_perdidas_dia": 6.7,
+   "stock_odoo": 566,
+   "motivo": "pausada por falta de stock en FULL con piezas libres en Odoo"
+  },
+  {
+   "tipo": "reactivar_full",
+   "sku": "TEC-1824-AZU",
+   "titulo": null,
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2726115455",
+   "ventas_perdidas_dia": 5.18,
+   "stock_odoo": 633,
+   "motivo": "pausada por falta de stock en FULL con piezas libres en Odoo"
+  },
+  {
+   "tipo": "reactivar_full",
+   "id": "mercado_libre:BEKURA:MLM2708872320",
+   "sku": "ACC-1402-CAF",
+   "titulo": "Cepillo alisador eléctrico cerámica iónica",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2708872320",
+   "ventas_perdidas_dia": 4.77,
+   "stock_odoo": 66,
+   "motivo": "pausada por falta de stock en FULL con piezas libres en Odoo"
+  },
+  {
+   "tipo": "reactivar_full",
+   "sku": "TEC-1081-NEG",
+   "titulo": null,
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2723851235",
+   "ventas_perdidas_dia": 4.5,
+   "stock_odoo": 394,
+   "motivo": "pausada por falta de stock en FULL con piezas libres en Odoo"
+  },
+  {
+   "tipo": "reactivar_full",
+   "id": "mercado_libre:SANCORFASHION:MLM2712865821",
+   "sku": "TEC-1247-DOR",
+   "titulo": "Cable USB-C carga rápida 2 m paquete de 3",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2712865821",
+   "ventas_perdidas_dia": 4.3,
+   "stock_odoo": 276,
+   "motivo": "pausada por falta de stock en FULL con piezas libres en Odoo"
+  },
+  {
+   "tipo": "reactivar_full",
+   "sku": "COC-1577-PLA",
+   "titulo": null,
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2725834174",
+   "ventas_perdidas_dia": 4.27,
+   "stock_odoo": 109,
+   "motivo": "pausada por falta de stock en FULL con piezas libres en Odoo"
+  },
+  {
+   "tipo": "reactivar_full",
+   "sku": "TEC-1606-BLN",
+   "titulo": null,
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2723030363",
+   "ventas_perdidas_dia": 4.19,
+   "stock_odoo": 133,
+   "motivo": "pausada por falta de stock en FULL con piezas libres en Odoo"
+  },
+  {
+   "tipo": "reactivar_full",
+   "id": "mercado_libre:SANCORFASHION:MLM2710692885",
+   "sku": "COC-1310-AZU",
+   "titulo": "Juego de cuchillos 6 piezas con base de madera",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2710692885",
+   "ventas_perdidas_dia": 4.08,
+   "stock_odoo": 266,
+   "motivo": "pausada por falta de stock en FULL con piezas libres en Odoo"
+  },
+  {
+   "tipo": "reactivar_full",
+   "sku": "COC-342-AZU",
+   "titulo": null,
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2725233055",
+   "ventas_perdidas_dia": 3.26,
+   "stock_odoo": 619,
+   "motivo": "pausada por falta de stock en FULL con piezas libres en Odoo"
+  },
+  {
+   "tipo": "reactivar_full",
+   "id": "mercado_libre:BEKURA:MLM2704827317",
+   "sku": "TEC-1847-MUL",
+   "titulo": "Audífonos inalámbricos Bluetooth 5.3 con estuche de carga",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2704827317",
+   "ventas_perdidas_dia": 2.92,
+   "stock_odoo": 354,
+   "motivo": "pausada por falta de stock en FULL con piezas libres en Odoo"
+  },
+  {
+   "tipo": "reactivar_full",
+   "id": "mercado_libre:SANCORFASHION:MLM2717352991",
+   "sku": "MAN-1173-CAF",
+   "titulo": "Ventilador de torre 36 pulgadas silencioso",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2717352991",
+   "ventas_perdidas_dia": 2.92,
+   "stock_odoo": 823,
+   "motivo": "pausada por falta de stock en FULL con piezas libres en Odoo"
+  },
+  {
+   "tipo": "reactivar_full",
+   "id": "mercado_libre:SANCORFASHION:MLM2703781105",
+   "sku": "TEC-1879-ROS",
+   "titulo": "Lámpara LED de escritorio recargable táctil",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2703781105",
+   "ventas_perdidas_dia": 2.66,
+   "stock_odoo": 434,
+   "motivo": "pausada por falta de stock en FULL con piezas libres en Odoo"
+  },
+  {
+   "tipo": "reactivar_full",
+   "id": "mercado_libre:SANCORFASHION:MLM2707717810",
+   "sku": "ORG-1701-AZU",
+   "titulo": "Tapete antiderrapante para baño memory foam",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2707717810",
+   "ventas_perdidas_dia": 1.87,
+   "stock_odoo": 148,
+   "motivo": "pausada por falta de stock en FULL con piezas libres en Odoo"
+  },
+  {
+   "tipo": "reactivar_full",
+   "sku": "ORG-1002-ROS",
+   "titulo": null,
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2722466054",
+   "ventas_perdidas_dia": 1.27,
+   "stock_odoo": 603,
+   "motivo": "pausada por falta de stock en FULL con piezas libres en Odoo"
+  },
+  {
+   "tipo": "reactivar_full",
+   "id": "mercado_libre:SANCORFASHION:MLM2710752059",
+   "sku": "COC-1203-GRS",
+   "titulo": "Lonchera térmica con 3 contenedores de vidrio",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2710752059",
+   "ventas_perdidas_dia": 0.62,
+   "stock_odoo": 602,
+   "motivo": "pausada por falta de stock en FULL con piezas libres en Odoo"
+  }
+ ],
+ "serie_diaria": [
+  {
+   "fecha": "2026-07-30",
+   "cuenta": "BEKURA",
+   "unidades": 647,
+   "ingreso": 121440.08,
+   "visitas": 20388
+  },
+  {
+   "fecha": "2026-07-30",
+   "cuenta": "SANCORFASHION",
+   "unidades": 513,
+   "ingreso": 95534.2,
+   "visitas": 12673
+  },
+  {
+   "fecha": "2026-07-31",
+   "cuenta": "BEKURA",
+   "unidades": 744,
+   "ingreso": 136513.77,
+   "visitas": 18324
+  },
+  {
+   "fecha": "2026-07-31",
+   "cuenta": "SANCORFASHION",
+   "unidades": 556,
+   "ingreso": 102271.18,
+   "visitas": 14438
+  },
+  {
+   "fecha": "2026-08-01",
+   "cuenta": "BEKURA",
+   "unidades": 467,
+   "ingreso": 92634.29,
+   "visitas": 12306
+  },
+  {
+   "fecha": "2026-08-01",
+   "cuenta": "SANCORFASHION",
+   "unidades": 466,
+   "ingreso": 87809.27,
+   "visitas": 16628
+  },
+  {
+   "fecha": "2026-08-02",
+   "cuenta": "BEKURA",
+   "unidades": 626,
+   "ingreso": 130381.82,
+   "visitas": 18864
+  },
+  {
+   "fecha": "2026-08-02",
+   "cuenta": "SANCORFASHION",
+   "unidades": 433,
+   "ingreso": 76396.88,
+   "visitas": 14289
+  },
+  {
+   "fecha": "2026-08-03",
+   "cuenta": "BEKURA",
+   "unidades": 754,
+   "ingreso": 155926.4,
+   "visitas": 21025
+  },
+  {
+   "fecha": "2026-08-03",
+   "cuenta": "SANCORFASHION",
+   "unidades": 618,
+   "ingreso": 118542.78,
+   "visitas": 21319
+  },
+  {
+   "fecha": "2026-08-04",
+   "cuenta": "BEKURA",
+   "unidades": 800,
+   "ingreso": 138456.09,
+   "visitas": 20200
+  },
+  {
+   "fecha": "2026-08-04",
+   "cuenta": "SANCORFASHION",
+   "unidades": 636,
+   "ingreso": 116394.57,
+   "visitas": 21161
+  },
+  {
+   "fecha": "2026-08-05",
+   "cuenta": "BEKURA",
+   "unidades": 866,
+   "ingreso": 152166.18,
+   "visitas": 23107
+  },
+  {
+   "fecha": "2026-08-05",
+   "cuenta": "SANCORFASHION",
+   "unidades": 668,
+   "ingreso": 118870.76,
+   "visitas": 20030
+  },
+  {
+   "fecha": "2026-08-06",
+   "cuenta": "BEKURA",
+   "unidades": 829,
+   "ingreso": 160872.52,
+   "visitas": 21120
+  },
+  {
+   "fecha": "2026-08-06",
+   "cuenta": "SANCORFASHION",
+   "unidades": 606,
+   "ingreso": 125895.78,
+   "visitas": 17632
+  },
+  {
+   "fecha": "2026-08-07",
+   "cuenta": "BEKURA",
+   "unidades": 761,
+   "ingreso": 136193.34,
+   "visitas": 20290
+  },
+  {
+   "fecha": "2026-08-07",
+   "cuenta": "SANCORFASHION",
+   "unidades": 589,
+   "ingreso": 109902.06,
+   "visitas": 16569
+  },
+  {
+   "fecha": "2026-08-08",
+   "cuenta": "BEKURA",
+   "unidades": 661,
+   "ingreso": 128555.31,
+   "visitas": 21181
+  },
+  {
+   "fecha": "2026-08-08",
+   "cuenta": "SANCORFASHION",
+   "unidades": 506,
+   "ingreso": 105691.78,
+   "visitas": 17130
+  },
+  {
+   "fecha": "2026-08-09",
+   "cuenta": "BEKURA",
+   "unidades": 561,
+   "ingreso": 112784.56,
+   "visitas": 15055
+  },
+  {
+   "fecha": "2026-08-09",
+   "cuenta": "SANCORFASHION",
+   "unidades": 479,
+   "ingreso": 80700.35,
+   "visitas": 12996
+  },
+  {
+   "fecha": "2026-08-10",
+   "cuenta": "BEKURA",
+   "unidades": 711,
+   "ingreso": 149721.83,
+   "visitas": 19786
+  },
+  {
+   "fecha": "2026-08-10",
+   "cuenta": "SANCORFASHION",
+   "unidades": 483,
+   "ingreso": 88206.52,
+   "visitas": 15014
+  },
+  {
+   "fecha": "2026-08-11",
+   "cuenta": "BEKURA",
+   "unidades": 779,
+   "ingreso": 161199.44,
+   "visitas": 19403
+  },
+  {
+   "fecha": "2026-08-11",
+   "cuenta": "SANCORFASHION",
+   "unidades": 608,
+   "ingreso": 120634.32,
+   "visitas": 19632
+  },
+  {
+   "fecha": "2026-08-12",
+   "cuenta": "BEKURA",
+   "unidades": 684,
+   "ingreso": 132403.82,
+   "visitas": 21943
+  },
+  {
+   "fecha": "2026-08-12",
+   "cuenta": "SANCORFASHION",
+   "unidades": 609,
+   "ingreso": 105454.95,
+   "visitas": 21289
+  },
+  {
+   "fecha": "2026-08-13",
+   "cuenta": "BEKURA",
+   "unidades": 734,
+   "ingreso": 140045.57,
+   "visitas": 22582
+  },
+  {
+   "fecha": "2026-08-13",
+   "cuenta": "SANCORFASHION",
+   "unidades": 595,
+   "ingreso": 115186.65,
+   "visitas": 16950
+  },
+  {
+   "fecha": "2026-08-14",
+   "cuenta": "BEKURA",
+   "unidades": 629,
+   "ingreso": 127233.8,
+   "visitas": 21720
+  },
+  {
+   "fecha": "2026-08-14",
+   "cuenta": "SANCORFASHION",
+   "unidades": 521,
+   "ingreso": 88506.96,
+   "visitas": 14267
+  },
+  {
+   "fecha": "2026-08-15",
+   "cuenta": "BEKURA",
+   "unidades": 534,
+   "ingreso": 94169.88,
+   "visitas": 17189
+  },
+  {
+   "fecha": "2026-08-15",
+   "cuenta": "SANCORFASHION",
+   "unidades": 463,
+   "ingreso": 81689.99,
+   "visitas": 12431
+  },
+  {
+   "fecha": "2026-08-16",
+   "cuenta": "BEKURA",
+   "unidades": 515,
+   "ingreso": 90370.09,
+   "visitas": 17904
+  },
+  {
+   "fecha": "2026-08-16",
+   "cuenta": "SANCORFASHION",
+   "unidades": 512,
+   "ingreso": 91842.74,
+   "visitas": 13681
+  },
+  {
+   "fecha": "2026-08-17",
+   "cuenta": "BEKURA",
+   "unidades": 641,
+   "ingreso": 126741.46,
+   "visitas": 16418
+  },
+  {
+   "fecha": "2026-08-17",
+   "cuenta": "SANCORFASHION",
+   "unidades": 573,
+   "ingreso": 118286.66,
+   "visitas": 19698
+  },
+  {
+   "fecha": "2026-08-18",
+   "cuenta": "BEKURA",
+   "unidades": 649,
+   "ingreso": 129405.73,
+   "visitas": 17441
+  },
+  {
+   "fecha": "2026-08-18",
+   "cuenta": "SANCORFASHION",
+   "unidades": 547,
+   "ingreso": 104141.63,
+   "visitas": 17691
+  },
+  {
+   "fecha": "2026-08-19",
+   "cuenta": "BEKURA",
+   "unidades": 775,
+   "ingreso": 158856.87,
+   "visitas": 21978
+  },
+  {
+   "fecha": "2026-08-19",
+   "cuenta": "SANCORFASHION",
+   "unidades": 451,
+   "ingreso": 85492.83,
+   "visitas": 12054
+  },
+  {
+   "fecha": "2026-08-20",
+   "cuenta": "BEKURA",
+   "unidades": 667,
+   "ingreso": 138411.96,
+   "visitas": 20349
+  },
+  {
+   "fecha": "2026-08-20",
+   "cuenta": "SANCORFASHION",
+   "unidades": 398,
+   "ingreso": 73970.49,
+   "visitas": 12678
+  },
+  {
+   "fecha": "2026-08-21",
+   "cuenta": "BEKURA",
+   "unidades": 547,
+   "ingreso": 110740.66,
+   "visitas": 14390
+  },
+  {
+   "fecha": "2026-08-21",
+   "cuenta": "SANCORFASHION",
+   "unidades": 554,
+   "ingreso": 102062.58,
+   "visitas": 13549
+  },
+  {
+   "fecha": "2026-08-22",
+   "cuenta": "BEKURA",
+   "unidades": 451,
+   "ingreso": 84061.99,
+   "visitas": 11180
+  },
+  {
+   "fecha": "2026-08-22",
+   "cuenta": "SANCORFASHION",
+   "unidades": 386,
+   "ingreso": 70891.94,
+   "visitas": 12820
+  },
+  {
+   "fecha": "2026-08-23",
+   "cuenta": "BEKURA",
+   "unidades": 485,
+   "ingreso": 84067.03,
+   "visitas": 16956
+  },
+  {
+   "fecha": "2026-08-23",
+   "cuenta": "SANCORFASHION",
+   "unidades": 349,
+   "ingreso": 60551.72,
+   "visitas": 9193
+  },
+  {
+   "fecha": "2026-08-24",
+   "cuenta": "BEKURA",
+   "unidades": 461,
+   "ingreso": 97344.82,
+   "visitas": 11709
+  },
+  {
+   "fecha": "2026-08-24",
+   "cuenta": "SANCORFASHION",
+   "unidades": 378,
+   "ingreso": 67916.98,
+   "visitas": 12954
+  },
+  {
+   "fecha": "2026-08-25",
+   "cuenta": "BEKURA",
+   "unidades": 594,
+   "ingreso": 109926.77,
+   "visitas": 16891
+  },
+  {
+   "fecha": "2026-08-25",
+   "cuenta": "SANCORFASHION",
+   "unidades": 420,
+   "ingreso": 76327.53,
+   "visitas": 11786
+  },
+  {
+   "fecha": "2026-08-26",
+   "cuenta": "BEKURA",
+   "unidades": 556,
+   "ingreso": 116698.55,
+   "visitas": 17353
+  },
+  {
+   "fecha": "2026-08-26",
+   "cuenta": "SANCORFASHION",
+   "unidades": 500,
+   "ingreso": 97783.87,
+   "visitas": 15545
+  },
+  {
+   "fecha": "2026-08-27",
+   "cuenta": "BEKURA",
+   "unidades": 553,
+   "ingreso": 98742.87,
+   "visitas": 18920
+  },
+  {
+   "fecha": "2026-08-27",
+   "cuenta": "SANCORFASHION",
+   "unidades": 434,
+   "ingreso": 79714.32,
+   "visitas": 13363
+  },
+  {
+   "fecha": "2026-08-28",
+   "cuenta": "BEKURA",
+   "unidades": 454,
+   "ingreso": 77174.74,
+   "visitas": 14072
+  },
+  {
+   "fecha": "2026-08-28",
+   "cuenta": "SANCORFASHION",
+   "unidades": 453,
+   "ingreso": 79291.76,
+   "visitas": 14086
+  },
+  {
+   "fecha": "2026-08-29",
+   "cuenta": "BEKURA",
+   "unidades": 509,
+   "ingreso": 102530.09,
+   "visitas": 14450
+  },
+  {
+   "fecha": "2026-08-29",
+   "cuenta": "SANCORFASHION",
+   "unidades": 374,
+   "ingreso": 67107.42,
+   "visitas": 9311
+  },
+  {
+   "fecha": "2026-08-30",
+   "cuenta": "BEKURA",
+   "unidades": 386,
+   "ingreso": 73429.94,
+   "visitas": 11831
+  },
+  {
+   "fecha": "2026-08-30",
+   "cuenta": "SANCORFASHION",
+   "unidades": 419,
+   "ingreso": 74562.04,
+   "visitas": 11111
+  },
+  {
+   "fecha": "2026-08-31",
+   "cuenta": "BEKURA",
+   "unidades": 514,
+   "ingreso": 103140.28,
+   "visitas": 12946
+  },
+  {
+   "fecha": "2026-08-31",
+   "cuenta": "SANCORFASHION",
+   "unidades": 468,
+   "ingreso": 90819.54,
+   "visitas": 13372
+  },
+  {
+   "fecha": "2026-09-01",
+   "cuenta": "BEKURA",
+   "unidades": 495,
+   "ingreso": 101370.55,
+   "visitas": 12572
+  },
+  {
+   "fecha": "2026-09-01",
+   "cuenta": "SANCORFASHION",
+   "unidades": 431,
+   "ingreso": 77533.02,
+   "visitas": 11556
+  },
+  {
+   "fecha": "2026-09-02",
+   "cuenta": "BEKURA",
+   "unidades": 647,
+   "ingreso": 128436.8,
+   "visitas": 15880
+  },
+  {
+   "fecha": "2026-09-02",
+   "cuenta": "SANCORFASHION",
+   "unidades": 434,
+   "ingreso": 90625.59,
+   "visitas": 11650
+  },
+  {
+   "fecha": "2026-09-03",
+   "cuenta": "BEKURA",
+   "unidades": 663,
+   "ingreso": 126263.84,
+   "visitas": 18239
+  },
+  {
+   "fecha": "2026-09-03",
+   "cuenta": "SANCORFASHION",
+   "unidades": 519,
+   "ingreso": 96260.39,
+   "visitas": 12834
+  },
+  {
+   "fecha": "2026-09-04",
+   "cuenta": "BEKURA",
+   "unidades": 636,
+   "ingreso": 113515.65,
+   "visitas": 16593
+  },
+  {
+   "fecha": "2026-09-04",
+   "cuenta": "SANCORFASHION",
+   "unidades": 535,
+   "ingreso": 109294.77,
+   "visitas": 13922
+  },
+  {
+   "fecha": "2026-09-05",
+   "cuenta": "BEKURA",
+   "unidades": 575,
+   "ingreso": 109869.36,
+   "visitas": 15473
+  },
+  {
+   "fecha": "2026-09-05",
+   "cuenta": "SANCORFASHION",
+   "unidades": 443,
+   "ingreso": 89457.82,
+   "visitas": 13294
+  },
+  {
+   "fecha": "2026-09-06",
+   "cuenta": "BEKURA",
+   "unidades": 661,
+   "ingreso": 133757.28,
+   "visitas": 17567
+  },
+  {
+   "fecha": "2026-09-06",
+   "cuenta": "SANCORFASHION",
+   "unidades": 459,
+   "ingreso": 84748.24,
+   "visitas": 12148
+  },
+  {
+   "fecha": "2026-09-07",
+   "cuenta": "BEKURA",
+   "unidades": 734,
+   "ingreso": 135679.77,
+   "visitas": 18750
+  },
+  {
+   "fecha": "2026-09-07",
+   "cuenta": "SANCORFASHION",
+   "unidades": 566,
+   "ingreso": 103780.35,
+   "visitas": 17571
+  },
+  {
+   "fecha": "2026-09-08",
+   "cuenta": "BEKURA",
+   "unidades": 685,
+   "ingreso": 125578.99,
+   "visitas": 18908
+  },
+  {
+   "fecha": "2026-09-08",
+   "cuenta": "SANCORFASHION",
+   "unidades": 619,
+   "ingreso": 119413.97,
+   "visitas": 19805
+  },
+  {
+   "fecha": "2026-09-09",
+   "cuenta": "BEKURA",
+   "unidades": 649,
+   "ingreso": 115260.34,
+   "visitas": 16944
+  },
+  {
+   "fecha": "2026-09-09",
+   "cuenta": "SANCORFASHION",
+   "unidades": 594,
+   "ingreso": 122018.55,
+   "visitas": 18628
+  },
+  {
+   "fecha": "2026-09-10",
+   "cuenta": "BEKURA",
+   "unidades": 841,
+   "ingreso": 172237.17,
+   "visitas": 23493
+  },
+  {
+   "fecha": "2026-09-10",
+   "cuenta": "SANCORFASHION",
+   "unidades": 616,
+   "ingreso": 121189.67,
+   "visitas": 15594
+  },
+  {
+   "fecha": "2026-09-11",
+   "cuenta": "BEKURA",
+   "unidades": 620,
+   "ingreso": 131185.92,
+   "visitas": 16484
+  },
+  {
+   "fecha": "2026-09-11",
+   "cuenta": "SANCORFASHION",
+   "unidades": 658,
+   "ingreso": 132297.41,
+   "visitas": 17400
+  },
+  {
+   "fecha": "2026-09-12",
+   "cuenta": "BEKURA",
+   "unidades": 535,
+   "ingreso": 102042.69,
+   "visitas": 17575
+  },
+  {
+   "fecha": "2026-09-12",
+   "cuenta": "SANCORFASHION",
+   "unidades": 466,
+   "ingreso": 84040.9,
+   "visitas": 16353
+  },
+  {
+   "fecha": "2026-09-13",
+   "cuenta": "BEKURA",
+   "unidades": 573,
+   "ingreso": 109065.22,
+   "visitas": 17385
+  },
+  {
+   "fecha": "2026-09-13",
+   "cuenta": "SANCORFASHION",
+   "unidades": 519,
+   "ingreso": 105623.89,
+   "visitas": 17409
+  },
+  {
+   "fecha": "2026-09-14",
+   "cuenta": "BEKURA",
+   "unidades": 676,
+   "ingreso": 123175.04,
+   "visitas": 21513
+  },
+  {
+   "fecha": "2026-09-14",
+   "cuenta": "SANCORFASHION",
+   "unidades": 585,
+   "ingreso": 122835.93,
+   "visitas": 17047
+  },
+  {
+   "fecha": "2026-09-15",
+   "cuenta": "BEKURA",
+   "unidades": 719,
+   "ingreso": 135230.46,
+   "visitas": 20276
+  },
+  {
+   "fecha": "2026-09-15",
+   "cuenta": "SANCORFASHION",
+   "unidades": 736,
+   "ingreso": 145947.01,
+   "visitas": 19772
+  },
+  {
+   "fecha": "2026-09-16",
+   "cuenta": "BEKURA",
+   "unidades": 849,
+   "ingreso": 170972.64,
+   "visitas": 20837
+  },
+  {
+   "fecha": "2026-09-16",
+   "cuenta": "SANCORFASHION",
+   "unidades": 608,
+   "ingreso": 106398.99,
+   "visitas": 19669
+  },
+  {
+   "fecha": "2026-09-17",
+   "cuenta": "BEKURA",
+   "unidades": 706,
+   "ingreso": 147882.25,
+   "visitas": 24290
+  },
+  {
+   "fecha": "2026-09-17",
+   "cuenta": "SANCORFASHION",
+   "unidades": 696,
+   "ingreso": 134543.18,
+   "visitas": 17993
+  },
+  {
+   "fecha": "2026-09-18",
+   "cuenta": "BEKURA",
+   "unidades": 688,
+   "ingreso": 140513.42,
+   "visitas": 22321
+  },
+  {
+   "fecha": "2026-09-18",
+   "cuenta": "SANCORFASHION",
+   "unidades": 550,
+   "ingreso": 103157.31,
+   "visitas": 16986
+  },
+  {
+   "fecha": "2026-09-19",
+   "cuenta": "BEKURA",
+   "unidades": 595,
+   "ingreso": 115238.27,
+   "visitas": 19250
+  },
+  {
+   "fecha": "2026-09-19",
+   "cuenta": "SANCORFASHION",
+   "unidades": 539,
+   "ingreso": 102637.37,
+   "visitas": 13485
+  },
+  {
+   "fecha": "2026-09-20",
+   "cuenta": "BEKURA",
+   "unidades": 651,
+   "ingreso": 113417.12,
+   "visitas": 17578
+  },
+  {
+   "fecha": "2026-09-20",
+   "cuenta": "SANCORFASHION",
+   "unidades": 432,
+   "ingreso": 84758.09,
+   "visitas": 13495
+  },
+  {
+   "fecha": "2026-09-21",
+   "cuenta": "BEKURA",
+   "unidades": 793,
+   "ingreso": 141620.31,
+   "visitas": 22404
+  },
+  {
+   "fecha": "2026-09-21",
+   "cuenta": "SANCORFASHION",
+   "unidades": 588,
+   "ingreso": 112681.64,
+   "visitas": 16054
+  },
+  {
+   "fecha": "2026-09-22",
+   "cuenta": "BEKURA",
+   "unidades": 703,
+   "ingreso": 141892.78,
+   "visitas": 18696
+  },
+  {
+   "fecha": "2026-09-22",
+   "cuenta": "SANCORFASHION",
+   "unidades": 497,
+   "ingreso": 94711.22,
+   "visitas": 15549
+  },
+  {
+   "fecha": "2026-09-23",
+   "cuenta": "BEKURA",
+   "unidades": 586,
+   "ingreso": 114157.78,
+   "visitas": 15728
+  },
+  {
+   "fecha": "2026-09-23",
+   "cuenta": "SANCORFASHION",
+   "unidades": 525,
+   "ingreso": 103099.55,
+   "visitas": 13901
+  },
+  {
+   "fecha": "2026-09-24",
+   "cuenta": "BEKURA",
+   "unidades": 612,
+   "ingreso": 125670.22,
+   "visitas": 16175
+  },
+  {
+   "fecha": "2026-09-24",
+   "cuenta": "SANCORFASHION",
+   "unidades": 539,
+   "ingreso": 110722.21,
+   "visitas": 18470
+  },
+  {
+   "fecha": "2026-09-25",
+   "cuenta": "BEKURA",
+   "unidades": 625,
+   "ingreso": 108068.71,
+   "visitas": 16410
+  },
+  {
+   "fecha": "2026-09-25",
+   "cuenta": "SANCORFASHION",
+   "unidades": 514,
+   "ingreso": 102591.19,
+   "visitas": 16459
+  },
+  {
+   "fecha": "2026-09-26",
+   "cuenta": "BEKURA",
+   "unidades": 455,
+   "ingreso": 79426.66,
+   "visitas": 14702
+  },
+  {
+   "fecha": "2026-09-26",
+   "cuenta": "SANCORFASHION",
+   "unidades": 392,
+   "ingreso": 79618.24,
+   "visitas": 10017
+  },
+  {
+   "fecha": "2026-09-27",
+   "cuenta": "BEKURA",
+   "unidades": 476,
+   "ingreso": 90885.91,
+   "visitas": 15183
+  },
+  {
+   "fecha": "2026-09-27",
+   "cuenta": "SANCORFASHION",
+   "unidades": 339,
+   "ingreso": 63226.15,
+   "visitas": 9892
+  }
+ ]
+}

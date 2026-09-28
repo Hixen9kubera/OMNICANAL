@@ -1,0 +1,59 @@
+# Contexto de `docker build -f laboratorio/Dockerfile .` (raíz del repo).
+#
+# El repo es PÚBLICO y la imagen del laboratorio copia backend/ completo: todo lo
+# que no deba viajar a Railway se corta AQUÍ, no confiando en que nadie lo copie.
+# Los patrones se anclan a la raíz; `**/` = a cualquier profundidad.
+# OJO: no usar `**/publicaciones_*` — se llevaría backend/services/publicaciones_panel.py,
+# que el laboratorio reusa.
+
+# ── Secretos ──────────────────────────────────────────────────────────────────
+.env
+.env.*
+**/.env
+**/.env.*
+env
+env.*
+**/*.pem
+config/meli_tokens.json
+.tokens_ml_observaciones.jsonl
+.competencia-chrome
+
+# ── Datos del laboratorio y volcados de trabajo (costos, márgenes, compradores) ──
+backend/sandbox_precios/datos
+**/*.xlsx
+**/*.pkl
+**/*.bak
+backups
+**/backups
+reportes
+backend/reportes
+publicaciones_*
+fantasmas_*.csv
+audita_*.json
+auditoria*.json
+verificacion_competencia
+
+# ── Construcción y cachés ─────────────────────────────────────────────────────
+.git
+**/node_modules
+**/.next
+**/out
+**/__pycache__
+**/*.py[cod]
+**/.venv
+**/venv
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/*.log
+**/*.tsbuildinfo
+
+# ── Lo que el laboratorio no usa (contexto más chico y sin sorpresas) ─────────
+frontend
+agents
+supabase
+.claude
+.github
+README.md
+*.sql
+*.csv

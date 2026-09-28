@@ -1,0 +1,2169 @@
+{
+ "generado_at": "2026-09-28T12:40:00Z",
+ "contenedor_mxn": 525000,
+ "filas": [
+  {
+   "sku": "TEC-1879-ROS",
+   "titulo": "Lámpara LED de escritorio recargable táctil",
+   "cuentas": [
+    "BEKURA",
+    "SANCORFASHION"
+   ],
+   "listing_ids": [
+    "MLM2703536658",
+    "MLM2703781105"
+   ],
+   "precio_cobrado": 109,
+   "unidades_30d": 378,
+   "odoo": {
+    "container_numbers": "PCIU9516451=CI^0PL contenedor 33",
+    "codigos": [
+     "PCIU9516451"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL PCIU9516451 contenedor 33.xlsx",
+    "file_id": "1s7zpfj5n2x",
+    "sha256": null,
+    "contenedor": "PCIU9516451"
+   },
+   "fila": 449,
+   "empate": {
+    "metodo": "ferraforme",
+    "distancia": null,
+    "confianza": "alta"
+   },
+   "cajas": 99,
+   "piezas_fila": 4752,
+   "piezas_grupo": 48,
+   "caja_mixta": true,
+   "cbm_caja": 0.12,
+   "cbm_pieza": 0.0025,
+   "peso_pieza_kg": 0.35,
+   "precio_usd": 23.62,
+   "costos": {
+    "volumetrico_real": 19.76,
+    "tarifa_fija_7500": 18.75,
+    "peso_volumen_wm": 19.17,
+    "valor_fob": 977.57,
+    "hibrido_70_30": 307.1
+   },
+   "kubera": {
+    "costo_total": 467.53,
+    "costo_cbm": 18.75,
+    "costo_producto": 448.78,
+    "revisado_at": null,
+    "revisado_por": "Cinthya",
+    "validado": false
+   },
+   "margen_con_525k": 0.1739,
+   "margen_panel": -3.9341
+  },
+  {
+   "sku": "ORG-1214-AZU",
+   "titulo": "Organizador de cajones 6 piezas plástico transparente",
+   "cuentas": [
+    "SANCORFASHION"
+   ],
+   "listing_ids": [
+    "MLM2703869528"
+   ],
+   "precio_cobrado": 159,
+   "unidades_30d": 2,
+   "odoo": {
+    "container_numbers": "MSKU7781230=CI^0PL contenedor 34",
+    "codigos": [
+     "MSKU7781230"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL MSKU7781230 contenedor 34.xlsx",
+    "file_id": "11wb199n7703",
+    "sha256": null,
+    "contenedor": "MSKU7781230"
+   },
+   "fila": 129,
+   "empate": {
+    "metodo": "sha256",
+    "distancia": 0,
+    "confianza": "alta"
+   },
+   "cajas": 48,
+   "piezas_fila": 2304,
+   "piezas_grupo": 48,
+   "caja_mixta": false,
+   "cbm_caja": 0.12,
+   "cbm_pieza": 0.0025,
+   "peso_pieza_kg": 0.55,
+   "precio_usd": null,
+   "costos": {
+    "volumetrico_real": 21.49,
+    "tarifa_fija_7500": 18.75,
+    "peso_volumen_wm": 20.22,
+    "valor_fob": null,
+    "hibrido_70_30": null
+   },
+   "kubera": {
+    "costo_total": 546.51,
+    "costo_cbm": 18.75,
+    "costo_producto": 527.76,
+    "revisado_at": null,
+    "revisado_por": null,
+    "validado": false
+   },
+   "margen_con_525k": 0.2992,
+   "margen_panel": -3.0028
+  },
+  {
+   "sku": "COC-1931-NEG",
+   "titulo": "Set 3 sartenes de hierro fundido prehorneadas",
+   "cuentas": [
+    "BEKURA"
+   ],
+   "listing_ids": [
+    "MLM2704063298"
+   ],
+   "precio_cobrado": 1099,
+   "unidades_30d": 242,
+   "odoo": {
+    "container_numbers": "TGHU6634102=CI^0PL contenedor 35",
+    "codigos": [
+     "TGHU6634102"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL TGHU6634102 contenedor 35.xlsx",
+    "file_id": "12a0mjjqxzkn",
+    "sha256": null,
+    "contenedor": "TGHU6634102"
+   },
+   "fila": 450,
+   "empate": {
+    "metodo": "ferraforme",
+    "distancia": null,
+    "confianza": "alta"
+   },
+   "cajas": 9,
+   "piezas_fila": 585,
+   "piezas_grupo": 65,
+   "caja_mixta": false,
+   "cbm_caja": 2.366,
+   "cbm_pieza": 0.0364,
+   "peso_pieza_kg": 4.07,
+   "precio_usd": 34.39,
+   "costos": {
+    "volumetrico_real": 269.53,
+    "tarifa_fija_7500": 273,
+    "peso_volumen_wm": 260.09,
+    "valor_fob": 1403.14,
+    "hibrido_70_30": 609.62
+   },
+   "kubera": null,
+   "margen_con_525k": 0.3021,
+   "margen_panel": -0.2956
+  },
+  {
+   "sku": "ORG-0817-DOR",
+   "titulo": "Vasos reutilizables con tapa y popote 4 piezas",
+   "cuentas": [
+    "SANCORFASHION"
+   ],
+   "listing_ids": [
+    "MLM2704448645"
+   ],
+   "precio_cobrado": 209,
+   "unidades_30d": 6,
+   "odoo": {
+    "container_numbers": "CMAU4512876=CI^0PL contenedor 36",
+    "codigos": [
+     "CMAU4512876"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL CMAU4512876 contenedor 36.xlsx",
+    "file_id": "11g60vc1hir7",
+    "sha256": null,
+    "contenedor": "CMAU4512876"
+   },
+   "fila": 24,
+   "empate": {
+    "metodo": "ferraforme",
+    "distancia": null,
+    "confianza": "alta"
+   },
+   "cajas": 62,
+   "piezas_fila": 1488,
+   "piezas_grupo": 24,
+   "caja_mixta": false,
+   "cbm_caja": 0.1056,
+   "cbm_pieza": 0.0044,
+   "peso_pieza_kg": 0.48,
+   "precio_usd": 15.81,
+   "costos": {
+    "volumetrico_real": 39.58,
+    "tarifa_fija_7500": 33,
+    "peso_volumen_wm": 38.83,
+    "valor_fob": 582.99,
+    "hibrido_70_30": 202.6
+   },
+   "kubera": {
+    "costo_total": 333.39,
+    "costo_cbm": 33,
+    "costo_producto": 300.39,
+    "revisado_at": "2026-09-16T17:20:00Z",
+    "revisado_por": "Cinthya",
+    "validado": true
+   },
+   "margen_con_525k": 0.3055,
+   "margen_panel": -1.1003
+  },
+  {
+   "sku": "TEC-1847-MUL",
+   "titulo": "Audífonos inalámbricos Bluetooth 5.3 con estuche de carga",
+   "cuentas": [
+    "BEKURA",
+    "SANCORFASHION"
+   ],
+   "listing_ids": [
+    "MLM2704827317",
+    "MLM2705278115"
+   ],
+   "precio_cobrado": 79,
+   "unidades_30d": 19,
+   "odoo": {
+    "container_numbers": "OOLU8820341=CI^0PL contenedor 37",
+    "codigos": [
+     "OOLU8820341"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL OOLU8820341 contenedor 37.xlsx",
+    "file_id": "11lh8y4h42v8",
+    "sha256": null,
+    "contenedor": "OOLU8820341"
+   },
+   "fila": 202,
+   "empate": {
+    "metodo": "dhash",
+    "distancia": 4,
+    "confianza": "media"
+   },
+   "cajas": 43,
+   "piezas_fila": 1032,
+   "piezas_grupo": 24,
+   "caja_mixta": false,
+   "cbm_caja": 0.036,
+   "cbm_pieza": 0.0015,
+   "peso_pieza_kg": 0.2,
+   "precio_usd": null,
+   "costos": {
+    "volumetrico_real": 9.65,
+    "tarifa_fija_7500": 11.25,
+    "peso_volumen_wm": 9.09,
+    "valor_fob": null,
+    "hibrido_70_30": null
+   },
+   "kubera": {
+    "costo_total": 241.29,
+    "costo_cbm": 11.25,
+    "costo_producto": 230.04,
+    "revisado_at": null,
+    "revisado_por": "Cinthya",
+    "validado": true
+   },
+   "margen_con_525k": 0.1145,
+   "margen_panel": -2.8176
+  },
+  {
+   "sku": "TEC-1367-ROS",
+   "titulo": "Soporte para laptop de aluminio ajustable plegable",
+   "cuentas": [
+    "SANCORFASHION"
+   ],
+   "listing_ids": [
+    "MLM2705841210"
+   ],
+   "precio_cobrado": 149,
+   "unidades_30d": 273,
+   "odoo": {
+    "container_numbers": "PCIU9516451=CI^0PL contenedor 33",
+    "codigos": [
+     "PCIU9516451"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL PCIU9516451 contenedor 33.xlsx",
+    "file_id": "11s2uq2ybk2m",
+    "sha256": null,
+    "contenedor": "PCIU9516451"
+   },
+   "fila": 352,
+   "empate": {
+    "metodo": "ferraforme",
+    "distancia": null,
+    "confianza": "alta"
+   },
+   "cajas": 31,
+   "piezas_fila": 2015,
+   "piezas_grupo": 65,
+   "caja_mixta": false,
+   "cbm_caja": 0.2795,
+   "cbm_pieza": 0.0043,
+   "peso_pieza_kg": 0.96,
+   "precio_usd": 8.85,
+   "costos": {
+    "volumetrico_real": 33.99,
+    "tarifa_fija_7500": 32.25,
+    "peso_volumen_wm": 31.74,
+    "valor_fob": 360.99,
+    "hibrido_70_30": 132.09
+   },
+   "kubera": null,
+   "margen_con_525k": 0.1705,
+   "margen_panel": -0.9464
+  },
+  {
+   "sku": "EST-0595-GRS",
+   "titulo": "Repisa flotante de madera 60 cm juego de 3",
+   "cuentas": [
+    "BEKURA"
+   ],
+   "listing_ids": [
+    "MLM2705997340"
+   ],
+   "precio_cobrado": 549,
+   "unidades_30d": 66,
+   "odoo": {
+    "container_numbers": "MSKU7781230=CI^0PL contenedor 34",
+    "codigos": [
+     "MSKU7781230"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL MSKU7781230 contenedor 34.xlsx",
+    "file_id": "12co41234ak1",
+    "sha256": null,
+    "contenedor": "MSKU7781230"
+   },
+   "fila": 198,
+   "empate": {
+    "metodo": "sha256",
+    "distancia": 0,
+    "confianza": "alta"
+   },
+   "cajas": 64,
+   "piezas_fila": 6400,
+   "piezas_grupo": 100,
+   "caja_mixta": false,
+   "cbm_caja": 1.48,
+   "cbm_pieza": 0.0148,
+   "peso_pieza_kg": 3.06,
+   "precio_usd": null,
+   "costos": {
+    "volumetrico_real": 127.21,
+    "tarifa_fija_7500": 111,
+    "peso_volumen_wm": 122.41,
+    "valor_fob": null,
+    "hibrido_70_30": null
+   },
+   "kubera": {
+    "costo_total": 294.34,
+    "costo_cbm": 111,
+    "costo_producto": 183.34,
+    "revisado_at": null,
+    "revisado_por": "Cinthya",
+    "validado": false
+   },
+   "margen_con_525k": 0.1917,
+   "margen_panel": -0.1128
+  },
+  {
+   "sku": "ACC-0547-PLA",
+   "titulo": "Mochila antirrobo con puerto USB impermeable",
+   "cuentas": [
+    "SANCORFASHION"
+   ],
+   "listing_ids": [
+    "MLM2706354461"
+   ],
+   "precio_cobrado": 199,
+   "unidades_30d": 380,
+   "odoo": {
+    "container_numbers": "TGHU6634102=CI^0PL contenedor 35",
+    "codigos": [
+     "TGHU6634102"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL TGHU6634102 contenedor 35.xlsx",
+    "file_id": "1oeldqgl6ej",
+    "sha256": null,
+    "contenedor": "TGHU6634102"
+   },
+   "fila": 426,
+   "empate": {
+    "metodo": "ia_titulo",
+    "distancia": null,
+    "confianza": "baja"
+   },
+   "cajas": 11,
+   "piezas_fila": 660,
+   "piezas_grupo": 60,
+   "caja_mixta": false,
+   "cbm_caja": 0.318,
+   "cbm_pieza": 0.0053,
+   "peso_pieza_kg": 0.79,
+   "precio_usd": 28.37,
+   "costos": {
+    "volumetrico_real": 39.25,
+    "tarifa_fija_7500": 39.75,
+    "peso_volumen_wm": 39.13,
+    "valor_fob": 976.53,
+    "hibrido_70_30": 320.43
+   },
+   "kubera": {
+    "costo_total": 578.78,
+    "costo_cbm": 39.75,
+    "costo_producto": 539.03,
+    "revisado_at": null,
+    "revisado_por": null,
+    "validado": true
+   },
+   "margen_con_525k": 0.2739,
+   "margen_panel": -2.4374
+  },
+  {
+   "sku": "COC-0961-CAF",
+   "titulo": "Termo de acero inoxidable 1 L doble pared",
+   "cuentas": [
+    "BEKURA",
+    "SANCORFASHION"
+   ],
+   "listing_ids": [
+    "MLM2707138723",
+    "MLM2707620248"
+   ],
+   "precio_cobrado": 189,
+   "unidades_30d": 85,
+   "odoo": {
+    "container_numbers": "CMAU4512876=CI^0PL contenedor 36",
+    "codigos": [
+     "CMAU4512876"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL CMAU4512876 contenedor 36.xlsx",
+    "file_id": "1tjuf0a6gb9",
+    "sha256": null,
+    "contenedor": "CMAU4512876"
+   },
+   "fila": 402,
+   "empate": {
+    "metodo": "ferraforme",
+    "distancia": null,
+    "confianza": "alta"
+   },
+   "cajas": 114,
+   "piezas_fila": 6840,
+   "piezas_grupo": 60,
+   "caja_mixta": false,
+   "cbm_caja": 0.228,
+   "cbm_pieza": 0.0038,
+   "peso_pieza_kg": 0.5,
+   "precio_usd": 19.22,
+   "costos": {
+    "volumetrico_real": 34.18,
+    "tarifa_fija_7500": 28.5,
+    "peso_volumen_wm": 32.26,
+    "valor_fob": 838.85,
+    "hibrido_70_30": 275.58
+   },
+   "kubera": {
+    "costo_total": 393.68,
+    "costo_cbm": 28.5,
+    "costo_producto": 365.18,
+    "revisado_at": null,
+    "revisado_por": "Andrea",
+    "validado": false
+   },
+   "margen_con_525k": 0.2958,
+   "margen_panel": -1.6064
+  },
+  {
+   "sku": "ORG-1701-AZU",
+   "titulo": "Tapete antiderrapante para baño memory foam",
+   "cuentas": [
+    "SANCORFASHION"
+   ],
+   "listing_ids": [
+    "MLM2707717810"
+   ],
+   "precio_cobrado": 229,
+   "unidades_30d": 2,
+   "odoo": {
+    "container_numbers": "OOLU8820341=CI^0PL contenedor 37",
+    "codigos": [
+     "OOLU8820341"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL OOLU8820341 contenedor 37.xlsx",
+    "file_id": "1cfbyomzdre",
+    "sha256": null,
+    "contenedor": "OOLU8820341"
+   },
+   "fila": 373,
+   "empate": {
+    "metodo": "ferraforme",
+    "distancia": null,
+    "confianza": "alta"
+   },
+   "cajas": 21,
+   "piezas_fila": 504,
+   "piezas_grupo": 24,
+   "caja_mixta": false,
+   "cbm_caja": 0.144,
+   "cbm_pieza": 0.006,
+   "peso_pieza_kg": 0.7,
+   "precio_usd": null,
+   "costos": {
+    "volumetrico_real": 38.6,
+    "tarifa_fija_7500": 45,
+    "peso_volumen_wm": 37.83,
+    "valor_fob": null,
+    "hibrido_70_30": null
+   },
+   "kubera": {
+    "costo_total": 679.34,
+    "costo_cbm": 45,
+    "costo_producto": 634.34,
+    "revisado_at": null,
+    "revisado_por": null,
+    "validado": false
+   },
+   "margen_con_525k": 0.3326,
+   "margen_panel": -2.4654
+  },
+  {
+   "sku": "MAN-1748-PLA",
+   "titulo": "Cortina blackout térmica 2 paneles con argollas",
+   "cuentas": [
+    "BEKURA"
+   ],
+   "listing_ids": [
+    "MLM2707932961"
+   ],
+   "precio_cobrado": 639,
+   "unidades_30d": 57,
+   "odoo": {
+    "container_numbers": "PCIU9516451=CI^0PL contenedor 33",
+    "codigos": [
+     "PCIU9516451"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL PCIU9516451 contenedor 33.xlsx",
+    "file_id": "1d9ogky7uat",
+    "sha256": null,
+    "contenedor": "PCIU9516451"
+   },
+   "fila": 248,
+   "empate": {
+    "metodo": "ferraforme",
+    "distancia": null,
+    "confianza": "alta"
+   },
+   "cajas": 55,
+   "piezas_fila": 2640,
+   "piezas_grupo": 48,
+   "caja_mixta": false,
+   "cbm_caja": 0.6864,
+   "cbm_pieza": 0.0143,
+   "peso_pieza_kg": 1.61,
+   "precio_usd": 21.73,
+   "costos": {
+    "volumetrico_real": 113.03,
+    "tarifa_fija_7500": 107.25,
+    "peso_volumen_wm": 107.91,
+    "valor_fob": 960.96,
+    "hibrido_70_30": 367.41
+   },
+   "kubera": {
+    "costo_total": 520.12,
+    "costo_cbm": 107.25,
+    "costo_producto": 412.87,
+    "revisado_at": null,
+    "revisado_por": null,
+    "validado": false
+   },
+   "margen_con_525k": 0.3468,
+   "margen_panel": -0.2903
+  },
+  {
+   "sku": "COC-0111-BLN",
+   "titulo": "Báscula digital de cocina 5 kg acero",
+   "cuentas": [
+    "SANCORFASHION"
+   ],
+   "listing_ids": [
+    "MLM2708080946"
+   ],
+   "precio_cobrado": 139,
+   "unidades_30d": 55,
+   "odoo": {
+    "container_numbers": "MSKU7781230=CI^0PL contenedor 34",
+    "codigos": [
+     "MSKU7781230"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL MSKU7781230 contenedor 34.xlsx",
+    "file_id": "110gkvap522o",
+    "sha256": null,
+    "contenedor": "MSKU7781230"
+   },
+   "fila": 208,
+   "empate": {
+    "metodo": "sha256",
+    "distancia": 0,
+    "confianza": "alta"
+   },
+   "cajas": 26,
+   "piezas_fila": 1248,
+   "piezas_grupo": 48,
+   "caja_mixta": false,
+   "cbm_caja": 0.144,
+   "cbm_pieza": 0.003,
+   "peso_pieza_kg": 0.42,
+   "precio_usd": 19.65,
+   "costos": {
+    "volumetrico_real": 25.79,
+    "tarifa_fija_7500": 22.5,
+    "peso_volumen_wm": 24.5,
+    "valor_fob": 676.15,
+    "hibrido_70_30": 220.9
+   },
+   "kubera": {
+    "costo_total": 395.85,
+    "costo_cbm": 22.5,
+    "costo_producto": 373.35,
+    "revisado_at": null,
+    "revisado_por": "Andrea",
+    "validado": true
+   },
+   "margen_con_525k": 0.2298,
+   "margen_panel": -2.4326
+  },
+  {
+   "sku": "ACC-1402-CAF",
+   "titulo": "Cepillo alisador eléctrico cerámica iónica",
+   "cuentas": [
+    "BEKURA",
+    "SANCORFASHION"
+   ],
+   "listing_ids": [
+    "MLM2708872320",
+    "MLM2709580395"
+   ],
+   "precio_cobrado": 169,
+   "unidades_30d": 14,
+   "odoo": {
+    "container_numbers": "TGHU6634102=CI^0PL contenedor 35",
+    "codigos": [
+     "TGHU6634102"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL TGHU6634102 contenedor 35.xlsx",
+    "file_id": "12clqtpmim1g",
+    "sha256": null,
+    "contenedor": "TGHU6634102"
+   },
+   "fila": 183,
+   "empate": {
+    "metodo": "ferraforme",
+    "distancia": null,
+    "confianza": "alta"
+   },
+   "cajas": 118,
+   "piezas_fila": 7080,
+   "piezas_grupo": 60,
+   "caja_mixta": false,
+   "cbm_caja": 0.21,
+   "cbm_pieza": 0.0035,
+   "peso_pieza_kg": 0.57,
+   "precio_usd": null,
+   "costos": {
+    "volumetrico_real": 25.92,
+    "tarifa_fija_7500": 26.25,
+    "peso_volumen_wm": 24.64,
+    "valor_fob": null,
+    "hibrido_70_30": null
+   },
+   "kubera": {
+    "costo_total": 138.77,
+    "costo_cbm": 26.25,
+    "costo_producto": 112.52,
+    "revisado_at": "2026-08-23T17:20:00Z",
+    "revisado_por": "Thalia",
+    "validado": false
+   },
+   "margen_con_525k": 0.2948,
+   "margen_panel": -0.373
+  },
+  {
+   "sku": "ACC-1777-GRS",
+   "titulo": "Faros de niebla LED universales 2 piezas",
+   "cuentas": [
+    "SANCORFASHION"
+   ],
+   "listing_ids": [
+    "MLM2709677160"
+   ],
+   "precio_cobrado": 169,
+   "unidades_30d": 523,
+   "odoo": {
+    "container_numbers": "CMAU4512876=CI^0PL contenedor 36",
+    "codigos": [
+     "CMAU4512876"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL CMAU4512876 contenedor 36.xlsx",
+    "file_id": "11e937edmslg",
+    "sha256": null,
+    "contenedor": "CMAU4512876"
+   },
+   "fila": 391,
+   "empate": {
+    "metodo": "dhash",
+    "distancia": 0,
+    "confianza": "media"
+   },
+   "cajas": 34,
+   "piezas_fila": 1632,
+   "piezas_grupo": 48,
+   "caja_mixta": false,
+   "cbm_caja": 0.2688,
+   "cbm_pieza": 0.0056,
+   "peso_pieza_kg": 1.09,
+   "precio_usd": 22.37,
+   "costos": {
+    "volumetrico_real": 50.37,
+    "tarifa_fija_7500": 42,
+    "peso_volumen_wm": 47.03,
+    "valor_fob": 935.47,
+    "hibrido_70_30": 315.9
+   },
+   "kubera": {
+    "costo_total": 467.03,
+    "costo_cbm": 42,
+    "costo_producto": 425.03,
+    "revisado_at": "2026-09-17T17:20:00Z",
+    "revisado_por": "Andrea",
+    "validado": false
+   },
+   "margen_con_525k": 0.1205,
+   "margen_panel": -2.3449
+  },
+  {
+   "sku": "TEC-0666-AZU",
+   "titulo": "Mini proyector portátil 1080p WiFi",
+   "cuentas": [
+    "BEKURA"
+   ],
+   "listing_ids": [
+    "MLM2709824143"
+   ],
+   "precio_cobrado": 299,
+   "unidades_30d": 0,
+   "odoo": {
+    "container_numbers": "OOLU8820341=CI^0PL contenedor 37",
+    "codigos": [
+     "OOLU8820341"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL OOLU8820341 contenedor 37.xlsx",
+    "file_id": "112cib5tagus",
+    "sha256": null,
+    "contenedor": "OOLU8820341"
+   },
+   "fila": 288,
+   "empate": {
+    "metodo": "ferraforme",
+    "distancia": null,
+    "confianza": "alta"
+   },
+   "cajas": 80,
+   "piezas_fila": 3840,
+   "piezas_grupo": 48,
+   "caja_mixta": false,
+   "cbm_caja": 0.4848,
+   "cbm_pieza": 0.0101,
+   "peso_pieza_kg": 1.37,
+   "precio_usd": null,
+   "costos": {
+    "volumetrico_real": 64.98,
+    "tarifa_fija_7500": 75.75,
+    "peso_volumen_wm": 64.27,
+    "valor_fob": null,
+    "hibrido_70_30": null
+   },
+   "kubera": {
+    "costo_total": 350.61,
+    "costo_cbm": 75.75,
+    "costo_producto": 274.86,
+    "revisado_at": null,
+    "revisado_por": "Cinthya",
+    "validado": false
+   },
+   "margen_con_525k": 0.1035,
+   "margen_panel": -0.8517
+  },
+  {
+   "sku": "ORG-0318-GRS",
+   "titulo": "Organizador de zapatos 10 niveles metálico",
+   "cuentas": [
+    "SANCORFASHION"
+   ],
+   "listing_ids": [
+    "MLM2709883867"
+   ],
+   "precio_cobrado": 419,
+   "unidades_30d": 234,
+   "odoo": {
+    "container_numbers": "PCIU9516451=CI^0PL contenedor 33",
+    "codigos": [
+     "PCIU9516451"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL PCIU9516451 contenedor 33.xlsx",
+    "file_id": "1l2q9t7kzvg",
+    "sha256": null,
+    "contenedor": "PCIU9516451"
+   },
+   "fila": 237,
+   "empate": {
+    "metodo": "ferraforme",
+    "distancia": null,
+    "confianza": "alta"
+   },
+   "cajas": 80,
+   "piezas_fila": 1600,
+   "piezas_grupo": 20,
+   "caja_mixta": false,
+   "cbm_caja": 0.21,
+   "cbm_pieza": 0.0105,
+   "peso_pieza_kg": 2.28,
+   "precio_usd": null,
+   "costos": {
+    "volumetrico_real": 82.99,
+    "tarifa_fija_7500": 78.75,
+    "peso_volumen_wm": 79.01,
+    "valor_fob": null,
+    "hibrido_70_30": null
+   },
+   "kubera": {
+    "costo_total": 307.61,
+    "costo_cbm": 78.75,
+    "costo_producto": 228.86,
+    "revisado_at": null,
+    "revisado_por": null,
+    "validado": true
+   },
+   "margen_con_525k": 0.1642,
+   "margen_panel": -0.3719
+  },
+  {
+   "sku": "COC-1310-AZU",
+   "titulo": "Juego de cuchillos 6 piezas con base de madera",
+   "cuentas": [
+    "BEKURA",
+    "SANCORFASHION"
+   ],
+   "listing_ids": [
+    "MLM2710370390",
+    "MLM2710692885"
+   ],
+   "precio_cobrado": 299,
+   "unidades_30d": 494,
+   "odoo": {
+    "container_numbers": "MSKU7781230=CI^0PL contenedor 34",
+    "codigos": [
+     "MSKU7781230"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL MSKU7781230 contenedor 34.xlsx",
+    "file_id": "14tmmkt9dgt",
+    "sha256": null,
+    "contenedor": "MSKU7781230"
+   },
+   "fila": 290,
+   "empate": {
+    "metodo": "sha256",
+    "distancia": 0,
+    "confianza": "alta"
+   },
+   "cajas": 19,
+   "piezas_fila": 684,
+   "piezas_grupo": 36,
+   "caja_mixta": true,
+   "cbm_caja": 0.2772,
+   "cbm_pieza": 0.0077,
+   "peso_pieza_kg": 1.39,
+   "precio_usd": null,
+   "costos": {
+    "volumetrico_real": 66.18,
+    "tarifa_fija_7500": 57.75,
+    "peso_volumen_wm": 61.57,
+    "valor_fob": null,
+    "hibrido_70_30": null
+   },
+   "kubera": {
+    "costo_total": 416.82,
+    "costo_cbm": 57.75,
+    "costo_producto": 359.07,
+    "revisado_at": null,
+    "revisado_por": null,
+    "validado": false
+   },
+   "margen_con_525k": 0.0895,
+   "margen_panel": -1.0832
+  },
+  {
+   "sku": "COC-1203-GRS",
+   "titulo": "Lonchera térmica con 3 contenedores de vidrio",
+   "cuentas": [
+    "SANCORFASHION"
+   ],
+   "listing_ids": [
+    "MLM2710752059"
+   ],
+   "precio_cobrado": 159,
+   "unidades_30d": 4,
+   "odoo": {
+    "container_numbers": "TGHU6634102=CI^0PL contenedor 35",
+    "codigos": [
+     "TGHU6634102"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL TGHU6634102 contenedor 35.xlsx",
+    "file_id": "1ttaueyxp0d",
+    "sha256": null,
+    "contenedor": "TGHU6634102"
+   },
+   "fila": 324,
+   "empate": {
+    "metodo": "ferraforme",
+    "distancia": null,
+    "confianza": "alta"
+   },
+   "cajas": 78,
+   "piezas_fila": 5070,
+   "piezas_grupo": 65,
+   "caja_mixta": true,
+   "cbm_caja": 0.351,
+   "cbm_pieza": 0.0054,
+   "peso_pieza_kg": 1.24,
+   "precio_usd": null,
+   "costos": {
+    "volumetrico_real": 39.99,
+    "tarifa_fija_7500": 40.5,
+    "peso_volumen_wm": 38.38,
+    "valor_fob": null,
+    "hibrido_70_30": null
+   },
+   "kubera": {
+    "costo_total": 549.25,
+    "costo_cbm": 40.5,
+    "costo_producto": 508.75,
+    "revisado_at": "2026-09-08T17:20:00Z",
+    "revisado_por": null,
+    "validado": false
+   },
+   "margen_con_525k": 0.1389,
+   "margen_panel": -3.0641
+  },
+  {
+   "sku": "TEC-1140-GRS",
+   "titulo": "Humidificador ultrasónico 300 ml con luz",
+   "cuentas": [
+    "BEKURA"
+   ],
+   "listing_ids": [
+    "MLM2711271810"
+   ],
+   "precio_cobrado": 129,
+   "unidades_30d": 454,
+   "odoo": {
+    "container_numbers": "CMAU4512876=CI^0PL contenedor 36",
+    "codigos": [
+     "CMAU4512876"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL CMAU4512876 contenedor 36.xlsx",
+    "file_id": "1b3c0e65av",
+    "sha256": null,
+    "contenedor": "CMAU4512876"
+   },
+   "fila": 301,
+   "empate": {
+    "metodo": "ia_titulo",
+    "distancia": null,
+    "confianza": "baja"
+   },
+   "cajas": 62,
+   "piezas_fila": 1488,
+   "piezas_grupo": 24,
+   "caja_mixta": false,
+   "cbm_caja": 0.0672,
+   "cbm_pieza": 0.0028,
+   "peso_pieza_kg": 0.38,
+   "precio_usd": null,
+   "costos": {
+    "volumetrico_real": 25.18,
+    "tarifa_fija_7500": 21,
+    "peso_volumen_wm": 25.1,
+    "valor_fob": null,
+    "hibrido_70_30": null
+   },
+   "kubera": {
+    "costo_total": 703.76,
+    "costo_cbm": 21,
+    "costo_producto": 682.76,
+    "revisado_at": "2026-09-06T17:20:00Z",
+    "revisado_por": null,
+    "validado": true
+   },
+   "margen_con_525k": 0.2005,
+   "margen_panel": -5.0598
+  },
+  {
+   "sku": "TEC-0360-NEG",
+   "titulo": "Bocina Bluetooth resistente al agua IPX7",
+   "cuentas": [
+    "SANCORFASHION"
+   ],
+   "listing_ids": [
+    "MLM2711417636"
+   ],
+   "precio_cobrado": 219,
+   "unidades_30d": 3,
+   "odoo": {
+    "container_numbers": "OOLU8820341=CI^0PL contenedor 37",
+    "codigos": [
+     "OOLU8820341"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL OOLU8820341 contenedor 37.xlsx",
+    "file_id": "11nqmyzwcm0v",
+    "sha256": null,
+    "contenedor": "OOLU8820341"
+   },
+   "fila": 405,
+   "empate": {
+    "metodo": "ferraforme",
+    "distancia": null,
+    "confianza": "alta"
+   },
+   "cajas": 67,
+   "piezas_fila": 1608,
+   "piezas_grupo": 24,
+   "caja_mixta": false,
+   "cbm_caja": 0.1272,
+   "cbm_pieza": 0.0053,
+   "peso_pieza_kg": 0.6,
+   "precio_usd": 8.98,
+   "costos": {
+    "volumetrico_real": 34.1,
+    "tarifa_fija_7500": 39.75,
+    "peso_volumen_wm": 32.27,
+    "valor_fob": 395.23,
+    "hibrido_70_30": 142.44
+   },
+   "kubera": {
+    "costo_total": 210.37,
+    "costo_cbm": 39.75,
+    "costo_producto": 170.62,
+    "revisado_at": "2026-09-01T17:20:00Z",
+    "revisado_por": null,
+    "validado": false
+   },
+   "margen_con_525k": 0.3424,
+   "margen_panel": -0.4625
+  },
+  {
+   "sku": "TEC-1588-PLA",
+   "titulo": "Reloj despertador digital con espejo LED",
+   "cuentas": [
+    "BEKURA",
+    "SANCORFASHION"
+   ],
+   "listing_ids": [
+    "MLM2711762333",
+    "MLM2711905402"
+   ],
+   "precio_cobrado": 189,
+   "unidades_30d": 3,
+   "odoo": {
+    "container_numbers": "PCIU9516451=CI^0PL contenedor 33",
+    "codigos": [
+     "PCIU9516451"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL PCIU9516451 contenedor 33.xlsx",
+    "file_id": "11t3jxpt1gsg",
+    "sha256": null,
+    "contenedor": "PCIU9516451"
+   },
+   "fila": 406,
+   "empate": {
+    "metodo": "ferraforme",
+    "distancia": null,
+    "confianza": "alta"
+   },
+   "cajas": 47,
+   "piezas_fila": 940,
+   "piezas_grupo": 20,
+   "caja_mixta": true,
+   "cbm_caja": 0.07,
+   "cbm_pieza": 0.0035,
+   "peso_pieza_kg": 0.51,
+   "precio_usd": 1.5,
+   "costos": {
+    "volumetrico_real": 27.66,
+    "tarifa_fija_7500": 26.25,
+    "peso_volumen_wm": 27.54,
+    "valor_fob": 66.47,
+    "hibrido_70_30": 39.31
+   },
+   "kubera": {
+    "costo_total": 54.75,
+    "costo_cbm": 26.25,
+    "costo_producto": 28.5,
+    "revisado_at": null,
+    "revisado_por": null,
+    "validado": true
+   },
+   "margen_con_525k": 0.3302,
+   "margen_panel": 0.1869
+  },
+  {
+   "sku": "EST-1854-CAF",
+   "titulo": "Perchero de pie metálico con 3 niveles",
+   "cuentas": [
+    "SANCORFASHION"
+   ],
+   "listing_ids": [
+    "MLM2712698255"
+   ],
+   "precio_cobrado": 499,
+   "unidades_30d": 165,
+   "odoo": {
+    "container_numbers": "MSKU7781230=CI^0PL contenedor 34",
+    "codigos": [
+     "MSKU7781230"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL MSKU7781230 contenedor 34.xlsx",
+    "file_id": "14favew4gq0",
+    "sha256": null,
+    "contenedor": "MSKU7781230"
+   },
+   "fila": 411,
+   "empate": {
+    "metodo": "sha256",
+    "distancia": 0,
+    "confianza": "alta"
+   },
+   "cajas": 8,
+   "piezas_fila": 160,
+   "piezas_grupo": 20,
+   "caja_mixta": true,
+   "cbm_caja": 0.36,
+   "cbm_pieza": 0.018,
+   "peso_pieza_kg": 4.15,
+   "precio_usd": 82.63,
+   "costos": {
+    "volumetrico_real": 154.72,
+    "tarifa_fija_7500": 135,
+    "peso_volumen_wm": 144.4,
+    "valor_fob": 2811.65,
+    "hibrido_70_30": 951.8
+   },
+   "kubera": {
+    "costo_total": 1704.97,
+    "costo_cbm": 135,
+    "costo_producto": 1569.97,
+    "revisado_at": null,
+    "revisado_por": null,
+    "validado": false
+   },
+   "margen_con_525k": 0.0293,
+   "margen_panel": -3.0774
+  },
+  {
+   "sku": "ORG-1625-CAF",
+   "titulo": "Botella de agua motivacional 2 L con marcas de tiempo",
+   "cuentas": [
+    "BEKURA"
+   ],
+   "listing_ids": [
+    "MLM2712716995"
+   ],
+   "precio_cobrado": 129,
+   "unidades_30d": 31,
+   "odoo": {
+    "container_numbers": "TGHU6634102=CI^0PL contenedor 35",
+    "codigos": [
+     "TGHU6634102"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL TGHU6634102 contenedor 35.xlsx",
+    "file_id": "1102tfspzkhv",
+    "sha256": null,
+    "contenedor": "TGHU6634102"
+   },
+   "fila": 122,
+   "empate": {
+    "metodo": "dhash",
+    "distancia": 5,
+    "confianza": "media"
+   },
+   "cajas": 91,
+   "piezas_fila": 5915,
+   "piezas_grupo": 65,
+   "caja_mixta": false,
+   "cbm_caja": 0.2015,
+   "cbm_pieza": 0.0031,
+   "peso_pieza_kg": 0.38,
+   "precio_usd": 21.97,
+   "costos": {
+    "volumetrico_real": 22.95,
+    "tarifa_fija_7500": 23.25,
+    "peso_volumen_wm": 22.56,
+    "valor_fob": 772.86,
+    "hibrido_70_30": 247.93
+   },
+   "kubera": {
+    "costo_total": 440.68,
+    "costo_cbm": 23.25,
+    "costo_producto": 417.43,
+    "revisado_at": null,
+    "revisado_por": "Cinthya",
+    "validado": false
+   },
+   "margen_con_525k": 0.2256,
+   "margen_panel": -3.0126
+  },
+  {
+   "sku": "ACC-1352-NEG",
+   "titulo": "Kit de brochas de maquillaje 12 piezas con estuche",
+   "cuentas": [
+    "SANCORFASHION"
+   ],
+   "listing_ids": [
+    "MLM2712837633"
+   ],
+   "precio_cobrado": 109,
+   "unidades_30d": 98,
+   "odoo": {
+    "container_numbers": "CMAU4512876=CI^0PL contenedor 36",
+    "codigos": [
+     "CMAU4512876"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL CMAU4512876 contenedor 36.xlsx",
+    "file_id": "11mg9vy9tnog",
+    "sha256": null,
+    "contenedor": "CMAU4512876"
+   },
+   "fila": 356,
+   "empate": {
+    "metodo": "ferraforme",
+    "distancia": null,
+    "confianza": "alta"
+   },
+   "cajas": 67,
+   "piezas_fila": 6700,
+   "piezas_grupo": 100,
+   "caja_mixta": false,
+   "cbm_caja": 0.23,
+   "cbm_pieza": 0.0023,
+   "peso_pieza_kg": 0.28,
+   "precio_usd": 2.04,
+   "costos": {
+    "volumetrico_real": 20.69,
+    "tarifa_fija_7500": 17.25,
+    "peso_volumen_wm": 19.32,
+    "valor_fob": 79.45,
+    "hibrido_70_30": 38.32
+   },
+   "kubera": {
+    "costo_total": 56.01,
+    "costo_cbm": 17.25,
+    "costo_producto": 38.76,
+    "revisado_at": "2026-09-07T17:20:00Z",
+    "revisado_por": "Thalia",
+    "validado": true
+   },
+   "margen_con_525k": 0.1654,
+   "margen_panel": -0.1587
+  },
+  {
+   "sku": "TEC-1247-DOR",
+   "titulo": "Cable USB-C carga rápida 2 m paquete de 3",
+   "cuentas": [
+    "BEKURA",
+    "SANCORFASHION"
+   ],
+   "listing_ids": [
+    "MLM2712850678",
+    "MLM2712865821"
+   ],
+   "precio_cobrado": 79,
+   "unidades_30d": 161,
+   "odoo": {
+    "container_numbers": "OOLU8820341=CI^0PL contenedor 37",
+    "codigos": [
+     "OOLU8820341"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL OOLU8820341 contenedor 37.xlsx",
+    "file_id": "12atshqet2di",
+    "sha256": null,
+    "contenedor": "OOLU8820341"
+   },
+   "fila": 453,
+   "empate": {
+    "metodo": "ferraforme",
+    "distancia": null,
+    "confianza": "alta"
+   },
+   "cajas": 48,
+   "piezas_fila": 4800,
+   "piezas_grupo": 100,
+   "caja_mixta": false,
+   "cbm_caja": 0.12,
+   "cbm_pieza": 0.0012,
+   "peso_pieza_kg": 0.16,
+   "precio_usd": 11.63,
+   "costos": {
+    "volumetrico_real": 7.72,
+    "tarifa_fija_7500": 9,
+    "peso_volumen_wm": 7.68,
+    "valor_fob": 429.6,
+    "hibrido_70_30": 134.28
+   },
+   "kubera": {
+    "costo_total": 229.97,
+    "costo_cbm": 9,
+    "costo_producto": 220.97,
+    "revisado_at": null,
+    "revisado_por": "Thalia",
+    "validado": false
+   },
+   "margen_con_525k": 0.139,
+   "margen_panel": -2.6743
+  },
+  {
+   "sku": "TEC-1791-GRS",
+   "titulo": "Soporte de celular para auto magnético",
+   "cuentas": [
+    "SANCORFASHION"
+   ],
+   "listing_ids": [
+    "MLM2713013535"
+   ],
+   "precio_cobrado": 99,
+   "unidades_30d": 2,
+   "odoo": {
+    "container_numbers": "PCIU9516451=CI^0PL contenedor 33",
+    "codigos": [
+     "PCIU9516451"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL PCIU9516451 contenedor 33.xlsx",
+    "file_id": "12cicp0j1yqg",
+    "sha256": null,
+    "contenedor": "PCIU9516451"
+   },
+   "fila": 240,
+   "empate": {
+    "metodo": "ferraforme",
+    "distancia": null,
+    "confianza": "alta"
+   },
+   "cajas": 58,
+   "piezas_fila": 2088,
+   "piezas_grupo": 36,
+   "caja_mixta": false,
+   "cbm_caja": 0.0504,
+   "cbm_pieza": 0.0014,
+   "peso_pieza_kg": 0.18,
+   "precio_usd": 12.31,
+   "costos": {
+    "volumetrico_real": 11.07,
+    "tarifa_fija_7500": 10.5,
+    "peso_volumen_wm": 10.61,
+    "valor_fob": 509.99,
+    "hibrido_70_30": 160.74
+   },
+   "kubera": {
+    "costo_total": 244.39,
+    "costo_cbm": 10.5,
+    "costo_producto": 233.89,
+    "revisado_at": "2026-09-22T17:20:00Z",
+    "revisado_por": "Cinthya",
+    "validado": false
+   },
+   "margen_con_525k": 0.2119,
+   "margen_panel": -2.145
+  },
+  {
+   "sku": "TEC-0538-MUL",
+   "titulo": "Tira LED RGB 5 m con control y app",
+   "cuentas": [
+    "BEKURA"
+   ],
+   "listing_ids": [
+    "MLM2713401145"
+   ],
+   "precio_cobrado": 139,
+   "unidades_30d": 469,
+   "odoo": {
+    "container_numbers": "MSKU7781230=CI^0PL contenedor 34",
+    "codigos": [
+     "MSKU7781230"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL MSKU7781230 contenedor 34.xlsx",
+    "file_id": "1wp7k00v2bx",
+    "sha256": null,
+    "contenedor": "MSKU7781230"
+   },
+   "fila": 73,
+   "empate": {
+    "metodo": "sha256",
+    "distancia": 0,
+    "confianza": "alta"
+   },
+   "cajas": 11,
+   "piezas_fila": 396,
+   "piezas_grupo": 36,
+   "caja_mixta": false,
+   "cbm_caja": 0.09,
+   "cbm_pieza": 0.0025,
+   "peso_pieza_kg": 0.31,
+   "precio_usd": null,
+   "costos": {
+    "volumetrico_real": 21.49,
+    "tarifa_fija_7500": 18.75,
+    "peso_volumen_wm": 20.38,
+    "valor_fob": null,
+    "hibrido_70_30": null
+   },
+   "kubera": {
+    "costo_total": 163.73,
+    "costo_cbm": 18.75,
+    "costo_producto": 144.98,
+    "revisado_at": null,
+    "revisado_por": null,
+    "validado": false
+   },
+   "margen_con_525k": 0.2679,
+   "margen_panel": -0.7554
+  },
+  {
+   "sku": "ORG-0766-NEG",
+   "titulo": "Canasta organizadora plegable de tela 3 piezas",
+   "cuentas": [
+    "SANCORFASHION"
+   ],
+   "listing_ids": [
+    "MLM2713571620"
+   ],
+   "precio_cobrado": 159,
+   "unidades_30d": 3,
+   "odoo": {
+    "container_numbers": "TGHU6634102=CI^0PL contenedor 35",
+    "codigos": [
+     "TGHU6634102"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL TGHU6634102 contenedor 35.xlsx",
+    "file_id": "11utyhpoj5k1",
+    "sha256": null,
+    "contenedor": "TGHU6634102"
+   },
+   "fila": 335,
+   "empate": {
+    "metodo": "ferraforme",
+    "distancia": null,
+    "confianza": "alta"
+   },
+   "cajas": 83,
+   "piezas_fila": 3984,
+   "piezas_grupo": 48,
+   "caja_mixta": false,
+   "cbm_caja": 0.1968,
+   "cbm_pieza": 0.0041,
+   "peso_pieza_kg": 0.98,
+   "precio_usd": 16.72,
+   "costos": {
+    "volumetrico_real": 30.36,
+    "tarifa_fija_7500": 30.75,
+    "peso_volumen_wm": 30.31,
+    "valor_fob": 626.05,
+    "hibrido_70_30": 209.07
+   },
+   "kubera": {
+    "costo_total": 348.43,
+    "costo_cbm": 30.75,
+    "costo_producto": 317.68,
+    "revisado_at": null,
+    "revisado_por": null,
+    "validado": true
+   },
+   "margen_con_525k": 0.2246,
+   "margen_panel": -1.7759
+  },
+  {
+   "sku": "MAN-1456-BLN",
+   "titulo": "Almohada ortopédica memory foam cervical",
+   "cuentas": [
+    "BEKURA",
+    "SANCORFASHION"
+   ],
+   "listing_ids": [
+    "MLM2714448212",
+    "MLM2714919614"
+   ],
+   "precio_cobrado": 539,
+   "unidades_30d": 6,
+   "odoo": {
+    "container_numbers": "CMAU4512876=CI^0PL contenedor 36",
+    "codigos": [
+     "CMAU4512876"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL CMAU4512876 contenedor 36.xlsx",
+    "file_id": "14vyls3fz3g",
+    "sha256": null,
+    "contenedor": "CMAU4512876"
+   },
+   "fila": 226,
+   "empate": {
+    "metodo": "ferraforme",
+    "distancia": null,
+    "confianza": "alta"
+   },
+   "cajas": 61,
+   "piezas_fila": 6100,
+   "piezas_grupo": 100,
+   "caja_mixta": false,
+   "cbm_caja": 1.03,
+   "cbm_pieza": 0.0103,
+   "peso_pieza_kg": 1.27,
+   "precio_usd": 27.85,
+   "costos": {
+    "volumetrico_real": 92.64,
+    "tarifa_fija_7500": 77.25,
+    "peso_volumen_wm": 86.03,
+    "valor_fob": 961.06,
+    "hibrido_70_30": 353.17
+   },
+   "kubera": null,
+   "margen_con_525k": 0.3391,
+   "margen_panel": -0.6141
+  },
+  {
+   "sku": "COC-1873-DOR",
+   "titulo": "Sartén antiadherente 28 cm con tapa de vidrio",
+   "cuentas": [
+    "SANCORFASHION"
+   ],
+   "listing_ids": [
+    "MLM2715459620"
+   ],
+   "precio_cobrado": 339,
+   "unidades_30d": 396,
+   "odoo": {
+    "container_numbers": "OOLU8820341=CI^0PL contenedor 37",
+    "codigos": [
+     "OOLU8820341"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL OOLU8820341 contenedor 37.xlsx",
+    "file_id": "11npy4ex91x1",
+    "sha256": null,
+    "contenedor": "OOLU8820341"
+   },
+   "fila": 30,
+   "empate": {
+    "metodo": "ia_titulo",
+    "distancia": null,
+    "confianza": "baja"
+   },
+   "cajas": 34,
+   "piezas_fila": 2210,
+   "piezas_grupo": 65,
+   "caja_mixta": false,
+   "cbm_caja": 0.9425,
+   "cbm_pieza": 0.0145,
+   "peso_pieza_kg": 1.72,
+   "precio_usd": null,
+   "costos": {
+    "volumetrico_real": 93.29,
+    "tarifa_fija_7500": 108.75,
+    "peso_volumen_wm": 88.35,
+    "valor_fob": null,
+    "hibrido_70_30": null
+   },
+   "kubera": {
+    "costo_total": 884.54,
+    "costo_cbm": 108.75,
+    "costo_producto": 775.79,
+    "revisado_at": null,
+    "revisado_por": "Cinthya",
+    "validado": true
+   },
+   "margen_con_525k": 0.0647,
+   "margen_panel": -2.2694
+  },
+  {
+   "sku": "COC-1870-DOR",
+   "titulo": "Molino de café manual con muelas cerámicas",
+   "cuentas": [
+    "BEKURA"
+   ],
+   "listing_ids": [
+    "MLM2716136056"
+   ],
+   "precio_cobrado": 149,
+   "unidades_30d": 4,
+   "odoo": {
+    "container_numbers": "PCIU9516451=CI^0PL contenedor 33",
+    "codigos": [
+     "PCIU9516451"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL PCIU9516451 contenedor 33.xlsx",
+    "file_id": "121b3h2wqm1n",
+    "sha256": null,
+    "contenedor": "PCIU9516451"
+   },
+   "fila": 19,
+   "empate": {
+    "metodo": "ferraforme",
+    "distancia": null,
+    "confianza": "alta"
+   },
+   "cajas": 43,
+   "piezas_fila": 2580,
+   "piezas_grupo": 60,
+   "caja_mixta": false,
+   "cbm_caja": 0.162,
+   "cbm_pieza": 0.0027,
+   "peso_pieza_kg": 0.7,
+   "precio_usd": 10.57,
+   "costos": {
+    "volumetrico_real": 21.34,
+    "tarifa_fija_7500": 20.25,
+    "peso_volumen_wm": 20.98,
+    "valor_fob": 368.42,
+    "hibrido_70_30": 125.47
+   },
+   "kubera": {
+    "costo_total": 221.08,
+    "costo_cbm": 20.25,
+    "costo_producto": 200.83,
+    "revisado_at": null,
+    "revisado_por": "Cinthya",
+    "validado": false
+   },
+   "margen_con_525k": 0.2688,
+   "margen_panel": -1.0717
+  },
+  {
+   "sku": "ORG-1782-PLA",
+   "titulo": "Pizarrón magnético 60 x 40 cm con marcadores",
+   "cuentas": [
+    "SANCORFASHION"
+   ],
+   "listing_ids": [
+    "MLM2716344420"
+   ],
+   "precio_cobrado": 559,
+   "unidades_30d": 153,
+   "odoo": {
+    "container_numbers": "MSKU7781230=CI^0PL contenedor 34",
+    "codigos": [
+     "MSKU7781230"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL MSKU7781230 contenedor 34.xlsx",
+    "file_id": "1irv0abcupw",
+    "sha256": null,
+    "contenedor": "MSKU7781230"
+   },
+   "fila": 300,
+   "empate": {
+    "metodo": "dhash",
+    "distancia": 4,
+    "confianza": "media"
+   },
+   "cajas": 29,
+   "piezas_fila": 696,
+   "piezas_grupo": 24,
+   "caja_mixta": false,
+   "cbm_caja": 0.2664,
+   "cbm_pieza": 0.0111,
+   "peso_pieza_kg": 2.06,
+   "precio_usd": 37.23,
+   "costos": {
+    "volumetrico_real": 95.41,
+    "tarifa_fija_7500": 83.25,
+    "peso_volumen_wm": 92.85,
+    "valor_fob": 1281.73,
+    "hibrido_70_30": 451.3
+   },
+   "kubera": null,
+   "margen_con_525k": 0.3149,
+   "margen_panel": -0.9287
+  },
+  {
+   "sku": "TEC-0477-BLN",
+   "titulo": "Cámara de seguridad WiFi 1080p visión nocturna",
+   "cuentas": [
+    "BEKURA",
+    "SANCORFASHION"
+   ],
+   "listing_ids": [
+    "MLM2716934434",
+    "MLM2717082479"
+   ],
+   "precio_cobrado": 139,
+   "unidades_30d": 541,
+   "odoo": {
+    "container_numbers": "TGHU6634102=CI^0PL contenedor 35",
+    "codigos": [
+     "TGHU6634102"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL TGHU6634102 contenedor 35.xlsx",
+    "file_id": "1y3rv1zdqmy",
+    "sha256": null,
+    "contenedor": "TGHU6634102"
+   },
+   "fila": 48,
+   "empate": {
+    "metodo": "ferraforme",
+    "distancia": null,
+    "confianza": "alta"
+   },
+   "cajas": 78,
+   "piezas_fila": 4680,
+   "piezas_grupo": 60,
+   "caja_mixta": false,
+   "cbm_caja": 0.252,
+   "cbm_pieza": 0.0042,
+   "peso_pieza_kg": 0.52,
+   "precio_usd": 2.09,
+   "costos": {
+    "volumetrico_real": 31.1,
+    "tarifa_fija_7500": 31.5,
+    "peso_volumen_wm": 29.58,
+    "valor_fob": 77.61,
+    "hibrido_70_30": 45.05
+   },
+   "kubera": {
+    "costo_total": 71.21,
+    "costo_cbm": 31.5,
+    "costo_producto": 39.71,
+    "revisado_at": null,
+    "revisado_por": "Andrea",
+    "validado": false
+   },
+   "margen_con_525k": 0.1843,
+   "margen_panel": -0.1042
+  },
+  {
+   "sku": "MAN-1173-CAF",
+   "titulo": "Ventilador de torre 36 pulgadas silencioso",
+   "cuentas": [
+    "SANCORFASHION"
+   ],
+   "listing_ids": [
+    "MLM2717352991"
+   ],
+   "precio_cobrado": 829,
+   "unidades_30d": 1,
+   "odoo": {
+    "container_numbers": "CMAU4512876=CI^0PL contenedor 36",
+    "codigos": [
+     "CMAU4512876"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL CMAU4512876 contenedor 36.xlsx",
+    "file_id": "11vxqodnhm9k",
+    "sha256": null,
+    "contenedor": "CMAU4512876"
+   },
+   "fila": 428,
+   "empate": {
+    "metodo": "ferraforme",
+    "distancia": null,
+    "confianza": "alta"
+   },
+   "cajas": 8,
+   "piezas_fila": 800,
+   "piezas_grupo": 100,
+   "caja_mixta": false,
+   "cbm_caja": 2.8,
+   "cbm_pieza": 0.028,
+   "peso_pieza_kg": 5.9,
+   "precio_usd": null,
+   "costos": {
+    "volumetrico_real": 251.84,
+    "tarifa_fija_7500": 210,
+    "peso_volumen_wm": 234.75,
+    "valor_fob": null,
+    "hibrido_70_30": null
+   },
+   "kubera": {
+    "costo_total": 420.03,
+    "costo_cbm": 210,
+    "costo_producto": 210.03,
+    "revisado_at": null,
+    "revisado_por": null,
+    "validado": true
+   },
+   "margen_con_525k": 0.1353,
+   "margen_panel": -0.0676
+  },
+  {
+   "sku": "EST-0364-CAF",
+   "titulo": "Mesa plegable para laptop con ventilador",
+   "cuentas": [
+    "BEKURA"
+   ],
+   "listing_ids": [
+    "MLM2717773811"
+   ],
+   "precio_cobrado": 469,
+   "unidades_30d": 385,
+   "odoo": {
+    "container_numbers": "OOLU8820341=CI^0PL contenedor 37",
+    "codigos": [
+     "OOLU8820341"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL OOLU8820341 contenedor 37.xlsx",
+    "file_id": "1lfkate6qnu",
+    "sha256": null,
+    "contenedor": "OOLU8820341"
+   },
+   "fila": 261,
+   "empate": {
+    "metodo": "ferraforme",
+    "distancia": null,
+    "confianza": "alta"
+   },
+   "cajas": 34,
+   "piezas_fila": 816,
+   "piezas_grupo": 24,
+   "caja_mixta": false,
+   "cbm_caja": 0.5256,
+   "cbm_pieza": 0.0219,
+   "peso_pieza_kg": 2.69,
+   "precio_usd": null,
+   "costos": {
+    "volumetrico_real": 140.9,
+    "tarifa_fija_7500": 164.25,
+    "peso_volumen_wm": 130.52,
+    "valor_fob": null,
+    "hibrido_70_30": null
+   },
+   "kubera": {
+    "costo_total": 878.17,
+    "costo_cbm": 164.25,
+    "costo_producto": 713.92,
+    "revisado_at": null,
+    "revisado_por": "Thalia",
+    "validado": true
+   },
+   "margen_con_525k": 0.0725,
+   "margen_panel": -1.4995
+  },
+  {
+   "sku": "TEC-0846-BLN",
+   "titulo": "Aspiradora de mano inalámbrica 120 W",
+   "cuentas": [],
+   "listing_ids": [],
+   "precio_cobrado": 289,
+   "unidades_30d": 0,
+   "odoo": {
+    "container_numbers": "PCIU9516451=CI^0PL contenedor 33",
+    "codigos": [
+     "PCIU9516451"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL PCIU9516451 contenedor 33.xlsx",
+    "file_id": "11eku6d8sphv",
+    "sha256": null,
+    "contenedor": "PCIU9516451"
+   },
+   "fila": 224,
+   "empate": {
+    "metodo": "ferraforme",
+    "distancia": null,
+    "confianza": "alta"
+   },
+   "cajas": 104,
+   "piezas_fila": 1248,
+   "piezas_grupo": 12,
+   "caja_mixta": false,
+   "cbm_caja": 0.1236,
+   "cbm_pieza": 0.0103,
+   "peso_pieza_kg": 1.71,
+   "precio_usd": 44.49,
+   "costos": {
+    "volumetrico_real": 81.41,
+    "tarifa_fija_7500": 77.25,
+    "peso_volumen_wm": 77.45,
+    "valor_fob": 1586.53,
+    "hibrido_70_30": 532.95
+   },
+   "kubera": {
+    "costo_total": 922.56,
+    "costo_cbm": 77.25,
+    "costo_producto": 845.31,
+    "revisado_at": "2026-09-21T17:20:00Z",
+    "revisado_por": null,
+    "validado": true
+   },
+   "margen_con_525k": 0.2124,
+   "margen_panel": -2.6982
+  },
+  {
+   "sku": "CALZ-0938-AZU",
+   "titulo": "Tenis deportivos para dama suela ligera",
+   "cuentas": [],
+   "listing_ids": [],
+   "precio_cobrado": 199,
+   "unidades_30d": 0,
+   "odoo": {
+    "container_numbers": "MSKU7781230=CI^0PL contenedor 34",
+    "codigos": [
+     "MSKU7781230"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL MSKU7781230 contenedor 34.xlsx",
+    "file_id": "11xus809lpw0",
+    "sha256": null,
+    "contenedor": "MSKU7781230"
+   },
+   "fila": 217,
+   "empate": {
+    "metodo": "sha256",
+    "distancia": 0,
+    "confianza": "alta"
+   },
+   "cajas": 25,
+   "piezas_fila": 1625,
+   "piezas_grupo": 65,
+   "caja_mixta": false,
+   "cbm_caja": 0.4225,
+   "cbm_pieza": 0.0065,
+   "peso_pieza_kg": 0.8,
+   "precio_usd": null,
+   "costos": {
+    "volumetrico_real": 55.87,
+    "tarifa_fija_7500": 48.75,
+    "peso_volumen_wm": 53.36,
+    "valor_fob": null,
+    "hibrido_70_30": null
+   },
+   "kubera": {
+    "costo_total": 923.99,
+    "costo_cbm": 48.75,
+    "costo_producto": 875.24,
+    "revisado_at": "2026-09-18T17:20:00Z",
+    "revisado_por": "Thalia",
+    "validado": false
+   },
+   "margen_con_525k": 0.1903,
+   "margen_panel": -4.1721
+  },
+  {
+   "sku": "ACC-1189-PLA",
+   "titulo": "Bolsa tote de lona con cierre y bolsillos",
+   "cuentas": [],
+   "listing_ids": [],
+   "precio_cobrado": 99,
+   "unidades_30d": 0,
+   "odoo": {
+    "container_numbers": "TGHU6634102=CI^0PL contenedor 35",
+    "codigos": [
+     "TGHU6634102"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL TGHU6634102 contenedor 35.xlsx",
+    "file_id": "1ohn4xznnv3",
+    "sha256": null,
+    "contenedor": "TGHU6634102"
+   },
+   "fila": 209,
+   "empate": {
+    "metodo": "ferraforme",
+    "distancia": null,
+    "confianza": "alta"
+   },
+   "cajas": 6,
+   "piezas_fila": 120,
+   "piezas_grupo": 20,
+   "caja_mixta": false,
+   "cbm_caja": 0.028,
+   "cbm_pieza": 0.0014,
+   "peso_pieza_kg": 0.39,
+   "precio_usd": 20.83,
+   "costos": {
+    "volumetrico_real": 10.37,
+    "tarifa_fija_7500": 10.5,
+    "peso_volumen_wm": 9.98,
+    "valor_fob": 876.05,
+    "hibrido_70_30": 270.07
+   },
+   "kubera": null,
+   "margen_con_525k": 0.2088,
+   "margen_panel": -3.7902
+  },
+  {
+   "sku": "MAN-1750-BLN",
+   "titulo": "Espejo de pared redondo 50 cm marco metálico",
+   "cuentas": [],
+   "listing_ids": [],
+   "precio_cobrado": 589,
+   "unidades_30d": 0,
+   "odoo": {
+    "container_numbers": "CMAU4512876=CI^0PL contenedor 36",
+    "codigos": [
+     "CMAU4512876"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL CMAU4512876 contenedor 36.xlsx",
+    "file_id": "121j9dn0983r",
+    "sha256": null,
+    "contenedor": "CMAU4512876"
+   },
+   "fila": 129,
+   "empate": {
+    "metodo": "ferraforme",
+    "distancia": null,
+    "confianza": "alta"
+   },
+   "cajas": 104,
+   "piezas_fila": 1248,
+   "piezas_grupo": 12,
+   "caja_mixta": false,
+   "cbm_caja": 0.192,
+   "cbm_pieza": 0.016,
+   "peso_pieza_kg": 3.42,
+   "precio_usd": 67.09,
+   "costos": {
+    "volumetrico_real": 143.91,
+    "tarifa_fija_7500": 120,
+    "peso_volumen_wm": 135.12,
+    "valor_fob": 2893.11,
+    "hibrido_70_30": 968.67
+   },
+   "kubera": {
+    "costo_total": 1394.71,
+    "costo_cbm": 120,
+    "costo_producto": 1274.71,
+    "revisado_at": null,
+    "revisado_por": null,
+    "validado": false
+   },
+   "margen_con_525k": 0.1861,
+   "margen_panel": -1.9375
+  },
+  {
+   "sku": "COC-1763-DOR",
+   "titulo": "Escurridor de platos 2 niveles acero",
+   "cuentas": [],
+   "listing_ids": [],
+   "precio_cobrado": 539,
+   "unidades_30d": 0,
+   "odoo": {
+    "container_numbers": "OOLU8820341=CI^0PL contenedor 37",
+    "codigos": [
+     "OOLU8820341"
+    ]
+   },
+   "archivo": {
+    "nombre": "PL OOLU8820341 contenedor 37.xlsx",
+    "file_id": "12egfa6n7oft",
+    "sha256": null,
+    "contenedor": "OOLU8820341"
+   },
+   "fila": 324,
+   "empate": {
+    "metodo": "ferraforme",
+    "distancia": null,
+    "confianza": "alta"
+   },
+   "cajas": 91,
+   "piezas_fila": 5915,
+   "piezas_grupo": 65,
+   "caja_mixta": false,
+   "cbm_caja": 1.066,
+   "cbm_pieza": 0.0164,
+   "peso_pieza_kg": 2.27,
+   "precio_usd": 5.17,
+   "costos": {
+    "volumetrico_real": 105.51,
+    "tarifa_fija_7500": 123,
+    "peso_volumen_wm": 105.03,
+    "valor_fob": 165.8,
+    "hibrido_70_30": 123.6
+   },
+   "kubera": {
+    "costo_total": 221.23,
+    "costo_cbm": 123,
+    "costo_producto": 98.23,
+    "revisado_at": null,
+    "revisado_por": "Cinthya",
+    "validado": false
+   },
+   "margen_con_525k": 0.2707,
+   "margen_panel": 0.056
+  }
+ ]
+}

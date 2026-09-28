@@ -1,0 +1,71 @@
+{
+ "generado_at": "2026-09-28T12:40:00Z",
+ "version": "lab-0.1",
+ "etapas": {
+  "extraer_kubera": {
+   "ok": true,
+   "filas": 142318,
+   "duracion_s": 48.2,
+   "avisos": []
+  },
+  "extraer_ml": {
+   "ok": true,
+   "filas": 11842,
+   "duracion_s": 612.4,
+   "avisos": [
+    "visitas: 3 items sin serie (404)"
+   ]
+  },
+  "packing100": {
+   "ok": true,
+   "filas": 100,
+   "duracion_s": 181.9,
+   "avisos": [
+    "17 SKUs saltados (ver packing_saltados.json)"
+   ]
+  },
+  "costos_lab": {
+   "ok": true,
+   "filas": 13262,
+   "duracion_s": 6.1,
+   "avisos": []
+  },
+  "elasticidad": {
+   "ok": true,
+   "filas": 1927,
+   "duracion_s": 21.7,
+   "avisos": []
+  },
+  "optimizador": {
+   "ok": true,
+   "filas": 1927,
+   "duracion_s": 9.8,
+   "avisos": []
+  },
+  "construir": {
+   "ok": true,
+   "filas": 9116,
+   "duracion_s": 4.3,
+   "avisos": []
+  }
+ },
+ "frescura": {
+  "ml_listings": "2026-09-28T12:31:00Z",
+  "amazon_listings": "2026-09-18T19:02:00Z",
+  "walmart_listings": "2026-08-17T15:44:00Z",
+  "competencia_serp": "2026-09-21T09:15:00Z",
+  "competencia_best": "2026-09-26T08:00:00Z",
+  "ventas": "2026-09-28T12:20:00Z",
+  "visitas_api": "2026-09-27"
+ },
+ "contadores_ml_api": {
+  "429": 3,
+  "get": 11842
+ },
+ "snapshots": [
+  "2026-09-26",
+  "2026-09-27",
+  "2026-09-28"
+ ],
+ "modo_local": true
+}

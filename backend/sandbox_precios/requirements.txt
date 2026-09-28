@@ -1,0 +1,17 @@
+# Laboratorio de precios: dependencias del servidor (api.py) y del pipeline.
+#
+# Son las MISMAS versiones del backend a propósito: el laboratorio reutiliza
+# `services.*` (supabase_db, odoo, meli, costos, publicaciones_panel,
+# packing_indice/_drive/_drive_carpeta/_storage/_ferraforme) y un pin distinto
+# aquí sería probar código de producción con librerías que producción no usa.
+# Medido el 28-sep importando esos módulos tras `_entorno.cargar()`: todo lo
+# que jalan (fastapi, pydantic-settings, httpx, requests, PyMySQL, DBUtils,
+# cryptography para Fernet, psycopg2 perezoso, openpyxl, Pillow para dHash,
+# anthropic para el peldaño IA del empate) ya está en ../requirements.txt.
+# pip resuelve el -r relativo a ESTE archivo.
+-r ../requirements.txt
+
+# `almacen.py` usa ZoneInfo("America/Mexico_City"). La laptop la saca de este
+# paquete (Windows no trae base de husos) y python:3.12-slim no garantiza
+# /usr/share/zoneinfo: sin él, el primer `hoy_cdmx()` revienta en el contenedor.
+tzdata==2026.2

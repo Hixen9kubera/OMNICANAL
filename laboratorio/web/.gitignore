@@ -1,0 +1,6 @@
+# El laboratorio vive en un repo PÚBLICO: nada generado ni con datos reales se sube.
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+.env*.local

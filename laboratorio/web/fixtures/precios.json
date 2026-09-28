@@ -1,0 +1,2464 @@
+{
+ "generado_at": "2026-09-28T12:40:00Z",
+ "parametros": {
+  "piso_margen": 0.12,
+  "sacrificio_utilidad_max": 0.1,
+  "paso_max_semana": 0.05,
+  "paso_max_dia": 0.02,
+  "rejilla_min_factor": 0.55,
+  "rejilla_max_factor": 1.45,
+  "rejilla_paso": 0.01,
+  "banda_competencia": [
+   0.7,
+   1.15
+  ],
+  "elasticidad_prior_unidades": -1.6,
+  "elasticidad_prior_visitas": -0.6,
+  "elasticidad_min": -6,
+  "elasticidad_max": -0.3,
+  "dias_base": 28,
+  "cobertura_dias_escasez": 10,
+  "cobertura_dias_exceso": 120,
+  "sacrificio_liquidacion": 0.25,
+  "terminaciones_psicologicas": true
+ },
+ "filas": [
+  {
+   "id": "mercado_libre:BEKURA:MLM2703536658",
+   "sku": "TEC-1879-ROS",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2703536658",
+   "titulo": "Lámpara LED de escritorio recargable táctil",
+   "estado": "activa",
+   "precio_actual": 109,
+   "precio_recomendado": 129,
+   "cambio_pct": 0.1835,
+   "precio_equilibrio": 80.66,
+   "precio_piso": 98.1,
+   "precio_max_utilidad": 158.05,
+   "precio_max_volumen": 98.1,
+   "precio_ref_competencia": 110.35,
+   "fuente_ref": "serp",
+   "unidades_dia": {
+    "actual": 12.47,
+    "recomendado": 9.77
+   },
+   "visitas_dia": {
+    "actual": 174.4,
+    "recomendado": 152.48
+   },
+   "conversion": {
+    "actual": 0.0715,
+    "recomendado": 0.0641
+   },
+   "utilidad_dia": {
+    "actual": 238.24,
+    "recomendado": 317.18
+   },
+   "margen": {
+    "actual": 0.1753,
+    "recomendado": 0.2516
+   },
+   "elasticidad": {
+    "beta": -1.44,
+    "beta_visitas": -0.8,
+    "beta_conversion": -0.65,
+    "fuente": "item",
+    "n_semanas": 14,
+    "confianza": "alta"
+   },
+   "stock": {
+    "full": 24,
+    "odoo": 267,
+    "cobertura_dias": 1.93
+   },
+   "razones": [
+    "stock_escaso"
+   ],
+   "plan": {
+    "modo": "semanal",
+    "pasos": [
+     {
+      "fecha": "2026-09-29",
+      "precio": 114
+     },
+     {
+      "fecha": "2026-10-06",
+      "precio": 120
+     },
+     {
+      "fecha": "2026-10-13",
+      "precio": 126
+     },
+     {
+      "fecha": "2026-10-20",
+      "precio": 129
+     }
+    ]
+   },
+   "autorizacion": "pendiente"
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2703781105",
+   "sku": "TEC-1879-ROS",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2703781105",
+   "titulo": "Lámpara LED de escritorio recargable táctil",
+   "estado": "pausada",
+   "precio_actual": 109,
+   "precio_recomendado": 119,
+   "cambio_pct": 0.0917,
+   "precio_equilibrio": 80.66,
+   "precio_piso": 98.1,
+   "precio_max_utilidad": 158.05,
+   "precio_max_volumen": 98.1,
+   "precio_ref_competencia": 103.76,
+   "fuente_ref": "serp",
+   "unidades_dia": {
+    "actual": 15.55,
+    "recomendado": 13.59
+   },
+   "visitas_dia": {
+    "actual": 231.84,
+    "recomendado": 225.98
+   },
+   "conversion": {
+    "actual": 0.0671,
+    "recomendado": 0.0601
+   },
+   "utilidad_dia": {
+    "actual": 297.2,
+    "recomendado": 350.28
+   },
+   "margen": {
+    "actual": 0.1753,
+    "recomendado": 0.2166
+   },
+   "elasticidad": {
+    "beta": -1.54,
+    "beta_visitas": -0.29,
+    "beta_conversion": -1.25,
+    "fuente": "categoria",
+    "n_semanas": 0,
+    "confianza": "media"
+   },
+   "stock": {
+    "full": 0,
+    "odoo": 434,
+    "cobertura_dias": 0
+   },
+   "razones": [
+    "pausada_sin_stock"
+   ],
+   "plan": {
+    "modo": "semanal",
+    "pasos": [
+     {
+      "fecha": "2026-09-29",
+      "precio": 114
+     },
+     {
+      "fecha": "2026-10-06",
+      "precio": 119
+     }
+    ]
+   },
+   "autorizacion": "pendiente"
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2703869528",
+   "sku": "ORG-1214-AZU",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2703869528",
+   "titulo": "Organizador de cajones 6 piezas plástico transparente",
+   "estado": "pausada",
+   "precio_actual": 159,
+   "precio_recomendado": 189,
+   "cambio_pct": 0.1887,
+   "precio_equilibrio": 89.04,
+   "precio_piso": 108.12,
+   "precio_max_utilidad": 230.55,
+   "precio_max_volumen": 108.12,
+   "precio_ref_competencia": 161.11,
+   "fuente_ref": "serp",
+   "unidades_dia": {
+    "actual": 23.04,
+    "recomendado": 18.88
+   },
+   "visitas_dia": {
+    "actual": 647.38,
+    "recomendado": 597.25
+   },
+   "conversion": {
+    "actual": 0.0356,
+    "recomendado": 0.0316
+   },
+   "utilidad_dia": {
+    "actual": 1096.42,
+    "recomendado": 1276.52
+   },
+   "margen": {
+    "actual": 0.2993,
+    "recomendado": 0.3577
+   },
+   "elasticidad": {
+    "beta": -1.15,
+    "beta_visitas": -0.47,
+    "beta_conversion": -0.68,
+    "fuente": "global",
+    "n_semanas": 6,
+    "confianza": "baja"
+   },
+   "stock": {
+    "full": 0,
+    "odoo": 167,
+    "cobertura_dias": 0
+   },
+   "razones": [
+    "pausada_sin_stock",
+    "elasticidad_baja_confianza"
+   ],
+   "plan": {
+    "modo": "semanal",
+    "pasos": [
+     {
+      "fecha": "2026-09-29",
+      "precio": 151.05,
+      "nota": "prueba −5 %: medir una semana antes de seguir"
+     },
+     {
+      "fecha": "2026-10-06",
+      "precio": 159
+     },
+     {
+      "fecha": "2026-10-13",
+      "precio": 167
+     },
+     {
+      "fecha": "2026-10-20",
+      "precio": 175
+     },
+     {
+      "fecha": "2026-10-27",
+      "precio": 184
+     },
+     {
+      "fecha": "2026-11-03",
+      "precio": 189
+     }
+    ]
+   },
+   "autorizacion": "pendiente"
+  },
+  {
+   "id": "mercado_libre:BEKURA:MLM2704063298",
+   "sku": "COC-1931-NEG",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2704063298",
+   "titulo": "Set 3 sartenes de hierro fundido prehorneadas",
+   "estado": "activa",
+   "precio_actual": 1099,
+   "precio_recomendado": 1019,
+   "cambio_pct": -0.0728,
+   "precio_equilibrio": 648.41,
+   "precio_piso": 780.29,
+   "precio_max_utilidad": 1373.75,
+   "precio_max_volumen": 780.29,
+   "precio_ref_competencia": 1319.46,
+   "fuente_ref": "serp",
+   "unidades_dia": {
+    "actual": 8.07,
+    "recomendado": 9.28
+   },
+   "visitas_dia": {
+    "actual": 246.8,
+    "recomendado": 257.64
+   },
+   "conversion": {
+    "actual": 0.0327,
+    "recomendado": 0.036
+   },
+   "utilidad_dia": {
+    "actual": 2650.41,
+    "recomendado": 2521.55
+   },
+   "margen": {
+    "actual": 0.299,
+    "recomendado": 0.2665
+   },
+   "elasticidad": {
+    "beta": -1.86,
+    "beta_visitas": -0.57,
+    "beta_conversion": -1.29,
+    "fuente": "categoria",
+    "n_semanas": 0,
+    "confianza": "media"
+   },
+   "stock": {
+    "full": 252,
+    "odoo": 78,
+    "cobertura_dias": 31.24
+   },
+   "razones": [
+    "promo_vigente",
+    "bajo_competencia"
+   ],
+   "plan": {
+    "modo": "semanal",
+    "pasos": [
+     {
+      "fecha": "2026-09-29",
+      "precio": 1044
+     },
+     {
+      "fecha": "2026-10-06",
+      "precio": 1019
+     }
+    ]
+   },
+   "autorizacion": "pendiente"
+  },
+  {
+   "id": "mercado_libre:BEKURA:MLM2704827317",
+   "sku": "TEC-1847-MUL",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2704827317",
+   "titulo": "Audífonos inalámbricos Bluetooth 5.3 con estuche de carga",
+   "estado": "pausada",
+   "precio_actual": 79,
+   "precio_recomendado": 109,
+   "cambio_pct": 0.3797,
+   "precio_equilibrio": 65.57,
+   "precio_piso": 79.79,
+   "precio_max_utilidad": 114.55,
+   "precio_max_volumen": 79.79,
+   "precio_ref_competencia": null,
+   "fuente_ref": null,
+   "unidades_dia": {
+    "actual": 7.26,
+    "recomendado": 6.59
+   },
+   "visitas_dia": {
+    "actual": 279.41,
+    "recomendado": 233.72
+   },
+   "conversion": {
+    "actual": 0.026,
+    "recomendado": 0.0282
+   },
+   "utilidad_dia": {
+    "actual": 66.09,
+    "recomendado": 191.84
+   },
+   "margen": {
+    "actual": 0.1153,
+    "recomendado": 0.2672
+   },
+   "elasticidad": {
+    "beta": -0.3,
+    "beta_visitas": -0.55,
+    "beta_conversion": 0.25,
+    "fuente": "global",
+    "n_semanas": 0,
+    "confianza": "baja"
+   },
+   "stock": {
+    "full": 0,
+    "odoo": null,
+    "cobertura_dias": 0
+   },
+   "razones": [
+    "pausada_sin_stock",
+    "elasticidad_baja_confianza"
+   ],
+   "plan": {
+    "modo": "semanal",
+    "pasos": [
+     {
+      "fecha": "2026-09-29",
+      "precio": 75.05,
+      "nota": "prueba −5 %: medir una semana antes de seguir"
+     },
+     {
+      "fecha": "2026-10-06",
+      "precio": 79
+     },
+     {
+      "fecha": "2026-10-13",
+      "precio": 83
+     },
+     {
+      "fecha": "2026-10-20",
+      "precio": 87
+     },
+     {
+      "fecha": "2026-10-27",
+      "precio": 91
+     },
+     {
+      "fecha": "2026-11-03",
+      "precio": 96
+     },
+     {
+      "fecha": "2026-11-10",
+      "precio": 101
+     },
+     {
+      "fecha": "2026-11-17",
+      "precio": 106
+     },
+     {
+      "fecha": "2026-11-24",
+      "precio": 109
+     }
+    ]
+   },
+   "autorizacion": "pendiente"
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2705841210",
+   "sku": "TEC-1367-ROS",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2705841210",
+   "titulo": "Soporte para laptop de aluminio ajustable plegable",
+   "estado": "activa",
+   "precio_actual": 149,
+   "precio_recomendado": 189,
+   "cambio_pct": 0.2685,
+   "precio_equilibrio": 108.77,
+   "precio_piso": 132.61,
+   "precio_max_utilidad": 216.05,
+   "precio_max_volumen": 132.61,
+   "precio_ref_competencia": 199.17,
+   "fuente_ref": "serp",
+   "unidades_dia": {
+    "actual": 9.1,
+    "recomendado": 6.46
+   },
+   "visitas_dia": {
+    "actual": 132.83,
+    "recomendado": 126.96
+   },
+   "conversion": {
+    "actual": 0.0685,
+    "recomendado": 0.0509
+   },
+   "utilidad_dia": {
+    "actual": 247,
+    "recomendado": 347.94
+   },
+   "margen": {
+    "actual": 0.1822,
+    "recomendado": 0.2848
+   },
+   "elasticidad": {
+    "beta": -1.44,
+    "beta_visitas": -0.19,
+    "beta_conversion": -1.25,
+    "fuente": "prior",
+    "n_semanas": 6,
+    "confianza": "baja"
+   },
+   "stock": {
+    "full": 206,
+    "odoo": null,
+    "cobertura_dias": 22.64
+   },
+   "razones": [
+    "elasticidad_baja_confianza",
+    "bajo_competencia"
+   ],
+   "plan": {
+    "modo": "semanal",
+    "pasos": [
+     {
+      "fecha": "2026-09-29",
+      "precio": 141.55,
+      "nota": "prueba −5 %: medir una semana antes de seguir"
+     },
+     {
+      "fecha": "2026-10-06",
+      "precio": 149
+     },
+     {
+      "fecha": "2026-10-13",
+      "precio": 156
+     },
+     {
+      "fecha": "2026-10-20",
+      "precio": 164
+     },
+     {
+      "fecha": "2026-10-27",
+      "precio": 172
+     },
+     {
+      "fecha": "2026-11-03",
+      "precio": 181
+     },
+     {
+      "fecha": "2026-11-10",
+      "precio": 189
+     }
+    ]
+   },
+   "autorizacion": "pendiente"
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2706354461",
+   "sku": "ACC-0547-PLA",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2706354461",
+   "titulo": "Mochila antirrobo con puerto USB impermeable",
+   "estado": "activa",
+   "precio_actual": 199,
+   "precio_recomendado": 289,
+   "cambio_pct": 0.4523,
+   "precio_equilibrio": 117.41,
+   "precio_piso": 143.28,
+   "precio_max_utilidad": 288.55,
+   "precio_max_volumen": 143.28,
+   "precio_ref_competencia": null,
+   "fuente_ref": null,
+   "unidades_dia": {
+    "actual": 12.63,
+    "recomendado": 8.71
+   },
+   "visitas_dia": {
+    "actual": 235.43,
+    "recomendado": 194.14
+   },
+   "conversion": {
+    "actual": 0.0537,
+    "recomendado": 0.0449
+   },
+   "utilidad_dia": {
+    "actual": 693.65,
+    "recomendado": 1001.67
+   },
+   "margen": {
+    "actual": 0.2759,
+    "recomendado": 0.3977
+   },
+   "elasticidad": {
+    "beta": -1,
+    "beta_visitas": -0.52,
+    "beta_conversion": -0.48,
+    "fuente": "categoria",
+    "n_semanas": 5,
+    "confianza": "media"
+   },
+   "stock": {
+    "full": 80,
+    "odoo": 860,
+    "cobertura_dias": 6.33
+   },
+   "razones": [
+    "promo_vigente",
+    "stock_escaso"
+   ],
+   "plan": {
+    "modo": "semanal",
+    "pasos": [
+     {
+      "fecha": "2026-09-29",
+      "precio": 209
+     },
+     {
+      "fecha": "2026-10-06",
+      "precio": 219
+     },
+     {
+      "fecha": "2026-10-13",
+      "precio": 230
+     },
+     {
+      "fecha": "2026-10-20",
+      "precio": 242
+     },
+     {
+      "fecha": "2026-10-27",
+      "precio": 254
+     },
+     {
+      "fecha": "2026-11-03",
+      "precio": 267
+     },
+     {
+      "fecha": "2026-11-10",
+      "precio": 280
+     },
+     {
+      "fecha": "2026-11-17",
+      "precio": 289
+     }
+    ]
+   },
+   "autorizacion": "pendiente"
+  },
+  {
+   "id": "mercado_libre:BEKURA:MLM2707138723",
+   "sku": "COC-0961-CAF",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2707138723",
+   "titulo": "Termo de acero inoxidable 1 L doble pared",
+   "estado": "activa",
+   "precio_actual": 189,
+   "precio_recomendado": 189,
+   "cambio_pct": 0,
+   "precio_equilibrio": 103.95,
+   "precio_piso": 119.07,
+   "precio_max_utilidad": 274.05,
+   "precio_max_volumen": 119.07,
+   "precio_ref_competencia": 160.97,
+   "fuente_ref": "serp",
+   "unidades_dia": {
+    "actual": 2.67,
+    "recomendado": 2.67
+   },
+   "visitas_dia": {
+    "actual": 100.67,
+    "recomendado": 100.67
+   },
+   "conversion": {
+    "actual": 0.0265,
+    "recomendado": 0.0265
+   },
+   "utilidad_dia": {
+    "actual": 164.2,
+    "recomendado": 164.2
+   },
+   "margen": {
+    "actual": 0.3258,
+    "recomendado": 0.3258
+   },
+   "elasticidad": {
+    "beta": -0.93,
+    "beta_visitas": -0.48,
+    "beta_conversion": -0.45,
+    "fuente": "item",
+    "n_semanas": 17,
+    "confianza": "alta"
+   },
+   "stock": {
+    "full": 205,
+    "odoo": 151,
+    "cobertura_dias": 76.88
+   },
+   "razones": [
+    "sobre_competencia"
+   ],
+   "plan": {
+    "modo": "semanal",
+    "pasos": []
+   },
+   "autorizacion": "pendiente"
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2707620248",
+   "sku": "COC-0961-CAF",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2707620248",
+   "titulo": "Termo de acero inoxidable 1 L doble pared",
+   "estado": "pausada",
+   "precio_actual": 189,
+   "precio_recomendado": 239,
+   "cambio_pct": 0.2646,
+   "precio_equilibrio": 103.95,
+   "precio_piso": 119.07,
+   "precio_max_utilidad": 274.05,
+   "precio_max_volumen": 119.07,
+   "precio_ref_competencia": 208.85,
+   "fuente_ref": "serp",
+   "unidades_dia": {
+    "actual": 15.94,
+    "recomendado": 13.45
+   },
+   "visitas_dia": {
+    "actual": 533.83,
+    "recomendado": 519.39
+   },
+   "conversion": {
+    "actual": 0.0299,
+    "recomendado": 0.0259
+   },
+   "utilidad_dia": {
+    "actual": 981.73,
+    "recomendado": 1276.64
+   },
+   "margen": {
+    "actual": 0.3258,
+    "recomendado": 0.3972
+   },
+   "elasticidad": {
+    "beta": -0.73,
+    "beta_visitas": -0.12,
+    "beta_conversion": -0.61,
+    "fuente": "item",
+    "n_semanas": 18,
+    "confianza": "alta"
+   },
+   "stock": {
+    "full": 0,
+    "odoo": null,
+    "cobertura_dias": 0
+   },
+   "razones": [
+    "pausada_sin_stock"
+   ],
+   "plan": {
+    "modo": "semanal",
+    "pasos": [
+     {
+      "fecha": "2026-09-29",
+      "precio": 198
+     },
+     {
+      "fecha": "2026-10-06",
+      "precio": 208
+     },
+     {
+      "fecha": "2026-10-13",
+      "precio": 219
+     },
+     {
+      "fecha": "2026-10-20",
+      "precio": 230
+     },
+     {
+      "fecha": "2026-10-27",
+      "precio": 239
+     }
+    ]
+   },
+   "autorizacion": "pendiente"
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2707717810",
+   "sku": "ORG-1701-AZU",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2707717810",
+   "titulo": "Tapete antiderrapante para baño memory foam",
+   "estado": "pausada",
+   "precio_actual": 229,
+   "precio_recomendado": 149,
+   "cambio_pct": -0.3493,
+   "precio_equilibrio": 125.95,
+   "precio_piso": 141.98,
+   "precio_max_utilidad": 183.2,
+   "precio_max_volumen": 141.98,
+   "precio_ref_competencia": 192.72,
+   "fuente_ref": "serp",
+   "unidades_dia": {
+    "actual": 6.84,
+    "recomendado": 21.91
+   },
+   "visitas_dia": {
+    "actual": 210.57,
+    "recomendado": 261.46
+   },
+   "conversion": {
+    "actual": 0.0325,
+    "recomendado": 0.0838
+   },
+   "utilidad_dia": {
+    "actual": 516.83,
+    "recomendado": 486.52
+   },
+   "margen": {
+    "actual": 0.33,
+    "recomendado": 0.149
+   },
+   "elasticidad": {
+    "beta": -2.71,
+    "beta_visitas": -0.5,
+    "beta_conversion": -2.21,
+    "fuente": "categoria",
+    "n_semanas": 0,
+    "confianza": "media"
+   },
+   "stock": {
+    "full": 0,
+    "odoo": 148,
+    "cobertura_dias": 0
+   },
+   "razones": [
+    "pausada_sin_stock",
+    "sobre_competencia"
+   ],
+   "plan": {
+    "modo": "semanal",
+    "pasos": [
+     {
+      "fecha": "2026-09-29",
+      "precio": 218
+     },
+     {
+      "fecha": "2026-10-06",
+      "precio": 207
+     },
+     {
+      "fecha": "2026-10-13",
+      "precio": 196
+     },
+     {
+      "fecha": "2026-10-20",
+      "precio": 187
+     },
+     {
+      "fecha": "2026-10-27",
+      "precio": 177
+     },
+     {
+      "fecha": "2026-11-03",
+      "precio": 168
+     },
+     {
+      "fecha": "2026-11-10",
+      "precio": 160
+     },
+     {
+      "fecha": "2026-11-17",
+      "precio": 152
+     },
+     {
+      "fecha": "2026-11-24",
+      "precio": 149
+     }
+    ]
+   },
+   "autorizacion": "pendiente"
+  },
+  {
+   "id": "mercado_libre:BEKURA:MLM2707932961",
+   "sku": "MAN-1748-PLA",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2707932961",
+   "titulo": "Cortina blackout térmica 2 paneles con argollas",
+   "estado": "activa",
+   "precio_actual": 639,
+   "precio_recomendado": 499,
+   "cambio_pct": -0.2191,
+   "precio_equilibrio": 351.45,
+   "precio_piso": 408.96,
+   "precio_max_utilidad": 645.39,
+   "precio_max_volumen": 408.96,
+   "precio_ref_competencia": 606.47,
+   "fuente_ref": "bestsellers",
+   "unidades_dia": {
+    "actual": 1.9,
+    "recomendado": 3.13
+   },
+   "visitas_dia": {
+    "actual": 23.83,
+    "recomendado": 26.87
+   },
+   "conversion": {
+    "actual": 0.0797,
+    "recomendado": 0.1164
+   },
+   "utilidad_dia": {
+    "actual": 419.87,
+    "recomendado": 352.49
+   },
+   "margen": {
+    "actual": 0.3458,
+    "recomendado": 0.2259
+   },
+   "elasticidad": {
+    "beta": -2.02,
+    "beta_visitas": -0.48,
+    "beta_conversion": -1.53,
+    "fuente": "global",
+    "n_semanas": 2,
+    "confianza": "baja"
+   },
+   "stock": {
+    "full": 104,
+    "odoo": 849,
+    "cobertura_dias": 54.74
+   },
+   "razones": [
+    "elasticidad_baja_confianza",
+    "tramo_comision_500"
+   ],
+   "plan": {
+    "modo": "semanal",
+    "pasos": [
+     {
+      "fecha": "2026-09-29",
+      "precio": 607.05,
+      "nota": "prueba −5 %: medir una semana antes de seguir"
+     },
+     {
+      "fecha": "2026-10-06",
+      "precio": 577
+     },
+     {
+      "fecha": "2026-10-13",
+      "precio": 548
+     },
+     {
+      "fecha": "2026-10-20",
+      "precio": 520
+     },
+     {
+      "fecha": "2026-10-27",
+      "precio": 499
+     }
+    ]
+   },
+   "autorizacion": "pendiente"
+  },
+  {
+   "id": "mercado_libre:BEKURA:MLM2708872320",
+   "sku": "ACC-1402-CAF",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2708872320",
+   "titulo": "Cepillo alisador eléctrico cerámica iónica",
+   "estado": "pausada",
+   "precio_actual": 169,
+   "precio_recomendado": 179,
+   "cambio_pct": 0.0592,
+   "precio_equilibrio": 94.64,
+   "precio_piso": 114.92,
+   "precio_max_utilidad": 245.05,
+   "precio_max_volumen": 114.92,
+   "precio_ref_competencia": null,
+   "fuente_ref": null,
+   "unidades_dia": {
+    "actual": 17.91,
+    "recomendado": 16.48
+   },
+   "visitas_dia": {
+    "actual": 234.89,
+    "recomendado": 229.98
+   },
+   "conversion": {
+    "actual": 0.0763,
+    "recomendado": 0.0717
+   },
+   "utilidad_dia": {
+    "actual": 897.77,
+    "recomendado": 935.93
+   },
+   "margen": {
+    "actual": 0.2966,
+    "recomendado": 0.3173
+   },
+   "elasticidad": {
+    "beta": -1.45,
+    "beta_visitas": -0.37,
+    "beta_conversion": -1.08,
+    "fuente": "categoria",
+    "n_semanas": 0,
+    "confianza": "media"
+   },
+   "stock": {
+    "full": 0,
+    "odoo": 66,
+    "cobertura_dias": 0
+   },
+   "razones": [
+    "pausada_sin_stock"
+   ],
+   "plan": {
+    "modo": "semanal",
+    "pasos": [
+     {
+      "fecha": "2026-09-29",
+      "precio": 177
+     },
+     {
+      "fecha": "2026-10-06",
+      "precio": 179
+     }
+    ]
+   },
+   "autorizacion": "pendiente"
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2709677160",
+   "sku": "ACC-1777-GRS",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2709677160",
+   "titulo": "Faros de niebla LED universales 2 piezas",
+   "estado": "activa",
+   "precio_actual": 169,
+   "precio_recomendado": null,
+   "cambio_pct": null,
+   "precio_equilibrio": null,
+   "precio_piso": null,
+   "precio_max_utilidad": null,
+   "precio_max_volumen": null,
+   "precio_ref_competencia": 200.14,
+   "fuente_ref": "sugerido_ml",
+   "unidades_dia": {
+    "actual": 17.43,
+    "recomendado": null
+   },
+   "visitas_dia": {
+    "actual": 236.43,
+    "recomendado": null
+   },
+   "conversion": {
+    "actual": 0.0737,
+    "recomendado": null
+   },
+   "utilidad_dia": {
+    "actual": null,
+    "recomendado": null
+   },
+   "margen": {
+    "actual": null,
+    "recomendado": null
+   },
+   "elasticidad": {
+    "beta": -0.3,
+    "beta_visitas": -0.31,
+    "beta_conversion": 0.01,
+    "fuente": "global",
+    "n_semanas": 0,
+    "confianza": "baja"
+   },
+   "stock": {
+    "full": 168,
+    "odoo": null,
+    "cobertura_dias": 9.64
+   },
+   "razones": [
+    "elasticidad_baja_confianza",
+    "sin_costo"
+   ],
+   "plan": {
+    "modo": "semanal",
+    "pasos": []
+   },
+   "autorizacion": "pendiente"
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2709883867",
+   "sku": "ORG-0318-GRS",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2709883867",
+   "titulo": "Organizador de zapatos 10 niveles metálico",
+   "estado": "activa",
+   "precio_actual": 419,
+   "precio_recomendado": 299,
+   "cambio_pct": -0.2864,
+   "precio_equilibrio": 230.45,
+   "precio_piso": 259.78,
+   "precio_max_utilidad": 298.99,
+   "precio_max_volumen": 259.78,
+   "precio_ref_competencia": null,
+   "fuente_ref": null,
+   "unidades_dia": {
+    "actual": 7.8,
+    "recomendado": 23.94
+   },
+   "visitas_dia": {
+    "actual": 90.3,
+    "recomendado": 115.15
+   },
+   "conversion": {
+    "actual": 0.0864,
+    "recomendado": 0.2079
+   },
+   "utilidad_dia": {
+    "actual": 526.55,
+    "recomendado": -343.33
+   },
+   "margen": {
+    "actual": 0.1611,
+    "recomendado": -0.048
+   },
+   "elasticidad": {
+    "beta": -3.32,
+    "beta_visitas": -0.72,
+    "beta_conversion": -2.6,
+    "fuente": "global",
+    "n_semanas": 1,
+    "confianza": "baja"
+   },
+   "stock": {
+    "full": 10,
+    "odoo": 757,
+    "cobertura_dias": 1.28
+   },
+   "razones": [
+    "elasticidad_baja_confianza",
+    "stock_escaso"
+   ],
+   "plan": {
+    "modo": "semanal",
+    "pasos": [
+     {
+      "fecha": "2026-09-29",
+      "precio": 398.05,
+      "nota": "prueba −5 %: medir una semana antes de seguir"
+     },
+     {
+      "fecha": "2026-10-06",
+      "precio": 378
+     },
+     {
+      "fecha": "2026-10-13",
+      "precio": 359
+     },
+     {
+      "fecha": "2026-10-20",
+      "precio": 341
+     },
+     {
+      "fecha": "2026-10-27",
+      "precio": 324
+     },
+     {
+      "fecha": "2026-11-03",
+      "precio": 308
+     },
+     {
+      "fecha": "2026-11-10",
+      "precio": 299
+     }
+    ]
+   },
+   "autorizacion": "pendiente"
+  },
+  {
+   "id": "mercado_libre:BEKURA:MLM2710370390",
+   "sku": "COC-1310-AZU",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2710370390",
+   "titulo": "Juego de cuchillos 6 piezas con base de madera",
+   "estado": "activa",
+   "precio_actual": 299,
+   "precio_recomendado": 419,
+   "cambio_pct": 0.4013,
+   "precio_equilibrio": 170.43,
+   "precio_piso": 209.3,
+   "precio_max_utilidad": 433.55,
+   "precio_max_volumen": 209.3,
+   "precio_ref_competencia": null,
+   "fuente_ref": null,
+   "unidades_dia": {
+    "actual": 16.37,
+    "recomendado": 14.79
+   },
+   "visitas_dia": {
+    "actual": 192.27,
+    "recomendado": 169
+   },
+   "conversion": {
+    "actual": 0.0851,
+    "recomendado": 0.0875
+   },
+   "utilidad_dia": {
+    "actual": 429.93,
+    "recomendado": 1599.16
+   },
+   "margen": {
+    "actual": 0.0879,
+    "recomendado": 0.258
+   },
+   "elasticidad": {
+    "beta": -0.3,
+    "beta_visitas": -0.38,
+    "beta_conversion": 0.08,
+    "fuente": "prior",
+    "n_semanas": 4,
+    "confianza": "baja"
+   },
+   "stock": {
+    "full": 247,
+    "odoo": 755,
+    "cobertura_dias": 15.09
+   },
+   "razones": [
+    "elasticidad_baja_confianza",
+    "escalon_envio_299"
+   ],
+   "plan": {
+    "modo": "semanal",
+    "pasos": [
+     {
+      "fecha": "2026-09-29",
+      "precio": 284.05,
+      "nota": "prueba −5 %: medir una semana antes de seguir"
+     },
+     {
+      "fecha": "2026-10-06",
+      "precio": 298
+     },
+     {
+      "fecha": "2026-10-13",
+      "precio": 313
+     },
+     {
+      "fecha": "2026-10-20",
+      "precio": 329
+     },
+     {
+      "fecha": "2026-10-27",
+      "precio": 345
+     },
+     {
+      "fecha": "2026-11-03",
+      "precio": 363
+     },
+     {
+      "fecha": "2026-11-10",
+      "precio": 381
+     },
+     {
+      "fecha": "2026-11-17",
+      "precio": 400
+     },
+     {
+      "fecha": "2026-11-24",
+      "precio": 419
+     }
+    ]
+   },
+   "autorizacion": "pendiente"
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2710692885",
+   "sku": "COC-1310-AZU",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2710692885",
+   "titulo": "Juego de cuchillos 6 piezas con base de madera",
+   "estado": "pausada",
+   "precio_actual": 299,
+   "precio_recomendado": 279,
+   "cambio_pct": -0.0669,
+   "precio_equilibrio": 170.43,
+   "precio_piso": 209.3,
+   "precio_max_utilidad": 298.99,
+   "precio_max_volumen": 209.3,
+   "precio_ref_competencia": null,
+   "fuente_ref": null,
+   "unidades_dia": {
+    "actual": 5.11,
+    "recomendado": 5.61
+   },
+   "visitas_dia": {
+    "actual": 366.34,
+    "recomendado": 376.52
+   },
+   "conversion": {
+    "actual": 0.014,
+    "recomendado": 0.0149
+   },
+   "utilidad_dia": {
+    "actual": 134.35,
+    "recomendado": 406.72
+   },
+   "margen": {
+    "actual": 0.0879,
+    "recomendado": 0.2596
+   },
+   "elasticidad": {
+    "beta": -1.35,
+    "beta_visitas": -0.4,
+    "beta_conversion": -0.95,
+    "fuente": "categoria",
+    "n_semanas": 2,
+    "confianza": "media"
+   },
+   "stock": {
+    "full": 0,
+    "odoo": 266,
+    "cobertura_dias": 0
+   },
+   "razones": [
+    "pausada_sin_stock",
+    "escalon_envio_299"
+   ],
+   "plan": {
+    "modo": "semanal",
+    "pasos": [
+     {
+      "fecha": "2026-09-29",
+      "precio": 284
+     },
+     {
+      "fecha": "2026-10-06",
+      "precio": 279
+     }
+    ]
+   },
+   "autorizacion": "pendiente"
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2710752059",
+   "sku": "COC-1203-GRS",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2710752059",
+   "titulo": "Lonchera térmica con 3 contenedores de vidrio",
+   "estado": "pausada",
+   "precio_actual": 159,
+   "precio_recomendado": 179,
+   "cambio_pct": 0.1258,
+   "precio_equilibrio": 127.2,
+   "precio_piso": 155.82,
+   "precio_max_utilidad": 219.42,
+   "precio_max_volumen": 155.82,
+   "precio_ref_competencia": null,
+   "fuente_ref": null,
+   "unidades_dia": {
+    "actual": 10.31,
+    "recomendado": 7.79
+   },
+   "visitas_dia": {
+    "actual": 228.55,
+    "recomendado": 207.91
+   },
+   "conversion": {
+    "actual": 0.0451,
+    "recomendado": 0.0375
+   },
+   "utilidad_dia": {
+    "actual": 222.26,
+    "recomendado": 272
+   },
+   "margen": {
+    "actual": 0.1356,
+    "recomendado": 0.195
+   },
+   "elasticidad": {
+    "beta": -2.36,
+    "beta_visitas": -0.8,
+    "beta_conversion": -1.56,
+    "fuente": "global",
+    "n_semanas": 4,
+    "confianza": "baja"
+   },
+   "stock": {
+    "full": 0,
+    "odoo": 602,
+    "cobertura_dias": 0
+   },
+   "razones": [
+    "pausada_sin_stock",
+    "elasticidad_baja_confianza"
+   ],
+   "plan": {
+    "modo": "semanal",
+    "pasos": [
+     {
+      "fecha": "2026-09-29",
+      "precio": 151.05,
+      "nota": "prueba −5 %: medir una semana antes de seguir"
+     },
+     {
+      "fecha": "2026-10-06",
+      "precio": 159
+     },
+     {
+      "fecha": "2026-10-13",
+      "precio": 167
+     },
+     {
+      "fecha": "2026-10-20",
+      "precio": 175
+     },
+     {
+      "fecha": "2026-10-27",
+      "precio": 179
+     }
+    ]
+   },
+   "autorizacion": "pendiente"
+  },
+  {
+   "id": "mercado_libre:BEKURA:MLM2711271810",
+   "sku": "TEC-1140-GRS",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2711271810",
+   "titulo": "Humidificador ultrasónico 300 ml con luz",
+   "estado": "activa",
+   "precio_actual": 129,
+   "precio_recomendado": 139,
+   "cambio_pct": 0.0775,
+   "precio_equilibrio": 91.59,
+   "precio_piso": 112.23,
+   "precio_max_utilidad": 187.05,
+   "precio_max_volumen": 112.23,
+   "precio_ref_competencia": 190.92,
+   "fuente_ref": "serp",
+   "unidades_dia": {
+    "actual": 15.13,
+    "recomendado": 13.16
+   },
+   "visitas_dia": {
+    "actual": 221.7,
+    "recomendado": 210.22
+   },
+   "conversion": {
+    "actual": 0.0683,
+    "recomendado": 0.0626
+   },
+   "utilidad_dia": {
+    "actual": 381.24,
+    "recomendado": 419.3
+   },
+   "margen": {
+    "actual": 0.1953,
+    "recomendado": 0.2292
+   },
+   "elasticidad": {
+    "beta": -1.87,
+    "beta_visitas": -0.71,
+    "beta_conversion": -1.16,
+    "fuente": "categoria",
+    "n_semanas": 3,
+    "confianza": "media"
+   },
+   "stock": {
+    "full": 197,
+    "odoo": 172,
+    "cobertura_dias": 13.02
+   },
+   "razones": [
+    "promo_vigente",
+    "bajo_competencia"
+   ],
+   "plan": {
+    "modo": "semanal",
+    "pasos": [
+     {
+      "fecha": "2026-09-29",
+      "precio": 135
+     },
+     {
+      "fecha": "2026-10-06",
+      "precio": 139
+     }
+    ]
+   },
+   "autorizacion": "pendiente"
+  },
+  {
+   "id": "mercado_libre:BEKURA:MLM2711762333",
+   "sku": "TEC-1588-PLA",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2711762333",
+   "titulo": "Reloj despertador digital con espejo LED",
+   "estado": "pausada",
+   "precio_actual": 189,
+   "precio_recomendado": null,
+   "cambio_pct": null,
+   "precio_equilibrio": null,
+   "precio_piso": null,
+   "precio_max_utilidad": null,
+   "precio_max_volumen": null,
+   "precio_ref_competencia": 211.98,
+   "fuente_ref": "serp",
+   "unidades_dia": {
+    "actual": 13.98,
+    "recomendado": null
+   },
+   "visitas_dia": {
+    "actual": 404.81,
+    "recomendado": null
+   },
+   "conversion": {
+    "actual": 0.0345,
+    "recomendado": null
+   },
+   "utilidad_dia": {
+    "actual": null,
+    "recomendado": null
+   },
+   "margen": {
+    "actual": null,
+    "recomendado": null
+   },
+   "elasticidad": {
+    "beta": -2.11,
+    "beta_visitas": -0.11,
+    "beta_conversion": -2,
+    "fuente": "categoria",
+    "n_semanas": 4,
+    "confianza": "media"
+   },
+   "stock": {
+    "full": 0,
+    "odoo": 207,
+    "cobertura_dias": 0
+   },
+   "razones": [
+    "pausada_sin_stock",
+    "sin_costo"
+   ],
+   "plan": {
+    "modo": "semanal",
+    "pasos": []
+   },
+   "autorizacion": "pendiente"
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2712698255",
+   "sku": "EST-1854-CAF",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2712698255",
+   "titulo": "Perchero de pie metálico con 3 niveles",
+   "estado": "activa",
+   "precio_actual": 499,
+   "precio_recomendado": 569,
+   "cambio_pct": 0.1403,
+   "precio_equilibrio": 484.03,
+   "precio_piso": 563.87,
+   "precio_max_utilidad": 723.55,
+   "precio_max_volumen": 563.87,
+   "precio_ref_competencia": 497.51,
+   "fuente_ref": "serp",
+   "unidades_dia": {
+    "actual": 5.2,
+    "recomendado": 3.95
+   },
+   "visitas_dia": {
+    "actual": 65.5,
+    "recomendado": 60.36
+   },
+   "conversion": {
+    "actual": 0.0794,
+    "recomendado": 0.0654
+   },
+   "utilidad_dia": {
+    "actual": 69.74,
+    "recomendado": 286.31
+   },
+   "margen": {
+    "actual": 0.0269,
+    "recomendado": 0.1275
+   },
+   "elasticidad": {
+    "beta": -2.1,
+    "beta_visitas": -0.62,
+    "beta_conversion": -1.48,
+    "fuente": "categoria",
+    "n_semanas": 4,
+    "confianza": "media"
+   },
+   "stock": {
+    "full": 186,
+    "odoo": 199,
+    "cobertura_dias": 35.77
+   },
+   "razones": [
+    "tramo_comision_500"
+   ],
+   "plan": {
+    "modo": "semanal",
+    "pasos": [
+     {
+      "fecha": "2026-09-29",
+      "precio": 524
+     },
+     {
+      "fecha": "2026-10-06",
+      "precio": 550
+     },
+     {
+      "fecha": "2026-10-13",
+      "precio": 569
+     }
+    ]
+   },
+   "autorizacion": "pendiente"
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2712837633",
+   "sku": "ACC-1352-NEG",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2712837633",
+   "titulo": "Kit de brochas de maquillaje 12 piezas con estuche",
+   "estado": "activa",
+   "precio_actual": 109,
+   "precio_recomendado": 129,
+   "cambio_pct": 0.1835,
+   "precio_equilibrio": 77.39,
+   "precio_piso": 93.74,
+   "precio_max_utilidad": 158.05,
+   "precio_max_volumen": 93.74,
+   "precio_ref_competencia": 114.09,
+   "fuente_ref": "serp",
+   "unidades_dia": {
+    "actual": 3.27,
+    "recomendado": 2.88
+   },
+   "visitas_dia": {
+    "actual": 202.27,
+    "recomendado": 183.4
+   },
+   "conversion": {
+    "actual": 0.0162,
+    "recomendado": 0.0157
+   },
+   "utilidad_dia": {
+    "actual": 70.1,
+    "recomendado": 100.29
+   },
+   "margen": {
+    "actual": 0.1969,
+    "recomendado": 0.2698
+   },
+   "elasticidad": {
+    "beta": -0.74,
+    "beta_visitas": -0.58,
+    "beta_conversion": -0.16,
+    "fuente": "categoria",
+    "n_semanas": 6,
+    "confianza": "media"
+   },
+   "stock": {
+    "full": 50,
+    "odoo": 425,
+    "cobertura_dias": 15.31
+   },
+   "razones": [],
+   "plan": {
+    "modo": "semanal",
+    "pasos": [
+     {
+      "fecha": "2026-09-29",
+      "precio": 114
+     },
+     {
+      "fecha": "2026-10-06",
+      "precio": 120
+     },
+     {
+      "fecha": "2026-10-13",
+      "precio": 126
+     },
+     {
+      "fecha": "2026-10-20",
+      "precio": 129
+     }
+    ]
+   },
+   "autorizacion": "pendiente"
+  },
+  {
+   "id": "mercado_libre:BEKURA:MLM2712850678",
+   "sku": "TEC-1247-DOR",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2712850678",
+   "titulo": "Cable USB-C carga rápida 2 m paquete de 3",
+   "estado": "activa",
+   "precio_actual": 79,
+   "precio_recomendado": 99,
+   "cambio_pct": 0.2532,
+   "precio_equilibrio": 63.2,
+   "precio_piso": 76.63,
+   "precio_max_utilidad": 114.55,
+   "precio_max_volumen": 76.63,
+   "precio_ref_competencia": null,
+   "fuente_ref": null,
+   "unidades_dia": {
+    "actual": 5.33,
+    "recomendado": 3.74
+   },
+   "visitas_dia": {
+    "actual": 103.93,
+    "recomendado": 95.09
+   },
+   "conversion": {
+    "actual": 0.0513,
+    "recomendado": 0.0393
+   },
+   "utilidad_dia": {
+    "actual": 58.66,
+    "recomendado": 91.04
+   },
+   "margen": {
+    "actual": 0.1392,
+    "recomendado": 0.2459
+   },
+   "elasticidad": {
+    "beta": -1.57,
+    "beta_visitas": -0.39,
+    "beta_conversion": -1.18,
+    "fuente": "item",
+    "n_semanas": 15,
+    "confianza": "alta"
+   },
+   "stock": {
+    "full": 237,
+    "odoo": 349,
+    "cobertura_dias": 44.44
+   },
+   "razones": [],
+   "plan": {
+    "modo": "semanal",
+    "pasos": [
+     {
+      "fecha": "2026-09-29",
+      "precio": 83
+     },
+     {
+      "fecha": "2026-10-06",
+      "precio": 87
+     },
+     {
+      "fecha": "2026-10-13",
+      "precio": 91
+     },
+     {
+      "fecha": "2026-10-20",
+      "precio": 96
+     },
+     {
+      "fecha": "2026-10-27",
+      "precio": 99
+     }
+    ]
+   },
+   "autorizacion": "pendiente"
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2712865821",
+   "sku": "TEC-1247-DOR",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2712865821",
+   "titulo": "Cable USB-C carga rápida 2 m paquete de 3",
+   "estado": "pausada",
+   "precio_actual": 79,
+   "precio_recomendado": 99,
+   "cambio_pct": 0.2532,
+   "precio_equilibrio": 63.2,
+   "precio_piso": 76.63,
+   "precio_max_utilidad": 114.55,
+   "precio_max_volumen": 76.63,
+   "precio_ref_competencia": 83.83,
+   "fuente_ref": "serp",
+   "unidades_dia": {
+    "actual": 63.57,
+    "recomendado": 47.54
+   },
+   "visitas_dia": {
+    "actual": 815.06,
+    "recomendado": 717.2
+   },
+   "conversion": {
+    "actual": 0.078,
+    "recomendado": 0.0663
+   },
+   "utilidad_dia": {
+    "actual": 699.2,
+    "recomendado": 1157.16
+   },
+   "margen": {
+    "actual": 0.1392,
+    "recomendado": 0.2459
+   },
+   "elasticidad": {
+    "beta": -1.29,
+    "beta_visitas": -0.57,
+    "beta_conversion": -0.72,
+    "fuente": "categoria",
+    "n_semanas": 2,
+    "confianza": "media"
+   },
+   "stock": {
+    "full": 0,
+    "odoo": null,
+    "cobertura_dias": 0
+   },
+   "razones": [
+    "pausada_sin_stock"
+   ],
+   "plan": {
+    "modo": "semanal",
+    "pasos": [
+     {
+      "fecha": "2026-09-29",
+      "precio": 83
+     },
+     {
+      "fecha": "2026-10-06",
+      "precio": 87
+     },
+     {
+      "fecha": "2026-10-13",
+      "precio": 91
+     },
+     {
+      "fecha": "2026-10-20",
+      "precio": 96
+     },
+     {
+      "fecha": "2026-10-27",
+      "precio": 99
+     }
+    ]
+   },
+   "autorizacion": "pendiente"
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2713013535",
+   "sku": "TEC-1791-GRS",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2713013535",
+   "titulo": "Soporte de celular para auto magnético",
+   "estado": "pausada",
+   "precio_actual": 99,
+   "precio_recomendado": 129,
+   "cambio_pct": 0.303,
+   "precio_equilibrio": 68.31,
+   "precio_piso": 83.16,
+   "precio_max_utilidad": 143.55,
+   "precio_max_volumen": 83.16,
+   "precio_ref_competencia": 122.12,
+   "fuente_ref": "serp",
+   "unidades_dia": {
+    "actual": 9.2,
+    "recomendado": 8
+   },
+   "visitas_dia": {
+    "actual": 122.96,
+    "recomendado": 107.27
+   },
+   "conversion": {
+    "actual": 0.0748,
+    "recomendado": 0.0746
+   },
+   "utilidad_dia": {
+    "actual": 192.1,
+    "recomendado": 327.29
+   },
+   "margen": {
+    "actual": 0.2109,
+    "recomendado": 0.317
+   },
+   "elasticidad": {
+    "beta": -0.53,
+    "beta_visitas": -0.52,
+    "beta_conversion": -0.01,
+    "fuente": "categoria",
+    "n_semanas": 5,
+    "confianza": "media"
+   },
+   "stock": {
+    "full": 0,
+    "odoo": null,
+    "cobertura_dias": 0
+   },
+   "razones": [
+    "pausada_sin_stock",
+    "bajo_competencia"
+   ],
+   "plan": {
+    "modo": "semanal",
+    "pasos": [
+     {
+      "fecha": "2026-09-29",
+      "precio": 104
+     },
+     {
+      "fecha": "2026-10-06",
+      "precio": 109
+     },
+     {
+      "fecha": "2026-10-13",
+      "precio": 115
+     },
+     {
+      "fecha": "2026-10-20",
+      "precio": 120
+     },
+     {
+      "fecha": "2026-10-27",
+      "precio": 126
+     },
+     {
+      "fecha": "2026-11-03",
+      "precio": 129
+     }
+    ]
+   },
+   "autorizacion": "pendiente"
+  },
+  {
+   "id": "mercado_libre:BEKURA:MLM2713401145",
+   "sku": "TEC-0538-MUL",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2713401145",
+   "titulo": "Tira LED RGB 5 m con control y app",
+   "estado": "activa",
+   "precio_actual": 139,
+   "precio_recomendado": 129,
+   "cambio_pct": -0.0719,
+   "precio_equilibrio": 79.23,
+   "precio_piso": 97.3,
+   "precio_max_utilidad": 180.7,
+   "precio_max_volumen": 97.3,
+   "precio_ref_competencia": 115.69,
+   "fuente_ref": "serp",
+   "unidades_dia": {
+    "actual": 15.03,
+    "recomendado": 17.17
+   },
+   "visitas_dia": {
+    "actual": 176.17,
+    "recomendado": 184.47
+   },
+   "conversion": {
+    "actual": 0.0853,
+    "recomendado": 0.0931
+   },
+   "utilidad_dia": {
+    "actual": 600.92,
+    "recomendado": 571.65
+   },
+   "margen": {
+    "actual": 0.2876,
+    "recomendado": 0.2582
+   },
+   "elasticidad": {
+    "beta": -1.78,
+    "beta_visitas": -0.62,
+    "beta_conversion": -1.16,
+    "fuente": "categoria",
+    "n_semanas": 0,
+    "confianza": "media"
+   },
+   "stock": {
+    "full": 122,
+    "odoo": 232,
+    "cobertura_dias": 8.12
+   },
+   "razones": [
+    "stock_escaso",
+    "sobre_competencia"
+   ],
+   "plan": {
+    "modo": "semanal",
+    "pasos": [
+     {
+      "fecha": "2026-09-29",
+      "precio": 132
+     },
+     {
+      "fecha": "2026-10-06",
+      "precio": 129
+     }
+    ]
+   },
+   "autorizacion": "pendiente"
+  },
+  {
+   "id": "mercado_libre:BEKURA:MLM2714448212",
+   "sku": "MAN-1456-BLN",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2714448212",
+   "titulo": "Almohada ortopédica memory foam cervical",
+   "estado": "pausada",
+   "precio_actual": 539,
+   "precio_recomendado": 719,
+   "cambio_pct": 0.334,
+   "precio_equilibrio": 296.45,
+   "precio_piso": 296.45,
+   "precio_max_utilidad": 781.55,
+   "precio_max_volumen": 296.45,
+   "precio_ref_competencia": null,
+   "fuente_ref": null,
+   "unidades_dia": {
+    "actual": 32.95,
+    "recomendado": 29.42
+   },
+   "visitas_dia": {
+    "actual": 563.66,
+    "recomendado": 487.47
+   },
+   "conversion": {
+    "actual": 0.0585,
+    "recomendado": 0.0603
+   },
+   "utilidad_dia": {
+    "actual": 5969.2,
+    "recomendado": 9046.32
+   },
+   "margen": {
+    "actual": 0.3361,
+    "recomendado": 0.4277
+   },
+   "elasticidad": {
+    "beta": -0.39,
+    "beta_visitas": -0.5,
+    "beta_conversion": 0.11,
+    "fuente": "item",
+    "n_semanas": 18,
+    "confianza": "alta"
+   },
+   "stock": {
+    "full": 0,
+    "odoo": 74,
+    "cobertura_dias": 0
+   },
+   "razones": [
+    "pausada_sin_stock",
+    "tramo_comision_500"
+   ],
+   "plan": {
+    "modo": "semanal",
+    "pasos": [
+     {
+      "fecha": "2026-09-29",
+      "precio": 566
+     },
+     {
+      "fecha": "2026-10-06",
+      "precio": 594
+     },
+     {
+      "fecha": "2026-10-13",
+      "precio": 624
+     },
+     {
+      "fecha": "2026-10-20",
+      "precio": 655
+     },
+     {
+      "fecha": "2026-10-27",
+      "precio": 688
+     },
+     {
+      "fecha": "2026-11-03",
+      "precio": 719
+     }
+    ]
+   },
+   "autorizacion": "pendiente"
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2715459620",
+   "sku": "COC-1873-DOR",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2715459620",
+   "titulo": "Sartén antiadherente 28 cm con tapa de vidrio",
+   "estado": "activa",
+   "precio_actual": 339,
+   "precio_recomendado": 299,
+   "cambio_pct": -0.118,
+   "precio_equilibrio": 237.3,
+   "precio_piso": 291.54,
+   "precio_max_utilidad": 298.99,
+   "precio_max_volumen": 291.54,
+   "precio_ref_competencia": 284.16,
+   "fuente_ref": "serp",
+   "unidades_dia": {
+    "actual": 13.2,
+    "recomendado": 20.05
+   },
+   "visitas_dia": {
+    "actual": 240.3,
+    "recomendado": 251.14
+   },
+   "conversion": {
+    "actual": 0.0549,
+    "recomendado": 0.0798
+   },
+   "utilidad_dia": {
+    "actual": 85.42,
+    "recomendado": -417.3
+   },
+   "margen": {
+    "actual": 0.0191,
+    "recomendado": -0.0696
+   },
+   "elasticidad": {
+    "beta": -3.33,
+    "beta_visitas": -0.35,
+    "beta_conversion": -2.98,
+    "fuente": "categoria",
+    "n_semanas": 2,
+    "confianza": "media"
+   },
+   "stock": {
+    "full": 19,
+    "odoo": 853,
+    "cobertura_dias": 1.44
+   },
+   "razones": [
+    "promo_vigente",
+    "stock_escaso",
+    "sobre_competencia",
+    "escalon_envio_299"
+   ],
+   "plan": {
+    "modo": "semanal",
+    "pasos": [
+     {
+      "fecha": "2026-09-29",
+      "precio": 322
+     },
+     {
+      "fecha": "2026-10-06",
+      "precio": 306
+     },
+     {
+      "fecha": "2026-10-13",
+      "precio": 299
+     }
+    ]
+   },
+   "autorizacion": "pendiente"
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2716344420",
+   "sku": "ORG-1782-PLA",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2716344420",
+   "titulo": "Pizarrón magnético 60 x 40 cm con marcadores",
+   "estado": "activa",
+   "precio_actual": 559,
+   "precio_recomendado": 499,
+   "cambio_pct": -0.1073,
+   "precio_equilibrio": 318.63,
+   "precio_piso": 385.71,
+   "precio_max_utilidad": 603.72,
+   "precio_max_volumen": 385.71,
+   "precio_ref_competencia": 521.14,
+   "fuente_ref": "bestsellers",
+   "unidades_dia": {
+    "actual": 5.1,
+    "recomendado": 6.43
+   },
+   "visitas_dia": {
+    "actual": 252.47,
+    "recomendado": 263.21
+   },
+   "conversion": {
+    "actual": 0.0202,
+    "recomendado": 0.0244
+   },
+   "utilidad_dia": {
+    "actual": 896.1,
+    "recomendado": 794.72
+   },
+   "margen": {
+    "actual": 0.3143,
+    "recomendado": 0.2477
+   },
+   "elasticidad": {
+    "beta": -2.04,
+    "beta_visitas": -0.37,
+    "beta_conversion": -1.67,
+    "fuente": "categoria",
+    "n_semanas": 3,
+    "confianza": "media"
+   },
+   "stock": {
+    "full": 55,
+    "odoo": 735,
+    "cobertura_dias": 10.78
+   },
+   "razones": [
+    "tramo_comision_500"
+   ],
+   "plan": {
+    "modo": "semanal",
+    "pasos": [
+     {
+      "fecha": "2026-09-29",
+      "precio": 531
+     },
+     {
+      "fecha": "2026-10-06",
+      "precio": 504
+     },
+     {
+      "fecha": "2026-10-13",
+      "precio": 499
+     }
+    ]
+   },
+   "autorizacion": "pendiente"
+  },
+  {
+   "id": "mercado_libre:BEKURA:MLM2716934434",
+   "sku": "TEC-0477-BLN",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2716934434",
+   "titulo": "Cámara de seguridad WiFi 1080p visión nocturna",
+   "estado": "activa",
+   "precio_actual": 139,
+   "precio_recomendado": 129,
+   "cambio_pct": -0.0719,
+   "precio_equilibrio": 101.47,
+   "precio_piso": 123.71,
+   "precio_max_utilidad": 201.55,
+   "precio_max_volumen": 123.71,
+   "precio_ref_competencia": 112.33,
+   "fuente_ref": "serp",
+   "unidades_dia": {
+    "actual": 17.87,
+    "recomendado": 20.19
+   },
+   "visitas_dia": {
+    "actual": 201.63,
+    "recomendado": 213.49
+   },
+   "conversion": {
+    "actual": 0.0886,
+    "recomendado": 0.0946
+   },
+   "utilidad_dia": {
+    "actual": 450.64,
+    "recomendado": 374.64
+   },
+   "margen": {
+    "actual": 0.1815,
+    "recomendado": 0.1438
+   },
+   "elasticidad": {
+    "beta": -1.64,
+    "beta_visitas": -0.77,
+    "beta_conversion": -0.87,
+    "fuente": "categoria",
+    "n_semanas": 5,
+    "confianza": "media"
+   },
+   "stock": {
+    "full": 42,
+    "odoo": 406,
+    "cobertura_dias": 2.35
+   },
+   "razones": [
+    "stock_escaso",
+    "sobre_competencia"
+   ],
+   "plan": {
+    "modo": "semanal",
+    "pasos": [
+     {
+      "fecha": "2026-09-29",
+      "precio": 132
+     },
+     {
+      "fecha": "2026-10-06",
+      "precio": 129
+     }
+    ]
+   },
+   "autorizacion": "pendiente"
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2717082479",
+   "sku": "TEC-0477-BLN",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2717082479",
+   "titulo": "Cámara de seguridad WiFi 1080p visión nocturna",
+   "estado": "pausada",
+   "precio_actual": 139,
+   "precio_recomendado": 129,
+   "cambio_pct": -0.0719,
+   "precio_equilibrio": 101.47,
+   "precio_piso": 123.71,
+   "precio_max_utilidad": 201.55,
+   "precio_max_volumen": 123.71,
+   "precio_ref_competencia": 117.08,
+   "fuente_ref": "sugerido_ml",
+   "unidades_dia": {
+    "actual": 4.27,
+    "recomendado": 4.38
+   },
+   "visitas_dia": {
+    "actual": 236.68,
+    "recomendado": 244.46
+   },
+   "conversion": {
+    "actual": 0.0181,
+    "recomendado": 0.0179
+   },
+   "utilidad_dia": {
+    "actual": 107.82,
+    "recomendado": 81.25
+   },
+   "margen": {
+    "actual": 0.1815,
+    "recomendado": 0.1438
+   },
+   "elasticidad": {
+    "beta": -0.32,
+    "beta_visitas": -0.43,
+    "beta_conversion": 0.11,
+    "fuente": "categoria",
+    "n_semanas": 1,
+    "confianza": "media"
+   },
+   "stock": {
+    "full": 0,
+    "odoo": 138,
+    "cobertura_dias": 0
+   },
+   "razones": [
+    "pausada_sin_stock",
+    "sobre_competencia"
+   ],
+   "plan": {
+    "modo": "semanal",
+    "pasos": [
+     {
+      "fecha": "2026-09-29",
+      "precio": 132
+     },
+     {
+      "fecha": "2026-10-06",
+      "precio": 129
+     }
+    ]
+   },
+   "autorizacion": "pendiente"
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2717352991",
+   "sku": "MAN-1173-CAF",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2717352991",
+   "titulo": "Ventilador de torre 36 pulgadas silencioso",
+   "estado": "pausada",
+   "precio_actual": 829,
+   "precio_recomendado": 1129,
+   "cambio_pct": 0.3619,
+   "precio_equilibrio": 679.78,
+   "precio_piso": 820.71,
+   "precio_max_utilidad": 1202.05,
+   "precio_max_volumen": 820.71,
+   "precio_ref_competencia": null,
+   "fuente_ref": null,
+   "unidades_dia": {
+    "actual": 8.65,
+    "recomendado": 6.69
+   },
+   "visitas_dia": {
+    "actual": 664.4,
+    "recomendado": 517.27
+   },
+   "conversion": {
+    "actual": 0.013,
+    "recomendado": 0.0129
+   },
+   "utilidad_dia": {
+    "actual": 906.5,
+    "recomendado": 2186.09
+   },
+   "margen": {
+    "actual": 0.1264,
+    "recomendado": 0.2894
+   },
+   "elasticidad": {
+    "beta": -0.83,
+    "beta_visitas": -0.81,
+    "beta_conversion": -0.02,
+    "fuente": "categoria",
+    "n_semanas": 2,
+    "confianza": "media"
+   },
+   "stock": {
+    "full": 3,
+    "odoo": 823,
+    "cobertura_dias": 0.35
+   },
+   "razones": [
+    "pausada_sin_stock"
+   ],
+   "plan": {
+    "modo": "semanal",
+    "pasos": [
+     {
+      "fecha": "2026-09-29",
+      "precio": 870
+     },
+     {
+      "fecha": "2026-10-06",
+      "precio": 914
+     },
+     {
+      "fecha": "2026-10-13",
+      "precio": 960
+     },
+     {
+      "fecha": "2026-10-20",
+      "precio": 1008
+     },
+     {
+      "fecha": "2026-10-27",
+      "precio": 1058
+     },
+     {
+      "fecha": "2026-11-03",
+      "precio": 1111
+     },
+     {
+      "fecha": "2026-11-10",
+      "precio": 1129
+     }
+    ]
+   },
+   "autorizacion": "pendiente"
+  },
+  {
+   "id": "mercado_libre:BEKURA:MLM2717773811",
+   "sku": "EST-0364-CAF",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2717773811",
+   "titulo": "Mesa plegable para laptop con ventilador",
+   "estado": "activa",
+   "precio_actual": 469,
+   "precio_recomendado": null,
+   "cambio_pct": null,
+   "precio_equilibrio": null,
+   "precio_piso": null,
+   "precio_max_utilidad": null,
+   "precio_max_volumen": null,
+   "precio_ref_competencia": 308.39,
+   "fuente_ref": "serp",
+   "unidades_dia": {
+    "actual": 12.83,
+    "recomendado": null
+   },
+   "visitas_dia": {
+    "actual": 273.97,
+    "recomendado": null
+   },
+   "conversion": {
+    "actual": 0.0468,
+    "recomendado": null
+   },
+   "utilidad_dia": {
+    "actual": null,
+    "recomendado": null
+   },
+   "margen": {
+    "actual": null,
+    "recomendado": null
+   },
+   "elasticidad": {
+    "beta": -1.44,
+    "beta_visitas": -0.43,
+    "beta_conversion": -1.01,
+    "fuente": "item",
+    "n_semanas": 11,
+    "confianza": "alta"
+   },
+   "stock": {
+    "full": 90,
+    "odoo": 615,
+    "cobertura_dias": 7.01
+   },
+   "razones": [
+    "sin_costo"
+   ],
+   "plan": {
+    "modo": "semanal",
+    "pasos": []
+   },
+   "autorizacion": "pendiente"
+  }
+ ]
+}

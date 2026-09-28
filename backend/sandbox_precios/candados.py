@@ -60,6 +60,41 @@ def _prohibido(nombre: str):
     return _f
 
 
+class _CursorLectura:
+    """Envoltura de un cursor DB-API que solo deja pasar SELECT/WITH."""
+
+    def __init__(self, real, origen: str):
+        self._real = real
+        self._origen = origen
+
+    def execute(self, sql, params=None):
+        texto = sql if isinstance(sql, str) else str(sql)
+        if not es_select(texto):
+            raise EscrituraProhibida(
+                f"laboratorio: {self._origen} rechazó una sentencia que no es SELECT: {texto[:120]!r}")
+        return self._real.execute(sql, params)
+
+    def executemany(self, *_a, **_k):
+        raise EscrituraProhibida(f"laboratorio: {self._origen} executemany prohibido")
+
+    def __iter__(self):
+        return iter(self._real)
+
+    def __getattr__(self, nombre):
+        return getattr(self._real, nombre)
+
+
+def _cursor_de_lectura(original, origen: str):
+    from contextlib import contextmanager
+
+    @contextmanager
+    def get_cursor(*a, **k):
+        with original(*a, **k) as cur:
+            yield _CursorLectura(cur, origen)
+
+    return get_cursor
+
+
 def _parchar(modulo: str, funciones: list[str]) -> None:
     try:
         mod = importlib.import_module(modulo)
@@ -90,9 +125,20 @@ def instalar() -> None:
     sdb.fetch_all, sdb.fetch_one = fetch_all, fetch_one
     sdb.execute = _prohibido("supabase_db.execute")
     sdb.execute_returning = _prohibido("supabase_db.execute_returning")
+    # El cursor crudo también: por `get_cursor` escriben `costos.marcar_validado`,
+    # `tokens_read` y `meli` (hallazgo de la auditoría del servidor). Parchar por
+    # nombre a los escritores conocidos no alcanza para uno nuevo; aquí se revisa
+    # cada sentencia que pase por el cursor, venga de quien venga.
+    sdb.get_cursor = _cursor_de_lectura(sdb.get_cursor, "kubera")
 
     # ── MySQL ─────────────────────────────────────────────────────────────────
     _parchar("services.db", ["execute"])
+    try:
+        from services import db as mysql
+
+        mysql.get_cursor = _cursor_de_lectura(mysql.get_cursor, "mysql")
+    except Exception as exc:  # noqa: BLE001
+        log.debug("candados: services.db no importó (%s)", exc)
 
     # ── Odoo: solo métodos de lectura ─────────────────────────────────────────
     try:

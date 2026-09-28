@@ -1,0 +1,79 @@
+{
+ "filas": [
+  {
+   "codigo": "PCIU9516451",
+   "archivo": "PL PCIU9516451 contenedor 33.xlsx",
+   "sha256": null,
+   "total_cbm": 66.42,
+   "total_piezas": 24647,
+   "total_peso_kg": 10798.52,
+   "total_usd": 51464.27,
+   "costo_m3": 7904.25,
+   "rango_ok": true,
+   "renglones": 198,
+   "renglones_sin_cbm": 1,
+   "cajas_mixtas": 11,
+   "skus_en_lote": 8
+  },
+  {
+   "codigo": "MSKU7781230",
+   "archivo": "PL MSKU7781230 contenedor 34.xlsx",
+   "sha256": null,
+   "total_cbm": 61.08,
+   "total_piezas": 10259,
+   "total_peso_kg": 21019.61,
+   "total_usd": 29070.43,
+   "costo_m3": 8595.28,
+   "rango_ok": true,
+   "renglones": 367,
+   "renglones_sin_cbm": 9,
+   "cajas_mixtas": 20,
+   "skus_en_lote": 8
+  },
+  {
+   "codigo": "TGHU6634102",
+   "archivo": "PL TGHU6634102 contenedor 35.xlsx",
+   "sha256": null,
+   "total_cbm": 70.9,
+   "total_piezas": 30464,
+   "total_peso_kg": 10980.12,
+   "total_usd": null,
+   "costo_m3": 7404.8,
+   "rango_ok": true,
+   "renglones": 177,
+   "renglones_sin_cbm": 2,
+   "cajas_mixtas": 23,
+   "skus_en_lote": 8
+  },
+  {
+   "codigo": "CMAU4512876",
+   "archivo": "PL CMAU4512876 contenedor 36.xlsx",
+   "sha256": null,
+   "total_cbm": 58.37,
+   "total_piezas": 30860,
+   "total_peso_kg": 10695.42,
+   "total_usd": null,
+   "costo_m3": 8994.35,
+   "rango_ok": true,
+   "renglones": 323,
+   "renglones_sin_cbm": 9,
+   "cajas_mixtas": 30,
+   "skus_en_lote": 8
+  },
+  {
+   "codigo": "OOLU8820341",
+   "archivo": "PL OOLU8820341 contenedor 37.xlsx",
+   "sha256": null,
+   "total_cbm": 81.6,
+   "total_piezas": 39775,
+   "total_peso_kg": 17486.49,
+   "total_usd": null,
+   "costo_m3": 6433.82,
+   "rango_ok": false,
+   "renglones": 152,
+   "renglones_sin_cbm": 5,
+   "cajas_mixtas": 27,
+   "skus_en_lote": 8
+  }
+ ]
+}

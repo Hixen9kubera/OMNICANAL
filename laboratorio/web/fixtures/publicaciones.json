@@ -1,0 +1,4526 @@
+{
+ "generado_at": "2026-09-28T12:40:00Z",
+ "filas": [
+  {
+   "id": "mercado_libre:BEKURA:MLM2703536658",
+   "canal": "mercado_libre",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2703536658",
+   "sku": "TEC-1879-ROS",
+   "titulo": "Lámpara LED de escritorio recargable táctil",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2703536658",
+   "thumbnail": null,
+   "categoria_id": "MLM1582",
+   "estado": "activa",
+   "situacion": "active",
+   "sub_status": [],
+   "logistica": "fulfillment",
+   "es_full": true,
+   "precio_cobrado": 109,
+   "precio_lista": 109,
+   "promo": null,
+   "stock_full": 24,
+   "stock_propio": 0,
+   "stock_odoo": 267,
+   "costo": {
+    "unitario": 19.6,
+    "fuente": "packing_list_exacto",
+    "contenedor": "PCIU9516451",
+    "validado": false,
+    "revisado_por": null,
+    "costo_panel": 79.38
+   },
+   "comision_pct": 0.195,
+   "comision": 21.26,
+   "envio": 34,
+   "iva": 15.03,
+   "utilidad": 19.11,
+   "margen_pct": 0.1753,
+   "visitas_30d": 5232,
+   "unidades_30d": 374,
+   "conversion_30d": 0.0715,
+   "ingreso_30d": 40766,
+   "competencia": {
+    "n": 13,
+    "promedio": 110.44,
+    "mediana": 110.35,
+    "minimo": 78.29,
+    "maximo": 154.1,
+    "fuente": "serp",
+    "capturado_en": "2026-09-10T09:15:00Z",
+    "sugerido_ml": null,
+    "lista": [
+     {
+      "titulo": null,
+      "precio": 78.29,
+      "vendedor": "vendedor_9794",
+      "vendidos": 509
+     },
+     {
+      "titulo": null,
+      "precio": 96.86,
+      "vendedor": "vendedor_1004",
+      "vendidos": 2477
+     },
+     {
+      "titulo": null,
+      "precio": 100.24,
+      "vendedor": "vendedor_9559",
+      "vendidos": 2999
+     },
+     {
+      "titulo": null,
+      "precio": 106.44,
+      "vendedor": "vendedor_6838",
+      "vendidos": 3975
+     },
+     {
+      "titulo": null,
+      "precio": 110.35,
+      "vendedor": "vendedor_8163",
+      "vendidos": 2214
+     },
+     {
+      "titulo": null,
+      "precio": 117.81,
+      "vendedor": "vendedor_8892",
+      "vendidos": 3162
+     },
+     {
+      "titulo": null,
+      "precio": 119.39,
+      "vendedor": "vendedor_2113",
+      "vendidos": 1105
+     },
+     {
+      "titulo": null,
+      "precio": 154.1,
+      "vendedor": "vendedor_5877",
+      "vendidos": 2624
+     }
+    ]
+   },
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T10:14:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2703781105",
+   "canal": "mercado_libre",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2703781105",
+   "sku": "TEC-1879-ROS",
+   "titulo": "Lámpara LED de escritorio recargable táctil",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2703781105",
+   "thumbnail": null,
+   "categoria_id": "MLM1582",
+   "estado": "pausada",
+   "situacion": "paused",
+   "sub_status": [
+    "out_of_stock"
+   ],
+   "logistica": "fulfillment",
+   "es_full": true,
+   "precio_cobrado": 109,
+   "precio_lista": 109,
+   "promo": null,
+   "stock_full": 0,
+   "stock_propio": 0,
+   "stock_odoo": 434,
+   "costo": {
+    "unitario": 19.6,
+    "fuente": "packing_list_exacto",
+    "contenedor": "PCIU9516451",
+    "validado": true,
+    "revisado_por": null,
+    "costo_panel": 125.8
+   },
+   "comision_pct": 0.195,
+   "comision": 21.26,
+   "envio": 34,
+   "iva": 15.03,
+   "utilidad": 19.11,
+   "margen_pct": 0.1753,
+   "visitas_30d": 46,
+   "unidades_30d": 4,
+   "conversion_30d": 0.087,
+   "ingreso_30d": 436,
+   "competencia": {
+    "n": 8,
+    "promedio": 94.9,
+    "mediana": 103.76,
+    "minimo": 66.89,
+    "maximo": 110.17,
+    "fuente": "serp",
+    "capturado_en": "2026-09-11T01:15:00Z",
+    "sugerido_ml": null,
+    "lista": [
+     {
+      "titulo": null,
+      "precio": 66.89,
+      "vendedor": "vendedor_8301",
+      "vendidos": 1433
+     },
+     {
+      "titulo": null,
+      "precio": 80.11,
+      "vendedor": "vendedor_9734",
+      "vendidos": 600
+     },
+     {
+      "titulo": null,
+      "precio": 92.78,
+      "vendedor": "vendedor_6785",
+      "vendidos": 606
+     },
+     {
+      "titulo": null,
+      "precio": 94.14,
+      "vendedor": "vendedor_3010",
+      "vendidos": 1383
+     },
+     {
+      "titulo": null,
+      "precio": 103.76,
+      "vendedor": "vendedor_1066",
+      "vendidos": 4461
+     },
+     {
+      "titulo": null,
+      "precio": 104.53,
+      "vendedor": "vendedor_7332",
+      "vendidos": 1092
+     },
+     {
+      "titulo": null,
+      "precio": 106.83,
+      "vendedor": "vendedor_7656",
+      "vendidos": 4137
+     },
+     {
+      "titulo": null,
+      "precio": 110.17,
+      "vendedor": "vendedor_9256",
+      "vendidos": 1762
+     }
+    ]
+   },
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T11:16:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2703869528",
+   "canal": "mercado_libre",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2703869528",
+   "sku": "ORG-1214-AZU",
+   "titulo": "Organizador de cajones 6 piezas plástico transparente",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2703869528",
+   "thumbnail": null,
+   "categoria_id": "MLM1631",
+   "estado": "pausada",
+   "situacion": "paused",
+   "sub_status": [
+    "out_of_stock"
+   ],
+   "logistica": "fulfillment",
+   "es_full": true,
+   "precio_cobrado": 159,
+   "precio_lista": 159,
+   "promo": null,
+   "stock_full": 0,
+   "stock_propio": 0,
+   "stock_odoo": 167,
+   "costo": {
+    "unitario": 21.48,
+    "fuente": "prorrateo_kubera",
+    "contenedor": "MSKU7781230",
+    "validado": false,
+    "revisado_por": "Thalia",
+    "costo_panel": 125.6
+   },
+   "comision_pct": 0.195,
+   "comision": 31.01,
+   "envio": 37,
+   "iva": 21.93,
+   "utilidad": 47.58,
+   "margen_pct": 0.2993,
+   "visitas_30d": 188,
+   "unidades_30d": 2,
+   "conversion_30d": 0.0106,
+   "ingreso_30d": 318,
+   "competencia": {
+    "n": 17,
+    "promedio": 153.38,
+    "mediana": 161.11,
+    "minimo": 131.58,
+    "maximo": 169.04,
+    "fuente": "serp",
+    "capturado_en": "2026-09-13T09:15:00Z",
+    "sugerido_ml": null,
+    "lista": [
+     {
+      "titulo": null,
+      "precio": 131.58,
+      "vendedor": "vendedor_2687",
+      "vendidos": 995
+     },
+     {
+      "titulo": null,
+      "precio": 131.97,
+      "vendedor": "vendedor_1579",
+      "vendidos": 4004
+     },
+     {
+      "titulo": null,
+      "precio": 148.32,
+      "vendedor": "vendedor_5692",
+      "vendidos": 4359
+     },
+     {
+      "titulo": null,
+      "precio": 152.56,
+      "vendedor": "vendedor_5418",
+      "vendidos": 4129
+     },
+     {
+      "titulo": null,
+      "precio": 161.11,
+      "vendedor": "vendedor_2423",
+      "vendidos": 2161
+     },
+     {
+      "titulo": null,
+      "precio": 164.18,
+      "vendedor": "vendedor_6068",
+      "vendidos": 228
+     },
+     {
+      "titulo": null,
+      "precio": 168.25,
+      "vendedor": "vendedor_8611",
+      "vendidos": 1110
+     },
+     {
+      "titulo": null,
+      "precio": 169.04,
+      "vendedor": "vendedor_9796",
+      "vendidos": 1444
+     }
+    ]
+   },
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T11:14:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:BEKURA:MLM2704063298",
+   "canal": "mercado_libre",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2704063298",
+   "sku": "COC-1931-NEG",
+   "titulo": "Set 3 sartenes de hierro fundido prehorneadas",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2704063298",
+   "thumbnail": null,
+   "categoria_id": "MLM1574",
+   "estado": "activa",
+   "situacion": "active",
+   "sub_status": [],
+   "logistica": "fulfillment",
+   "es_full": true,
+   "precio_cobrado": 1099,
+   "precio_lista": 1729,
+   "promo": {
+    "tipo": "price_discount",
+    "fin": "2026-10-04T05:59:59Z"
+   },
+   "stock_full": 252,
+   "stock_propio": 0,
+   "stock_odoo": 78,
+   "costo": {
+    "unitario": 273,
+    "fuente": "tarifa_7500",
+    "contenedor": null,
+    "validado": false,
+    "revisado_por": null,
+    "costo_panel": 1112.32
+   },
+   "comision_pct": 0.15,
+   "comision": 164.85,
+   "envio": 181,
+   "iva": 151.59,
+   "utilidad": 328.56,
+   "margen_pct": 0.299,
+   "visitas_30d": 7404,
+   "unidades_30d": 242,
+   "conversion_30d": 0.0327,
+   "ingreso_30d": 265958,
+   "competencia": {
+    "n": 9,
+    "promedio": 1305.87,
+    "mediana": 1319.46,
+    "minimo": 848.72,
+    "maximo": 1624.45,
+    "fuente": "serp",
+    "capturado_en": "2026-09-13T05:15:00Z",
+    "sugerido_ml": 1216.48,
+    "lista": [
+     {
+      "titulo": null,
+      "precio": 848.72,
+      "vendedor": "vendedor_8513",
+      "vendidos": 3155
+     },
+     {
+      "titulo": null,
+      "precio": 1187.42,
+      "vendedor": "vendedor_6331",
+      "vendidos": 3721
+     },
+     {
+      "titulo": null,
+      "precio": 1211.38,
+      "vendedor": "vendedor_6115",
+      "vendidos": 3337
+     },
+     {
+      "titulo": null,
+      "precio": 1253.23,
+      "vendedor": "vendedor_9198",
+      "vendidos": 4550
+     },
+     {
+      "titulo": null,
+      "precio": 1319.46,
+      "vendedor": "vendedor_3873",
+      "vendidos": 502
+     },
+     {
+      "titulo": null,
+      "precio": 1496.26,
+      "vendedor": "vendedor_3251",
+      "vendidos": 4283
+     },
+     {
+      "titulo": null,
+      "precio": 1506.03,
+      "vendedor": "vendedor_8985",
+      "vendidos": 1035
+     },
+     {
+      "titulo": null,
+      "precio": 1624.45,
+      "vendedor": "vendedor_5393",
+      "vendidos": 3586
+     }
+    ]
+   },
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T10:17:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2704448645",
+   "canal": "mercado_libre",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2704448645",
+   "sku": "ORG-0817-DOR",
+   "titulo": "Vasos reutilizables con tapa y popote 4 piezas",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2704448645",
+   "thumbnail": null,
+   "categoria_id": "MLM1621",
+   "estado": "pausada",
+   "situacion": "paused",
+   "sub_status": [],
+   "logistica": "xd_drop_off",
+   "es_full": false,
+   "precio_cobrado": 209,
+   "precio_lista": 209,
+   "promo": null,
+   "stock_full": null,
+   "stock_propio": 62,
+   "stock_odoo": 507,
+   "costo": {
+    "unitario": 40.39,
+    "fuente": "packing_list_exacto",
+    "contenedor": "CMAU4512876",
+    "validado": false,
+    "revisado_por": null,
+    "costo_panel": 126.89
+   },
+   "comision_pct": 0.195,
+   "comision": 40.76,
+   "envio": 36,
+   "iva": 28.83,
+   "utilidad": 63.03,
+   "margen_pct": 0.3016,
+   "visitas_30d": 41,
+   "unidades_30d": 6,
+   "conversion_30d": 0.1463,
+   "ingreso_30d": 1254,
+   "competencia": {
+    "n": 13,
+    "promedio": 284.51,
+    "mediana": 296.21,
+    "minimo": 224.12,
+    "maximo": 366.67,
+    "fuente": "serp",
+    "capturado_en": "2026-09-08T01:15:00Z",
+    "sugerido_ml": null,
+    "lista": [
+     {
+      "titulo": null,
+      "precio": 224.12,
+      "vendedor": "vendedor_6228",
+      "vendidos": 963
+     },
+     {
+      "titulo": null,
+      "precio": 245.61,
+      "vendedor": "vendedor_6691",
+      "vendidos": 1957
+     },
+     {
+      "titulo": null,
+      "precio": 248.85,
+      "vendedor": "vendedor_7042",
+      "vendidos": 4255
+     },
+     {
+      "titulo": null,
+      "precio": 274.45,
+      "vendedor": "vendedor_9048",
+      "vendidos": 220
+     },
+     {
+      "titulo": null,
+      "precio": 296.21,
+      "vendedor": "vendedor_1585",
+      "vendidos": 3962
+     },
+     {
+      "titulo": null,
+      "precio": 297.84,
+      "vendedor": "vendedor_7167",
+      "vendidos": 599
+     },
+     {
+      "titulo": null,
+      "precio": 322.31,
+      "vendedor": "vendedor_5153",
+      "vendidos": 533
+     },
+     {
+      "titulo": null,
+      "precio": 366.67,
+      "vendedor": "vendedor_4357",
+      "vendidos": 3456
+     }
+    ]
+   },
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T11:51:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:BEKURA:MLM2704827317",
+   "canal": "mercado_libre",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2704827317",
+   "sku": "TEC-1847-MUL",
+   "titulo": "Audífonos inalámbricos Bluetooth 5.3 con estuche de carga",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2704827317",
+   "thumbnail": null,
+   "categoria_id": "MLM1276",
+   "estado": "pausada",
+   "situacion": "paused",
+   "sub_status": [
+    "out_of_stock"
+   ],
+   "logistica": "fulfillment",
+   "es_full": true,
+   "precio_cobrado": 79,
+   "precio_lista": 79,
+   "promo": null,
+   "stock_full": 0,
+   "stock_propio": 0,
+   "stock_odoo": null,
+   "costo": {
+    "unitario": 9.59,
+    "fuente": "prorrateo_kubera",
+    "contenedor": "OOLU8820341",
+    "validado": true,
+    "revisado_por": "Andrea",
+    "costo_panel": 52.73
+   },
+   "comision_pct": 0.195,
+   "comision": 15.41,
+   "envio": 34,
+   "iva": 10.9,
+   "utilidad": 9.11,
+   "margen_pct": 0.1153,
+   "visitas_30d": 168,
+   "unidades_30d": 1,
+   "conversion_30d": 0.006,
+   "ingreso_30d": 79,
+   "competencia": null,
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T11:17:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2705278115",
+   "canal": "mercado_libre",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2705278115",
+   "sku": "TEC-1847-MUL",
+   "titulo": "Audífonos inalámbricos Bluetooth 5.3 con estuche de carga",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2705278115",
+   "thumbnail": null,
+   "categoria_id": "MLM1276",
+   "estado": "en_revision",
+   "situacion": "under_review",
+   "sub_status": [],
+   "logistica": "xd_drop_off",
+   "es_full": false,
+   "precio_cobrado": 79,
+   "precio_lista": 79,
+   "promo": null,
+   "stock_full": null,
+   "stock_propio": 40,
+   "stock_odoo": null,
+   "costo": {
+    "unitario": 9.59,
+    "fuente": "prorrateo_kubera",
+    "contenedor": "OOLU8820341",
+    "validado": true,
+    "revisado_por": "Brandon",
+    "costo_panel": 21.16
+   },
+   "comision_pct": 0.195,
+   "comision": 15.41,
+   "envio": 34,
+   "iva": 10.9,
+   "utilidad": 9.11,
+   "margen_pct": 0.1153,
+   "visitas_30d": 174,
+   "unidades_30d": 0,
+   "conversion_30d": 0,
+   "ingreso_30d": 0,
+   "competencia": {
+    "n": 16,
+    "promedio": 104.57,
+    "mediana": 112.58,
+    "minimo": 66.18,
+    "maximo": 145.57,
+    "fuente": "bestsellers",
+    "capturado_en": "2026-09-28T02:15:00Z",
+    "sugerido_ml": null,
+    "lista": [
+     {
+      "titulo": null,
+      "precio": 66.18,
+      "vendedor": "vendedor_7733",
+      "vendidos": 4924
+     },
+     {
+      "titulo": null,
+      "precio": 86.66,
+      "vendedor": "vendedor_1961",
+      "vendidos": 4821
+     },
+     {
+      "titulo": null,
+      "precio": 88.25,
+      "vendedor": "vendedor_3538",
+      "vendidos": 2890
+     },
+     {
+      "titulo": null,
+      "precio": 111.96,
+      "vendedor": "vendedor_8298",
+      "vendidos": 160
+     },
+     {
+      "titulo": null,
+      "precio": 112.58,
+      "vendedor": "vendedor_3965",
+      "vendidos": 2010
+     },
+     {
+      "titulo": null,
+      "precio": 112.59,
+      "vendedor": "vendedor_4155",
+      "vendidos": 2881
+     },
+     {
+      "titulo": null,
+      "precio": 112.79,
+      "vendedor": "vendedor_3714",
+      "vendidos": 2457
+     },
+     {
+      "titulo": null,
+      "precio": 145.57,
+      "vendedor": "vendedor_4171",
+      "vendidos": 4837
+     }
+    ]
+   },
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T11:59:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2705841210",
+   "canal": "mercado_libre",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2705841210",
+   "sku": "TEC-1367-ROS",
+   "titulo": "Soporte para laptop de aluminio ajustable plegable",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2705841210",
+   "thumbnail": null,
+   "categoria_id": "MLM1648",
+   "estado": "activa",
+   "situacion": "active",
+   "sub_status": [],
+   "logistica": "fulfillment",
+   "es_full": true,
+   "precio_cobrado": 149,
+   "precio_lista": 149,
+   "promo": null,
+   "stock_full": 206,
+   "stock_propio": 0,
+   "stock_odoo": null,
+   "costo": {
+    "unitario": 32.25,
+    "fuente": "tarifa_7500",
+    "contenedor": null,
+    "validado": true,
+    "revisado_por": "Thalia",
+    "costo_panel": 138.29
+   },
+   "comision_pct": 0.195,
+   "comision": 29.06,
+   "envio": 40,
+   "iva": 20.55,
+   "utilidad": 27.14,
+   "margen_pct": 0.1822,
+   "visitas_30d": 3985,
+   "unidades_30d": 273,
+   "conversion_30d": 0.0685,
+   "ingreso_30d": 40677,
+   "competencia": {
+    "n": 19,
+    "promedio": 197.94,
+    "mediana": 199.17,
+    "minimo": 151.52,
+    "maximo": 239.9,
+    "fuente": "serp",
+    "capturado_en": "2026-09-11T04:15:00Z",
+    "sugerido_ml": 181.41,
+    "lista": [
+     {
+      "titulo": null,
+      "precio": 151.52,
+      "vendedor": "vendedor_2518",
+      "vendidos": 3172
+     },
+     {
+      "titulo": null,
+      "precio": 155.29,
+      "vendedor": "vendedor_3214",
+      "vendidos": 4418
+     },
+     {
+      "titulo": null,
+      "precio": 179.6,
+      "vendedor": "vendedor_3309",
+      "vendidos": 141
+     },
+     {
+      "titulo": null,
+      "precio": 184.91,
+      "vendedor": "vendedor_1311",
+      "vendidos": 3436
+     },
+     {
+      "titulo": null,
+      "precio": 199.17,
+      "vendedor": "vendedor_8285",
+      "vendidos": 2969
+     },
+     {
+      "titulo": null,
+      "precio": 233.51,
+      "vendedor": "vendedor_3808",
+      "vendidos": 4883
+     },
+     {
+      "titulo": null,
+      "precio": 239.59,
+      "vendedor": "vendedor_8081",
+      "vendidos": 1636
+     },
+     {
+      "titulo": null,
+      "precio": 239.9,
+      "vendedor": "vendedor_7229",
+      "vendidos": 4576
+     }
+    ]
+   },
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T10:11:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:BEKURA:MLM2705997340",
+   "canal": "mercado_libre",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2705997340",
+   "sku": "EST-0595-GRS",
+   "titulo": "Repisa flotante de madera 60 cm juego de 3",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2705997340",
+   "thumbnail": null,
+   "categoria_id": "MLM1644",
+   "estado": "pausada",
+   "situacion": "paused",
+   "sub_status": [],
+   "logistica": "xd_drop_off",
+   "es_full": false,
+   "precio_cobrado": 549,
+   "precio_lista": 549,
+   "promo": null,
+   "stock_full": null,
+   "stock_propio": 6,
+   "stock_odoo": 541,
+   "costo": {
+    "unitario": null,
+    "fuente": "sin_costo",
+    "contenedor": null,
+    "validado": false,
+    "revisado_por": null,
+    "costo_panel": null
+   },
+   "comision_pct": 0.16,
+   "comision": 87.84,
+   "envio": 153,
+   "iva": 75.72,
+   "utilidad": null,
+   "margen_pct": null,
+   "visitas_30d": 163,
+   "unidades_30d": 6,
+   "conversion_30d": 0.0368,
+   "ingreso_30d": 3294,
+   "competencia": null,
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T10:54:00Z",
+   "avisos": [
+    "sin_costo"
+   ],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2706354461",
+   "canal": "mercado_libre",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2706354461",
+   "sku": "ACC-0547-PLA",
+   "titulo": "Mochila antirrobo con puerto USB impermeable",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2706354461",
+   "thumbnail": null,
+   "categoria_id": "MLM1227",
+   "estado": "activa",
+   "situacion": "active",
+   "sub_status": [],
+   "logistica": "fulfillment",
+   "es_full": true,
+   "precio_cobrado": 199,
+   "precio_lista": 299,
+   "promo": {
+    "tipo": "deal",
+    "fin": "2026-09-30T05:59:59Z"
+   },
+   "stock_full": 80,
+   "stock_propio": 0,
+   "stock_odoo": 860,
+   "costo": {
+    "unitario": 38.84,
+    "fuente": "prorrateo_kubera",
+    "contenedor": "TGHU6634102",
+    "validado": true,
+    "revisado_por": null,
+    "costo_panel": 140.2
+   },
+   "comision_pct": 0.195,
+   "comision": 38.81,
+   "envio": 39,
+   "iva": 27.45,
+   "utilidad": 54.91,
+   "margen_pct": 0.2759,
+   "visitas_30d": 7063,
+   "unidades_30d": 379,
+   "conversion_30d": 0.0537,
+   "ingreso_30d": 75421,
+   "competencia": null,
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T10:44:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:BEKURA:MLM2707138723",
+   "canal": "mercado_libre",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2707138723",
+   "sku": "COC-0961-CAF",
+   "titulo": "Termo de acero inoxidable 1 L doble pared",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2707138723",
+   "thumbnail": null,
+   "categoria_id": "MLM1574",
+   "estado": "activa",
+   "situacion": "active",
+   "sub_status": [],
+   "logistica": "fulfillment",
+   "es_full": true,
+   "precio_cobrado": 189,
+   "precio_lista": 189,
+   "promo": null,
+   "stock_full": 205,
+   "stock_propio": 0,
+   "stock_odoo": 151,
+   "costo": {
+    "unitario": 28.5,
+    "fuente": "tarifa_7500",
+    "contenedor": null,
+    "validado": false,
+    "revisado_por": null,
+    "costo_panel": 81.69
+   },
+   "comision_pct": 0.195,
+   "comision": 36.86,
+   "envio": 36,
+   "iva": 26.07,
+   "utilidad": 61.58,
+   "margen_pct": 0.3258,
+   "visitas_30d": 3020,
+   "unidades_30d": 80,
+   "conversion_30d": 0.0265,
+   "ingreso_30d": 15120,
+   "competencia": {
+    "n": 17,
+    "promedio": 170.17,
+    "mediana": 160.97,
+    "minimo": 124.47,
+    "maximo": 241.81,
+    "fuente": "serp",
+    "capturado_en": "2026-09-09T03:15:00Z",
+    "sugerido_ml": 167.17,
+    "lista": [
+     {
+      "titulo": null,
+      "precio": 124.47,
+      "vendedor": "vendedor_7662",
+      "vendidos": 1242
+     },
+     {
+      "titulo": null,
+      "precio": 142.16,
+      "vendedor": "vendedor_7496",
+      "vendidos": 4243
+     },
+     {
+      "titulo": null,
+      "precio": 143.12,
+      "vendedor": "vendedor_7741",
+      "vendidos": 3796
+     },
+     {
+      "titulo": null,
+      "precio": 153.15,
+      "vendedor": "vendedor_6322",
+      "vendidos": 370
+     },
+     {
+      "titulo": null,
+      "precio": 160.97,
+      "vendedor": "vendedor_7480",
+      "vendidos": 3377
+     },
+     {
+      "titulo": null,
+      "precio": 176.89,
+      "vendedor": "vendedor_3301",
+      "vendidos": 2914
+     },
+     {
+      "titulo": null,
+      "precio": 218.77,
+      "vendedor": "vendedor_4948",
+      "vendidos": 1939
+     },
+     {
+      "titulo": null,
+      "precio": 241.81,
+      "vendedor": "vendedor_1342",
+      "vendidos": 592
+     }
+    ]
+   },
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T10:47:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2707620248",
+   "canal": "mercado_libre",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2707620248",
+   "sku": "COC-0961-CAF",
+   "titulo": "Termo de acero inoxidable 1 L doble pared",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2707620248",
+   "thumbnail": null,
+   "categoria_id": "MLM1574",
+   "estado": "pausada",
+   "situacion": "paused",
+   "sub_status": [
+    "out_of_stock"
+   ],
+   "logistica": "fulfillment",
+   "es_full": true,
+   "precio_cobrado": 189,
+   "precio_lista": 189,
+   "promo": null,
+   "stock_full": 0,
+   "stock_propio": 0,
+   "stock_odoo": null,
+   "costo": {
+    "unitario": 28.5,
+    "fuente": "tarifa_7500",
+    "contenedor": null,
+    "validado": true,
+    "revisado_por": null,
+    "costo_panel": 135.85
+   },
+   "comision_pct": 0.195,
+   "comision": 36.86,
+   "envio": 36,
+   "iva": 26.07,
+   "utilidad": 61.58,
+   "margen_pct": 0.3258,
+   "visitas_30d": 190,
+   "unidades_30d": 5,
+   "conversion_30d": 0.0263,
+   "ingreso_30d": 945,
+   "competencia": {
+    "n": 8,
+    "promedio": 216.41,
+    "mediana": 208.85,
+    "minimo": 144.13,
+    "maximo": 315.72,
+    "fuente": "serp",
+    "capturado_en": "2026-09-27T05:15:00Z",
+    "sugerido_ml": 195.91,
+    "lista": [
+     {
+      "titulo": null,
+      "precio": 144.13,
+      "vendedor": "vendedor_5466",
+      "vendidos": 669
+     },
+     {
+      "titulo": null,
+      "precio": 194.35,
+      "vendedor": "vendedor_3792",
+      "vendidos": 3426
+     },
+     {
+      "titulo": null,
+      "precio": 195.89,
+      "vendedor": "vendedor_5935",
+      "vendidos": 1346
+     },
+     {
+      "titulo": null,
+      "precio": 198.17,
+      "vendedor": "vendedor_4871",
+      "vendidos": 2913
+     },
+     {
+      "titulo": null,
+      "precio": 208.85,
+      "vendedor": "vendedor_1318",
+      "vendidos": 4899
+     },
+     {
+      "titulo": null,
+      "precio": 227.16,
+      "vendedor": "vendedor_9215",
+      "vendidos": 911
+     },
+     {
+      "titulo": null,
+      "precio": 247.03,
+      "vendedor": "vendedor_7764",
+      "vendidos": 2413
+     },
+     {
+      "titulo": null,
+      "precio": 315.72,
+      "vendedor": "vendedor_5263",
+      "vendidos": 500
+     }
+    ]
+   },
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T11:35:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2707717810",
+   "canal": "mercado_libre",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2707717810",
+   "sku": "ORG-1701-AZU",
+   "titulo": "Tapete antiderrapante para baño memory foam",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2707717810",
+   "thumbnail": null,
+   "categoria_id": "MLM1631",
+   "estado": "pausada",
+   "situacion": "paused",
+   "sub_status": [
+    "out_of_stock"
+   ],
+   "logistica": "fulfillment",
+   "es_full": true,
+   "precio_cobrado": 229,
+   "precio_lista": 229,
+   "promo": null,
+   "stock_full": 0,
+   "stock_propio": 0,
+   "stock_odoo": 148,
+   "costo": {
+    "unitario": 39.19,
+    "fuente": "packing_list_exacto",
+    "contenedor": "OOLU8820341",
+    "validado": false,
+    "revisado_por": "Brandon",
+    "costo_panel": 73.74
+   },
+   "comision_pct": 0.195,
+   "comision": 44.66,
+   "envio": 38,
+   "iva": 31.59,
+   "utilidad": 75.57,
+   "margen_pct": 0.33,
+   "visitas_30d": 283,
+   "unidades_30d": 0,
+   "conversion_30d": 0,
+   "ingreso_30d": 0,
+   "competencia": {
+    "n": 12,
+    "promedio": 191.25,
+    "mediana": 192.72,
+    "minimo": 157.95,
+    "maximo": 224.11,
+    "fuente": "serp",
+    "capturado_en": "2026-09-08T01:15:00Z",
+    "sugerido_ml": 180.73,
+    "lista": [
+     {
+      "titulo": null,
+      "precio": 157.95,
+      "vendedor": "vendedor_5584",
+      "vendidos": 205
+     },
+     {
+      "titulo": null,
+      "precio": 168.32,
+      "vendedor": "vendedor_3779",
+      "vendidos": 3706
+     },
+     {
+      "titulo": null,
+      "precio": 179.17,
+      "vendedor": "vendedor_5411",
+      "vendidos": 2631
+     },
+     {
+      "titulo": null,
+      "precio": 190.13,
+      "vendedor": "vendedor_4886",
+      "vendidos": 496
+     },
+     {
+      "titulo": null,
+      "precio": 192.72,
+      "vendedor": "vendedor_4908",
+      "vendidos": 1148
+     },
+     {
+      "titulo": null,
+      "precio": 194.91,
+      "vendedor": "vendedor_9323",
+      "vendidos": 1732
+     },
+     {
+      "titulo": null,
+      "precio": 222.68,
+      "vendedor": "vendedor_7390",
+      "vendidos": 2445
+     },
+     {
+      "titulo": null,
+      "precio": 224.11,
+      "vendedor": "vendedor_4131",
+      "vendidos": 1687
+     }
+    ]
+   },
+   "tags_calidad": [
+    "poor_quality_thumbnail"
+   ],
+   "frescura_at": "2026-09-28T10:13:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:BEKURA:MLM2707932961",
+   "canal": "mercado_libre",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2707932961",
+   "sku": "MAN-1748-PLA",
+   "titulo": "Cortina blackout térmica 2 paneles con argollas",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2707932961",
+   "thumbnail": null,
+   "categoria_id": "MLM1631",
+   "estado": "activa",
+   "situacion": "active",
+   "sub_status": [],
+   "logistica": "fulfillment",
+   "es_full": true,
+   "precio_cobrado": 639,
+   "precio_lista": 639,
+   "promo": null,
+   "stock_full": 104,
+   "stock_propio": 0,
+   "stock_odoo": 849,
+   "costo": {
+    "unitario": 113.64,
+    "fuente": "prorrateo_kubera",
+    "contenedor": "PCIU9516451",
+    "validado": false,
+    "revisado_por": "Andrea",
+    "costo_panel": 641.37
+   },
+   "comision_pct": 0.16,
+   "comision": 102.24,
+   "envio": 114,
+   "iva": 88.14,
+   "utilidad": 220.98,
+   "margen_pct": 0.3458,
+   "visitas_30d": 715,
+   "unidades_30d": 57,
+   "conversion_30d": 0.0797,
+   "ingreso_30d": 36423,
+   "competencia": {
+    "n": 9,
+    "promedio": 604.91,
+    "mediana": 606.47,
+    "minimo": 449.27,
+    "maximo": 759.75,
+    "fuente": "bestsellers",
+    "capturado_en": "2026-09-25T02:15:00Z",
+    "sugerido_ml": null,
+    "lista": [
+     {
+      "titulo": null,
+      "precio": 449.27,
+      "vendedor": "vendedor_5921",
+      "vendidos": 4124
+     },
+     {
+      "titulo": null,
+      "precio": 500.21,
+      "vendedor": "vendedor_4814",
+      "vendidos": 4146
+     },
+     {
+      "titulo": null,
+      "precio": 597.72,
+      "vendedor": "vendedor_3264",
+      "vendidos": 777
+     },
+     {
+      "titulo": null,
+      "precio": 603.57,
+      "vendedor": "vendedor_2149",
+      "vendidos": 2680
+     },
+     {
+      "titulo": null,
+      "precio": 606.47,
+      "vendedor": "vendedor_2819",
+      "vendidos": 3498
+     },
+     {
+      "titulo": null,
+      "precio": 614.03,
+      "vendedor": "vendedor_3277",
+      "vendidos": 2860
+     },
+     {
+      "titulo": null,
+      "precio": 708.25,
+      "vendedor": "vendedor_8103",
+      "vendidos": 3590
+     },
+     {
+      "titulo": null,
+      "precio": 759.75,
+      "vendedor": "vendedor_4658",
+      "vendidos": 1295
+     }
+    ]
+   },
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T12:47:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2708080946",
+   "canal": "mercado_libre",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2708080946",
+   "sku": "COC-0111-BLN",
+   "titulo": "Báscula digital de cocina 5 kg acero",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2708080946",
+   "thumbnail": null,
+   "categoria_id": "MLM1574",
+   "estado": "pausada",
+   "situacion": "paused",
+   "sub_status": [],
+   "logistica": "xd_drop_off",
+   "es_full": false,
+   "precio_cobrado": 139,
+   "precio_lista": 139,
+   "promo": null,
+   "stock_full": null,
+   "stock_propio": 76,
+   "stock_odoo": 56,
+   "costo": {
+    "unitario": 22.5,
+    "fuente": "tarifa_7500",
+    "contenedor": null,
+    "validado": true,
+    "revisado_por": null,
+    "costo_panel": 54.83
+   },
+   "comision_pct": 0.195,
+   "comision": 27.11,
+   "envio": 35,
+   "iva": 19.17,
+   "utilidad": 35.22,
+   "margen_pct": 0.2534,
+   "visitas_30d": 83,
+   "unidades_30d": 1,
+   "conversion_30d": 0.012,
+   "ingreso_30d": 139,
+   "competencia": {
+    "n": 1,
+    "promedio": 105.12,
+    "mediana": 105.12,
+    "minimo": 105.12,
+    "maximo": 105.12,
+    "fuente": "sugerido_ml",
+    "capturado_en": "2026-09-18T08:15:00Z",
+    "sugerido_ml": null,
+    "lista": []
+   },
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T11:40:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:BEKURA:MLM2708872320",
+   "canal": "mercado_libre",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2708872320",
+   "sku": "ACC-1402-CAF",
+   "titulo": "Cepillo alisador eléctrico cerámica iónica",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2708872320",
+   "thumbnail": null,
+   "categoria_id": "MLM1246",
+   "estado": "pausada",
+   "situacion": "paused",
+   "sub_status": [
+    "out_of_stock"
+   ],
+   "logistica": "fulfillment",
+   "es_full": true,
+   "precio_cobrado": 169,
+   "precio_lista": 169,
+   "promo": null,
+   "stock_full": 0,
+   "stock_propio": 0,
+   "stock_odoo": 66,
+   "costo": {
+    "unitario": 25.61,
+    "fuente": "packing_list_exacto",
+    "contenedor": "TGHU6634102",
+    "validado": true,
+    "revisado_por": "Cinthya",
+    "costo_panel": 67.08
+   },
+   "comision_pct": 0.195,
+   "comision": 32.96,
+   "envio": 37,
+   "iva": 23.31,
+   "utilidad": 50.12,
+   "margen_pct": 0.2966,
+   "visitas_30d": 358,
+   "unidades_30d": 1,
+   "conversion_30d": 0.0028,
+   "ingreso_30d": 169,
+   "competencia": null,
+   "tags_calidad": [
+    "poor_quality_thumbnail"
+   ],
+   "frescura_at": "2026-09-28T10:37:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2709580395",
+   "canal": "mercado_libre",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2709580395",
+   "sku": "ACC-1402-CAF",
+   "titulo": "Cepillo alisador eléctrico cerámica iónica",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2709580395",
+   "thumbnail": null,
+   "categoria_id": "MLM1246",
+   "estado": "en_revision",
+   "situacion": "under_review",
+   "sub_status": [],
+   "logistica": "xd_drop_off",
+   "es_full": false,
+   "precio_cobrado": 169,
+   "precio_lista": 169,
+   "promo": null,
+   "stock_full": null,
+   "stock_propio": 5,
+   "stock_odoo": null,
+   "costo": {
+    "unitario": 25.61,
+    "fuente": "packing_list_exacto",
+    "contenedor": "TGHU6634102",
+    "validado": false,
+    "revisado_por": null,
+    "costo_panel": 150.81
+   },
+   "comision_pct": 0.195,
+   "comision": 32.96,
+   "envio": 37,
+   "iva": 23.31,
+   "utilidad": 50.12,
+   "margen_pct": 0.2966,
+   "visitas_30d": 65,
+   "unidades_30d": 0,
+   "conversion_30d": 0,
+   "ingreso_30d": 0,
+   "competencia": {
+    "n": 18,
+    "promedio": 146.32,
+    "mediana": 136.33,
+    "minimo": 100.17,
+    "maximo": 214.08,
+    "fuente": "bestsellers",
+    "capturado_en": "2026-09-22T08:15:00Z",
+    "sugerido_ml": null,
+    "lista": [
+     {
+      "titulo": null,
+      "precio": 100.17,
+      "vendedor": "vendedor_2856",
+      "vendidos": 4352
+     },
+     {
+      "titulo": null,
+      "precio": 121.85,
+      "vendedor": "vendedor_5039",
+      "vendidos": 256
+     },
+     {
+      "titulo": null,
+      "precio": 125.86,
+      "vendedor": "vendedor_6383",
+      "vendidos": 1822
+     },
+     {
+      "titulo": null,
+      "precio": 128.82,
+      "vendedor": "vendedor_5612",
+      "vendidos": 902
+     },
+     {
+      "titulo": null,
+      "precio": 136.33,
+      "vendedor": "vendedor_1414",
+      "vendidos": 2450
+     },
+     {
+      "titulo": null,
+      "precio": 154.12,
+      "vendedor": "vendedor_1938",
+      "vendidos": 4575
+     },
+     {
+      "titulo": null,
+      "precio": 189.29,
+      "vendedor": "vendedor_9876",
+      "vendidos": 2008
+     },
+     {
+      "titulo": null,
+      "precio": 214.08,
+      "vendedor": "vendedor_5714",
+      "vendidos": 3520
+     }
+    ]
+   },
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T11:38:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2709677160",
+   "canal": "mercado_libre",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2709677160",
+   "sku": "ACC-1777-GRS",
+   "titulo": "Faros de niebla LED universales 2 piezas",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2709677160",
+   "thumbnail": null,
+   "categoria_id": "MLM1747",
+   "estado": "activa",
+   "situacion": "active",
+   "sub_status": [],
+   "logistica": "fulfillment",
+   "es_full": true,
+   "precio_cobrado": 169,
+   "precio_lista": 169,
+   "promo": null,
+   "stock_full": 168,
+   "stock_propio": 0,
+   "stock_odoo": null,
+   "costo": {
+    "unitario": null,
+    "fuente": "sin_costo",
+    "contenedor": null,
+    "validado": false,
+    "revisado_por": null,
+    "costo_panel": null
+   },
+   "comision_pct": 0.195,
+   "comision": 32.96,
+   "envio": 42,
+   "iva": 23.31,
+   "utilidad": null,
+   "margen_pct": null,
+   "visitas_30d": 7093,
+   "unidades_30d": 523,
+   "conversion_30d": 0.0737,
+   "ingreso_30d": 88387,
+   "competencia": {
+    "n": 1,
+    "promedio": 200.14,
+    "mediana": 200.14,
+    "minimo": 200.14,
+    "maximo": 200.14,
+    "fuente": "sugerido_ml",
+    "capturado_en": "2026-09-10T07:15:00Z",
+    "sugerido_ml": null,
+    "lista": []
+   },
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T12:28:00Z",
+   "avisos": [
+    "sin_costo"
+   ],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:BEKURA:MLM2709824143",
+   "canal": "mercado_libre",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2709824143",
+   "sku": "TEC-0666-AZU",
+   "titulo": "Mini proyector portátil 1080p WiFi",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2709824143",
+   "thumbnail": null,
+   "categoria_id": "MLM1000",
+   "estado": "pausada",
+   "situacion": "paused",
+   "sub_status": [],
+   "logistica": "xd_drop_off",
+   "es_full": false,
+   "precio_cobrado": 299,
+   "precio_lista": 299,
+   "promo": null,
+   "stock_full": null,
+   "stock_propio": 79,
+   "stock_odoo": null,
+   "costo": {
+    "unitario": 75.75,
+    "fuente": "tarifa_7500",
+    "contenedor": null,
+    "validado": true,
+    "revisado_por": null,
+    "costo_panel": 289.16
+   },
+   "comision_pct": 0.18,
+   "comision": 53.82,
+   "envio": 108,
+   "iva": 41.24,
+   "utilidad": 20.19,
+   "margen_pct": 0.0675,
+   "visitas_30d": 57,
+   "unidades_30d": 0,
+   "conversion_30d": 0,
+   "ingreso_30d": 0,
+   "competencia": {
+    "n": 15,
+    "promedio": 295.61,
+    "mediana": 311.74,
+    "minimo": 187.47,
+    "maximo": 411.67,
+    "fuente": "serp",
+    "capturado_en": "2026-09-26T02:15:00Z",
+    "sugerido_ml": null,
+    "lista": [
+     {
+      "titulo": null,
+      "precio": 187.47,
+      "vendedor": "vendedor_1251",
+      "vendidos": 2474
+     },
+     {
+      "titulo": null,
+      "precio": 245.18,
+      "vendedor": "vendedor_9052",
+      "vendidos": 1094
+     },
+     {
+      "titulo": null,
+      "precio": 246.66,
+      "vendedor": "vendedor_5238",
+      "vendidos": 800
+     },
+     {
+      "titulo": null,
+      "precio": 308.22,
+      "vendedor": "vendedor_7489",
+      "vendidos": 4014
+     },
+     {
+      "titulo": null,
+      "precio": 311.74,
+      "vendedor": "vendedor_9138",
+      "vendidos": 131
+     },
+     {
+      "titulo": null,
+      "precio": 316.34,
+      "vendedor": "vendedor_6558",
+      "vendidos": 965
+     },
+     {
+      "titulo": null,
+      "precio": 337.6,
+      "vendedor": "vendedor_7835",
+      "vendidos": 4479
+     },
+     {
+      "titulo": null,
+      "precio": 411.67,
+      "vendedor": "vendedor_4974",
+      "vendidos": 1374
+     }
+    ]
+   },
+   "tags_calidad": [
+    "poor_quality_thumbnail"
+   ],
+   "frescura_at": "2026-09-28T12:11:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2709883867",
+   "canal": "mercado_libre",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2709883867",
+   "sku": "ORG-0318-GRS",
+   "titulo": "Organizador de zapatos 10 niveles metálico",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2709883867",
+   "thumbnail": null,
+   "categoria_id": "MLM1631",
+   "estado": "activa",
+   "situacion": "active",
+   "sub_status": [],
+   "logistica": "fulfillment",
+   "es_full": true,
+   "precio_cobrado": 419,
+   "precio_lista": 419,
+   "promo": null,
+   "stock_full": 10,
+   "stock_propio": 0,
+   "stock_odoo": 757,
+   "costo": {
+    "unitario": 84.28,
+    "fuente": "packing_list_exacto",
+    "contenedor": "PCIU9516451",
+    "validado": false,
+    "revisado_por": null,
+    "costo_panel": 423.01
+   },
+   "comision_pct": 0.18,
+   "comision": 75.42,
+   "envio": 134,
+   "iva": 57.79,
+   "utilidad": 67.51,
+   "margen_pct": 0.1611,
+   "visitas_30d": 2709,
+   "unidades_30d": 234,
+   "conversion_30d": 0.0864,
+   "ingreso_30d": 98046,
+   "competencia": null,
+   "tags_calidad": [
+    "poor_quality_thumbnail"
+   ],
+   "frescura_at": "2026-09-28T12:36:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:BEKURA:MLM2710370390",
+   "canal": "mercado_libre",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2710370390",
+   "sku": "COC-1310-AZU",
+   "titulo": "Juego de cuchillos 6 piezas con base de madera",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2710370390",
+   "thumbnail": null,
+   "categoria_id": "MLM1574",
+   "estado": "activa",
+   "situacion": "active",
+   "sub_status": [],
+   "logistica": "fulfillment",
+   "es_full": true,
+   "precio_cobrado": 299,
+   "precio_lista": 299,
+   "promo": null,
+   "stock_full": 247,
+   "stock_propio": 0,
+   "stock_odoo": 755,
+   "costo": {
+    "unitario": 66.67,
+    "fuente": "prorrateo_kubera",
+    "contenedor": "MSKU7781230",
+    "validado": true,
+    "revisado_por": null,
+    "costo_panel": 193.12
+   },
+   "comision_pct": 0.18,
+   "comision": 53.82,
+   "envio": 111,
+   "iva": 41.24,
+   "utilidad": 26.27,
+   "margen_pct": 0.0879,
+   "visitas_30d": 5768,
+   "unidades_30d": 491,
+   "conversion_30d": 0.0851,
+   "ingreso_30d": 146809,
+   "competencia": null,
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T11:47:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2710692885",
+   "canal": "mercado_libre",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2710692885",
+   "sku": "COC-1310-AZU",
+   "titulo": "Juego de cuchillos 6 piezas con base de madera",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2710692885",
+   "thumbnail": null,
+   "categoria_id": "MLM1574",
+   "estado": "pausada",
+   "situacion": "paused",
+   "sub_status": [
+    "out_of_stock"
+   ],
+   "logistica": "fulfillment",
+   "es_full": true,
+   "precio_cobrado": 299,
+   "precio_lista": 299,
+   "promo": null,
+   "stock_full": 0,
+   "stock_propio": 0,
+   "stock_odoo": 266,
+   "costo": {
+    "unitario": 66.67,
+    "fuente": "prorrateo_kubera",
+    "contenedor": "MSKU7781230",
+    "validado": false,
+    "revisado_por": "Cinthya",
+    "costo_panel": 172.44
+   },
+   "comision_pct": 0.18,
+   "comision": 53.82,
+   "envio": 111,
+   "iva": 41.24,
+   "utilidad": 26.27,
+   "margen_pct": 0.0879,
+   "visitas_30d": 108,
+   "unidades_30d": 3,
+   "conversion_30d": 0.0278,
+   "ingreso_30d": 897,
+   "competencia": null,
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T11:55:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2710752059",
+   "canal": "mercado_libre",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2710752059",
+   "sku": "COC-1203-GRS",
+   "titulo": "Lonchera térmica con 3 contenedores de vidrio",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2710752059",
+   "thumbnail": null,
+   "categoria_id": "MLM1574",
+   "estado": "pausada",
+   "situacion": "paused",
+   "sub_status": [
+    "out_of_stock"
+   ],
+   "logistica": "fulfillment",
+   "es_full": true,
+   "precio_cobrado": 159,
+   "precio_lista": 159,
+   "promo": null,
+   "stock_full": 0,
+   "stock_propio": 0,
+   "stock_odoo": 602,
+   "costo": {
+    "unitario": 40.5,
+    "fuente": "tarifa_7500",
+    "contenedor": null,
+    "validado": true,
+    "revisado_por": "Andrea",
+    "costo_panel": 205.14
+   },
+   "comision_pct": 0.195,
+   "comision": 31.01,
+   "envio": 44,
+   "iva": 21.93,
+   "utilidad": 21.56,
+   "margen_pct": 0.1356,
+   "visitas_30d": 351,
+   "unidades_30d": 4,
+   "conversion_30d": 0.0114,
+   "ingreso_30d": 636,
+   "competencia": null,
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T12:25:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:BEKURA:MLM2711271810",
+   "canal": "mercado_libre",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2711271810",
+   "sku": "TEC-1140-GRS",
+   "titulo": "Humidificador ultrasónico 300 ml con luz",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2711271810",
+   "thumbnail": null,
+   "categoria_id": "MLM1276",
+   "estado": "activa",
+   "situacion": "active",
+   "sub_status": [],
+   "logistica": "fulfillment",
+   "es_full": true,
+   "precio_cobrado": 129,
+   "precio_lista": 219,
+   "promo": {
+    "tipo": "custom",
+    "fin": "2026-11-01T05:59:59Z"
+   },
+   "stock_full": 197,
+   "stock_propio": 0,
+   "stock_odoo": 172,
+   "costo": {
+    "unitario": 25.86,
+    "fuente": "packing_list_exacto",
+    "contenedor": "CMAU4512876",
+    "validado": false,
+    "revisado_por": null,
+    "costo_panel": 147.77
+   },
+   "comision_pct": 0.195,
+   "comision": 25.16,
+   "envio": 35,
+   "iva": 17.79,
+   "utilidad": 25.19,
+   "margen_pct": 0.1953,
+   "visitas_30d": 6651,
+   "unidades_30d": 454,
+   "conversion_30d": 0.0683,
+   "ingreso_30d": 58566,
+   "competencia": {
+    "n": 16,
+    "promedio": 188.86,
+    "mediana": 190.92,
+    "minimo": 149.28,
+    "maximo": 231.02,
+    "fuente": "serp",
+    "capturado_en": "2026-09-19T07:15:00Z",
+    "sugerido_ml": null,
+    "lista": [
+     {
+      "titulo": null,
+      "precio": 149.28,
+      "vendedor": "vendedor_3295",
+      "vendidos": 331
+     },
+     {
+      "titulo": null,
+      "precio": 170.4,
+      "vendedor": "vendedor_3289",
+      "vendidos": 4291
+     },
+     {
+      "titulo": null,
+      "precio": 182.76,
+      "vendedor": "vendedor_8612",
+      "vendidos": 1751
+     },
+     {
+      "titulo": null,
+      "precio": 182.82,
+      "vendedor": "vendedor_1703",
+      "vendidos": 259
+     },
+     {
+      "titulo": null,
+      "precio": 190.92,
+      "vendedor": "vendedor_3744",
+      "vendidos": 4699
+     },
+     {
+      "titulo": null,
+      "precio": 195.11,
+      "vendedor": "vendedor_5943",
+      "vendidos": 687
+     },
+     {
+      "titulo": null,
+      "precio": 208.56,
+      "vendedor": "vendedor_5530",
+      "vendidos": 4274
+     },
+     {
+      "titulo": null,
+      "precio": 231.02,
+      "vendedor": "vendedor_1667",
+      "vendidos": 4993
+     }
+    ]
+   },
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T11:37:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2711417636",
+   "canal": "mercado_libre",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2711417636",
+   "sku": "TEC-0360-NEG",
+   "titulo": "Bocina Bluetooth resistente al agua IPX7",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2711417636",
+   "thumbnail": null,
+   "categoria_id": "MLM1000",
+   "estado": "pausada",
+   "situacion": "paused",
+   "sub_status": [],
+   "logistica": "xd_drop_off",
+   "es_full": false,
+   "precio_cobrado": 219,
+   "precio_lista": 219,
+   "promo": null,
+   "stock_full": null,
+   "stock_propio": 79,
+   "stock_odoo": null,
+   "costo": {
+    "unitario": 33.86,
+    "fuente": "prorrateo_kubera",
+    "contenedor": "OOLU8820341",
+    "validado": false,
+    "revisado_por": null,
+    "costo_panel": 172.53
+   },
+   "comision_pct": 0.195,
+   "comision": 42.71,
+   "envio": 37,
+   "iva": 30.21,
+   "utilidad": 75.23,
+   "margen_pct": 0.3435,
+   "visitas_30d": 237,
+   "unidades_30d": 3,
+   "conversion_30d": 0.0127,
+   "ingreso_30d": 657,
+   "competencia": {
+    "n": 6,
+    "promedio": 300.56,
+    "mediana": 333.64,
+    "minimo": 209.75,
+    "maximo": 415.38,
+    "fuente": "serp",
+    "capturado_en": "2026-09-28T09:15:00Z",
+    "sugerido_ml": 266.46,
+    "lista": [
+     {
+      "titulo": null,
+      "precio": 209.75,
+      "vendedor": "vendedor_1444",
+      "vendidos": 1271
+     },
+     {
+      "titulo": null,
+      "precio": 233.9,
+      "vendedor": "vendedor_3536",
+      "vendidos": 2552
+     },
+     {
+      "titulo": null,
+      "precio": 246.25,
+      "vendedor": "vendedor_9862",
+      "vendidos": 2796
+     },
+     {
+      "titulo": null,
+      "precio": 333.64,
+      "vendedor": "vendedor_8003",
+      "vendidos": 3337
+     },
+     {
+      "titulo": null,
+      "precio": 364.43,
+      "vendedor": "vendedor_2249",
+      "vendidos": 4226
+     },
+     {
+      "titulo": null,
+      "precio": 415.38,
+      "vendedor": "vendedor_4086",
+      "vendidos": 389
+     }
+    ]
+   },
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T10:38:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:BEKURA:MLM2711762333",
+   "canal": "mercado_libre",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2711762333",
+   "sku": "TEC-1588-PLA",
+   "titulo": "Reloj despertador digital con espejo LED",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2711762333",
+   "thumbnail": null,
+   "categoria_id": "MLM1276",
+   "estado": "pausada",
+   "situacion": "paused",
+   "sub_status": [
+    "out_of_stock"
+   ],
+   "logistica": "fulfillment",
+   "es_full": true,
+   "precio_cobrado": 189,
+   "precio_lista": 189,
+   "promo": null,
+   "stock_full": 0,
+   "stock_propio": 0,
+   "stock_odoo": 207,
+   "costo": {
+    "unitario": null,
+    "fuente": "sin_costo",
+    "contenedor": null,
+    "validado": false,
+    "revisado_por": null,
+    "costo_panel": null
+   },
+   "comision_pct": 0.195,
+   "comision": 36.86,
+   "envio": 36,
+   "iva": 26.07,
+   "utilidad": null,
+   "margen_pct": null,
+   "visitas_30d": 327,
+   "unidades_30d": 3,
+   "conversion_30d": 0.0092,
+   "ingreso_30d": 567,
+   "competencia": {
+    "n": 14,
+    "promedio": 213.44,
+    "mediana": 211.98,
+    "minimo": 170.69,
+    "maximo": 248.1,
+    "fuente": "serp",
+    "capturado_en": "2026-09-20T01:15:00Z",
+    "sugerido_ml": null,
+    "lista": [
+     {
+      "titulo": null,
+      "precio": 170.69,
+      "vendedor": "vendedor_7086",
+      "vendidos": 4344
+     },
+     {
+      "titulo": null,
+      "precio": 187.47,
+      "vendedor": "vendedor_6190",
+      "vendidos": 1992
+     },
+     {
+      "titulo": null,
+      "precio": 209.87,
+      "vendedor": "vendedor_4839",
+      "vendidos": 3878
+     },
+     {
+      "titulo": null,
+      "precio": 211.68,
+      "vendedor": "vendedor_3563",
+      "vendidos": 2326
+     },
+     {
+      "titulo": null,
+      "precio": 211.98,
+      "vendedor": "vendedor_3607",
+      "vendidos": 4091
+     },
+     {
+      "titulo": null,
+      "precio": 230.89,
+      "vendedor": "vendedor_1552",
+      "vendidos": 3775
+     },
+     {
+      "titulo": null,
+      "precio": 236.83,
+      "vendedor": "vendedor_8442",
+      "vendidos": 305
+     },
+     {
+      "titulo": null,
+      "precio": 248.1,
+      "vendedor": "vendedor_6356",
+      "vendidos": 4146
+     }
+    ]
+   },
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T12:33:00Z",
+   "avisos": [
+    "sin_costo"
+   ],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2711905402",
+   "canal": "mercado_libre",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2711905402",
+   "sku": "TEC-1588-PLA",
+   "titulo": "Reloj despertador digital con espejo LED",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2711905402",
+   "thumbnail": null,
+   "categoria_id": "MLM1276",
+   "estado": "en_revision",
+   "situacion": "under_review",
+   "sub_status": [],
+   "logistica": "xd_drop_off",
+   "es_full": false,
+   "precio_cobrado": 189,
+   "precio_lista": 189,
+   "promo": null,
+   "stock_full": null,
+   "stock_propio": 45,
+   "stock_odoo": null,
+   "costo": {
+    "unitario": null,
+    "fuente": "sin_costo",
+    "contenedor": null,
+    "validado": false,
+    "revisado_por": null,
+    "costo_panel": null
+   },
+   "comision_pct": 0.195,
+   "comision": 36.86,
+   "envio": 36,
+   "iva": 26.07,
+   "utilidad": null,
+   "margen_pct": null,
+   "visitas_30d": 1,
+   "unidades_30d": 0,
+   "conversion_30d": 0,
+   "ingreso_30d": 0,
+   "competencia": {
+    "n": 7,
+    "promedio": 205.08,
+    "mediana": 212.49,
+    "minimo": 163.73,
+    "maximo": 233.37,
+    "fuente": "serp",
+    "capturado_en": "2026-09-18T05:15:00Z",
+    "sugerido_ml": 187.3,
+    "lista": [
+     {
+      "titulo": null,
+      "precio": 163.73,
+      "vendedor": "vendedor_4381",
+      "vendidos": 3827
+     },
+     {
+      "titulo": null,
+      "precio": 176.48,
+      "vendedor": "vendedor_1551",
+      "vendidos": 3011
+     },
+     {
+      "titulo": null,
+      "precio": 195.29,
+      "vendedor": "vendedor_3104",
+      "vendidos": 3830
+     },
+     {
+      "titulo": null,
+      "precio": 212.49,
+      "vendedor": "vendedor_6345",
+      "vendidos": 3711
+     },
+     {
+      "titulo": null,
+      "precio": 224.93,
+      "vendedor": "vendedor_3874",
+      "vendidos": 3388
+     },
+     {
+      "titulo": null,
+      "precio": 229.29,
+      "vendedor": "vendedor_8329",
+      "vendidos": 4436
+     },
+     {
+      "titulo": null,
+      "precio": 233.37,
+      "vendedor": "vendedor_2377",
+      "vendidos": 2125
+     }
+    ]
+   },
+   "tags_calidad": [
+    "poor_quality_thumbnail"
+   ],
+   "frescura_at": "2026-09-28T12:39:00Z",
+   "avisos": [
+    "sin_costo"
+   ],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2712698255",
+   "canal": "mercado_libre",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2712698255",
+   "sku": "EST-1854-CAF",
+   "titulo": "Perchero de pie metálico con 3 niveles",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2712698255",
+   "thumbnail": null,
+   "categoria_id": "MLM1644",
+   "estado": "activa",
+   "situacion": "active",
+   "sub_status": [],
+   "logistica": "fulfillment",
+   "es_full": true,
+   "precio_cobrado": 499,
+   "precio_lista": 499,
+   "promo": null,
+   "stock_full": 186,
+   "stock_propio": 0,
+   "stock_odoo": 199,
+   "costo": {
+    "unitario": 155.94,
+    "fuente": "packing_list_exacto",
+    "contenedor": "MSKU7781230",
+    "validado": false,
+    "revisado_por": null,
+    "costo_panel": 927.36
+   },
+   "comision_pct": 0.18,
+   "comision": 89.82,
+   "envio": 171,
+   "iva": 68.83,
+   "utilidad": 13.41,
+   "margen_pct": 0.0269,
+   "visitas_30d": 1965,
+   "unidades_30d": 156,
+   "conversion_30d": 0.0794,
+   "ingreso_30d": 77844,
+   "competencia": {
+    "n": 12,
+    "promedio": 492.5,
+    "mediana": 497.51,
+    "minimo": 357.46,
+    "maximo": 645.56,
+    "fuente": "serp",
+    "capturado_en": "2026-09-09T07:15:00Z",
+    "sugerido_ml": 470.63,
+    "lista": [
+     {
+      "titulo": null,
+      "precio": 357.46,
+      "vendedor": "vendedor_8307",
+      "vendidos": 420
+     },
+     {
+      "titulo": null,
+      "precio": 412.35,
+      "vendedor": "vendedor_4080",
+      "vendidos": 1108
+     },
+     {
+      "titulo": null,
+      "precio": 488.05,
+      "vendedor": "vendedor_9786",
+      "vendidos": 4218
+     },
+     {
+      "titulo": null,
+      "precio": 495.14,
+      "vendedor": "vendedor_5014",
+      "vendidos": 1442
+     },
+     {
+      "titulo": null,
+      "precio": 497.51,
+      "vendedor": "vendedor_5513",
+      "vendidos": 3207
+     },
+     {
+      "titulo": null,
+      "precio": 504.45,
+      "vendedor": "vendedor_4180",
+      "vendidos": 956
+     },
+     {
+      "titulo": null,
+      "precio": 539.47,
+      "vendedor": "vendedor_4174",
+      "vendidos": 4774
+     },
+     {
+      "titulo": null,
+      "precio": 645.56,
+      "vendedor": "vendedor_9865",
+      "vendidos": 4738
+     }
+    ]
+   },
+   "tags_calidad": [
+    "poor_quality_thumbnail"
+   ],
+   "frescura_at": "2026-09-28T10:51:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:BEKURA:MLM2712716995",
+   "canal": "mercado_libre",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2712716995",
+   "sku": "ORG-1625-CAF",
+   "titulo": "Botella de agua motivacional 2 L con marcas de tiempo",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2712716995",
+   "thumbnail": null,
+   "categoria_id": "MLM1621",
+   "estado": "pausada",
+   "situacion": "paused",
+   "sub_status": [],
+   "logistica": "xd_drop_off",
+   "es_full": false,
+   "precio_cobrado": 129,
+   "precio_lista": 129,
+   "promo": null,
+   "stock_full": null,
+   "stock_propio": 43,
+   "stock_odoo": 745,
+   "costo": {
+    "unitario": 22.27,
+    "fuente": "prorrateo_kubera",
+    "contenedor": "TGHU6634102",
+    "validado": true,
+    "revisado_por": null,
+    "costo_panel": 126.14
+   },
+   "comision_pct": 0.195,
+   "comision": 25.16,
+   "envio": 34,
+   "iva": 17.79,
+   "utilidad": 29.78,
+   "margen_pct": 0.2309,
+   "visitas_30d": 400,
+   "unidades_30d": 2,
+   "conversion_30d": 0.005,
+   "ingreso_30d": 258,
+   "competencia": {
+    "n": 17,
+    "promedio": 149.97,
+    "mediana": 158.99,
+    "minimo": 109.44,
+    "maximo": 211.01,
+    "fuente": "bestsellers",
+    "capturado_en": "2026-09-14T07:15:00Z",
+    "sugerido_ml": null,
+    "lista": [
+     {
+      "titulo": null,
+      "precio": 109.44,
+      "vendedor": "vendedor_7195",
+      "vendidos": 1719
+     },
+     {
+      "titulo": null,
+      "precio": 115.34,
+      "vendedor": "vendedor_5945",
+      "vendidos": 2904
+     },
+     {
+      "titulo": null,
+      "precio": 140.2,
+      "vendedor": "vendedor_9378",
+      "vendidos": 4379
+     },
+     {
+      "titulo": null,
+      "precio": 141.35,
+      "vendedor": "vendedor_1603",
+      "vendidos": 860
+     },
+     {
+      "titulo": null,
+      "precio": 158.99,
+      "vendedor": "vendedor_6527",
+      "vendidos": 3028
+     },
+     {
+      "titulo": null,
+      "precio": 159.03,
+      "vendedor": "vendedor_7487",
+      "vendidos": 594
+     },
+     {
+      "titulo": null,
+      "precio": 164.42,
+      "vendedor": "vendedor_4608",
+      "vendidos": 3358
+     },
+     {
+      "titulo": null,
+      "precio": 211.01,
+      "vendedor": "vendedor_7988",
+      "vendidos": 1076
+     }
+    ]
+   },
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T10:45:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2712837633",
+   "canal": "mercado_libre",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2712837633",
+   "sku": "ACC-1352-NEG",
+   "titulo": "Kit de brochas de maquillaje 12 piezas con estuche",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2712837633",
+   "thumbnail": null,
+   "categoria_id": "MLM1246",
+   "estado": "activa",
+   "situacion": "active",
+   "sub_status": [],
+   "logistica": "fulfillment",
+   "es_full": true,
+   "precio_cobrado": 109,
+   "precio_lista": 109,
+   "promo": null,
+   "stock_full": 50,
+   "stock_propio": 0,
+   "stock_odoo": 425,
+   "costo": {
+    "unitario": 17.25,
+    "fuente": "tarifa_7500",
+    "contenedor": null,
+    "validado": false,
+    "revisado_por": null,
+    "costo_panel": 83.19
+   },
+   "comision_pct": 0.195,
+   "comision": 21.26,
+   "envio": 34,
+   "iva": 15.03,
+   "utilidad": 21.46,
+   "margen_pct": 0.1969,
+   "visitas_30d": 6068,
+   "unidades_30d": 98,
+   "conversion_30d": 0.0162,
+   "ingreso_30d": 10682,
+   "competencia": {
+    "n": 17,
+    "promedio": 111.77,
+    "mediana": 114.09,
+    "minimo": 94.34,
+    "maximo": 141.7,
+    "fuente": "serp",
+    "capturado_en": "2026-09-10T04:15:00Z",
+    "sugerido_ml": 98.31,
+    "lista": [
+     {
+      "titulo": null,
+      "precio": 94.34,
+      "vendedor": "vendedor_9904",
+      "vendidos": 2058
+     },
+     {
+      "titulo": null,
+      "precio": 97.22,
+      "vendedor": "vendedor_1270",
+      "vendidos": 3957
+     },
+     {
+      "titulo": null,
+      "precio": 100.42,
+      "vendedor": "vendedor_8647",
+      "vendidos": 1333
+     },
+     {
+      "titulo": null,
+      "precio": 110.38,
+      "vendedor": "vendedor_6359",
+      "vendidos": 2029
+     },
+     {
+      "titulo": null,
+      "precio": 114.09,
+      "vendedor": "vendedor_2140",
+      "vendidos": 3509
+     },
+     {
+      "titulo": null,
+      "precio": 117.38,
+      "vendedor": "vendedor_9159",
+      "vendidos": 847
+     },
+     {
+      "titulo": null,
+      "precio": 118.62,
+      "vendedor": "vendedor_1594",
+      "vendidos": 2646
+     },
+     {
+      "titulo": null,
+      "precio": 141.7,
+      "vendedor": "vendedor_6388",
+      "vendidos": 1571
+     }
+    ]
+   },
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T10:41:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:BEKURA:MLM2712850678",
+   "canal": "mercado_libre",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2712850678",
+   "sku": "TEC-1247-DOR",
+   "titulo": "Cable USB-C carga rápida 2 m paquete de 3",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2712850678",
+   "thumbnail": null,
+   "categoria_id": "MLM1051",
+   "estado": "activa",
+   "situacion": "active",
+   "sub_status": [],
+   "logistica": "fulfillment",
+   "es_full": true,
+   "precio_cobrado": 79,
+   "precio_lista": 79,
+   "promo": null,
+   "stock_full": 237,
+   "stock_propio": 0,
+   "stock_odoo": 349,
+   "costo": {
+    "unitario": 7.7,
+    "fuente": "packing_list_exacto",
+    "contenedor": "OOLU8820341",
+    "validado": true,
+    "revisado_por": "Brandon",
+    "costo_panel": 12.53
+   },
+   "comision_pct": 0.195,
+   "comision": 15.41,
+   "envio": 34,
+   "iva": 10.9,
+   "utilidad": 11,
+   "margen_pct": 0.1392,
+   "visitas_30d": 3118,
+   "unidades_30d": 160,
+   "conversion_30d": 0.0513,
+   "ingreso_30d": 12640,
+   "competencia": null,
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T10:46:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2712865821",
+   "canal": "mercado_libre",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2712865821",
+   "sku": "TEC-1247-DOR",
+   "titulo": "Cable USB-C carga rápida 2 m paquete de 3",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2712865821",
+   "thumbnail": null,
+   "categoria_id": "MLM1051",
+   "estado": "pausada",
+   "situacion": "paused",
+   "sub_status": [
+    "out_of_stock"
+   ],
+   "logistica": "fulfillment",
+   "es_full": true,
+   "precio_cobrado": 79,
+   "precio_lista": 79,
+   "promo": null,
+   "stock_full": 0,
+   "stock_propio": 0,
+   "stock_odoo": null,
+   "costo": {
+    "unitario": 7.7,
+    "fuente": "packing_list_exacto",
+    "contenedor": "OOLU8820341",
+    "validado": false,
+    "revisado_por": null,
+    "costo_panel": 42.68
+   },
+   "comision_pct": 0.195,
+   "comision": 15.41,
+   "envio": 34,
+   "iva": 10.9,
+   "utilidad": 11,
+   "margen_pct": 0.1392,
+   "visitas_30d": 85,
+   "unidades_30d": 1,
+   "conversion_30d": 0.0118,
+   "ingreso_30d": 79,
+   "competencia": {
+    "n": 8,
+    "promedio": 80.8,
+    "mediana": 83.83,
+    "minimo": 59.63,
+    "maximo": 109.18,
+    "fuente": "serp",
+    "capturado_en": "2026-09-17T08:15:00Z",
+    "sugerido_ml": 71.68,
+    "lista": [
+     {
+      "titulo": null,
+      "precio": 59.63,
+      "vendedor": "vendedor_8011",
+      "vendidos": 1753
+     },
+     {
+      "titulo": null,
+      "precio": 63.69,
+      "vendedor": "vendedor_6610",
+      "vendidos": 3750
+     },
+     {
+      "titulo": null,
+      "precio": 70.57,
+      "vendedor": "vendedor_1055",
+      "vendidos": 4990
+     },
+     {
+      "titulo": null,
+      "precio": 76.57,
+      "vendedor": "vendedor_2264",
+      "vendidos": 1056
+     },
+     {
+      "titulo": null,
+      "precio": 83.83,
+      "vendedor": "vendedor_8359",
+      "vendidos": 4983
+     },
+     {
+      "titulo": null,
+      "precio": 86.07,
+      "vendedor": "vendedor_3813",
+      "vendidos": 1693
+     },
+     {
+      "titulo": null,
+      "precio": 96.83,
+      "vendedor": "vendedor_5023",
+      "vendidos": 951
+     },
+     {
+      "titulo": null,
+      "precio": 109.18,
+      "vendedor": "vendedor_2282",
+      "vendidos": 1771
+     }
+    ]
+   },
+   "tags_calidad": [
+    "poor_quality_thumbnail"
+   ],
+   "frescura_at": "2026-09-28T10:48:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2713013535",
+   "canal": "mercado_libre",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2713013535",
+   "sku": "TEC-1791-GRS",
+   "titulo": "Soporte de celular para auto magnético",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2713013535",
+   "thumbnail": null,
+   "categoria_id": "MLM1747",
+   "estado": "pausada",
+   "situacion": "paused",
+   "sub_status": [
+    "out_of_stock"
+   ],
+   "logistica": "fulfillment",
+   "es_full": true,
+   "precio_cobrado": 99,
+   "precio_lista": 99,
+   "promo": null,
+   "stock_full": 0,
+   "stock_propio": 0,
+   "stock_odoo": null,
+   "costo": {
+    "unitario": 11.16,
+    "fuente": "prorrateo_kubera",
+    "contenedor": "PCIU9516451",
+    "validado": true,
+    "revisado_por": null,
+    "costo_panel": 37.75
+   },
+   "comision_pct": 0.195,
+   "comision": 19.31,
+   "envio": 34,
+   "iva": 13.66,
+   "utilidad": 20.88,
+   "margen_pct": 0.2109,
+   "visitas_30d": 41,
+   "unidades_30d": 2,
+   "conversion_30d": 0.0488,
+   "ingreso_30d": 198,
+   "competencia": {
+    "n": 21,
+    "promedio": 119.42,
+    "mediana": 122.12,
+    "minimo": 93.95,
+    "maximo": 145.28,
+    "fuente": "serp",
+    "capturado_en": "2026-09-28T05:15:00Z",
+    "sugerido_ml": null,
+    "lista": [
+     {
+      "titulo": null,
+      "precio": 93.95,
+      "vendedor": "vendedor_8256",
+      "vendidos": 3019
+     },
+     {
+      "titulo": null,
+      "precio": 108.33,
+      "vendedor": "vendedor_9105",
+      "vendidos": 3872
+     },
+     {
+      "titulo": null,
+      "precio": 109.36,
+      "vendedor": "vendedor_3895",
+      "vendidos": 3788
+     },
+     {
+      "titulo": null,
+      "precio": 116.51,
+      "vendedor": "vendedor_9595",
+      "vendidos": 533
+     },
+     {
+      "titulo": null,
+      "precio": 122.12,
+      "vendedor": "vendedor_4589",
+      "vendidos": 411
+     },
+     {
+      "titulo": null,
+      "precio": 127.28,
+      "vendedor": "vendedor_3775",
+      "vendidos": 4534
+     },
+     {
+      "titulo": null,
+      "precio": 132.56,
+      "vendedor": "vendedor_1632",
+      "vendidos": 3239
+     },
+     {
+      "titulo": null,
+      "precio": 145.28,
+      "vendedor": "vendedor_3027",
+      "vendidos": 2548
+     }
+    ]
+   },
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T10:57:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:BEKURA:MLM2713401145",
+   "canal": "mercado_libre",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2713401145",
+   "sku": "TEC-0538-MUL",
+   "titulo": "Tira LED RGB 5 m con control y app",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2713401145",
+   "thumbnail": null,
+   "categoria_id": "MLM1276",
+   "estado": "activa",
+   "situacion": "active",
+   "sub_status": [],
+   "logistica": "fulfillment",
+   "es_full": true,
+   "precio_cobrado": 139,
+   "precio_lista": 139,
+   "promo": null,
+   "stock_full": 122,
+   "stock_propio": 0,
+   "stock_odoo": 232,
+   "costo": {
+    "unitario": 18.75,
+    "fuente": "tarifa_7500",
+    "contenedor": null,
+    "validado": true,
+    "revisado_por": null,
+    "costo_panel": 74.69
+   },
+   "comision_pct": 0.195,
+   "comision": 27.11,
+   "envio": 34,
+   "iva": 19.17,
+   "utilidad": 39.97,
+   "margen_pct": 0.2876,
+   "visitas_30d": 5285,
+   "unidades_30d": 451,
+   "conversion_30d": 0.0853,
+   "ingreso_30d": 62689,
+   "competencia": {
+    "n": 9,
+    "promedio": 113.89,
+    "mediana": 115.69,
+    "minimo": 95.54,
+    "maximo": 125.69,
+    "fuente": "serp",
+    "capturado_en": "2026-09-28T07:15:00Z",
+    "sugerido_ml": null,
+    "lista": [
+     {
+      "titulo": null,
+      "precio": 95.54,
+      "vendedor": "vendedor_2833",
+      "vendidos": 1191
+     },
+     {
+      "titulo": null,
+      "precio": 104.38,
+      "vendedor": "vendedor_6331",
+      "vendidos": 1103
+     },
+     {
+      "titulo": null,
+      "precio": 110.8,
+      "vendedor": "vendedor_9393",
+      "vendidos": 2090
+     },
+     {
+      "titulo": null,
+      "precio": 112.39,
+      "vendedor": "vendedor_4148",
+      "vendidos": 2184
+     },
+     {
+      "titulo": null,
+      "precio": 115.69,
+      "vendedor": "vendedor_2556",
+      "vendidos": 4412
+     },
+     {
+      "titulo": null,
+      "precio": 123.27,
+      "vendedor": "vendedor_1404",
+      "vendidos": 2015
+     },
+     {
+      "titulo": null,
+      "precio": 123.35,
+      "vendedor": "vendedor_4605",
+      "vendidos": 3807
+     },
+     {
+      "titulo": null,
+      "precio": 125.69,
+      "vendedor": "vendedor_1578",
+      "vendidos": 2432
+     }
+    ]
+   },
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T12:56:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2713571620",
+   "canal": "mercado_libre",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2713571620",
+   "sku": "ORG-0766-NEG",
+   "titulo": "Canasta organizadora plegable de tela 3 piezas",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2713571620",
+   "thumbnail": null,
+   "categoria_id": "MLM1631",
+   "estado": "pausada",
+   "situacion": "paused",
+   "sub_status": [],
+   "logistica": "xd_drop_off",
+   "es_full": false,
+   "precio_cobrado": 159,
+   "precio_lista": 159,
+   "promo": null,
+   "stock_full": null,
+   "stock_propio": 21,
+   "stock_odoo": 267,
+   "costo": {
+    "unitario": null,
+    "fuente": "sin_costo",
+    "contenedor": null,
+    "validado": false,
+    "revisado_por": null,
+    "costo_panel": null
+   },
+   "comision_pct": 0.195,
+   "comision": 31.01,
+   "envio": 40,
+   "iva": 21.93,
+   "utilidad": null,
+   "margen_pct": null,
+   "visitas_30d": 252,
+   "unidades_30d": 3,
+   "conversion_30d": 0.0119,
+   "ingreso_30d": 477,
+   "competencia": null,
+   "tags_calidad": [
+    "poor_quality_thumbnail"
+   ],
+   "frescura_at": "2026-09-28T10:46:00Z",
+   "avisos": [
+    "sin_costo"
+   ],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:BEKURA:MLM2714448212",
+   "canal": "mercado_libre",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2714448212",
+   "sku": "MAN-1456-BLN",
+   "titulo": "Almohada ortopédica memory foam cervical",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2714448212",
+   "thumbnail": null,
+   "categoria_id": "MLM1631",
+   "estado": "pausada",
+   "situacion": "paused",
+   "sub_status": [
+    "out_of_stock"
+   ],
+   "logistica": "fulfillment",
+   "es_full": true,
+   "precio_cobrado": 539,
+   "precio_lista": 539,
+   "promo": null,
+   "stock_full": 0,
+   "stock_propio": 0,
+   "stock_odoo": 74,
+   "costo": {
+    "unitario": 94.27,
+    "fuente": "prorrateo_kubera",
+    "contenedor": "CMAU4512876",
+    "validado": true,
+    "revisado_por": "Brandon",
+    "costo_panel": 422.69
+   },
+   "comision_pct": 0.16,
+   "comision": 86.24,
+   "envio": 103,
+   "iva": 74.34,
+   "utilidad": 181.15,
+   "margen_pct": 0.3361,
+   "visitas_30d": 62,
+   "unidades_30d": 6,
+   "conversion_30d": 0.0968,
+   "ingreso_30d": 3234,
+   "competencia": null,
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T10:50:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2714919614",
+   "canal": "mercado_libre",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2714919614",
+   "sku": "MAN-1456-BLN",
+   "titulo": "Almohada ortopédica memory foam cervical",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2714919614",
+   "thumbnail": null,
+   "categoria_id": "MLM1631",
+   "estado": "en_revision",
+   "situacion": "under_review",
+   "sub_status": [],
+   "logistica": "xd_drop_off",
+   "es_full": false,
+   "precio_cobrado": 539,
+   "precio_lista": 539,
+   "promo": null,
+   "stock_full": null,
+   "stock_propio": 65,
+   "stock_odoo": 33,
+   "costo": {
+    "unitario": 94.27,
+    "fuente": "prorrateo_kubera",
+    "contenedor": "CMAU4512876",
+    "validado": false,
+    "revisado_por": null,
+    "costo_panel": 447.62
+   },
+   "comision_pct": 0.16,
+   "comision": 86.24,
+   "envio": 103,
+   "iva": 74.34,
+   "utilidad": 181.15,
+   "margen_pct": 0.3361,
+   "visitas_30d": 280,
+   "unidades_30d": 0,
+   "conversion_30d": 0,
+   "ingreso_30d": 0,
+   "competencia": {
+    "n": 13,
+    "promedio": 505.99,
+    "mediana": 500.05,
+    "minimo": 347.36,
+    "maximo": 784.14,
+    "fuente": "serp",
+    "capturado_en": "2026-09-25T01:15:00Z",
+    "sugerido_ml": 484.65,
+    "lista": [
+     {
+      "titulo": null,
+      "precio": 347.36,
+      "vendedor": "vendedor_3314",
+      "vendidos": 3458
+     },
+     {
+      "titulo": null,
+      "precio": 360.32,
+      "vendedor": "vendedor_5215",
+      "vendidos": 4939
+     },
+     {
+      "titulo": null,
+      "precio": 376.38,
+      "vendedor": "vendedor_3511",
+      "vendidos": 4673
+     },
+     {
+      "titulo": null,
+      "precio": 493.73,
+      "vendedor": "vendedor_7276",
+      "vendidos": 3624
+     },
+     {
+      "titulo": null,
+      "precio": 500.05,
+      "vendedor": "vendedor_4922",
+      "vendidos": 1404
+     },
+     {
+      "titulo": null,
+      "precio": 561.26,
+      "vendedor": "vendedor_2261",
+      "vendidos": 666
+     },
+     {
+      "titulo": null,
+      "precio": 624.66,
+      "vendedor": "vendedor_7064",
+      "vendidos": 4727
+     },
+     {
+      "titulo": null,
+      "precio": 784.14,
+      "vendedor": "vendedor_5516",
+      "vendidos": 3844
+     }
+    ]
+   },
+   "tags_calidad": [
+    "poor_quality_thumbnail"
+   ],
+   "frescura_at": "2026-09-28T11:46:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2715459620",
+   "canal": "mercado_libre",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2715459620",
+   "sku": "COC-1873-DOR",
+   "titulo": "Sartén antiadherente 28 cm con tapa de vidrio",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2715459620",
+   "thumbnail": null,
+   "categoria_id": "MLM1574",
+   "estado": "activa",
+   "situacion": "active",
+   "sub_status": [],
+   "logistica": "fulfillment",
+   "es_full": true,
+   "precio_cobrado": 339,
+   "precio_lista": 529,
+   "promo": {
+    "tipo": "custom",
+    "fin": "2026-11-04T05:59:59Z"
+   },
+   "stock_full": 19,
+   "stock_propio": 0,
+   "stock_odoo": 853,
+   "costo": {
+    "unitario": 108.75,
+    "fuente": "tarifa_7500",
+    "contenedor": null,
+    "validado": true,
+    "revisado_por": "Andrea",
+    "costo_panel": 492.66
+   },
+   "comision_pct": 0.18,
+   "comision": 61.02,
+   "envio": 116,
+   "iva": 46.76,
+   "utilidad": 6.47,
+   "margen_pct": 0.0191,
+   "visitas_30d": 7209,
+   "unidades_30d": 396,
+   "conversion_30d": 0.0549,
+   "ingreso_30d": 134244,
+   "competencia": {
+    "n": 18,
+    "promedio": 279.11,
+    "mediana": 284.16,
+    "minimo": 208.18,
+    "maximo": 345.64,
+    "fuente": "serp",
+    "capturado_en": "2026-09-21T08:15:00Z",
+    "sugerido_ml": null,
+    "lista": [
+     {
+      "titulo": null,
+      "precio": 208.18,
+      "vendedor": "vendedor_6974",
+      "vendidos": 2666
+     },
+     {
+      "titulo": null,
+      "precio": 221.77,
+      "vendedor": "vendedor_6726",
+      "vendidos": 241
+     },
+     {
+      "titulo": null,
+      "precio": 240.28,
+      "vendedor": "vendedor_1806",
+      "vendidos": 324
+     },
+     {
+      "titulo": null,
+      "precio": 279.31,
+      "vendedor": "vendedor_9207",
+      "vendidos": 504
+     },
+     {
+      "titulo": null,
+      "precio": 284.16,
+      "vendedor": "vendedor_3190",
+      "vendidos": 2094
+     },
+     {
+      "titulo": null,
+      "precio": 320.7,
+      "vendedor": "vendedor_8976",
+      "vendidos": 1629
+     },
+     {
+      "titulo": null,
+      "precio": 332.8,
+      "vendedor": "vendedor_7586",
+      "vendidos": 1120
+     },
+     {
+      "titulo": null,
+      "precio": 345.64,
+      "vendedor": "vendedor_7621",
+      "vendidos": 621
+     }
+    ]
+   },
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T12:42:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:BEKURA:MLM2716136056",
+   "canal": "mercado_libre",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2716136056",
+   "sku": "COC-1870-DOR",
+   "titulo": "Molino de café manual con muelas cerámicas",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2716136056",
+   "thumbnail": null,
+   "categoria_id": "MLM1574",
+   "estado": "pausada",
+   "situacion": "paused",
+   "sub_status": [],
+   "logistica": "xd_drop_off",
+   "es_full": false,
+   "precio_cobrado": 149,
+   "precio_lista": 149,
+   "promo": null,
+   "stock_full": null,
+   "stock_propio": 13,
+   "stock_odoo": null,
+   "costo": {
+    "unitario": 21.42,
+    "fuente": "packing_list_exacto",
+    "contenedor": "PCIU9516451",
+    "validado": true,
+    "revisado_por": "Andrea",
+    "costo_panel": 53.8
+   },
+   "comision_pct": 0.195,
+   "comision": 29.06,
+   "envio": 38,
+   "iva": 20.55,
+   "utilidad": 39.97,
+   "margen_pct": 0.2683,
+   "visitas_30d": 290,
+   "unidades_30d": 4,
+   "conversion_30d": 0.0138,
+   "ingreso_30d": 596,
+   "competencia": {
+    "n": 17,
+    "promedio": 147.99,
+    "mediana": 175.94,
+    "minimo": 101.69,
+    "maximo": 201.44,
+    "fuente": "serp",
+    "capturado_en": "2026-09-16T08:15:00Z",
+    "sugerido_ml": null,
+    "lista": [
+     {
+      "titulo": null,
+      "precio": 101.69,
+      "vendedor": "vendedor_4559",
+      "vendidos": 2466
+     },
+     {
+      "titulo": null,
+      "precio": 106.25,
+      "vendedor": "vendedor_1973",
+      "vendidos": 103
+     },
+     {
+      "titulo": null,
+      "precio": 114.41,
+      "vendedor": "vendedor_5123",
+      "vendidos": 4309
+     },
+     {
+      "titulo": null,
+      "precio": 124.77,
+      "vendedor": "vendedor_3388",
+      "vendidos": 793
+     },
+     {
+      "titulo": null,
+      "precio": 175.94,
+      "vendedor": "vendedor_7035",
+      "vendidos": 1832
+     },
+     {
+      "titulo": null,
+      "precio": 177.56,
+      "vendedor": "vendedor_2425",
+      "vendidos": 414
+     },
+     {
+      "titulo": null,
+      "precio": 181.9,
+      "vendedor": "vendedor_6240",
+      "vendidos": 3336
+     },
+     {
+      "titulo": null,
+      "precio": 201.44,
+      "vendedor": "vendedor_2287",
+      "vendidos": 3916
+     }
+    ]
+   },
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T10:13:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2716344420",
+   "canal": "mercado_libre",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2716344420",
+   "sku": "ORG-1782-PLA",
+   "titulo": "Pizarrón magnético 60 x 40 cm con marcadores",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2716344420",
+   "thumbnail": null,
+   "categoria_id": "MLM1631",
+   "estado": "activa",
+   "situacion": "active",
+   "sub_status": [],
+   "logistica": "fulfillment",
+   "es_full": true,
+   "precio_cobrado": 559,
+   "precio_lista": 559,
+   "promo": null,
+   "stock_full": 55,
+   "stock_propio": 0,
+   "stock_odoo": 735,
+   "costo": {
+    "unitario": 95.75,
+    "fuente": "prorrateo_kubera",
+    "contenedor": "MSKU7781230",
+    "validado": true,
+    "revisado_por": null,
+    "costo_panel": 179.42
+   },
+   "comision_pct": 0.16,
+   "comision": 89.44,
+   "envio": 121,
+   "iva": 77.1,
+   "utilidad": 175.71,
+   "margen_pct": 0.3143,
+   "visitas_30d": 7574,
+   "unidades_30d": 153,
+   "conversion_30d": 0.0202,
+   "ingreso_30d": 85527,
+   "competencia": {
+    "n": 14,
+    "promedio": 541.37,
+    "mediana": 521.14,
+    "minimo": 448.86,
+    "maximo": 637.87,
+    "fuente": "bestsellers",
+    "capturado_en": "2026-09-20T04:15:00Z",
+    "sugerido_ml": null,
+    "lista": [
+     {
+      "titulo": null,
+      "precio": 448.86,
+      "vendedor": "vendedor_2914",
+      "vendidos": 2915
+     },
+     {
+      "titulo": null,
+      "precio": 467.65,
+      "vendedor": "vendedor_9601",
+      "vendidos": 1541
+     },
+     {
+      "titulo": null,
+      "precio": 511.62,
+      "vendedor": "vendedor_2235",
+      "vendidos": 4464
+     },
+     {
+      "titulo": null,
+      "precio": 519.94,
+      "vendedor": "vendedor_1266",
+      "vendidos": 3585
+     },
+     {
+      "titulo": null,
+      "precio": 521.14,
+      "vendedor": "vendedor_5450",
+      "vendidos": 282
+     },
+     {
+      "titulo": null,
+      "precio": 608.74,
+      "vendedor": "vendedor_3144",
+      "vendidos": 1912
+     },
+     {
+      "titulo": null,
+      "precio": 615.1,
+      "vendedor": "vendedor_2825",
+      "vendidos": 1436
+     },
+     {
+      "titulo": null,
+      "precio": 637.87,
+      "vendedor": "vendedor_9537",
+      "vendidos": 487
+     }
+    ]
+   },
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T11:49:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:BEKURA:MLM2716934434",
+   "canal": "mercado_libre",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2716934434",
+   "sku": "TEC-0477-BLN",
+   "titulo": "Cámara de seguridad WiFi 1080p visión nocturna",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2716934434",
+   "thumbnail": null,
+   "categoria_id": "MLM1000",
+   "estado": "activa",
+   "situacion": "active",
+   "sub_status": [],
+   "logistica": "fulfillment",
+   "es_full": true,
+   "precio_cobrado": 139,
+   "precio_lista": 139,
+   "promo": null,
+   "stock_full": 42,
+   "stock_propio": 0,
+   "stock_odoo": 406,
+   "costo": {
+    "unitario": 31.5,
+    "fuente": "tarifa_7500",
+    "contenedor": null,
+    "validado": true,
+    "revisado_por": "Andrea",
+    "costo_panel": 158.72
+   },
+   "comision_pct": 0.195,
+   "comision": 27.11,
+   "envio": 36,
+   "iva": 19.17,
+   "utilidad": 25.22,
+   "margen_pct": 0.1815,
+   "visitas_30d": 6049,
+   "unidades_30d": 536,
+   "conversion_30d": 0.0886,
+   "ingreso_30d": 74504,
+   "competencia": {
+    "n": 14,
+    "promedio": 112.91,
+    "mediana": 112.33,
+    "minimo": 99.59,
+    "maximo": 137.02,
+    "fuente": "serp",
+    "capturado_en": "2026-09-08T08:15:00Z",
+    "sugerido_ml": null,
+    "lista": [
+     {
+      "titulo": null,
+      "precio": 99.59,
+      "vendedor": "vendedor_4407",
+      "vendidos": 2022
+     },
+     {
+      "titulo": null,
+      "precio": 102.45,
+      "vendedor": "vendedor_2910",
+      "vendidos": 621
+     },
+     {
+      "titulo": null,
+      "precio": 109.48,
+      "vendedor": "vendedor_3673",
+      "vendidos": 80
+     },
+     {
+      "titulo": null,
+      "precio": 110.24,
+      "vendedor": "vendedor_9321",
+      "vendidos": 2007
+     },
+     {
+      "titulo": null,
+      "precio": 112.33,
+      "vendedor": "vendedor_4210",
+      "vendidos": 1169
+     },
+     {
+      "titulo": null,
+      "precio": 113.52,
+      "vendedor": "vendedor_8768",
+      "vendidos": 2996
+     },
+     {
+      "titulo": null,
+      "precio": 118.68,
+      "vendedor": "vendedor_9972",
+      "vendidos": 2468
+     },
+     {
+      "titulo": null,
+      "precio": 137.02,
+      "vendedor": "vendedor_4372",
+      "vendidos": 3696
+     }
+    ]
+   },
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T11:17:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2717082479",
+   "canal": "mercado_libre",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2717082479",
+   "sku": "TEC-0477-BLN",
+   "titulo": "Cámara de seguridad WiFi 1080p visión nocturna",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2717082479",
+   "thumbnail": null,
+   "categoria_id": "MLM1000",
+   "estado": "pausada",
+   "situacion": "paused",
+   "sub_status": [
+    "out_of_stock"
+   ],
+   "logistica": "fulfillment",
+   "es_full": true,
+   "precio_cobrado": 139,
+   "precio_lista": 139,
+   "promo": null,
+   "stock_full": 0,
+   "stock_propio": 0,
+   "stock_odoo": 138,
+   "costo": {
+    "unitario": 31.5,
+    "fuente": "tarifa_7500",
+    "contenedor": null,
+    "validado": false,
+    "revisado_por": "Cinthya",
+    "costo_panel": 117.05
+   },
+   "comision_pct": 0.195,
+   "comision": 27.11,
+   "envio": 36,
+   "iva": 19.17,
+   "utilidad": 25.22,
+   "margen_pct": 0.1815,
+   "visitas_30d": 29,
+   "unidades_30d": 5,
+   "conversion_30d": 0.1724,
+   "ingreso_30d": 695,
+   "competencia": {
+    "n": 1,
+    "promedio": 117.08,
+    "mediana": 117.08,
+    "minimo": 117.08,
+    "maximo": 117.08,
+    "fuente": "sugerido_ml",
+    "capturado_en": "2026-09-22T07:15:00Z",
+    "sugerido_ml": 110.19,
+    "lista": []
+   },
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T10:41:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:SANCORFASHION:MLM2717352991",
+   "canal": "mercado_libre",
+   "cuenta": "SANCORFASHION",
+   "listing_id": "MLM2717352991",
+   "sku": "MAN-1173-CAF",
+   "titulo": "Ventilador de torre 36 pulgadas silencioso",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2717352991",
+   "thumbnail": null,
+   "categoria_id": "MLM1574",
+   "estado": "pausada",
+   "situacion": "paused",
+   "sub_status": [],
+   "logistica": "fulfillment",
+   "es_full": true,
+   "precio_cobrado": 829,
+   "precio_lista": 829,
+   "promo": null,
+   "stock_full": 3,
+   "stock_propio": 0,
+   "stock_odoo": 823,
+   "costo": {
+    "unitario": 259.2,
+    "fuente": "packing_list_exacto",
+    "contenedor": "CMAU4512876",
+    "validado": true,
+    "revisado_por": null,
+    "costo_panel": 1402.47
+   },
+   "comision_pct": 0.16,
+   "comision": 132.64,
+   "envio": 218,
+   "iva": 114.34,
+   "utilidad": 104.82,
+   "margen_pct": 0.1264,
+   "visitas_30d": 175,
+   "unidades_30d": 1,
+   "conversion_30d": 0.0057,
+   "ingreso_30d": 829,
+   "competencia": null,
+   "tags_calidad": [
+    "poor_quality_thumbnail"
+   ],
+   "frescura_at": "2026-09-28T10:16:00Z",
+   "avisos": [],
+   "supuesto_canal": false
+  },
+  {
+   "id": "mercado_libre:BEKURA:MLM2717773811",
+   "canal": "mercado_libre",
+   "cuenta": "BEKURA",
+   "listing_id": "MLM2717773811",
+   "sku": "EST-0364-CAF",
+   "titulo": "Mesa plegable para laptop con ventilador",
+   "url": "https://articulo.mercadolibre.com.mx/MLM-2717773811",
+   "thumbnail": null,
+   "categoria_id": "MLM1644",
+   "estado": "activa",
+   "situacion": "active",
+   "sub_status": [],
+   "logistica": "fulfillment",
+   "es_full": true,
+   "precio_cobrado": 469,
+   "precio_lista": 469,
+   "promo": null,
+   "stock_full": 90,
+   "stock_propio": 0,
+   "stock_odoo": 615,
+   "costo": {
+    "unitario": null,
+    "fuente": "sin_costo",
+    "contenedor": null,
+    "validado": false,
+    "revisado_por": null,
+    "costo_panel": null
+   },
+   "comision_pct": 0.18,
+   "comision": 84.42,
+   "envio": 145,
+   "iva": 64.69,
+   "utilidad": null,
+   "margen_pct": null,
+   "visitas_30d": 8219,
+   "unidades_30d": 385,
+   "conversion_30d": 0.0468,
+   "ingreso_30d": 180565,
+   "competencia": {
+    "n": 13,
+    "promedio": 319.41,
+    "mediana": 308.39,
+    "minimo": 251.26,
+    "maximo": 457.72,
+    "fuente": "serp",
+    "capturado_en": "2026-09-28T07:15:00Z",
+    "sugerido_ml": 316.84,
+    "lista": [
+     {
+      "titulo": null,
+      "precio": 251.26,
+      "vendedor": "vendedor_1086",
+      "vendidos": 2369
+     },
+     {
+      "titulo": null,
+      "precio": 278.41,
+      "vendedor": "vendedor_5105",
+      "vendidos": 1616
+     },
+     {
+      "titulo": null,
+      "precio": 288.41,
+      "vendedor": "vendedor_5487",
+      "vendidos": 406
+     },
+     {
+      "titulo": null,
+      "precio": 299.55,
+      "vendedor": "vendedor_9524",
+      "vendidos": 2916
+     },
+     {
+      "titulo": null,
+      "precio": 308.39,
+      "vendedor": "vendedor_8072",
+      "vendidos": 3039
+     },
+     {
+      "titulo": null,
+      "precio": 320.67,
+      "vendedor": "vendedor_6794",
+      "vendidos": 4932
+     },
+     {
+      "titulo": null,
+      "precio": 350.87,
+      "vendedor": "vendedor_7224",
+      "vendidos": 1101
+     },
+     {
+      "titulo": null,
+      "precio": 457.72,
+      "vendedor": "vendedor_9711",
+      "vendidos": 41
+     }
+    ]
+   },
+   "tags_calidad": [
+    "poor_quality_thumbnail"
+   ],
+   "frescura_at": "2026-09-28T10:54:00Z",
+   "avisos": [
+    "sin_costo"
+   ],
+   "supuesto_canal": false
+  },
+  {
+   "id": "amazon:AMAZON:B082333075",
+   "canal": "amazon",
+   "cuenta": "AMAZON",
+   "listing_id": "B082333075",
+   "sku": "EST-0595-GRS",
+   "titulo": "Repisa flotante de madera 60 cm juego de 3",
+   "url": null,
+   "thumbnail": null,
+   "categoria_id": null,
+   "estado": "activa",
+   "situacion": "active",
+   "sub_status": [],
+   "logistica": "AFN",
+   "es_full": false,
+   "precio_cobrado": 569,
+   "precio_lista": 569,
+   "promo": null,
+   "stock_full": null,
+   "stock_propio": 10,
+   "stock_odoo": 292,
+   "costo": {
+    "unitario": null,
+    "fuente": "sin_costo",
+    "contenedor": null,
+    "validado": false,
+    "revisado_por": null,
+    "costo_panel": null
+   },
+   "comision_pct": 0.15,
+   "comision": 85.35,
+   "envio": 0,
+   "iva": 78.48,
+   "utilidad": null,
+   "margen_pct": null,
+   "visitas_30d": null,
+   "unidades_30d": 37,
+   "conversion_30d": null,
+   "ingreso_30d": null,
+   "competencia": null,
+   "tags_calidad": [],
+   "frescura_at": "2026-09-18T19:02:00Z",
+   "avisos": [
+    "amazon_sin_cambios_desde_18_sep"
+   ],
+   "supuesto_canal": true
+  },
+  {
+   "id": "amazon:AMAZON:B040567809",
+   "canal": "amazon",
+   "cuenta": "AMAZON",
+   "listing_id": "B040567809",
+   "sku": "COC-0111-BLN",
+   "titulo": "Báscula digital de cocina 5 kg acero",
+   "url": null,
+   "thumbnail": null,
+   "categoria_id": null,
+   "estado": "activa",
+   "situacion": "active",
+   "sub_status": [],
+   "logistica": "MFN",
+   "es_full": false,
+   "precio_cobrado": 159,
+   "precio_lista": 159,
+   "promo": null,
+   "stock_full": null,
+   "stock_propio": 35,
+   "stock_odoo": 529,
+   "costo": {
+    "unitario": 22.5,
+    "fuente": "tarifa_7500",
+    "contenedor": null,
+    "validado": false,
+    "revisado_por": null,
+    "costo_panel": null
+   },
+   "comision_pct": 0.15,
+   "comision": 23.85,
+   "envio": 0,
+   "iva": 21.93,
+   "utilidad": 90.72,
+   "margen_pct": 0.5706,
+   "visitas_30d": null,
+   "unidades_30d": 37,
+   "conversion_30d": null,
+   "ingreso_30d": null,
+   "competencia": null,
+   "tags_calidad": [],
+   "frescura_at": "2026-09-18T19:02:00Z",
+   "avisos": [
+    "amazon_sin_cambios_desde_18_sep"
+   ],
+   "supuesto_canal": true
+  },
+  {
+   "id": "amazon:AMAZON:B032153228",
+   "canal": "amazon",
+   "cuenta": "AMAZON",
+   "listing_id": "B032153228",
+   "sku": "COC-1310-AZU",
+   "titulo": "Juego de cuchillos 6 piezas con base de madera",
+   "url": null,
+   "thumbnail": null,
+   "categoria_id": null,
+   "estado": "inactiva",
+   "situacion": "inactive",
+   "sub_status": [],
+   "logistica": "MFN",
+   "es_full": false,
+   "precio_cobrado": 319,
+   "precio_lista": 319,
+   "promo": null,
+   "stock_full": null,
+   "stock_propio": 11,
+   "stock_odoo": null,
+   "costo": {
+    "unitario": 66.67,
+    "fuente": "prorrateo_kubera",
+    "contenedor": null,
+    "validado": false,
+    "revisado_por": null,
+    "costo_panel": null
+   },
+   "comision_pct": 0.15,
+   "comision": 47.85,
+   "envio": 0,
+   "iva": 44,
+   "utilidad": 160.48,
+   "margen_pct": 0.5031,
+   "visitas_30d": null,
+   "unidades_30d": 0,
+   "conversion_30d": null,
+   "ingreso_30d": null,
+   "competencia": null,
+   "tags_calidad": [],
+   "frescura_at": "2026-09-18T19:02:00Z",
+   "avisos": [
+    "amazon_sin_cambios_desde_18_sep"
+   ],
+   "supuesto_canal": true
+  },
+  {
+   "id": "amazon:AMAZON:B051007641",
+   "canal": "amazon",
+   "cuenta": "AMAZON",
+   "listing_id": "B051007641",
+   "sku": "EST-1854-CAF",
+   "titulo": "Perchero de pie metálico con 3 niveles",
+   "url": null,
+   "thumbnail": null,
+   "categoria_id": null,
+   "estado": "activa",
+   "situacion": "active",
+   "sub_status": [],
+   "logistica": "MFN",
+   "es_full": false,
+   "precio_cobrado": 519,
+   "precio_lista": 519,
+   "promo": null,
+   "stock_full": null,
+   "stock_propio": 4,
+   "stock_odoo": 563,
+   "costo": {
+    "unitario": 155.94,
+    "fuente": "packing_list_exacto",
+    "contenedor": null,
+    "validado": false,
+    "revisado_por": null,
+    "costo_panel": null
+   },
+   "comision_pct": 0.15,
+   "comision": 77.85,
+   "envio": 0,
+   "iva": 71.59,
+   "utilidad": 213.62,
+   "margen_pct": 0.4116,
+   "visitas_30d": null,
+   "unidades_30d": 9,
+   "conversion_30d": null,
+   "ingreso_30d": null,
+   "competencia": null,
+   "tags_calidad": [],
+   "frescura_at": "2026-09-18T19:02:00Z",
+   "avisos": [
+    "amazon_sin_cambios_desde_18_sep"
+   ],
+   "supuesto_canal": true
+  },
+  {
+   "id": "amazon:AMAZON:B096680983",
+   "canal": "amazon",
+   "cuenta": "AMAZON",
+   "listing_id": "B096680983",
+   "sku": "TEC-0538-MUL",
+   "titulo": "Tira LED RGB 5 m con control y app",
+   "url": null,
+   "thumbnail": null,
+   "categoria_id": null,
+   "estado": "activa",
+   "situacion": "active",
+   "sub_status": [],
+   "logistica": "AFN",
+   "es_full": false,
+   "precio_cobrado": 159,
+   "precio_lista": 159,
+   "promo": null,
+   "stock_full": null,
+   "stock_propio": 26,
+   "stock_odoo": 22,
+   "costo": {
+    "unitario": 18.75,
+    "fuente": "tarifa_7500",
+    "contenedor": null,
+    "validado": false,
+    "revisado_por": null,
+    "costo_panel": null
+   },
+   "comision_pct": 0.15,
+   "comision": 23.85,
+   "envio": 0,
+   "iva": 21.93,
+   "utilidad": 94.47,
+   "margen_pct": 0.5941,
+   "visitas_30d": null,
+   "unidades_30d": 18,
+   "conversion_30d": null,
+   "ingreso_30d": null,
+   "competencia": null,
+   "tags_calidad": [],
+   "frescura_at": "2026-09-18T19:02:00Z",
+   "avisos": [
+    "amazon_sin_cambios_desde_18_sep"
+   ],
+   "supuesto_canal": true
+  },
+  {
+   "id": "amazon:AMAZON:B021152644",
+   "canal": "amazon",
+   "cuenta": "AMAZON",
+   "listing_id": "B021152644",
+   "sku": "ORG-1782-PLA",
+   "titulo": "Pizarrón magnético 60 x 40 cm con marcadores",
+   "url": null,
+   "thumbnail": null,
+   "categoria_id": null,
+   "estado": "inactiva",
+   "situacion": "inactive",
+   "sub_status": [],
+   "logistica": "MFN",
+   "es_full": false,
+   "precio_cobrado": 579,
+   "precio_lista": 579,
+   "promo": null,
+   "stock_full": null,
+   "stock_propio": 32,
+   "stock_odoo": 470,
+   "costo": {
+    "unitario": 95.75,
+    "fuente": "prorrateo_kubera",
+    "contenedor": null,
+    "validado": false,
+    "revisado_por": null,
+    "costo_panel": null
+   },
+   "comision_pct": 0.15,
+   "comision": 86.85,
+   "envio": 0,
+   "iva": 79.86,
+   "utilidad": 316.54,
+   "margen_pct": 0.5467,
+   "visitas_30d": null,
+   "unidades_30d": 0,
+   "conversion_30d": null,
+   "ingreso_30d": null,
+   "competencia": null,
+   "tags_calidad": [],
+   "frescura_at": "2026-09-18T19:02:00Z",
+   "avisos": [
+    "amazon_sin_cambios_desde_18_sep"
+   ],
+   "supuesto_canal": true
+  },
+  {
+   "id": "walmart:WALMART:239456036",
+   "canal": "walmart",
+   "cuenta": "WALMART",
+   "listing_id": "239456036",
+   "sku": "ACC-0547-PLA",
+   "titulo": "Mochila antirrobo con puerto USB impermeable",
+   "url": null,
+   "thumbnail": null,
+   "categoria_id": null,
+   "estado": "activa",
+   "situacion": "active",
+   "sub_status": [],
+   "logistica": "seller",
+   "es_full": false,
+   "precio_cobrado": 199,
+   "precio_lista": 199,
+   "promo": null,
+   "stock_full": null,
+   "stock_propio": 18,
+   "stock_odoo": 93,
+   "costo": {
+    "unitario": 38.84,
+    "fuente": "prorrateo_kubera",
+    "contenedor": null,
+    "validado": false,
+    "revisado_por": null,
+    "costo_panel": null
+   },
+   "comision_pct": 0.15,
+   "comision": 29.85,
+   "envio": 0,
+   "iva": 27.45,
+   "utilidad": 102.86,
+   "margen_pct": 0.5169,
+   "visitas_30d": null,
+   "unidades_30d": 1,
+   "conversion_30d": null,
+   "ingreso_30d": null,
+   "competencia": null,
+   "tags_calidad": [],
+   "frescura_at": "2026-08-17T15:44:00Z",
+   "avisos": [
+    "walmart_sin_cambios_desde_17_ago"
+   ],
+   "supuesto_canal": true
+  },
+  {
+   "id": "walmart:WALMART:650353876",
+   "canal": "walmart",
+   "cuenta": "WALMART",
+   "listing_id": "650353876",
+   "sku": "ACC-1402-CAF",
+   "titulo": "Cepillo alisador eléctrico cerámica iónica",
+   "url": null,
+   "thumbnail": null,
+   "categoria_id": null,
+   "estado": "activa",
+   "situacion": "active",
+   "sub_status": [],
+   "logistica": "seller",
+   "es_full": false,
+   "precio_cobrado": 169,
+   "precio_lista": 169,
+   "promo": null,
+   "stock_full": null,
+   "stock_propio": 10,
+   "stock_odoo": 456,
+   "costo": {
+    "unitario": 25.61,
+    "fuente": "packing_list_exacto",
+    "contenedor": null,
+    "validado": false,
+    "revisado_por": null,
+    "costo_panel": null
+   },
+   "comision_pct": 0.15,
+   "comision": 25.35,
+   "envio": 0,
+   "iva": 23.31,
+   "utilidad": 94.73,
+   "margen_pct": 0.5605,
+   "visitas_30d": null,
+   "unidades_30d": 13,
+   "conversion_30d": null,
+   "ingreso_30d": null,
+   "competencia": null,
+   "tags_calidad": [],
+   "frescura_at": "2026-08-17T15:44:00Z",
+   "avisos": [
+    "walmart_sin_cambios_desde_17_ago"
+   ],
+   "supuesto_canal": true
+  },
+  {
+   "id": "walmart:WALMART:304943835",
+   "canal": "walmart",
+   "cuenta": "WALMART",
+   "listing_id": "304943835",
+   "sku": "COC-1203-GRS",
+   "titulo": "Lonchera térmica con 3 contenedores de vidrio",
+   "url": null,
+   "thumbnail": null,
+   "categoria_id": null,
+   "estado": "inactiva",
+   "situacion": "inactive",
+   "sub_status": [],
+   "logistica": "seller",
+   "es_full": false,
+   "precio_cobrado": 159,
+   "precio_lista": 159,
+   "promo": null,
+   "stock_full": null,
+   "stock_propio": 14,
+   "stock_odoo": 488,
+   "costo": {
+    "unitario": 40.5,
+    "fuente": "tarifa_7500",
+    "contenedor": null,
+    "validado": false,
+    "revisado_por": null,
+    "costo_panel": null
+   },
+   "comision_pct": 0.15,
+   "comision": 23.85,
+   "envio": 0,
+   "iva": 21.93,
+   "utilidad": 72.72,
+   "margen_pct": 0.4574,
+   "visitas_30d": null,
+   "unidades_30d": 0,
+   "conversion_30d": null,
+   "ingreso_30d": null,
+   "competencia": null,
+   "tags_calidad": [],
+   "frescura_at": "2026-08-17T15:44:00Z",
+   "avisos": [
+    "walmart_sin_cambios_desde_17_ago"
+   ],
+   "supuesto_canal": true
+  },
+  {
+   "id": "walmart:WALMART:202851799",
+   "canal": "walmart",
+   "cuenta": "WALMART",
+   "listing_id": "202851799",
+   "sku": "ORG-1625-CAF",
+   "titulo": "Botella de agua motivacional 2 L con marcas de tiempo",
+   "url": null,
+   "thumbnail": null,
+   "categoria_id": null,
+   "estado": "activa",
+   "situacion": "active",
+   "sub_status": [],
+   "logistica": "seller",
+   "es_full": false,
+   "precio_cobrado": 129,
+   "precio_lista": 129,
+   "promo": null,
+   "stock_full": null,
+   "stock_propio": 14,
+   "stock_odoo": 301,
+   "costo": {
+    "unitario": 22.27,
+    "fuente": "prorrateo_kubera",
+    "contenedor": null,
+    "validado": false,
+    "revisado_por": null,
+    "costo_panel": null
+   },
+   "comision_pct": 0.15,
+   "comision": 19.35,
+   "envio": 0,
+   "iva": 17.79,
+   "utilidad": 69.59,
+   "margen_pct": 0.5394,
+   "visitas_30d": null,
+   "unidades_30d": 29,
+   "conversion_30d": null,
+   "ingreso_30d": null,
+   "competencia": null,
+   "tags_calidad": [],
+   "frescura_at": "2026-08-17T15:44:00Z",
+   "avisos": [
+    "walmart_sin_cambios_desde_17_ago"
+   ],
+   "supuesto_canal": true
+  },
+  {
+   "id": "tiktok:KUBERA:1769271090282",
+   "canal": "tiktok",
+   "cuenta": "KUBERA",
+   "listing_id": "1769271090282",
+   "sku": "EST-0595-GRS",
+   "titulo": "Repisa flotante de madera 60 cm juego de 3",
+   "url": null,
+   "thumbnail": null,
+   "categoria_id": null,
+   "estado": "activa",
+   "situacion": "active",
+   "sub_status": [],
+   "logistica": "drop",
+   "es_full": false,
+   "precio_cobrado": 549,
+   "precio_lista": 549,
+   "promo": null,
+   "stock_full": null,
+   "stock_propio": 8,
+   "stock_odoo": null,
+   "costo": {
+    "unitario": null,
+    "fuente": "sin_costo",
+    "contenedor": null,
+    "validado": false,
+    "revisado_por": null,
+    "costo_panel": null
+   },
+   "comision_pct": 0.08,
+   "comision": 43.92,
+   "envio": 0,
+   "iva": 75.72,
+   "utilidad": null,
+   "margen_pct": null,
+   "visitas_30d": null,
+   "unidades_30d": 23,
+   "conversion_30d": null,
+   "ingreso_30d": null,
+   "competencia": null,
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T11:30:00Z",
+   "avisos": [
+    "tiktok_precio_puede_venir_sin_iva"
+   ],
+   "supuesto_canal": true
+  },
+  {
+   "id": "tiktok:KUBERA:1752207525288",
+   "canal": "tiktok",
+   "cuenta": "KUBERA",
+   "listing_id": "1752207525288",
+   "sku": "COC-0111-BLN",
+   "titulo": "Báscula digital de cocina 5 kg acero",
+   "url": null,
+   "thumbnail": null,
+   "categoria_id": null,
+   "estado": "activa",
+   "situacion": "active",
+   "sub_status": [],
+   "logistica": "drop",
+   "es_full": false,
+   "precio_cobrado": 139,
+   "precio_lista": 139,
+   "promo": null,
+   "stock_full": null,
+   "stock_propio": 9,
+   "stock_odoo": 317,
+   "costo": {
+    "unitario": 22.5,
+    "fuente": "tarifa_7500",
+    "contenedor": null,
+    "validado": false,
+    "revisado_por": null,
+    "costo_panel": null
+   },
+   "comision_pct": 0.08,
+   "comision": 11.12,
+   "envio": 0,
+   "iva": 19.17,
+   "utilidad": 86.21,
+   "margen_pct": 0.6202,
+   "visitas_30d": null,
+   "unidades_30d": 17,
+   "conversion_30d": null,
+   "ingreso_30d": null,
+   "competencia": null,
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T11:30:00Z",
+   "avisos": [
+    "tiktok_precio_puede_venir_sin_iva"
+   ],
+   "supuesto_canal": true
+  },
+  {
+   "id": "tiktok:KUBERA:1770955403696",
+   "canal": "tiktok",
+   "cuenta": "KUBERA",
+   "listing_id": "1770955403696",
+   "sku": "COC-1310-AZU",
+   "titulo": "Juego de cuchillos 6 piezas con base de madera",
+   "url": null,
+   "thumbnail": null,
+   "categoria_id": null,
+   "estado": "inactiva",
+   "situacion": "inactive",
+   "sub_status": [],
+   "logistica": "drop",
+   "es_full": false,
+   "precio_cobrado": 299,
+   "precio_lista": 299,
+   "promo": null,
+   "stock_full": null,
+   "stock_propio": 33,
+   "stock_odoo": 516,
+   "costo": {
+    "unitario": 66.67,
+    "fuente": "prorrateo_kubera",
+    "contenedor": null,
+    "validado": false,
+    "revisado_por": null,
+    "costo_panel": null
+   },
+   "comision_pct": 0.08,
+   "comision": 23.92,
+   "envio": 0,
+   "iva": 41.24,
+   "utilidad": 167.17,
+   "margen_pct": 0.5591,
+   "visitas_30d": null,
+   "unidades_30d": 0,
+   "conversion_30d": null,
+   "ingreso_30d": null,
+   "competencia": null,
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T11:30:00Z",
+   "avisos": [
+    "tiktok_precio_puede_venir_sin_iva"
+   ],
+   "supuesto_canal": true
+  },
+  {
+   "id": "temu:TEMU:632833218295",
+   "canal": "temu",
+   "cuenta": "TEMU",
+   "listing_id": "632833218295",
+   "sku": "TEC-1847-MUL",
+   "titulo": "Audífonos inalámbricos Bluetooth 5.3 con estuche de carga",
+   "url": null,
+   "thumbnail": null,
+   "categoria_id": null,
+   "estado": "activa",
+   "situacion": "active",
+   "sub_status": [],
+   "logistica": "drop",
+   "es_full": false,
+   "precio_cobrado": 49,
+   "precio_lista": 49,
+   "promo": null,
+   "stock_full": null,
+   "stock_propio": 1,
+   "stock_odoo": 580,
+   "costo": {
+    "unitario": 9.59,
+    "fuente": "prorrateo_kubera",
+    "contenedor": null,
+    "validado": false,
+    "revisado_por": null,
+    "costo_panel": null
+   },
+   "comision_pct": 0,
+   "comision": 0,
+   "envio": 0,
+   "iva": 0,
+   "utilidad": 39.41,
+   "margen_pct": 0.8043,
+   "visitas_30d": null,
+   "unidades_30d": 18,
+   "conversion_30d": null,
+   "ingreso_30d": null,
+   "competencia": null,
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T11:30:00Z",
+   "avisos": [],
+   "supuesto_canal": true
+  },
+  {
+   "id": "temu:TEMU:681379011762",
+   "canal": "temu",
+   "cuenta": "TEMU",
+   "listing_id": "681379011762",
+   "sku": "ORG-1701-AZU",
+   "titulo": "Tapete antiderrapante para baño memory foam",
+   "url": null,
+   "thumbnail": null,
+   "categoria_id": null,
+   "estado": "activa",
+   "situacion": "active",
+   "sub_status": [],
+   "logistica": "drop",
+   "es_full": false,
+   "precio_cobrado": 142,
+   "precio_lista": 142,
+   "promo": null,
+   "stock_full": null,
+   "stock_propio": 7,
+   "stock_odoo": 385,
+   "costo": {
+    "unitario": 39.19,
+    "fuente": "packing_list_exacto",
+    "contenedor": null,
+    "validado": false,
+    "revisado_por": null,
+    "costo_panel": null
+   },
+   "comision_pct": 0,
+   "comision": 0,
+   "envio": 0,
+   "iva": 0,
+   "utilidad": 102.81,
+   "margen_pct": 0.724,
+   "visitas_30d": null,
+   "unidades_30d": 2,
+   "conversion_30d": null,
+   "ingreso_30d": null,
+   "competencia": null,
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T11:30:00Z",
+   "avisos": [],
+   "supuesto_canal": true
+  },
+  {
+   "id": "temu:TEMU:604349332931",
+   "canal": "temu",
+   "cuenta": "TEMU",
+   "listing_id": "604349332931",
+   "sku": "TEC-0666-AZU",
+   "titulo": "Mini proyector portátil 1080p WiFi",
+   "url": null,
+   "thumbnail": null,
+   "categoria_id": null,
+   "estado": "inactiva",
+   "situacion": "inactive",
+   "sub_status": [],
+   "logistica": "drop",
+   "es_full": false,
+   "precio_cobrado": 185,
+   "precio_lista": 185,
+   "promo": null,
+   "stock_full": null,
+   "stock_propio": 37,
+   "stock_odoo": 593,
+   "costo": {
+    "unitario": 75.75,
+    "fuente": "tarifa_7500",
+    "contenedor": null,
+    "validado": false,
+    "revisado_por": null,
+    "costo_panel": null
+   },
+   "comision_pct": 0,
+   "comision": 0,
+   "envio": 0,
+   "iva": 0,
+   "utilidad": 109.25,
+   "margen_pct": 0.5905,
+   "visitas_30d": null,
+   "unidades_30d": 0,
+   "conversion_30d": null,
+   "ingreso_30d": null,
+   "competencia": null,
+   "tags_calidad": [],
+   "frescura_at": "2026-09-28T11:30:00Z",
+   "avisos": [],
+   "supuesto_canal": true
+  }
+ ]
+}
