@@ -2,7 +2,13 @@
 radar_precios.py — Radar de precios por contenedor · F1 (solo Mercado Libre).
 
   GET /api/radar-precios          → la lista (filtros, conteos, página)
+  GET /api/radar-precios?todos=1  → la lista SIN el recorte del piloto
   GET /api/radar-precios/{sku}    → el item + comparables, serie 90 d, categoría
+
+PILOTO: mientras `services.radar_precios.PILOTO` tenga SKUs, la lista y sus
+conteos muestran solo esos (la respuesta lo dice en `piloto`). El universo se
+arma completo igual —una vez, en la caché— y el recorte va encima; el detalle
+contesta para cualquier SKU con publicación activa.
 
 SOLO LECTURA. Ninguna ruta escribe: no hay POST/PUT/PATCH/DELETE aquí, y el
 servicio (`services/radar_precios.py`) solo hace SELECT.
@@ -70,6 +76,8 @@ async def listar(
     limite: int = Query(200, ge=1, le=1000),
     pagina: int = Query(1, ge=1),
     refrescar: bool = Query(False),
+    # `todos=1` o `todos=true` (FastAPI acepta los dos): sin recorte del piloto.
+    todos: bool = Query(False),
     quien=Depends(solo_admin),
 ) -> dict[str, Any]:
     if clase and clase not in radar.CLASES:
@@ -84,7 +92,7 @@ async def listar(
                             detail=f"No se pudo leer el radar: {type(exc).__name__}") from exc
     datos = radar.filtrar(universo, cuenta=cuenta, clase=clase, direccion=direccion,
                           contenedor=contenedor, q=q, limite=limite, pagina=pagina,
-                          ambiente=settings.app_env)
+                          ambiente=settings.app_env, todos=todos)
     return {**datos, "_cache": {"edad_s": edad, "ttl_s": TTL_S}}
 
 

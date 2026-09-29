@@ -30,6 +30,7 @@ import {
   entero,
   etiquetaClase,
   etiquetaContenedor,
+  tituloContenedor,
   etiquetaCuenta,
   fechaCorta,
   fechaHora,
@@ -250,7 +251,7 @@ function Contenido({ d, volver }: { d: RadarDetalle; volver: string }) {
             {cont && (
               <span
                 className="rounded-md border border-[#D0D5DD] px-2 py-0.5 text-xs font-semibold text-[#4A5163]"
-                title={d.contenedor_multi ? "Llegó en varios contenedores; se muestra el más antiguo" : "Contenedor"}
+                title={tituloContenedor(d)}
               >
                 {cont}
                 {d.contenedor_multi ? " · y otros" : ""}

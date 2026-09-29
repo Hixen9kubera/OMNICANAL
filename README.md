@@ -1001,6 +1001,33 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.592.0 — Radar de precios: piloto de 5 SKUs y consulta de stock 7 veces más rápida
+
+Eduardo, 29-sep: "vaciar" el Radar y dejar por ahora 5 SKUs publicados, activos en Full y con alta probabilidad de
+seguir así, que sean **cinco casos distintos** de calidad y experiencia.
+
+- **Piloto** (`services/radar_precios.py::PILOTO`): el listado y sus conteos muestran solo estos SKUs por defecto; el
+  universo se sigue armando completo (misma caché de 10 min) y **«Ver todos»** (`?todos=1`) lo devuelve. La respuesta trae
+  `piloto` (activo, SKUs, n, total del universo). Los cinco, elegidos entre 461 SKUs activos en Full; solo 10 pasaron el
+  filtro de estables (venden 6+ de 8 semanas, 45+ días de cobertura, sin pausas ni salidas de Full en 45 días, sin aleteo
+  ni gemelas, publicados hace 60+ días):
+  - **Estrella** HERR-0035-VER (calidad 93, experiencia verde);
+  - **Experiencia mala** ORG-0781-AZL-ROS-VER (roja por reclamos, ya barata: el problema no es el precio);
+  - **Ficha débil** TEC-1527-MUL (calidad 64, promoción del 44 %);
+  - **Exceso en Full** JUGU-0268-ROS (~193 días solo con Full);
+  - **Dos cuentas** TEC-0961-BLN (SANCOR a $99 vende todo, BEKURA a $199 nada).
+- **Contenedor en producción:** donde no existe `costing.sku_contenedor` (producción hoy), el número sale del propio
+  PILOTO para esos cinco (`contenedor_fuente`: `tabla` | `piloto`).
+- **Stock:** `_SQL_STOCK` pasa a la forma de Competencia (v0.591.0): un `JOIN` contra la lista de SKUs, sin subconsulta
+  correlacionada. Mismo resultado, 0.83 s → 0.12 s con los 505 SKUs del sandbox.
+- **Frontend:** franja «Piloto · 5 SKUs» con el botón «Ver todos (N)» / «Solo el piloto»; el modo viaja en la URL.
+- Sigue siendo **solo lectura** y **solo admin** (dos `GET` con `solo_admin`).
+
+**Verificado:** 73 pruebas (incluye piloto por defecto, `todos=1`, conteos y contenedor sin tabla); `auditar_rbac.py` con
+las dos rutas en ADMIN explícito; `tsc` y `next build` limpios; en vivo contra el sandbox: 5 de 505, «Ver todos (505)».
+
+**Reversa:** revert de este commit, o vaciar `PILOTO` para volver al universo completo.
+
 ### v0.591.0 — Competencia: el stock de cada SKU junto a su código
 
 Eduardo, 28-sep: *"En competencia agrega al lado del sku su stock del producto"*.

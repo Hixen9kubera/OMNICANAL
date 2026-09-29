@@ -14,6 +14,12 @@
 7. **Filtrar** (pura): conteos sin el filtro de dirección, página.
 8. **Acceso**: la regla RBAC es admin y ninguna otra la tapa; el router solo
    declara GET y rechaza sin sesión (401) o sin rol admin (403).
+9. **Stock**: la consulta es la forma rápida de v0.591.0 (JOIN contra la
+   lista, sin subconsulta correlacionada ni `any()`).
+10. **Piloto**: con SKUs de piloto el listado, los conteos y los contenedores
+   se recortan a ellos; `todos` (y `?todos=1`/`?todos=true`) lo quita; sin
+   costing.sku_contenedor el contenedor sale de PILOTO y, con la tabla, manda
+   la tabla.
 
 Sin red: nada aquí habla con kubera ni con ningún marketplace.
 
@@ -311,6 +317,8 @@ class Redondeo(unittest.TestCase):
         self.assertIsNone(rp.redondear_precio(None))
 
 
+# Sin piloto: estas pruebas miden el filtrado sobre el universo entero.
+@mock.patch.dict(rp.PILOTO, {}, clear=True)
 class Filtrar(unittest.TestCase):
     def test_conteos_sin_filtro_de_direccion_y_pagina(self):
         uni = {"generado_en": "x", "tablas": {}, "items": [
@@ -378,6 +386,176 @@ class Promocion(unittest.TestCase):
         # cobrado); aquí se fija el umbral para que no cambie sin querer.
         self.assertEqual(rp.PARAMS["promocion_min"], 0.05)
         self.assertEqual(rp.DIRECCION_TEXTO["subir"], "subir")
+
+
+class StockSQL(unittest.TestCase):
+    def test_forma_rapida_join_contra_la_lista(self):
+        import re
+        sql = " ".join(rp._SQL_STOCK.split()).lower()
+        # La lista entra UNA vez, como CTE, y se junta con channel.listings.
+        self.assertEqual(rp._SQL_STOCK.count("%(skus)s"), 1)
+        self.assertIn("with s(sku) as (select distinct unnest(%(skus)s::citext[]))", sql)
+        self.assertIn("join s on l.sku = s.sku", sql)
+        # Ni subconsulta escalar en el SELECT (la correlacionada de antes) ni any().
+        self.assertIsNone(re.search(r",\s*\(\s*select", sql), sql)
+        self.assertNotIn("any(", sql)
+        self.assertNotIn("where f.sku = l.sku", sql)
+        # La salida no cambia de nombre: sku, propio, full_.
+        for col in ("as sku", "as propio", "as full_"):
+            self.assertIn(col, sql)
+
+
+def _fake_sdb(*, con_tabla_cont: bool, cont_filas=()):
+    """Un supabase_db de mentira para construir_universo: contesta por consulta
+    y anota cuáles se hicieron. Sin red."""
+    llamadas: list[tuple[str, object]] = []
+    pubs = [
+        {"sku": "AAA-0001-NEG", "cuenta": "BEKURA", "item_id": "MLM1", "price": 500,
+         "price_sale": 500, "price_base": 500, "is_fulfillment": True,
+         "logistic_type": "fulfillment", "stock_own": 10, "stock_full": 5,
+         "category_id": "MLM9"},
+        {"sku": "BBB-0002-BLN", "cuenta": "SANCORFASHION", "item_id": "MLM2", "price": 800,
+         "price_sale": 800, "price_base": 800, "is_fulfillment": False,
+         "logistic_type": "cross_docking", "stock_own": 3, "stock_full": 0,
+         "category_id": "MLM9"},
+    ]
+
+    def fetch_all(sql, params=None):
+        llamadas.append((sql, params))
+        if sql.lstrip().startswith("select l.sku::text as sku, a.legacy_code"):
+            return pubs
+        if sql is rp._SQL_STOCK:
+            return [{"sku": "AAA-0001-NEG", "propio": 10, "full_": 5},
+                    {"sku": "BBB-0002-BLN", "propio": 3, "full_": 0}]
+        if sql is rp._SQL_PESO:
+            return [{"sku": "AAA-0001-NEG", "peso": 1.0, "largo": 10, "ancho": 10, "alto": 10}]
+        if sql is rp._SQL_CONT:
+            return list(cont_filas)
+        return []
+
+    def fetch_scalar(sql, params=None):
+        return bool(con_tabla_cont) if params == ("costing.sku_contenedor",) else False
+
+    return SimpleNamespace(fetch_all=fetch_all, fetch_scalar=fetch_scalar,
+                           fetch_one=lambda *a, **k: None), llamadas
+
+
+class Piloto(unittest.TestCase):
+    UNI = {"generado_en": "x", "tablas": {}, "items": [
+        _item("A", "subir", ref=100, cont="94"), _item("B", "bajar", ref=100, cont="80"),
+        _item("C", "subir", cuenta="SANCORFASHION", cont="94"),
+        _item("D", "mantener", clase="exceso", cont="77")]}
+
+    def test_modulo_trae_dict_y_vacio_no_recorta(self):
+        self.assertIsInstance(rp.PILOTO, dict)
+        with mock.patch.dict(rp.PILOTO, {}, clear=True):
+            r = rp.filtrar(self.UNI)
+        self.assertEqual(r["total"], 4)
+        self.assertEqual(r["piloto"], {"activo": False, "skus": [], "n": 0,
+                                       "total_universo": 4, "faltan": []})
+
+    def test_por_defecto_recorta_lista_conteos_y_contenedores(self):
+        with mock.patch.dict(rp.PILOTO, {"b": 80, " D ": None, "ZZZ-9": 12}, clear=True):
+            r = rp.filtrar(self.UNI)
+        self.assertEqual(sorted(i["sku"] for i in r["items"]), ["B", "D"])
+        self.assertEqual(r["total"], 2)
+        self.assertEqual((r["conteos"]["subir"], r["conteos"]["bajar"],
+                          r["conteos"]["mantener"]), (0, 1, 1))
+        self.assertEqual(r["contenedores"], ["77", "80"])
+        self.assertEqual(r["piloto"], {"activo": True, "skus": ["B", "D", "ZZZ-9"],
+                                       "n": 3, "total_universo": 4, "faltan": ["ZZZ-9"]})
+        # Los demás filtros siguen funcionando DENTRO del piloto.
+        with mock.patch.dict(rp.PILOTO, {"B": 80, "D": None}, clear=True):
+            self.assertEqual(rp.filtrar(self.UNI, direccion="subir")["total"], 0)
+            self.assertEqual(rp.filtrar(self.UNI, clase="exceso")["total"], 1)
+
+    def test_todos_quita_el_recorte(self):
+        with mock.patch.dict(rp.PILOTO, {"B": 80, "D": None}, clear=True):
+            r = rp.filtrar(self.UNI, todos=True)
+        self.assertEqual(r["total"], 4)
+        self.assertEqual((r["conteos"]["subir"], r["conteos"]["bajar"]), (2, 1))
+        self.assertEqual(r["contenedores"], ["77", "80", "94"])
+        self.assertEqual(r["piloto"]["activo"], False)
+        self.assertEqual(r["piloto"]["skus"], ["B", "D"])     # sigue diciendo cuál es
+
+    def test_piloto_explicito_manda_sobre_el_modulo(self):
+        with mock.patch.dict(rp.PILOTO, {"A": None}, clear=True):
+            r = rp.filtrar(self.UNI, piloto=["c"])
+        self.assertEqual([i["sku"] for i in r["items"]], ["C"])
+
+    def test_helpers(self):
+        self.assertEqual(rp.skus_piloto({"a": 1, "A": 2, "": 3, "b": None}), ["A", "B"])
+        self.assertEqual(rp.contenedores_piloto({"x-1": 94, "Y": None}),
+                         {"X-1": {"numero": 94, "n": 1, "multi": False, "fuente": "piloto"}})
+        # «C-80» se entiende; basura no tumba el radar (ese SKU queda sin contenedor).
+        with self.assertLogs("omnicanal.radar_precios", level="WARNING"):
+            self.assertEqual(rp.contenedores_piloto({"A": "C-80", "B": "ochenta"}),
+                             {"A": {"numero": 80, "n": 1, "multi": False, "fuente": "piloto"}})
+
+    def test_contenedor_desde_piloto_sin_tabla(self):
+        fake, llamadas = _fake_sdb(con_tabla_cont=False)
+        with mock.patch.object(rp, "_sdb", return_value=fake):
+            uni = rp.construir_universo(ahora=AHORA, piloto={"aaa-0001-neg": 94})
+        por = {it["sku"]: it for it in uni["items"]}
+        self.assertEqual(set(por), {"AAA-0001-NEG", "BBB-0002-BLN"})   # universo COMPLETO
+        self.assertEqual((por["AAA-0001-NEG"]["contenedor"],
+                          por["AAA-0001-NEG"]["contenedor_multi"],
+                          por["AAA-0001-NEG"]["contenedor_fuente"]), ("94", False, "piloto"))
+        self.assertEqual((por["BBB-0002-BLN"]["contenedor"],
+                          por["BBB-0002-BLN"]["contenedor_fuente"]), (None, None))
+        self.assertFalse(uni["tablas"]["costing.sku_contenedor"])
+        self.assertNotIn(rp._SQL_CONT, [s for s, _ in llamadas])       # sin tabla, no se consulta
+        stock = [p for s, p in llamadas if s is rp._SQL_STOCK]
+        self.assertEqual(stock, [{"skus": ["AAA-0001-NEG", "BBB-0002-BLN"]}])
+        self.assertEqual(por["AAA-0001-NEG"]["stock_detalle"], {"propio": 10, "full": 5})
+
+    def test_con_tabla_manda_la_tabla(self):
+        fake, llamadas = _fake_sdb(con_tabla_cont=True, cont_filas=[
+            {"sku": "AAA-0001-NEG", "numero": 80, "n": 2, "multi": True}])
+        with mock.patch.object(rp, "_sdb", return_value=fake):
+            uni = rp.construir_universo(ahora=AHORA, piloto={"AAA-0001-NEG": 94,
+                                                             "BBB-0002-BLN": 12})
+        por = {it["sku"]: it for it in uni["items"]}
+        self.assertEqual((por["AAA-0001-NEG"]["contenedor"],
+                          por["AAA-0001-NEG"]["contenedor_multi"],
+                          por["AAA-0001-NEG"]["contenedor_fuente"]), ("80", True, "tabla"))
+        # La tabla no lo tiene: null, NO el número del piloto.
+        self.assertIsNone(por["BBB-0002-BLN"]["contenedor"])
+        self.assertIn(rp._SQL_CONT, [s for s, _ in llamadas])
+
+
+class PilotoRouter(unittest.TestCase):
+    def test_todos_por_query(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from routers import radar_precios as ruta
+
+        app = FastAPI()
+        app.include_router(ruta.router)
+        cli = TestClient(app)
+        admin = SimpleNamespace(autenticado=True, tipo="persona", rol="admin",
+                                actor="admin@x")
+        uni = Piloto.UNI
+        ruta._universo = None
+        try:
+            with mock.patch("routers.investigacion.core_identidad.resolver",
+                            new=mock.AsyncMock(return_value=admin)), \
+                 mock.patch.object(rp, "construir_universo", return_value=uni) as cu, \
+                 mock.patch.dict(rp.PILOTO, {"B": 80, "D": None}, clear=True):
+                r = cli.get("/api/radar-precios")
+                self.assertEqual(r.status_code, 200, r.text)
+                self.assertEqual((r.json()["total"], r.json()["piloto"]["activo"]), (2, True))
+                for q in ("todos=1", "todos=true"):
+                    with self.subTest(q=q):
+                        r = cli.get(f"/api/radar-precios?{q}")
+                        self.assertEqual(r.status_code, 200, r.text)
+                        self.assertEqual((r.json()["total"], r.json()["piloto"]["activo"]),
+                                         (4, False))
+                # El universo se arma UNA vez; el recorte va encima de la caché.
+                self.assertEqual(cu.call_count, 1)
+        finally:
+            ruta._universo = None
+            ruta._detalles.clear()
 
 
 if __name__ == "__main__":

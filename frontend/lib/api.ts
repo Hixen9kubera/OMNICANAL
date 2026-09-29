@@ -2119,6 +2119,8 @@ export interface RadarItem {
   titulo: string | null;
   contenedor: string | null;
   contenedor_multi: boolean;
+  /** De dónde salió el contenedor: la tabla medida o el número escrito en el piloto. */
+  contenedor_fuente?: "tabla" | "piloto" | null;
   clase: RadarClase | null;
   cuenta_principal: string | null;
   cuentas: RadarCuenta[];
@@ -2159,6 +2161,22 @@ export interface RadarCompletitud {
 
 export type RadarConteos = Record<RadarDireccion, number>;
 
+/**
+ * El piloto: por ahora el radar sigue solo unos SKUs elegidos a mano
+ * (publicados, activos en Full y con casos distintos de calidad y experiencia).
+ * `activo` = la respuesta viene recortada a esos SKUs; con `todos=1` el backend
+ * devuelve el universo entero. Los conteos ya vienen filtrados del servidor.
+ */
+export interface RadarPiloto {
+  activo: boolean;
+  skus: string[];
+  n: number;
+  /** SKUs con publicación activa sin el recorte del piloto. */
+  total_universo: number;
+  /** SKUs del piloto que hoy no tienen publicación activa (no salen en la lista). */
+  faltan?: string[];
+}
+
 /** Los PARAMS del servicio: decisiones de negocio, no mediciones. */
 export type RadarParametros = Record<string, number | string | boolean | null>;
 
@@ -2174,6 +2192,8 @@ export interface RadarListaResp {
   limite: number;
   contenedores: string[];
   items: RadarItem[];
+  /** Opcional: un backend anterior al piloto no lo manda. */
+  piloto?: RadarPiloto | null;
   /** Qué tablas encontró el backend (las opcionales se consultan con to_regclass). */
   tablas?: Record<string, unknown>;
   notas?: Record<string, unknown>;
@@ -2219,6 +2239,8 @@ export interface RadarParams {
   q?: string | null;
   limite?: number;
   pagina?: number;
+  /** true = ver el universo completo en vez de solo el piloto. */
+  todos?: boolean;
 }
 
 /** Una página del radar, ya ordenada por el servidor (stock × contribución). */
@@ -2230,6 +2252,7 @@ export function radarPrecios(p: RadarParams, signal?: AbortSignal): Promise<Rada
   if (p.direccion) qs.set("direccion", p.direccion);
   if (p.contenedor) qs.set("contenedor", p.contenedor);
   if (p.q?.trim()) qs.set("q", p.q.trim());
+  if (p.todos) qs.set("todos", "1");
   qs.set("limite", String(p.limite ?? 200));
   qs.set("pagina", String(p.pagina ?? 1));
   return getJSON<RadarListaResp>(`/api/radar-precios?${qs.toString()}`, signal);

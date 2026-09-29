@@ -108,6 +108,16 @@ export function etiquetaContenedor(c: string | null | undefined): string | null 
   return /^\d+$/.test(c.trim()) ? `C-${c.trim()}` : c;
 }
 
+/** El title del chip de contenedor: multi y procedencia, dichos, no insinuados. */
+export function tituloContenedor(item: {
+  contenedor_multi?: boolean;
+  contenedor_fuente?: string | null;
+}): string {
+  const partes = [item.contenedor_multi ? "Llegó en varios contenedores; se muestra el más antiguo" : "Contenedor"];
+  if (item.contenedor_fuente === "piloto") partes.push("ubicado a mano para el piloto");
+  return partes.join(" · ");
+}
+
 // ── Dirección ───────────────────────────────────────────────────────────────
 // Colores semánticos de la maqueta aprobada. El chip lleva SIEMPRE icono y
 // texto: el color solo nunca es la única señal.

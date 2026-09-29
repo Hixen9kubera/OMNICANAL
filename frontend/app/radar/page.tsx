@@ -14,9 +14,14 @@
  *
  * Los filtros viven en la URL (se pueden compartir y el "atrás" del navegador
  * los conserva). La paginación, el orden y los conteos los hace el servidor.
+ *
+ * Piloto (28-sep): por ahora el backend recorta el radar a unos pocos SKUs
+ * elegidos a mano. `?todos=1` pide el universo entero; no es un filtro más,
+ * así que "Quitar filtros" no lo toca.
  */
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { Search } from "lucide-react";
 
 import AppNavbar from "@/components/AppNavbar";
@@ -50,9 +55,13 @@ import {
   type RadarClase,
   type RadarDireccion,
   type RadarListaResp,
+  type RadarPiloto,
 } from "@/lib/api";
 
 const LIMITE = 100;
+
+/** El backend no manda la fecha de la elección; es la del corte del piloto. */
+const FECHA_PILOTO = "28-sep";
 
 interface Filtros {
   direccion: RadarDireccion | null;
@@ -61,9 +70,11 @@ interface Filtros {
   contenedor: string;
   q: string;
   pagina: number;
+  /** Universo completo en vez del piloto (`?todos=1`). */
+  todos: boolean;
 }
 
-const VACIOS: Filtros = { direccion: null, cuenta: "", clase: "", contenedor: "", q: "", pagina: 1 };
+const VACIOS: Filtros = { direccion: null, cuenta: "", clase: "", contenedor: "", q: "", pagina: 1, todos: false };
 
 function leerFiltros(qs: URLSearchParams): Filtros {
   const d = qs.get("direccion");
@@ -76,11 +87,13 @@ function leerFiltros(qs: URLSearchParams): Filtros {
     contenedor: qs.get("contenedor") || "",
     q: qs.get("q") || "",
     pagina: Number.isInteger(pag) && pag > 0 ? pag : 1,
+    todos: qs.get("todos") === "1",
   };
 }
 
 function escribirFiltros(f: Filtros): string {
   const qs = new URLSearchParams();
+  if (f.todos) qs.set("todos", "1");
   if (f.direccion) qs.set("direccion", f.direccion);
   if (f.cuenta) qs.set("cuenta", f.cuenta);
   if (f.clase) qs.set("clase", f.clase);
@@ -152,6 +165,7 @@ function RadarLista() {
         q: f.q || null,
         limite: LIMITE,
         pagina: f.pagina,
+        todos: f.todos,
       },
       ctl.signal,
     )
@@ -178,7 +192,8 @@ function RadarLista() {
 
   const limpiar = useCallback(() => {
     setTexto("");
-    setF({ ...VACIOS });
+    // Quitar filtros no saca del piloto ni lo vuelve a poner.
+    setF((prev) => ({ ...VACIOS, todos: prev?.todos ?? false }));
   }, []);
 
   if (noDisponible) return <NoDisponible />;
@@ -191,6 +206,13 @@ function RadarLista() {
   const contenedores = datos?.contenedores ?? [];
   const pasoMax = fraccionComoPct(num(datos?.parametros?.paso_max));
   const items = datos?.items ?? [];
+  const piloto = datos?.piloto ?? null;
+  const todos = !!f?.todos;
+  // La lista viene recortada al piloto (con ?todos=1 ya no, diga lo que diga `activo`).
+  const enPiloto = !!piloto?.activo && !todos;
+  // Con ?todos=1 la franja sigue, para poder volver al piloto.
+  const mostrarPiloto =
+    !!piloto && (piloto.activo || (todos && ((piloto.n ?? 0) > 0 || (piloto.skus?.length ?? 0) > 0)));
 
   let resumen = "";
   if (datos) {
@@ -199,6 +221,7 @@ function RadarLista() {
     else if (typeof datos.con_referencia === "number") {
       resumen = `${base} con publicación activa · ${entero(datos.con_referencia)} con referencia de mercado`;
     } else resumen = `${base} con publicación activa`;
+    if (enPiloto) resumen = `Piloto · ${resumen}`;
   }
 
   return (
@@ -222,6 +245,10 @@ function RadarLista() {
         </div>
 
         <FranjaCompletitud completitud={datos?.completitud} />
+
+        {mostrarPiloto && piloto && (
+          <FranjaPiloto piloto={piloto} todos={todos} onAlternar={() => cambiar({ todos: !todos })} />
+        )}
 
         <TarjetasDireccion
           conteos={datos?.conteos}
@@ -315,7 +342,11 @@ function RadarLista() {
           ) : items.length === 0 ? (
             <div className="flex flex-col items-center gap-2 px-4 py-14 text-center">
               <span className="text-sm font-semibold text-slate-700">
-                {hayFiltro ? "Ningún SKU coincide con el filtro." : "El radar no tiene publicaciones activas de Mercado Libre."}
+                {hayFiltro
+                  ? "Ningún SKU coincide con el filtro."
+                  : enPiloto
+                    ? "Ningún SKU del piloto tiene hoy publicación activa de Mercado Libre."
+                    : "El radar no tiene publicaciones activas de Mercado Libre."}
               </span>
               {hayFiltro && (
                 <button type="button" onClick={limpiar} className="text-sm font-semibold text-indigo-700 hover:underline">
@@ -352,6 +383,79 @@ function RadarLista() {
         <ParametrosRadar parametros={datos?.parametros} />
       </main>
     </>
+  );
+}
+
+/** Qué sigue el radar por ahora, y la salida al universo completo (y de vuelta). */
+function FranjaPiloto({
+  piloto,
+  todos,
+  onAlternar,
+}: {
+  piloto: RadarPiloto;
+  todos: boolean;
+  onAlternar: () => void;
+}) {
+  const skus = Array.isArray(piloto.skus) ? piloto.skus : [];
+  const faltan = new Set(Array.isArray(piloto.faltan) ? piloto.faltan : []);
+  const n = typeof piloto.n === "number" ? piloto.n : skus.length;
+  const universo = entero(piloto.total_universo);
+  const plural = n === 1 ? "" : "s";
+  return (
+    <section
+      aria-label="Piloto del radar"
+      className="flex flex-col gap-3 rounded-xl border border-indigo-200 bg-indigo-50/60 px-5 py-3.5 sm:flex-row sm:items-center sm:gap-5"
+    >
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <div className="font-semibold text-slate-900">
+          Piloto · {entero(n)} SKU{plural} elegido{plural} el {FECHA_PILOTO}
+        </div>
+        <div className="text-[13px] leading-snug text-[#4A5163]">
+          {todos
+            ? `Estás viendo todas las publicaciones activas; el piloto sigue solo estos ${entero(n)} SKU${plural}.`
+            : "Por ahora el radar sigue solo estos SKUs: publicados, activos en Full y con casos distintos de calidad y experiencia."}
+        </div>
+        {skus.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 pt-1">
+            {skus.map((s) =>
+              faltan.has(s) ? (
+                // Sin publicación activa el detalle da 404: se nombra, no se enlaza.
+                <span
+                  key={s}
+                  title="Sin publicación activa de Mercado Libre hoy"
+                  className="rounded-md border border-dashed border-amber-300 bg-amber-50 px-2 py-0.5 text-xs font-semibold tabular-nums text-amber-800"
+                >
+                  {s}
+                </span>
+              ) : (
+                <Link
+                  key={s}
+                  href={`/radar/${encodeURIComponent(s)}`}
+                  className="rounded-md border border-indigo-200 bg-white px-2 py-0.5 text-xs font-semibold tabular-nums text-slate-800 hover:border-indigo-400 hover:text-indigo-700"
+                >
+                  {s}
+                </Link>
+              ),
+            )}
+          </div>
+        )}
+        {faltan.size > 0 && (
+          <div className="text-[13px] leading-snug text-amber-800">
+            {faltan.size === 1
+              ? "1 SKU del piloto no tiene hoy publicación activa y no sale en la lista."
+              : `${entero(faltan.size)} SKUs del piloto no tienen hoy publicación activa y no salen en la lista.`}
+          </div>
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={onAlternar}
+        aria-pressed={todos}
+        className="h-[36px] shrink-0 self-start rounded-lg border border-[#D0D5DD] bg-white px-3.5 text-sm font-semibold text-slate-800 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-indigo-100 sm:self-center"
+      >
+        {todos ? "Solo el piloto" : universo ? `Ver todos (${universo})` : "Ver todos"}
+      </button>
+    </section>
   );
 }
 

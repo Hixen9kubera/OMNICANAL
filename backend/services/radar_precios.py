@@ -17,7 +17,15 @@ LO QUE NO HACE — y es la mitad de su diseño
     · No usa `publicaciones_panel.margen_de` ni la regla de mercado del
       Publicador: tiene sus funciones propias (las de abajo), con pruebas.
     · No enciende ni lee LEER_SKU_CONTENEDOR: el contenedor se consulta directo
-      a `costing.sku_contenedor` SOLO si la tabla existe (`to_regclass`).
+      a `costing.sku_contenedor` SOLO si la tabla existe (`to_regclass`); si no
+      existe (producción hoy), sale del número que trae PILOTO, y solo para
+      esos SKUs.
+
+PILOTO (28-sep-2026)
+    Mientras PILOTO tenga SKUs, el LISTADO y sus conteos muestran solo esos; el
+    universo se sigue armando COMPLETO (misma caché de 10 min) y el recorte va
+    encima, en `filtrar`. `?todos=1` quita el recorte y el detalle /{sku}
+    contesta para cualquier SKU del universo.
 
 ESTRUCTURA
     1. PARAMS — las perillas. Todas son DECISIÓN, no medición.
@@ -100,6 +108,20 @@ DIRECCION_TEXTO = {"subir": "subir", "bajar": "bajar", "mantener": "mantener",
 
 # Los SKUs de clase «recompra» los decide el NEGOCIO; vacío hasta que lo diga.
 RECOMPRA: set[str] = set()
+
+# SKUs del piloto (Eduardo, 28-sep-2026): el radar muestra solo estos por ahora.
+# SKU → número de contenedor (o None si no se sabe). El número solo se usa
+# donde no existe costing.sku_contenedor (producción hoy); con la tabla, manda
+# la tabla. Vacío = sin piloto: el listado muestra el universo completo.
+PILOTO: dict[str, int | None] = {
+    # Cinco casos distintos, todos estables (activos en Full, venden 6+ de 8
+    # semanas, sin pausas en 45 días): _radar_f0/piloto_5_skus.md, fuera del repo.
+    "HERR-0035-VER": 88,          # Estrella: calidad 93, experiencia verde
+    "ORG-0781-AZL-ROS-VER": 73,   # Experiencia mala (roja) aunque ya es barato
+    "TEC-1527-MUL": 50,           # Ficha débil (calidad 64) y promoción profunda
+    "JUGU-0268-ROS": 74,          # Exceso en Full: ~193 días de Full
+    "TEC-0961-BLN": 44,           # Dos cuentas: SANCOR a $99 vende todo, BEKURA a $199 nada
+}
 
 DIRECCIONES = ("subir", "bajar", "mantener", "caro_justificado", "no_competir",
                "sin_referencia")
@@ -496,18 +518,22 @@ select sku::text as sku, cuenta, ml_item_id as item_id, titulo, precio,
 
 # Stock compartido: Woo es la fuente y el resto espejo → max(), no sum().
 # Full vive aparte (bodega de ML): por cuenta el max de stock_full, sumado.
+# La forma de competencia_supabase.stock_por_sku (v0.591.0): un JOIN contra la
+# lista y una sola pasada por channel.listings. La anterior (subconsulta
+# correlacionada por SKU + dos `any()`) daba lo mismo pero recorría la tabla
+# dos veces y resolvía el Full fila por fila.
 _SQL_STOCK = """
-with f as (
-  select sku, account_id, max(coalesce(stock_full, 0)) as sf
-    from channel.listings
-   where canal = 'mercado_libre' and is_fulfillment
-     and sku = any(%(skus)s::citext[])
-   group by 1, 2
-)
+with s(sku) as (select distinct unnest(%(skus)s::citext[])),
+l as (select l.sku, l.account_id, l.canal, l.is_fulfillment,
+             l.stock_own, l.stock_full
+        from channel.listings l join s on l.sku = s.sku),
+fa as (select sku, account_id, max(coalesce(stock_full, 0)) as sf
+         from l where canal = 'mercado_libre' and is_fulfillment
+        group by 1, 2),
+f as (select sku, sum(sf) as sf from fa group by 1)
 select l.sku::text as sku, max(l.stock_own) as propio,
-       (select coalesce(sum(f.sf), 0) from f where f.sku = l.sku) as full_
-  from channel.listings l
- where l.sku = any(%(skus)s::citext[])
+       coalesce(max(f.sf), 0) as full_
+  from l left join f on f.sku = l.sku
  group by l.sku
 """
 
@@ -596,7 +622,8 @@ select a.legacy_code as cuenta, h.listing_id as item_id, h.metrica, h.estado,
 """
 
 # costing.sku_contenedor (0060) solo existe en el sandbox: se consulta si la
-# tabla existe. El más antiguo (N menor) es la etiqueta.
+# tabla existe. El más antiguo (N menor) es la etiqueta. Sin la tabla, el
+# contenedor sale de PILOTO (`contenedores_piloto`) y el resto queda en null.
 _SQL_CONT = """
 select sku::text as sku, min(numero) as numero, count(*) as n,
        bool_or(multi) as multi
@@ -705,6 +732,38 @@ def depurar_padres(pubs: list[dict]) -> tuple[list[dict], int]:
     return [f for f in pubs if (str(f["item_id"]), str(f["sku"]).upper()) not in padres], len(fuera)
 
 
+def skus_piloto(piloto: dict[str, Any] | Iterable[str] | None = None) -> list[str]:
+    """PURA. Los SKUs del piloto en MAYÚSCULAS, sin repetidos ni vacíos, en el
+    orden en que se escribieron. `None` = el PILOTO del módulo."""
+    fuente = PILOTO if piloto is None else piloto
+    out: list[str] = []
+    for s in fuente:
+        k = str(s or "").strip().upper()
+        if k and k not in out:
+            out.append(k)
+    return out
+
+
+def contenedores_piloto(piloto: dict[str, Any] | None = None) -> dict[str, dict]:
+    """PURA. {SKU: fila con la forma de _SQL_CONT} para los SKUs del piloto que
+    traen número. Es la fuente del contenedor SOLO cuando costing.sku_contenedor
+    no existe: un número escrito a mano, uno por SKU, así que nunca es multi."""
+    fuente = PILOTO if piloto is None else piloto
+    out: dict[str, dict] = {}
+    for s, n in fuente.items():
+        k = str(s or "").strip().upper()
+        if not k or n is None:
+            continue
+        try:
+            numero = int(str(n).strip().upper().removeprefix("C-"))
+        except ValueError:
+            # Un número mal escrito no tumba el radar: ese SKU sale sin contenedor.
+            log.warning("radar: contenedor del piloto ilegible para %s: %r", k, n)
+            continue
+        out[k] = {"numero": numero, "n": 1, "multi": False, "fuente": "piloto"}
+    return out
+
+
 def asignar_ventas(filas: Iterable[dict], item_a_sku: dict[str, str],
                    skus: set[str]) -> dict[str, float]:
     """PURA. Unidades por SKU nuestro. Cada fila cuenta para el SKU de su item
@@ -745,9 +804,13 @@ def _mejor_vista(filas: list[dict]) -> dict[tuple[str, str], dict]:
 
 def construir_universo(*, ahora: datetime | None = None,
                        params: dict | None = None,
-                       recompra: Iterable[str] | None = None) -> dict[str, Any]:
+                       recompra: Iterable[str] | None = None,
+                       piloto: dict[str, int | None] | None = None) -> dict[str, Any]:
     """BLOQUEANTE. Un item por SKU con publicación activa de ML, ya con
-    contribución, clase, piso, referencia y dirección. Solo SELECT."""
+    contribución, clase, piso, referencia y dirección. Solo SELECT.
+
+    Siempre el universo COMPLETO: el recorte del piloto lo hace `filtrar`.
+    `piloto` (None = PILOTO) solo aporta el contenedor cuando no hay tabla."""
     from services import publicaciones_panel as pp
     sdb = _sdb()
     P = _p(params)
@@ -792,8 +855,9 @@ def construir_universo(*, ahora: datetime | None = None,
     if tablas["enrich.listing_health"]:
         for f in sdb.fetch_all(_SQL_SALUD, {"items": items}):
             salud[(f["cuenta"].upper(), str(f["item_id"]), f["metrica"])] = f
-    cont = ({f["sku"].upper(): f for f in sdb.fetch_all(_SQL_CONT, {"skus": skus})}
-            if tablas["costing.sku_contenedor"] else {})
+    cont = ({f["sku"].upper(): {**f, "fuente": "tabla"}
+             for f in sdb.fetch_all(_SQL_CONT, {"skus": skus})}
+            if tablas["costing.sku_contenedor"] else contenedores_piloto(piloto))
     peso = {f["sku"].upper(): f for f in sdb.fetch_all(_SQL_PESO, {"skus": skus})}
     ref_filas: dict[str, list[dict]] = {}
     terminos: dict[str, str | None] = {}
@@ -925,7 +989,10 @@ def _armar_item(sku: str, filas: list[dict], *, vista, stock, u90, comis, envios
 
     return {
         "sku": sku, "titulo": titulo, "contenedor": contenedor,
-        "contenedor_multi": multi, "clase": clase,
+        "contenedor_multi": multi,
+        # tabla (costing.sku_contenedor) · piloto (número escrito en PILOTO) · None
+        "contenedor_fuente": (cont or {}).get("fuente") if contenedor else None,
+        "clase": clase,
         "cuenta_principal": principal["cuenta"], "cuentas": publicas,
         "referencia": {k: ref[k] for k in ("precio", "fuente", "n", "termino",
                                            "capturado_en", "motivo", "n_total",
@@ -963,12 +1030,26 @@ def _publico(it: dict) -> dict:
 def filtrar(universo: dict, *, cuenta: str | None = None, clase: str | None = None,
             direccion: str | None = None, contenedor: str | None = None,
             q: str | None = None, limite: int = 200, pagina: int = 1,
-            ambiente: str | None = None) -> dict[str, Any]:
+            ambiente: str | None = None, todos: bool = False,
+            piloto: dict[str, Any] | Iterable[str] | None = None) -> dict[str, Any]:
     """PURA. La respuesta de GET /api/radar-precios sobre un universo ya armado.
 
     Los conteos por dirección se calculan con TODOS los filtros menos el de
-    dirección (las tarjetas son el filtro de dirección)."""
-    items = universo.get("items") or []
+    dirección (las tarjetas son el filtro de dirección).
+
+    PILOTO: si hay SKUs de piloto (`piloto`, None = PILOTO) y no se pidió
+    `todos`, TODO lo de abajo —lista, conteos, completitud y la lista de
+    contenedores— se calcula solo sobre ellos. `piloto.faltan` son los del
+    piloto que no están en el universo (perdieron su publicación activa)."""
+    universo_items = universo.get("items") or []
+    pil = skus_piloto(piloto)
+    pil_activo = bool(pil) and not todos
+    presentes = {it["sku"] for it in universo_items}
+    items = ([it for it in universo_items if it["sku"] in set(pil)]
+             if pil_activo else universo_items)
+    bloque_piloto = {"activo": pil_activo, "skus": pil, "n": len(pil),
+                     "total_universo": len(universo_items),
+                     "faltan": [s for s in pil if s not in presentes]}
     cta = (cuenta or "").strip().upper() or None
     qq = (q or "").strip().lower() or None
     cont = (contenedor or "").strip() or None
@@ -1026,6 +1107,7 @@ def filtrar(universo: dict, *, cuenta: str | None = None, clase: str | None = No
         "contenedores": contenedores,
         "tablas": tablas,
         "notas": universo.get("notas") or {},
+        "piloto": bloque_piloto,
         "items": [_publico(it) for it in final[ini:ini + limite]],
     }
 

@@ -19,6 +19,7 @@ import {
   entero,
   etiquetaClase,
   etiquetaContenedor,
+  tituloContenedor,
   motivoSinReferencia,
   num,
   pesos,
@@ -212,7 +213,7 @@ export function TablaRadar({
                     </Link>
                     {cont && (
                       <span
-                        title={item.contenedor_multi ? "Llegó en varios contenedores; se muestra el más antiguo" : "Contenedor"}
+                        title={tituloContenedor(item)}
                         className="shrink-0 rounded-md border border-[#D0D5DD] px-1.5 py-px text-[11px] font-semibold text-[#4A5163]"
                       >
                         {cont}{item.contenedor_multi ? " +" : ""}
