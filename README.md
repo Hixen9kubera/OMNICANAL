@@ -1001,6 +1001,30 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.595.0 — Cajón del producto: la tarjeta de Amazon trae el ASIN y «Ver publicación»
+
+Seguimiento de CAM-0030-MAT (29-sep): con v0.594.0 la ficha ya mostraba precio
+y stock, pero seguía sin ASIN ni enlace. La tarjeta de Amazon de
+`GET /api/productos/{sku}` tomaba el id de `amazon.por_sku`, que lee la bitácora
+del publicador (`amazon_progress`, MySQL), y ahí `asin` está vacío en las
+**1,710** publicaciones: el pie con el ASIN y «Ver publicación» no salía en
+**ningún** producto de Amazon. Y como la lista de publicaciones dentro de la
+tarjeta va sin enlace a propósito (el pie lo trae), no había enlace en ningún lado.
+
+**Arreglo** (`routers/productos.py`, solo lectura):
+- El ASIN sale de `channel.listings.listing_id` (kubera), que el sync y el
+  descubrimiento diario mantienen al día; ya venía en `inventario.leer_inventario`.
+- Lo que el publicador no registró (lo que encontró el descubrimiento, p. ej.
+  SIL-0013-BLN/NEG) también tiene tarjeta.
+- Si MySQL no contesta, la tarjeta sale con lo de kubera en vez de tirar el cajón
+  entero con un 503. La bitácora queda de complemento (tipo de producto y estado
+  de publicación).
+
+Pruebas: 5 unitarias (`tests/test_cajon_amazon_asin.py`) más las 3 del cajón que
+ya había, y `scripts/probar_cajon_amazon_sandbox.py` contra el sandbox con MySQL
+apagado: CAM-0030-MAT (B0HJ463BQB), CAM-0030 (B0HHBDHMDB) y SIL-0013-BLN
+(B0H6H7G24R) salen con su ASIN y su enlace.
+
 ### v0.594.0 — Amazon completo en el panel: el sync ya no se queda clavado y descubre lo que nadie registró
 
 Reporte de Eduardo (29-sep): en la ficha de CAM-0030 Amazon decía «publicado»,
@@ -1042,8 +1066,8 @@ que faltaban quedaron registradas, y la de CAM-0030 completa, leyéndolas de
 Amazon por el camino del sync. TEC-0935-AZLMAR y -ROS dicen PUBLISHED en
 `amazon_progress` pero Amazon las contesta 404; no se registraron.
 
-**Pendiente, aparte:** 844 filas del panel que Amazon no lista (dadas de baja o
-nunca publicadas).
+**Pendiente, aparte:** 578 filas del panel que Amazon no lista (dadas de baja o
+nunca publicadas). El primer conteo, 844, salió de la lectura cortada en 1,000.
 
 Pruebas: 11 unitarias (`tests/test_amazon_sync_completo.py`, con una cuenta
 simulada de 2,500 publicaciones y el tope de 1,000) y

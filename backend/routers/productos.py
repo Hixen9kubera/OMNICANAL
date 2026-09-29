@@ -984,15 +984,33 @@ async def detalle_producto(sku: str, refrescar: bool = False):
     # Amazon (cache). IGUALDAD EXACTA, nunca `search=` — ése hace LIKE de prefijo
     # y con 693 SKUs que son prefijo de otros el detalle acababa mostrando la
     # publicación de OTRO producto (auditoría 29-jul).
-    a = await asyncio.to_thread(amazon.por_sku, sku)
-    if a:
+    #
+    # EL ASIN SALE DE KUBERA (29-sep). `amazon.por_sku` lee la bitácora del
+    # publicador (`amazon_progress`, MySQL) y su columna `asin` está vacía en
+    # las 1,710 publicaciones: la tarjeta nunca traía id, así que el pie con el
+    # ASIN y el botón «Ver publicación» no salían en NINGÚN producto (caso
+    # CAM-0030-MAT). El ASIN vive en `channel.listings.listing_id`, que el sync
+    # y el descubrimiento diario mantienen al día, y ya viene en `inv`. Con eso
+    # también tiene tarjeta lo que el publicador no registró (lo que encontró el
+    # descubrimiento, p. ej. SIL-0013-BLN). La bitácora queda de complemento
+    # —tipo de producto y estado de publicación— y si MySQL no contesta, la
+    # tarjeta sale igual en vez de tirar el cajón entero.
+    try:
+        a = await asyncio.to_thread(amazon.por_sku, sku)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("bitácora de Amazon no disponible para %s: %s", sku, exc)
+        a = None
+    asin = (inv.get("amazon|") or {}).get("item_id") or (a or {}).get("item_id")
+    if a or asin:
+        a = a or {}
         dc = DetalleCanal(
             canal=Canal.AMAZON.value,
-            publicado=a["publicado"], item_id=a["item_id"], url=a["url"],
-            precio=a["precio"], stock=a["stock"],
-            full=a["full"], full_label=a["full_label"],
-            categoria_id=a["categoria_id"], categoria_path=a["categoria_path"],
-            estado=a["estado"],
+            publicado=bool(a.get("publicado")) or bool(asin), item_id=asin,
+            url=f"https://www.amazon.com.mx/dp/{asin}" if asin else a.get("url"),
+            precio=a.get("precio"), stock=a.get("stock"),
+            full=a.get("full"), full_label=a.get("full_label", "FBA"),
+            categoria_id=a.get("categoria_id"), categoria_path=a.get("categoria_path") or [],
+            estado=a.get("estado") or (inv.get("amazon|") or {}).get("situacion"),
         )
         detalle.canales.append(_aplicar_inv(Canal.AMAZON.value, "", dc))
 
