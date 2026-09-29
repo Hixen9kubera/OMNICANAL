@@ -1001,6 +1001,30 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.596.0 — Competencia: nuestras publicaciones vuelven a salir como NUESTRAS en las búsquedas
+
+29-sep: en las 9,246 filas de búsqueda guardadas **ninguna** estaba marcada como nuestra. La búsqueda de ML ya no devuelve
+el id de la publicación sino el del **producto de vendedor** (`MLMU…`), y `_marcar` comparaba solo ese id crudo contra
+nuestros ids de publicación: nunca coincidía. Nuestra propia publicación contaba como rival y entraba a la mediana del
+mercado (Radar y Competencia). Ejemplo: el kit de doctor de BEKURA a $159 era el #2 «de la competencia».
+
+- La captura ya traducía cada `MLMU` a su publicación real (para pedir visitas). Ahora esa publicación queda en la fila
+  (`item_real`, solo en memoria; no se guarda) y `_marcar` compara también contra ella.
+- **Solo para `MLMU`:** un producto de vendedor es de un solo vendedor. Las fichas de **catálogo** (`/p/`) se quedan como
+  estaban: las comparten varios vendedores y el primer item que devuelve la API al resolver puede no ser el de la tarjeta
+  raspada (marcarla haría «nuestra» la oferta de otro).
+- Candado: una fila sin id nunca es «nuestra» (antes una llave vacía en el mapa las habría marcado todas).
+
+**Verificado con datos reales (solo lectura, sin renovar tokens):** la verdad salió del `user_product_id` de nuestras
+5,274 publicaciones de ML. **0 falsos de 150** filas ajenas y 0 de otro vendedor en 544 resoluciones; **98.3 %** de
+nuestras publicaciones activas reconocidas (532/541). Las 20 históricas que no reconoce son publicaciones pausadas hoy (ML
+no resuelve el producto de vendedor de una pausada, y en una búsqueda nueva no aparecen). 7 pruebas nuevas; suite completa
+del backend: 967 pruebas, 0 fallas.
+
+**Lo guardado no cambia solo:** las filas existentes siguen sin marca hasta que su término se vuelva a medir.
+
+**Reversa:** revert de este commit.
+
 ### v0.595.0 — Cajón del producto: la tarjeta de Amazon trae el ASIN y «Ver publicación»
 
 Seguimiento de CAM-0030-MAT (29-sep): con v0.594.0 la ficha ya mostraba precio

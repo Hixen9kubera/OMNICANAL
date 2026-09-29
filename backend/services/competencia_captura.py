@@ -78,8 +78,17 @@ def _nuestras_publicaciones() -> dict[str, dict[str, str]]:
 
 
 def _marcar(filas: list[dict[str, Any]], nuestras: dict[str, dict[str, str]]) -> None:
+    # Se busca por el id de la fila Y por la publicación real a la que se
+    # resolvió (`item_real`, lo deja `enriquecer_visitas`). La búsqueda de ML ya
+    # no devuelve el item sino el PRODUCTO DE VENDEDOR (`MLMU…`), que nunca es un
+    # id de publicación: comparando solo el crudo, NINGUNA de nuestras
+    # publicaciones salía como nuestra y cada una contaba como rival —medido el
+    # 29-sep-2026: el kit de doctor de BEKURA a $159 era el #2 «de la
+    # competencia» y entraba a la mediana del Radar—.
     for f in filas:
-        mio = nuestras.get(f.get("externo_id") or "")
+        # Nunca con llave vacía: una fila sin id no puede «ser nuestra».
+        mio = next((nuestras[k] for k in (f.get("externo_id"), f.get("item_real"))
+                    if k and k in nuestras), None)
         if mio:
             f["es_nuestro"] = True
             f["sku_nuestro"] = mio["sku"]
@@ -1376,6 +1385,16 @@ async def enriquecer_visitas(filas: list[dict[str, Any]]) -> int:
     for f in filas:
         crudo = f.get("externo_id") or ""
         ident = porv.get(crudo, crudo)
+        # La publicación real queda en la fila (en memoria, no se guarda): es con
+        # la que `_marcar` reconoce las nuestras cuando el crudo es un MLMU. SOLO
+        # para MLMU: un producto de vendedor es de UN vendedor (validado el
+        # 29-sep contra nuestros propios user products: 0 de 150 falsos, 98 %
+        # de las activas reconocidas). Una ficha de CATÁLOGO (/p/) la comparten
+        # varios, y el primer item que devuelve /products/{id}/items al resolver
+        # puede no ser el de la tarjeta raspada: marcarla haría «nuestra» la
+        # oferta de otro vendedor. El catálogo se queda como estaba.
+        if crudo in porv and crudo.startswith("MLMU"):
+            f["item_real"] = porv[crudo]
         # Un id de catálogo sin resolver NO sirve para /visits: pedirlo devolvería
         # 0 y ese cero se leería como "nadie la ve".
         if ident == crudo and "/p/" in (f.get("url") or "") and crudo not in porv:
