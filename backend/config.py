@@ -675,6 +675,19 @@ class Settings(BaseSettings):
     # Apagado = comportamiento idéntico al de siempre. Encenderlo = dale de
     # Brandon (flujo vivo, regla 3).
     sync_desde_ml: bool = False
+    # ROTACIÓN POR RELOJ del lote de ML (v0.597.0). Solo actúa con
+    # SYNC_DESDE_ML encendido. El orden de siempre ("lo más rancio primero")
+    # usa `updated_at`, que solo se mueve cuando algo CAMBIA: releer una
+    # pausada que no cambió la deja igual de rancia, así que la ronda
+    # siguiente la vuelve a elegir. Medido el 22-sep-2026: los 80 del lote eran
+    # SIEMPRE los mismos (35-44 "nunca vistos" + pausadas del 24-ago) y la
+    # primera activa estaba en el lugar ~2,200 de la fila; ninguna activa se
+    # releía nunca. Encendido: cada ronda lee una TAJADA fija del universo
+    # ordenado, según la hora (`ronda × lote mod n`), y cada publicación se
+    # visita una vez por vuelta (~32 rondas ≈ 8 h por cuenta). Ver
+    # `inventario._tajada_por_reloj`. Nace apagado: cambia qué se le pregunta
+    # a ML y qué se escribe en channel.listings (flujo vivo, regla 3).
+    sync_ml_rotacion_reloj: bool = False
 
     # ── Refresco de precio AL ABRIR el cajón de un producto ───
     # `services/precio_al_abrir.py`. Al abrir el cajón de un SKU se le pregunta
@@ -840,6 +853,39 @@ class Settings(BaseSettings):
     # full-refresh por tanda) repuebla canal_inventario solo. El respaldo de
     # emergencia (kubera caída → MySQL absorbe) NO se toca: sigue vivo.
     channel_espejo_inverso: bool = True
+    # GEMELAS de una publicación de ML (v0.597.0). La PK de channel.listings es
+    # (sku, account_id, canal): cuando el padre y una variante reclaman el MISMO
+    # listing_id, el sync solo escribe la fila del SKU que declara el item y la
+    # otra se queda con su último estado para siempre. Medido el 22-sep-2026:
+    # 93 listing_id en dos filas; 14 huérfanas decían `active` con ML pausado
+    # (618 unidades de FULL fantasma). Encendido: después de escribir una fila
+    # de ML se copia su `situacion` —y SOLO la situación: el stock no se puede
+    # repartir entre dos SKUs sin inventarlo— a las demás filas con el mismo
+    # listing_id en la cuenta. La situación es de la publicación, no del SKU.
+    # Quién es el dueño de cada publicación es de identidad y NO se arregla aquí.
+    #
+    # Y el AVISO de ML escribe en la fila DUEÑA (v0.597.0). El webhook tomaba el
+    # SKU con `channel_read.dueno_de_item_ml`, un `limit 1` sin orden: con dos
+    # filas para el mismo item refrescaba cualquiera de las dos. Medido el
+    # 29-sep-2026 contra ML: en los 93 items repartidos siempre hay UNA fila con
+    # el SKU que declara ML (88 son padre→hijo, 5 el mismo SKU mal escrito), y
+    # 13 de esas dueñas estaban atrasadas porque el aviso escribía en la otra.
+    # Encendido: leído el item, si una de SUS filas lleva el SKU que declara ML,
+    # el aviso escribe ahí. No crea filas ni cambia a quién apunta cada una.
+    channel_gemelas_situacion: bool = False
+    # DUEÑO ESTABLE de una fila de ML (v0.597.0). El caso inverso de las
+    # gemelas: dos o más items de ML que declaran el MISMO SKU (p. ej. uno FULL
+    # y otro xd_drop_off). Como la fila guarda un solo listing_id, el otro item
+    # nunca figura como "visto", entra al frente de la ronda siguiente y le
+    # arrebata la fila: una vuelta por ronda, para siempre. Medido el
+    # 22-sep-2026: 35-44 items por cuenta en cada lote, 84,264 cambios de
+    # `is_fulfillment` en 30 días (12 pares hacen el 90%), y de los pares que
+    # aletean sale el ~79% de toda la historia de ML de ese lapso (241,688 de
+    # 305,300 filas). Encendido: una fila de ML solo cambia de
+    # listing_id si el item nuevo está en un estado ESTRICTAMENTE mejor
+    # (active > paused > under_review > lo demás); en empate se queda el que
+    # ya estaba. Ver `channel_mirror._condicion_dueno_estable`.
+    channel_dueno_estable: bool = False
     # DESMANTELAMIENTO de costing y orders (mismo paso 1 que channel). En false,
     # el espejo inverso a MySQL (costos_*/pedidos_ml) deja de escribirse y la
     # tabla queda congelada; el cron de deltas correspondiente se retira EN EL

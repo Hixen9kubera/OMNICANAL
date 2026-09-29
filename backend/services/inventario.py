@@ -295,6 +295,68 @@ async def _universo_ml(cli: httpx.AsyncClient, cuenta: str, token: str) -> list[
     return en_cache[1] if en_cache else []
 
 
+# Rotación por reloj (SYNC_ML_ROTACION_RELOJ, v0.597.0). Lo nunca visto conserva
+# un turno preferente, pero acotado y UNA sola vez por proceso: hay items que
+# jamás llegan a tener fila —los que no traen SKU legible y los "hermanos" que
+# declaran el SKU de otro item— y con preferencia ilimitada ocupaban 35-44 de
+# los 80 lugares de CADA ronda (medido el 22-sep-2026).
+_NUEVOS_POR_RONDA = 20
+_intentados: dict[str, set[str]] = {}
+
+
+def _tajada_por_reloj(cuenta: str, ids: list[str], vistos: dict[str, Any],
+                      limite: int, ahora: float | None = None) -> list[str]:
+    """
+    Los item_id de la ronda con SYNC_ML_ROTACION_RELOJ: una TAJADA fija del
+    universo ordenado según la hora, más lo nunca visto que no se haya
+    intentado todavía en este proceso.
+
+    POR QUÉ NO "LO MÁS RANCIO PRIMERO". `updated_at` solo se mueve cuando algo
+    CAMBIA (el upsert es solo-si-cambió y `trg_touch_listings` sella la hora):
+    releer una pausada que no cambió la deja igual de rancia, y la ronda
+    siguiente la vuelve a elegir. El lote se quedaba clavado en las mismas 80
+    y ninguna activa entraba nunca (la primera estaba en el lugar ~2,200).
+    Encima `precios_venta` sella `updated_at` de las activas al confirmar su
+    precio, así que parecían recién vistas sin que nadie les leyera el estado.
+
+    POR QUÉ NO UNA COLUMNA `observed_at`. Sellarla en cada lectura sería un
+    UPDATE por fila leída, y el trigger movería `updated_at`: rompería la
+    regla `price_sale_at >= updated_at` con la que `precios_venta` confirma
+    una oferta (ver su encabezado), y cada releída dejaría la oferta "sin
+    confirmar".
+
+    El reloj no necesita estado: `inicio = (ronda × lote) mod n`, con
+    `ronda = ahora // intervalo`. Rondas seguidas leen tajadas contiguas, y
+    cada publicación se visita una vez por vuelta (⌈n / lote⌉ rondas; con
+    ~2,525 y 80 son 32 ≈ 8 h por cuenta). Un reinicio retoma donde toca, no
+    desde el principio. Si el universo cambia de tamaño (el cache de 30 min)
+    la tajada se corre un poco: alguna se lee dos veces o espera una vuelta más.
+    """
+    import time
+    universo = sorted(set(ids))
+    n = len(universo)
+    if not n or limite <= 0:
+        return []
+    periodo = max(int(settings.sync_interval_min or 0), 1) * 60
+    ronda = int((time.time() if ahora is None else ahora) // periodo)
+    inicio = (ronda * limite) % n
+    tajada = [universo[(inicio + k) % n] for k in range(min(limite, n))]
+
+    intentados = _intentados.setdefault(cuenta, set())
+    intentados.intersection_update(universo)   # lo que ML ya no lista, se olvida
+    en_tajada = set(tajada)
+    # dict.fromkeys: un item que cambió de estado a media lectura del universo
+    # puede venir en el barrido de active Y en el de paused
+    nuevos = [i for i in dict.fromkeys(ids) if i not in vistos
+              and i not in intentados and i not in en_tajada][:_NUEVOS_POR_RONDA]
+    intentados.update(nuevos)
+    intentados.update(i for i in tajada if i not in vistos)
+    log.info("rotación por reloj %s: tajada %d-%d de %d, %d nunca visto(s) "
+             "con turno preferente", cuenta, inicio,
+             (inicio + len(tajada) - 1) % n, n, len(nuevos))
+    return nuevos + tajada
+
+
 async def _lote_desde_ml(cli: httpx.AsyncClient, cuenta: str, token: str,
                          limite: int) -> list[dict[str, Any]]:
     """
@@ -304,6 +366,8 @@ async def _lote_desde_ml(cli: httpx.AsyncClient, cuenta: str, token: str,
     publicaciones que ML ya borró no aparecen en el universo → dejan de
     refrescarse y de pisar la fila de su SKU (253 muertas medidas el 4-ago).
     El sku viaja None: se resuelve del propio item al leer el detalle.
+    Con SYNC_ML_ROTACION_RELOJ la rotación ya no es por rancio sino por reloj
+    (ver `_tajada_por_reloj`, que explica por qué la de siempre no avanza).
     """
     ids = await _universo_ml(cli, cuenta, token)
     if not ids:
@@ -317,10 +381,14 @@ async def _lote_desde_ml(cli: httpx.AsyncClient, cuenta: str, token: str,
         vistos = await asyncio.to_thread(channel_read.vistos_ml, cuenta)
     except Exception:  # noqa: BLE001 — sin cache de vistos el orden degrada, no rompe
         pass
-    from datetime import datetime
-    epoca = datetime(1970, 1, 1)
-    orden = sorted(ids, key=lambda i: (i in vistos, vistos.get(i) or epoca))
-    lote = [{"sku": None, "ml_item_id": i} for i in orden[:limite]]
+    if settings.sync_ml_rotacion_reloj:
+        elegidos = _tajada_por_reloj(cuenta, ids, vistos, limite)
+    else:
+        from datetime import datetime
+        epoca = datetime(1970, 1, 1)
+        orden = sorted(ids, key=lambda i: (i in vistos, vistos.get(i) or epoca))
+        elegidos = orden[:limite]
+    lote = [{"sku": None, "ml_item_id": i} for i in elegidos]
 
     # BARRIDO DE CIERRE: filas que el panel cree vivas (active/paused) cuyo
     # item YA NO aparece en el catálogo vivo — ML lo borró o lo cerró y, como
@@ -522,7 +590,7 @@ def _tajada_reloj(filas: list[dict[str, Any]], limite: int,
     vuelve a elegir. Los logs lo mostraron: las MISMAS 80 (CALZ-0227,
     ACC-0306-NEG-1.8…) cada 15 min, todo el día, y CAM-0030 en el lugar 1,660 de
     1,695 sin su ASIN desde el 31-ago. Mismo defecto que el sync de ML tiene
-    diagnosticado desde el 22-sep (`SYNC_ROTACION_RELOJ`, rama sin publicar).
+    diagnosticado desde el 22-sep (`SYNC_ML_ROTACION_RELOJ`, v0.597.0).
 
     El reloj no necesita estado: `inicio = (ronda × lote) mod n`, con
     `ronda = ahora // intervalo`. Vueltas seguidas leen tajadas contiguas y cada
@@ -863,6 +931,17 @@ async def refrescar_ml_item_id(item_id: str, *,
         return {"ok": False, "motivo": str(exc)}
     if not item:
         return {"ok": False, "motivo": "no se pudo leer el item"}
+    # LA FILA DUEÑA (CHANNEL_GEMELAS_SITUACION, v0.597.0). `_dueno` es un
+    # `limit 1` sin orden: si el padre y su variante reclaman este item, podía
+    # tocarle a cualquiera, y la del SKU que declara ML se quedaba atrasada (13
+    # de 93 el 29-sep). Solo se elige entre las filas que YA apuntan a este
+    # item: no se crea ninguna ni se le cambia el item a otra. La situación le
+    # llega a la otra por `channel_mirror._copiar_situacion_a_gemelas`.
+    sku_ml = _sku_de_item(item)
+    if (settings.channel_gemelas_situacion and settings.supabase_read_publicaciones
+            and sku_ml and sku_ml.upper() != str(sku).upper()):
+        suyas = await asyncio.to_thread(channel_read.skus_de_item_ml, item_id, cuenta)
+        sku = next((s for s in suyas if s.upper() == sku_ml.upper()), sku)
     logistic = (item.get("shipping") or {}).get("logistic_type")
     es_full = logistic == "fulfillment"
     qty = item.get("available_quantity")

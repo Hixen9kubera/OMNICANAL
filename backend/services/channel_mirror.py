@@ -101,6 +101,68 @@ def _provisional_fuera(sku: str, via: str) -> bool:
     return True
 
 
+# ── Una publicación de ML ↔ una fila (flags del 22-sep-2026, v0.597.0) ───────
+# La PK de channel.listings es (sku, account_id, canal), pero en ML la relación
+# publicación↔SKU no es 1 a 1 en ninguno de los dos sentidos. Las dos piezas de
+# abajo NO deciden quién es el dueño de cada publicación (eso es de identidad);
+# solo evitan los dos daños medidos: la fila que se queda congelada y la fila
+# que cambia de item en cada ronda.
+
+def _rango_situacion(col: str) -> str:
+    """Rango SQL de la situación de ML: active 3 > paused 2 > under_review 1 >
+    lo demás (closed, inactive, NULL) 0."""
+    return (f"(case lower(coalesce({col}, '')) when 'active' then 3 "
+            f"when 'paused' then 2 when 'under_review' then 1 else 0 end)")
+
+
+def _condicion_dueno_estable(canal: str) -> str:
+    """Condición extra del upsert con CHANNEL_DUENO_ESTABLE: la fila de ML solo
+    pasa a OTRO listing_id si el item nuevo está en un estado estrictamente
+    mejor; en empate se queda el que ya estaba.
+
+    Sin esto, dos items que declaran el mismo SKU se turnan la fila: el que no
+    está guardado nunca figura como "visto" en `channel_read.vistos_ml`, entra
+    al frente de la ronda siguiente y la arrebata (TEC-0409-NEG: un item FULL y
+    otro xd_drop_off, los dos pausados con 0 piezas; `is_fulfillment` cambió en
+    cada ronda de 15 min desde agosto). Mismo listing_id, o uno de los dos sin
+    id, escribe como siempre. Vacía (sin condición) fuera de ML o con el flag
+    apagado."""
+    if canal != "mercado_libre" or not settings.channel_dueno_estable:
+        return ""
+    return f"""
+                       and (nullif(excluded.listing_id, '') is null
+                            or nullif(listings.listing_id, '') is null
+                            or excluded.listing_id = listings.listing_id
+                            or {_rango_situacion('excluded.situacion')}
+                               > {_rango_situacion('listings.situacion')})"""
+
+
+_SQL_SITUACION_GEMELAS = """
+    update channel.listings set situacion = %s
+     where canal = %s and account_id = %s and listing_id = %s
+       and sku <> %s and situacion is distinct from %s"""
+
+
+def _copiar_situacion_a_gemelas(cur, canal: str, cuenta_id: str, sku: str,
+                                r: dict[str, Any]) -> None:
+    """Con CHANNEL_GEMELAS_SITUACION: la `situacion` recién observada pasa a las
+    OTRAS filas de la cuenta que reclaman el mismo listing_id de ML.
+
+    Solo la situación, a propósito. Es un dato de la PUBLICACIÓN (ML pausa el
+    item entero, con todas sus variantes); el stock no: copiarle las piezas a la
+    gemela las contaría dos veces. Solo ML: en Amazon el listing_id es el ASIN y
+    varios SKUs lo comparten legítimamente, cada uno con su propio estado. Si el
+    lector no observó la situación (None), no hay nada que copiar. El trigger de
+    historia registra el cambio como cualquier otro escritor."""
+    if canal != "mercado_libre" or not settings.channel_gemelas_situacion:
+        return
+    lid = str(r.get("item_id") or "").strip()
+    sit = r.get("situacion")
+    if not lid or not sit:
+        return
+    cur.execute(_SQL_SITUACION_GEMELAS, (sit, canal, cuenta_id, lid, sku, sit))
+
+
 def escribir_tanda(cur, rows: list[dict[str, Any]]) -> None:
     """Upserts de una tanda a nivel cursor (identidad + solo-si-cambió por
     fila). Lo comparten el espejo F3 y la primaria del CORTE F6 — es el mismo
@@ -182,7 +244,8 @@ def escribir_tanda(cur, rows: list[dict[str, Any]]) -> None:
                               coalesce(excluded.logistic_type, listings.logistic_type),
                               coalesce(excluded.stock_fba, listings.stock_fba),
                               coalesce(excluded.currency, listings.currency),
-                              coalesce(listings.date_published, excluded.date_published))""",
+                              coalesce(listings.date_published, excluded.date_published))"""
+                    + _condicion_dueno_estable(canal),
                     (sku, cuenta_id, canal, r.get("item_id"), r.get("precio"),
                      # precio de lista (el tachado de ML): solo lo trae el lector
                      # de mercado_libre; en los demás canales viaja NULL y el
@@ -200,6 +263,7 @@ def escribir_tanda(cur, rows: list[dict[str, Any]]) -> None:
                      # guardado) — ver comment on column de la migración 0023.
                      r.get("fecha_publicacion")),
                 )
+                _copiar_situacion_a_gemelas(cur, canal, cuenta_id, sku, r)
 
 
 def espejar_inventario(rows: list[dict[str, Any]]) -> None:

@@ -1001,6 +1001,58 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.597.0 — Sync de ML: rotación que sí avanza, la fila dueña de cada publicación y fin del aleteo (3 flags apagados)
+
+Revisión de Eduardo (29-sep): «qué tan desfasado está ML». Medido ese día contra
+la API de ML (solo GET) y producción (solo lectura), sobre las 5,098
+publicaciones vivas (578 activas, 4,520 pausadas):
+
+- Lo que muestra el panel coincide con ML en el 99 %, gracias a los **avisos** de
+  ML (16 topics, ~9,800 en 24 h, todos procesados). No es gracias al sync.
+- **El sync de 15 min está clavado**: entre dos vueltas repitió 116 de 160
+  items, casi todos pausados. El turno sale de `updated_at`, que solo se mueve
+  si algo cambia, y además `precios_venta` sella `updated_at` de ~600 activas
+  al confirmar su oferta: las activas nunca son «las más viejas».
+- **52 filas no cuadran**. 46 son items que el panel guarda en DOS filas (SKU
+  padre + hijo en 88 de 93 casos, el mismo SKU mal escrito en 5). El aviso
+  toma la fila con un `limit 1` sin orden y refresca cualquiera de las dos: 13
+  dueñas (la fila del SKU que declara ML) y 29 sobrantes estaban atrasadas.
+  Ejemplo: CAM-0030-MAT en BEKURA «activa con 76», ML pausada en 0.
+- **Aleteo**: 45 SKUs con dos items que declaran el mismo SKU cambiaron
+  `is_fulfillment` 19,541 veces en 7 días (TEC-0370-ROS: 1,404, unas 200 al día).
+
+Es el trabajo de la rama v0.548.0 (22-sep, nunca publicada), traído a hoy,
+más la fila dueña del aviso. Tres flags, todos apagados. Apagado = lo de siempre:
+- `SYNC_ML_ROTACION_RELOJ`: el lote es una tajada fija según la hora
+  (`inicio = ronda × 80 mod n`). Cada publicación viva se lee una vez cada ~8 h
+  por cuenta (32 rondas), activas incluidas. Lo nunca visto tiene turno
+  preferente con tope de 20 y una sola vez por proceso.
+- `CHANNEL_GEMELAS_SITUACION`: el aviso escribe en la fila DUEÑA, la del SKU que
+  declara ML, entre las filas que ya apuntan al item (no crea ni muda filas). A
+  la sobrante se le copia SOLO la situación: el stock no se reparte entre dos
+  SKUs.
+- `CHANNEL_DUENO_ESTABLE`: una fila de ML solo cambia de item si el nuevo está en
+  un estado estrictamente mejor (active > paused > under_review > lo demás).
+
+**Qué cambiaría en producción** (proyección del 29-sep, solo lectura):
+- Rotación: se corrigen en la primera vuelta las 13 dueñas atrasadas y 5 filas
+  únicas atrasadas. Deja de releer las mismas pausadas.
+- Gemelas: 16 sobrantes cambian de situación (13 active→paused, 3
+  paused→active). Dejan de contar como activas 580 piezas FULL que no existen.
+  Ninguna sobrante queda activa y no-FULL, así que el fan-out no gana destinos
+  nuevos.
+- Dueño estable: se acaba el aleteo de los 45 SKUs.
+
+Lo que NO arregla: el stock viejo de las filas sobrantes (la solución es de
+identidad: quitarle la publicación al padre, aparte y con acta) y el stock de
+Woo→ML, que ML rechaza desde el 18-sep por el token de las apps de José.
+
+Pruebas: `tests/test_sync_ml_listings.py` (26; suite 998 OK) y
+`scripts/probar_ml_sync_sandbox.py`, Postgres real del sandbox en una
+transacción que se revierte: A gemelas, B dueño estable, C rotación con los
+listings reales (32 rondas leen 2,488/2,488, activas 252/252), D el aviso cae
+en la dueña. Todo OK.
+
 ### v0.596.0 — Competencia: nuestras publicaciones vuelven a salir como NUESTRAS en las búsquedas
 
 29-sep: en las 9,246 filas de búsqueda guardadas **ninguna** estaba marcada como nuestra. La búsqueda de ML ya no devuelve

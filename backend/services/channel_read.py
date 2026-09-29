@@ -1051,6 +1051,20 @@ def dueno_de_item_ml(item_id: str) -> dict[str, str] | None:
     return {"sku": filas[0]["sku"], "cuenta": filas[0]["cuenta"]} if filas else None
 
 
+def skus_de_item_ml(item_id: str, cuenta: str) -> list[str]:
+    """Los SKUs de la cuenta cuyas filas apuntan a ESTE item de ML.
+
+    Casi siempre uno. Son dos cuando el padre y su variante (o el mismo SKU mal
+    escrito) reclaman la misma publicación: 93 items así el 29-sep-2026. El
+    webhook lo usa para escribir en la fila dueña, no en cualquiera."""
+    return [str(f["sku"]) for f in sdb.fetch_all(
+        """select l.sku::text as sku
+             from channel.listings l
+             join core.accounts a on a.id = l.account_id
+            where l.canal = 'mercado_libre' and l.listing_id = %(i)s
+              and a.legacy_code = %(c)s""", {"i": str(item_id), "c": cuenta})]
+
+
 def existe_en_amazon(sku: str) -> bool:
     """¿Este SKU tiene fila de Amazon? Gemela del `SELECT 1 FROM amazon_progress`.
 
