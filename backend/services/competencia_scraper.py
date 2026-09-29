@@ -37,10 +37,12 @@ disponible de un competidor. Por eso el detalle se pide solo del top N.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import urllib.parse
 import re
+import threading
 from typing import Any
 
 import httpx
@@ -57,7 +59,26 @@ _ESPERA = 5
 # leía el dataset a medias y reportaba "sin resultados" habiendo pagado el cómputo.
 # 240 sondeos son 20 minutos.
 _MAX_SONDEOS = 240
-_sem = asyncio.Semaphore(2)
+# TOPE DE CORRIDAS SIMULTÁNEAS DE APIFY, compartido por TODO el proceso.
+# Era `asyncio.Semaphore(2)` y se rompía: cada captura del panel corre en su
+# PROPIO hilo con su PROPIO loop (`competencia_trabajos._correr` →
+# `asyncio.run`), y un semáforo de asyncio se amarra al loop del primero que
+# espera. Con tres capturas a la vez (29-sep-2026, piloto del Radar) quedó
+# «locked, waiters:1» en un loop ajeno y TODA captura posterior fallaba con
+# «is bound to a different event loop» hasta reiniciar. Un semáforo de hilos
+# no pertenece a ningún loop; se pide sin bloquear el loop (sondeo corto), así
+# que una cancelación mientras espera no se queda con un lugar.
+_sem = threading.BoundedSemaphore(2)
+
+
+@contextlib.asynccontextmanager
+async def _turno():
+    while not _sem.acquire(blocking=False):
+        await asyncio.sleep(0.5)
+    try:
+        yield
+    finally:
+        _sem.release()
 _URL_MAS_VENDIDOS = "https://www.mercadolibre.com.mx/mas-vendidos/"
 
 # Tarifas del actor (PAY_PER_EVENT), para poder reportar el gasto de una corrida.
@@ -131,7 +152,7 @@ async def _correr_actor(actor: str, payload: dict[str, Any],
         return []
     token = {"token": settings.apify_api_key}
     filas: list[dict[str, Any]] = []
-    async with _sem:
+    async with _turno():
         try:
             async with httpx.AsyncClient(timeout=120.0) as cli:
                 r = await cli.post(f"{_APIFY}/acts/{actor}/runs",

@@ -1001,6 +1001,27 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.593.0 — Competencia: las capturas de búsqueda ya no se traban cuando corren varias a la vez
+
+29-sep: al recapturar 5 términos del piloto del Radar casi al mismo tiempo, la tercera captura dejó trabado el tope de
+corridas de Apify y **toda captura de búsqueda posterior fallaba** con *«Semaphore … is bound to a different event
+loop»* hasta reiniciar el backend (incluido el botón «Buscar» de Competencia).
+
+- **La causa:** `competencia_scraper._sem` era un `asyncio.Semaphore(2)` a nivel de módulo, pero cada captura del panel
+  corre en su propio hilo con su propio loop (`competencia_trabajos._correr` → `asyncio.run`). Un semáforo de asyncio se
+  amarra al loop del primero que espera; con tres capturas quedó «locked, waiters:1» en un loop ajeno y ya nadie podía
+  entrar.
+- **El arreglo:** `threading.BoundedSemaphore(2)` —de todo el proceso, de ningún loop— detrás de `_turno()`, que lo pide
+  sin bloquear el loop (sondeo de 0.5 s), así que una captura cancelada mientras espera no se queda con un lugar. El tope
+  sigue siendo 2 corridas simultáneas.
+- `competencia-barrido` (proceso aparte) no estaba afectado.
+
+**Verificado:** reproducido con el código anterior (4 capturas en hilos → el mismo `RuntimeError` y una captura colgada
+para siempre); `tests/test_competencia_semaforo.py` (4 capturas en 4 hilos con su loop sin errores y nunca más de 2
+adentro; cancelar en espera no se queda el lugar) y las 58 pruebas de Competencia pasan.
+
+**Reversa:** revert de este commit.
+
 ### v0.592.0 — Radar de precios: piloto de 5 SKUs y consulta de stock 7 veces más rápida
 
 Eduardo, 29-sep: "vaciar" el Radar y dejar por ahora 5 SKUs publicados, activos en Full y con alta probabilidad de
