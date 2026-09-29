@@ -1001,6 +1001,57 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.594.0 — Amazon completo en el panel: el sync ya no se queda clavado y descubre lo que nadie registró
+
+Reporte de Eduardo (29-sep): en la ficha de CAM-0030 Amazon decía «publicado»,
+sin stock, sin precio y sin enlace, aunque CAM-0030-MAT se vende en Amazon (ASIN
+B0HJ463BQB, comprable, 20 piezas). Eran tres defectos:
+
+1. **El sync de Amazon estaba clavado en las mismas 80.** El turno salía de
+   `updated_at`, que solo se mueve cuando algo CAMBIA (upsert solo-si-cambió):
+   releer una publicación sin cambios la deja igual de rancia y la vuelta
+   siguiente la vuelve a elegir. En los logs, los MISMOS SKUs cada 15 min todo
+   el día (CALZ-0227, ACC-0306-NEG-1.8…); CAM-0030 estaba en el lugar 1,660 de
+   1,695 y sin ASIN desde el 31-ago. Es el mismo defecto que el sync de ML tiene
+   diagnosticado desde el 22-sep (`SYNC_ROTACION_RELOJ`, rama sin publicar).
+2. **Lo publicado sin fila no entraba nunca.** El sync solo lee lo que ya tiene
+   fila en `channel.listings`. Así estaban CAM-0030-MAT y -QUE, 7 de SIL-008/
+   009/011 y SIL-0013-BLN/NEG.
+3. **El estado dependía del orden.** Amazon manda `["DISCOVERABLE","BUYABLE"]`
+   sin orden fijo y se tomaba el primero: una comprable quedaba «no comprable».
+
+**Arreglos:**
+- `amazon.estado_listing`: si Amazon dice BUYABLE en cualquier lugar, es
+  BUYABLE. En los tres lectores, sin interruptor.
+- **Rotación por reloj** (`SYNC_AMAZON_ROTACION_RELOJ`, nace apagada): el lote
+  es una tajada fija por hora (`inicio = ronda × 80 mod n`). Cada publicación se
+  visita una vez por vuelta (~5.5 h con ~1,700) y un reinicio retoma donde toca.
+- **Descubrimiento** (`AMAZON_DESCUBRIR_ENABLED`, nace apagado; diario a las
+  `AMAZON_DESCUBRIR_HORA_UTC` = 09:40, a hora fija para que los deploys no lo
+  pospongan): `amazon.listar_publicaciones` lista la cuenta completa sorteando
+  el tope de 1,000 de `searchListingsItems` (ventanas de `createdAfter`/
+  `createdBefore` que se parten si pasan de 1,000; 1,266 de 1,266 en ~70
+  consultas) e `inventario.descubrir_amazon` registra y refresca por el camino
+  del sync solo lo de NUESTRO catálogo. Los SKUs que Amazon genera solo (tipo
+  «8Z-86S1-B5IM») se cuentan pero no se dan de alta. No cierra ni borra nada:
+  cerrar sigue siendo de `scripts/marcar_amazon_muertas.py`. A mano:
+  `POST /api/sync/amazon/descubrir` (`aplicar=false` solo cuenta).
+
+**Ya hecho en producción (29-sep, con el sí de Eduardo):** las 10 publicaciones
+que faltaban quedaron registradas, y la de CAM-0030 completa, leyéndolas de
+Amazon por el camino del sync. TEC-0935-AZLMAR y -ROS dicen PUBLISHED en
+`amazon_progress` pero Amazon las contesta 404; no se registraron.
+
+**Pendiente, aparte:** 844 filas del panel que Amazon no lista (dadas de baja o
+nunca publicadas).
+
+Pruebas: 11 unitarias (`tests/test_amazon_sync_completo.py`, con una cuenta
+simulada de 2,500 publicaciones y el tope de 1,000) y
+`scripts/probar_amazon_descubrir_sandbox.py` leyendo el Amazon real y
+escribiendo solo en el sandbox: 1,266 de 1,266 leídas; 1,258 escritas (8 ajenas
+fuera); nada borrado; releer 44 sin cambios movió 0 fechas; la rotación visita
+las 1,706 en 22 vueltas.
+
 ### v0.593.0 — Competencia: las capturas de búsqueda ya no se traban cuando corren varias a la vez
 
 29-sep: al recapturar 5 términos del piloto del Radar casi al mismo tiempo, la tercera captura dejó trabado el tope de

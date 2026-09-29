@@ -657,6 +657,15 @@ class Settings(BaseSettings):
     sync_enabled: bool = True
     sync_interval_min: int = 15
     sync_batch: int = 80
+    # AMAZON (29-sep, ver inventario._tajada_reloj y descubrir_amazon).
+    # ROTACION_RELOJ: el lote de cada vuelta es una tajada fija por hora en vez de
+    # «lo más rancio primero», que se quedaba clavado en las mismas 80.
+    # DESCUBRIR: una pasada diaria lista TODO lo publicado en Amazon y registra/
+    # refresca lo de nuestro catálogo; no cierra ni borra nada. A mano:
+    # POST /api/sync/amazon/descubrir (aplicar=false solo cuenta).
+    sync_amazon_rotacion_reloj: bool = False
+    amazon_descubrir_enabled: bool = False
+    amazon_descubrir_hora_utc: str = "09:40"
     # F. UNIVERSO (propuesta 4-ago, fase A): el lote del sondeo sale del
     # CATÁLOGO VIVO de ML (/users/{id}/items/search, active+paused) en vez de
     # ml_progress (la bitácora del publicador). Medido: entran ~517

@@ -510,6 +510,39 @@ async def sincronizar_amazon(limite: int = 100) -> dict[str, Any]:
     return await _sincronizar_amazon_resto(pubs, skus_pub, fba)
 
 
+def _tajada_reloj(filas: list[dict[str, Any]], limite: int,
+                  ahora: float | None = None) -> list[dict[str, Any]]:
+    """
+    Las publicaciones de Amazon de esta vuelta con SYNC_AMAZON_ROTACION_RELOJ: una
+    TAJADA fija del universo ordenado por SKU, elegida por la hora.
+
+    POR QUÉ NO «LO MÁS RANCIO PRIMERO» (29-sep). El turno salía de `updated_at`,
+    que solo se mueve cuando algo CAMBIA (el upsert es solo-si-cambió): releer
+    una publicación que no cambió la deja igual de rancia y la vuelta siguiente la
+    vuelve a elegir. Los logs lo mostraron: las MISMAS 80 (CALZ-0227,
+    ACC-0306-NEG-1.8…) cada 15 min, todo el día, y CAM-0030 en el lugar 1,660 de
+    1,695 sin su ASIN desde el 31-ago. Mismo defecto que el sync de ML tiene
+    diagnosticado desde el 22-sep (`SYNC_ROTACION_RELOJ`, rama sin publicar).
+
+    El reloj no necesita estado: `inicio = (ronda × lote) mod n`, con
+    `ronda = ahora // intervalo`. Vueltas seguidas leen tajadas contiguas y cada
+    publicación se visita una vez por vuelta completa (⌈1,695 / 80⌉ = 22 rondas
+    ≈ 5.5 h). Un reinicio retoma donde toca, no desde el principio.
+    """
+    import time
+    universo = sorted(filas, key=lambda r: str(r.get("sku") or ""))
+    n = len(universo)
+    if not n or limite <= 0:
+        return []
+    periodo = max(int(settings.sync_interval_min or 0), 1) * 60
+    ronda = int((time.time() if ahora is None else ahora) // periodo)
+    inicio = (ronda * limite) % n
+    tajada = universo[inicio:inicio + limite]
+    if len(tajada) < limite:   # la vuelta da la vuelta: se completa desde el principio
+        tajada += universo[:min(limite - len(tajada), n - len(tajada))]
+    return tajada
+
+
 def _pubs_amazon(limite: int) -> list[dict[str, Any]]:
     """Qué publicaciones de Amazon se leen en esta vuelta, en su turno.
     SÍNCRONA a propósito: se llama con asyncio.to_thread (regla 11)."""
@@ -520,8 +553,11 @@ def _pubs_amazon(limite: int) -> list[dict[str, Any]]:
                     """SELECT ap.sku, ap.asin, ap.status
                        FROM amazon_progress ap WHERE ap.success=1"""))
         vistos = channel_read.vistos_amazon()
-        pubs.sort(key=lambda r: _turno(vistos.get(str(r["sku"]))))
-        pubs = pubs[:limite]
+        if settings.sync_amazon_rotacion_reloj:
+            pubs = _tajada_reloj(pubs, limite)
+        else:
+            pubs.sort(key=lambda r: _turno(vistos.get(str(r["sku"]))))
+            pubs = pubs[:limite]
         lecturas_fuente.anotar("channel", "kubera")
     else:
         pubs = db.fetch_all(
@@ -584,6 +620,71 @@ async def _sincronizar_amazon_resto(pubs: list[dict[str, Any]], skus_pub: list[s
             "skus_fba": len(fba), "skus_leidos_en_vivo": len(vivo),
             "skus_con_precio": sum(1 for v in vivo.values() if v.get("precio") is not None),
             "skus_con_stock": sum(1 for v in vivo.values() if v.get("stock_real") is not None)}
+
+
+def _fila_amazon(i: dict[str, Any]) -> dict[str, Any]:
+    """Una publicación leída de Amazon → la fila que escribe el sync."""
+    es_fba = bool(i.get("es_fba"))
+    return {"sku": i["sku"], "canal": "amazon", "cuenta": "",
+            "item_id": i.get("asin"), "precio": i.get("precio"),
+            "stock_real": i.get("stock_real"), "stock_full": None,
+            "stock_fba": i.get("stock_fba"), "es_full": 1 if es_fba else 0,
+            "logistica": "FBA" if es_fba else "FBM",
+            "situacion": i.get("estado"), "moneda": "MXN"}
+
+
+async def descubrir_amazon(aplicar: bool = False) -> dict[str, Any]:
+    """
+    Todo lo publicado en Amazon, registrado y al día (29-sep). Nunca lanza.
+
+    POR QUÉ. El sync de 15 min solo lee lo que ya tiene fila en
+    `channel.listings`: una publicación que se hizo sin dejar fila no entraba
+    NUNCA. Así estaban CAM-0030-MAT y 9 más (comprables en Amazon, invisibles en
+    el panel). Esto lista la cuenta completa (`amazon.listar_publicaciones`, que
+    sortea el tope de 1,000) y guarda por el camino del sync las publicaciones de
+    NUESTRO catálogo: nuevas y ya conocidas, que de paso quedan refrescadas.
+
+    Lo que NO hace, a propósito:
+      · dar de alta como producto un SKU que Amazon generó solo (tipo
+        «8Z-86S1-B5IM», creados en Seller Central): se cuentan y se muestran;
+      · cerrar o borrar lo que el panel tiene y Amazon no lista. Cerrar es de
+        `scripts/marcar_amazon_muertas.py`, que confirma cada 404.
+
+    `aplicar=False` solo cuenta.
+    """
+    r: dict[str, Any] = {"ok": False, "aplicado": aplicar, "total_amazon": None,
+                         "leidas": 0, "completo": False, "del_catalogo": 0,
+                         "nuevas": 0, "nuevas_muestra": [], "fuera_de_catalogo": 0,
+                         "fuera_muestra": [], "escritas": 0, "error": None}
+    try:
+        lista = await amazon.listar_publicaciones()
+        items = lista["items"]
+        r.update(total_amazon=lista["total"], leidas=len(items), completo=lista["completo"])
+
+        def _leer() -> tuple[set[str], set[str]]:   # regla 11: en hilo
+            from services import supabase_db as sdb
+            cat = {x["sku"] for x in sdb.fetch_all("select sku::text sku from core.products")}
+            pan = {x["sku"] for x in sdb.fetch_all(
+                "select sku::text sku from channel.listings where canal = 'amazon'")}
+            return cat, pan
+
+        catalogo, panel = await asyncio.to_thread(_leer)
+        propias = [i for i in items if i["sku"] in catalogo]
+        fuera = sorted(i["sku"] for i in items if i["sku"] not in catalogo)
+        nuevas = sorted(i["sku"] for i in propias if i["sku"] not in panel)
+        r.update(del_catalogo=len(propias), nuevas=len(nuevas), nuevas_muestra=nuevas[:20],
+                 fuera_de_catalogo=len(fuera), fuera_muestra=fuera[:10])
+        if aplicar:
+            filas = [_fila_amazon(i) for i in propias]
+            for k in range(0, len(filas), 200):   # transacciones cortas
+                r["escritas"] += await _upsert_async(filas[k:k + 200])
+        r["ok"] = True
+    except Exception as exc:  # noqa: BLE001 — nunca lanza
+        r["error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+        log.warning("Descubrir Amazon falló: %s", r["error"])
+    log.info("Descubrir Amazon: %s",
+             {k: v for k, v in r.items() if not k.endswith("_muestra")})
+    return r
 
 
 # ── LECTOR: WooCommerce ─────────────────────────────────────────────────────────

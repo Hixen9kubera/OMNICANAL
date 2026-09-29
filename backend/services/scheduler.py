@@ -341,6 +341,21 @@ def iniciar() -> None:
         log.info("Reintentos de avisos de venta de ML cada %s min (tope %s intentos).",
                  settings.ml_webhook_reintentos_min,
                  settings.ml_webhook_reintentos_tope)
+    # Descubrimiento diario de Amazon: todo lo publicado, registrado y al día.
+    # A HORA FIJA (cron) y no por intervalo: con varios deploys al día, un
+    # intervalo de 24 h se reinicia en cada uno y no llegaría a correr nunca.
+    if getattr(settings, "amazon_descubrir_enabled", False):
+        try:
+            hh, mm = (int(x) for x in str(settings.amazon_descubrir_hora_utc).split(":"))
+        except ValueError:
+            hh, mm = 9, 40
+
+        async def _descubrir_amazon() -> None:
+            await inventario.descubrir_amazon(aplicar=True)
+
+        _scheduler.add_job(_descubrir_amazon, "cron", hour=hh, minute=mm,
+                           id="amazon_descubrir", max_instances=1, coalesce=True)
+        log.info("Descubrimiento de Amazon diario a las %02d:%02d UTC.", hh, mm)
     # Guía + etiqueta PDF de TikTok en Odoo. Cada 20 min: el PDF sólo existe
     # entre el agendado de la recolección y la recolección.
     if getattr(settings, "tiktok_guias_enabled", False):

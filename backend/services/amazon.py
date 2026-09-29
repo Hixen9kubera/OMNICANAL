@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -289,12 +290,98 @@ async def precios_por_sku(skus: list[str]) -> dict[str, float]:
     return out
 
 
+_LIMITE_BUSQUEDA = 1000   # searchListingsItems no devuelve más de 1,000 por consulta
+
+
+def _iso(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+async def listar_publicaciones() -> dict[str, Any]:
+    """
+    TODAS las publicaciones de la cuenta en Amazon, con ASIN, precio, estado y
+    stock: `{items: [{sku, asin, precio, estado, stock_fba, stock_real, es_fba}],
+    total, completo, consultas}`.
+
+    POR VENTANAS DE FECHA (29-sep). `searchListingsItems` sin identificadores
+    lista el catálogo, pero se corta en 1,000 resultados aunque `numberOfResults`
+    diga 1,266. Se pide por rangos de `createdAfter`/`createdBefore`, y el rango
+    que pasa de 1,000 se parte en dos.
+
+    `completo` = lo leído cuadra con el total que informa Amazon. Si no cuadra,
+    lo encontrado sirve igual para registrar y refrescar, pero de aquí NO se
+    puede concluir que algo que falta ya no existe. Lanza si Amazon falla: quien
+    llama decide qué hacer.
+    """
+    token = await _access_token()
+    if not token:
+        raise RuntimeError("sin token LWA de Amazon")
+    ruta = f"/listings/2021-08-01/items/{settings.amazon_seller_id}"
+    base = {"marketplaceIds": settings.amazon_marketplace_id, "pageSize": 20,
+            "includedData": "summaries,offers,fulfillmentAvailability"}
+    items: dict[str, dict[str, Any]] = {}
+    consultas = 0
+
+    async with httpx.AsyncClient(base_url=settings.amazon_sp_api_endpoint,
+                                 timeout=40.0) as cli:
+        async def pagina(params: dict[str, Any]) -> dict[str, Any]:
+            nonlocal consultas
+            for intento in range(5):
+                consultas += 1
+                r = await cli.get(ruta, params=params,
+                                  headers={"x-amz-access-token": token})
+                if r.status_code == 429:           # 5 por segundo: se espera y se sigue
+                    await asyncio.sleep(2 * (intento + 1))
+                    continue
+                if r.status_code != 200:
+                    raise RuntimeError(f"Amazon {r.status_code}: {r.text[:150]}")
+                return r.json()
+            raise RuntimeError("Amazon siguió contestando 429")
+
+        async def ventana(desde: datetime, hasta: datetime, hondo: int = 0) -> int:
+            params = dict(base, createdAfter=_iso(desde), createdBefore=_iso(hasta))
+            d = await pagina(params)
+            n = int(d.get("numberOfResults") or 0)
+            if n > _LIMITE_BUSQUEDA and hondo < 16 and hasta - desde > timedelta(hours=1):
+                medio = desde + (hasta - desde) / 2
+                return (await ventana(desde, medio, hondo + 1)
+                        + await ventana(medio, hasta, hondo + 1))
+            while True:
+                for it in d.get("items") or []:
+                    if it.get("sku"):
+                        items[it["sku"]] = {"sku": it["sku"], **_parsear_listing(it)}
+                sig = (d.get("pagination") or {}).get("nextToken")
+                if not sig:
+                    return n
+                await asyncio.sleep(0.25)
+                d = await pagina(dict(params, pageToken=sig))
+
+        total = int((await pagina(dict(base, pageSize=1, includedData="summaries")))
+                    .get("numberOfResults") or 0)
+        await ventana(datetime(2010, 1, 1, tzinfo=timezone.utc),
+                      datetime.now(timezone.utc) + timedelta(days=1))
+    return {"items": list(items.values()), "total": total,
+            "completo": len(items) == total, "consultas": consultas}
+
+
+def estado_listing(status: Any) -> str | None:
+    """
+    El estado de una publicación a partir de la lista que da Amazon.
+
+    Amazon manda VARIOS a la vez (`["BUYABLE", "DISCOVERABLE"]`) y no promete el
+    orden: la consulta por lotes devolvió `["DISCOVERABLE", "BUYABLE"]` para
+    CAM-0030-MAT (29-sep), y quedarse con el primero la marcaba «no comprable»
+    siendo comprable. Si dice BUYABLE en cualquier lugar, es BUYABLE.
+    """
+    if isinstance(status, list):
+        return "BUYABLE" if "BUYABLE" in status else (status[0] if status else None)
+    return status
+
+
 def _parsear_listing(d: dict[str, Any]) -> dict[str, Any]:
     """summaries+offers+fulfillmentAvailability → {asin, precio, estado, stocks}."""
     summaries = d.get("summaries") or [{}]
-    estado = summaries[0].get("status")
-    if isinstance(estado, list):
-        estado = estado[0] if estado else None
+    estado = estado_listing(summaries[0].get("status"))
     offers = d.get("offers") or []
     precio = None
     if offers and offers[0].get("price"):
@@ -392,9 +479,7 @@ async def detalle_sku(sku: str) -> dict[str, Any] | None:
 
     summaries = d.get("summaries") or [{}]
     asin = summaries[0].get("asin")
-    estado = summaries[0].get("status")
-    if isinstance(estado, list):
-        estado = estado[0] if estado else None
+    estado = estado_listing(summaries[0].get("status"))
 
     offers = d.get("offers") or []
     precio = None
@@ -454,7 +539,7 @@ async def refrescar_listing(sku: str, asin: str | None = None) -> dict[str, Any]
     return {
         "item_id": summaries[0].get("asin") or asin,
         "precio": precio,
-        "estado": summaries[0].get("status", [None])[0] if isinstance(summaries[0].get("status"), list) else summaries[0].get("status"),
+        "estado": estado_listing(summaries[0].get("status")),
         "categoria_id": summaries[0].get("productType"),
         "full": es_fba,
         "full_label": "FBA" if es_fba else "FBM",

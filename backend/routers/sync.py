@@ -52,6 +52,18 @@ async def refrescar_catalogo():
     return {"ok": True, "mensaje": "Refresco de catálogo y drafts iniciado."}
 
 
+@router.post("/amazon/descubrir")
+async def descubrir_amazon(
+    aplicar: bool = Query(False, description="false = solo cuenta; true = registra y refresca"),
+):
+    """
+    Todo lo publicado en Amazon contra lo que el panel tiene registrado. Con
+    `aplicar=true` registra lo que falta y refresca lo demás (solo SKUs de
+    nuestro catálogo). No cierra ni borra nada. Tarda ~1 min (≈70 consultas).
+    """
+    return await inventario.descubrir_amazon(aplicar=aplicar)
+
+
 @router.post("/woo")
 async def sincronizar_woo(
     limite: int | None = Query(None, ge=1, description="Máx. de SKUs (para pruebas); vacío = todos"),
