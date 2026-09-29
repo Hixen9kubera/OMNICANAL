@@ -11,6 +11,20 @@ const ENTERO = new Intl.NumberFormat("es-MX", { maximumFractionDigits: 0 });
 const ok = (v: number | null | undefined): v is number => v !== null && v !== undefined && Number.isFinite(v);
 
 /** $1,234.5 — sin centavos si es entero. */
+/**
+ * URL que se puede poner en un `href`: solo http(s) (http:// sube a https://).
+ * Cualquier otro esquema (`javascript:`, `data:`…) → null. React 18 no bloquea
+ * `javascript:` en `href` y los datos vienen de marketplaces: se filtra aquí además
+ * de en el servidor (`almacen.a_https`).
+ */
+export function urlSegura(u: string | null | undefined): string | null {
+  const s = (u ?? "").trim();
+  if (!s || /[\u0000-\u001f]/.test(s)) return null;
+  if (/^http:\/\//i.test(s)) return "https://" + s.slice(7);
+  if (s.startsWith("//")) return "https:" + s;
+  return /^https:\/\/[^/\\]/i.test(s) ? s : null;
+}
+
 export function pesos(v: number | null | undefined, vacio = "—"): string {
   if (!ok(v)) return vacio;
   return (Math.abs(v % 1) < 0.005 ? MXN0 : MXN).format(v);
@@ -37,10 +51,10 @@ export function cifra(v: number | null | undefined, vacio = "—"): string {
   return v.toLocaleString("es-MX", { minimumFractionDigits: 0, maximumFractionDigits: dec });
 }
 
-/** Fracción (0.138) → "13.8 %". */
+/** Fracción (0.138) → "13.8 %". El negativo lleva el signo menos tipográfico (−), no el guion. */
 export function pct(v: number | null | undefined, dec = 1, vacio = "—"): string {
   if (!ok(v)) return vacio;
-  return `${(v * 100).toFixed(dec)} %`;
+  return `${(v * 100).toFixed(dec).replace(/^-/, "−")} %`;
 }
 
 /** Igual con signo: un margen negativo se tiene que LEER negativo. */

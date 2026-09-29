@@ -64,8 +64,13 @@ async function fixture<T>(camino: string, params?: Params, metodo = "GET", cuerp
   return (await m.responder(camino, params ?? {}, metodo, cuerpo)) as T | null;
 }
 
-/** GET a `/api/lab{camino}`. Un 401 manda a /login (salvo `sinRedirigir`). */
-export async function pedir<T>(camino: string, params?: Params, opciones: { signal?: AbortSignal; sinRedirigir?: boolean } = {}): Promise<T> {
+/**
+ * GET a `/api/lab{camino}`. Un 401 manda a /login (salvo `sinRedirigir`).
+ * `nulo404`: un 404 («sin historial para …», «aún no hay …») se lee como `null`,
+ * no como error: en el cajón de una publicación de Amazon no hay historia y eso
+ * no es una falla.
+ */
+export async function pedir<T>(camino: string, params?: Params, opciones: { signal?: AbortSignal; sinRedirigir?: boolean; nulo404?: boolean } = {}): Promise<T> {
   const f = await fixture<T>(camino, params);
   if (f !== null) return f;
   const resp = await fetch(`/api/lab${camino}${consulta(params)}`, {
@@ -78,14 +83,35 @@ export async function pedir<T>(camino: string, params?: Params, opciones: { sign
     if (!opciones.sinRedirigir) irALogin();
     throw new NoAutorizado();
   }
+  if (resp.status === 404 && opciones.nulo404) return null as T;
   if (!resp.ok) throw new ErrorApi(resp.status, await detalle(resp));
   return (await resp.json()) as T;
+}
+
+/**
+ * POST /api/lab/recalcular (api.py: 202 arranca, 409 ya corre, 403 desactivado).
+ * `sinMl`: usa los crudos de Mercado Libre que ya hay (≈1.5 min) en vez de volver
+ * a pedir ~8,500 consultas a la API. Devuelve null si arrancó, o el motivo.
+ */
+export async function recalcular(sinMl: boolean): Promise<string | null> {
+  if (USA_FIXTURES) return null;
+  const resp = await fetch("/api/lab/recalcular", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ sin_ml: sinMl }),
+  });
+  if (resp.status === 202) return null;
+  if (resp.status === 401) { irALogin(); return "La sesión expiró."; }
+  if (resp.status === 409) return "Ya hay un recálculo en curso.";
+  return detalle(resp);
 }
 
 async function detalle(resp: Response): Promise<string> {
   try {
     const j = await resp.json();
-    if (typeof j?.detail === "string") return j.detail;
+    // api.py: 500 → {"detail", "ref"}; la referencia cruza con el log del servidor.
+    if (typeof j?.detail === "string") return typeof j?.ref === "string" ? `${j.detail} (ref ${j.ref})` : j.detail;
     if (typeof j?.detalle === "string") return j.detalle;
   } catch { /* cuerpo no JSON */ }
   if (resp.status === 503) return "El laboratorio no tiene llave configurada: falla cerrado (503).";
@@ -147,13 +173,15 @@ export function aPagina<T>(r: unknown): Pagina<T> {
     per_page: Number(o.per_page ?? o.por_pagina ?? filas.length),
     filas,
     conteos: o.conteos as Record<string, number> | undefined,
+    facetas: o.facetas as Record<string, Record<string, number>> | undefined,
     parametros: o.parametros as Record<string, unknown> | undefined,
+    sin_datos: o.sin_datos === true,
   };
 }
 
 /**
- * Trae TODAS las filas de un listado paginado (para Precios: ~1,900 publicaciones
- * FULL como máximo, y los KPIs de arriba deben sumar el universo, no la página).
+ * Trae TODAS las filas de un listado paginado (para Precios: 1,744 publicaciones
+ * FULL el 28-sep, y los KPIs de arriba deben sumar el universo, no la página).
  * Pide páginas grandes; si el servidor topa `per_page`, sigue pidiendo de a 4.
  */
 export async function traerTodo<T>(camino: string, params: Params = {}, signal?: AbortSignal): Promise<Pagina<T>> {

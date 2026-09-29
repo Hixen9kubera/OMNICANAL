@@ -70,7 +70,7 @@ if __package__ in (None, ""):
 from sandbox_precios import _entorno  # noqa: E402
 
 _entorno.cargar()
-from sandbox_precios import almacen, canales, costos_lab, economia  # noqa: E402
+from sandbox_precios import almacen, canales, costos_lab, economia, prorrateo  # noqa: E402
 
 log = logging.getLogger("laboratorio.construir")
 
@@ -269,13 +269,20 @@ class _Ctx:
         self.vcache = (_crudo("kubera_visitas_cache.json", d) or {}).get("filas") or []
         self.series: dict[str, list] = almacen.leer_json(almacen.ruta("cache", "visitas_serie.json"), {}) or {}
         self.comisiones = almacen.leer_json(almacen.ruta("cache", "comisiones.json"), {}) or {}
-        self.reales = (almacen.leer_json(almacen.ultimo("comisiones_reales.json"), {}) or {}).get("categorias") or {}
+        self.reales_doc = almacen.leer_json(almacen.ultimo("comisiones_reales.json"), {}) or {}
+        self.reales = self.reales_doc.get("categorias") or {}
         self.costos = costos_lab.leer()
         self.precios_doc = almacen.leer_json(almacen.ultimo("precios.json"), {}) or {}
         self.elasticidades = almacen.leer_json(almacen.ultimo("elasticidades.json"), {}) or {}
         ml = self.par.get("mercado_libre") or {}
-        self.respaldo = {"real_orders": self.reales, "por_tramo": ml.get("comision_respaldo_por_tramo")}
+        # Mismo respaldo que el optimizador (tramos de parámetros + los de las tasas reales).
+        self.respaldo = economia.respaldo_desde_doc(ml, self.reales_doc)
         self.costo_full = float(ml.get("costo_full_unitario_mes") or 0.0)
+        self.envio_promo_regular = bool(ml.get("envio_promo_columna_regular", True))
+        self.umbral_envio = float(ml.get("umbral_envio_gratis") or 299)
+        self.piso_margen = float((self.par.get("optimizador") or {}).get("piso_margen") or 0.12)
+        self.incluye_mercancia = (self.par.get("contenedor") or {}).get("incluye_mercancia")
+        self.costos_resumen = almacen.leer_json(almacen.ultimo("costos_resumen.json"), {}) or {}
 
         for nombre, dia in d.items():
             if dia is None:
@@ -348,14 +355,55 @@ def _tags_calidad(tags: Iterable[str] | None) -> list[str]:
 
 
 def _costo(ce: dict | None) -> dict[str, Any]:
+    """El costo de la publicación con sus AVISOS (fase 3).
+
+    ``avisos`` (códigos) y ``aviso`` (el más importante, en texto):
+    - ``costo_imposible``: el costo del laboratorio NO se usa (fuente
+      `sospechoso`, `unitario` null): su cbm_pieza pasa de 3× lo que permite el
+      peso facturable de ML. El número descartado va en ``unitario_descartado``.
+    - ``costo_menor_a_1_peso``: CBM probablemente 20–160× chico (densidades de
+      7,567 a 61,074 kg/m³ en la auditoría).
+    - ``costo_bajo_fob``: informativo; el costo de 525k es menor que la
+      mercancía sola. No bloquea: el producto no aplica (Brandon, 28-sep).
+    `_fila_ml` agrega ``riesgo_si_se_cobra_mercancia`` (a precio cobrado y al
+    recomendado) y fija ``aviso`` con `_aviso_principal`.
+    """
     if not ce:
         return {"unitario": None, "fuente": "sin_costo", "contenedor": None, "validado": False,
-                "revisado_por": None, "costo_panel": None, "marca": "sin_fila_costos"}
-    unit = _f(ce.get("unitario")) if ce.get("fuente") != "sin_costo" else None
+                "revisado_por": None, "costo_panel": None, "marca": "sin_fila_costos",
+                "aviso": None, "avisos": [], "_textos": {}}
+    unit = _f(ce.get("unitario")) if ce.get("fuente") not in ("sin_costo", "sospechoso") else None
+    textos: dict[str, str] = {}
+    imp = ce.get("costo_imposible") or None
+    if imp:
+        textos["costo_imposible"] = (
+            f"Costo descartado: {imp.get('cbm_pieza')} m³ por pieza es {imp.get('veces')}× lo que permite el "
+            f"peso facturable de ML ({imp.get('kg_facturable')} kg ÷ 200); el costo "
+            f"{ce.get('fuente_descartada')} de ${_f(ce.get('unitario_descartado')) or 0:,.2f} no se usa")
+    if unit is not None and unit < 1.0:
+        textos["costo_menor_a_1_peso"] = f"Costo de ${unit:,.4f}: m³ por pieza probablemente mal capturado"
+    if ce.get("costo_bajo_fob") and unit is not None:
+        textos["costo_bajo_fob"] = (f"Informativo: el costo de 525k (${unit:,.2f}) es menor que la mercancía sola "
+                                    f"(${_f(ce.get('mercancia_mxn')) or 0:,.2f}); no bloquea: el producto no aplica")
     return {"unitario": _r(unit, 4), "fuente": ce.get("fuente") or "sin_costo",
             "contenedor": ce.get("contenedor"), "validado": bool(ce.get("validado")),
             "revisado_por": ce.get("revisado_por"), "costo_panel": _r(ce.get("costo_panel"), 4),
-            "marca": ce.get("marca")}
+            "marca": ce.get("marca"),
+            "unitario_descartado": _r(ce.get("unitario_descartado"), 4) if imp else None,
+            "mercancia_mxn": _r(ce.get("mercancia_mxn"), 4), "costo_bajo_fob": bool(ce.get("costo_bajo_fob")),
+            "aviso": None, "avisos": list(textos), "_textos": textos}
+
+
+# Orden de importancia del texto de `costo.aviso`: primero lo que deja la fila sin
+# costo, luego lo que pone en duda el número, al final lo solo informativo.
+_PRIORIDAD_AVISO_COSTO = ("costo_imposible", "costo_menor_a_1_peso", "riesgo_si_se_cobra_mercancia", "costo_bajo_fob")
+
+
+def _aviso_principal(costo: dict[str, Any]) -> dict[str, Any]:
+    """Fija `costo.aviso` (texto del aviso más importante) y quita los textos internos."""
+    textos = costo.pop("_textos", None) or {}
+    costo["aviso"] = next((textos[k] for k in _PRIORIDAD_AVISO_COSTO if k in textos), None)
+    return costo
 
 
 def _sin_nulos(d: dict) -> dict:
@@ -496,20 +544,55 @@ def _fila_ml(u: dict, ctx: _Ctx) -> dict[str, Any]:
     ce = ctx.costos.get(sku or "") if sku else None
     costo = _costo(ce)
     peso, fuente_peso = costos_lab.peso_de(ctx.costos, sku, lid) if sku else (None, None)
+    # Envío con la columna del REGULAR de la promoción (misma regla y mismo peor
+    # caso que el optimizador): solo si el cobrado es < $299 y el regular ≥ $299
+    # (`economia.envio_ml`). Así `margen_pct` cuadra con `precios.margen.actual`.
+    regular = _f((promo or {}).get("regular")) if promo else None
+    ancla = (regular if (ctx.envio_promo_regular and regular and p0 and regular > p0 + 1e-9
+                         and regular >= ctx.umbral_envio) else None)
     eco: dict[str, Any] = {}
     if p0:
         eco = economia.utilidad(p0, costo["unitario"], u.get("category_id"), peso,
                                 ctx.costo_full if es_full else 0.0,
-                                comisiones_cache=ctx.comisiones, respaldo=ctx.respaldo, es_full=es_full)
+                                comisiones_cache=ctx.comisiones, respaldo=ctx.respaldo, es_full=es_full,
+                                ancla_envio=ancla)
         avisos.extend(eco.get("faltan") or [])
+        if ancla is not None and p0 < ctx.umbral_envio and eco.get("envio") is not None:
+            avisos.append("envio_con_columna_del_regular")
         if not es_full:
             # cache/comisiones.json se pidió con logistic_type=fulfillment: fuera de
             # FULL, ≥$500 ML cobra ~3.5 puntos MÁS y el envío no es la tabla FULL.
             avisos.append("comision_y_envio_con_tabla_full")
     else:
         avisos.append("sin_precio")
-    if costo["unitario"] is not None and costo["unitario"] < 1.0:
-        avisos.append("costo_menor_a_1_peso")
+    # Riesgo (AVISO, nunca bloqueo: `contenedor.incluye_mercancia` = true por
+    # Brandon): si algún día se cobrara la mercancía, con el costo del PANEL
+    # (mercancía + flete) esta publicación quedaría debajo del piso de margen, a
+    # su precio de hoy o al recomendado cuando éste es una BAJADA.
+    rec = ctx.precios_rec.get(rid) or {}
+    c_panel = _f((ce or {}).get("costo_panel")) or _f((ce or {}).get("costo_panel_variantes_max"))
+    if c_panel and peso and p0:
+        def _m_panel(P: float) -> float | None:
+            return economia.utilidad(P, c_panel, u.get("category_id"), peso, ctx.costo_full if es_full else 0.0,
+                                     comisiones_cache=ctx.comisiones, respaldo=ctx.respaldo, es_full=es_full,
+                                     ancla_envio=ancla)["margen"]
+        p_rec = _f(rec.get("precio_recomendado"))
+        riesgo = {"costo_panel": _r(c_panel, 4), "piso": ctx.piso_margen, "al_precio_cobrado": _m_panel(p0),
+                  "precio_recomendado": p_rec,
+                  "al_recomendado": _m_panel(p_rec) if (p_rec and p_rec < p0 - 1e-9) else None}
+        costo["riesgo_mercancia"] = riesgo
+        bajo = [(k, P) for k, P in (("al_precio_cobrado", p0), ("al_recomendado", p_rec))
+                if riesgo.get(k) is not None and riesgo[k] < ctx.piso_margen - 1e-9]
+        if bajo:
+            costo["avisos"].append("riesgo_si_se_cobra_mercancia")
+            k, P = bajo[-1]
+            costo["_textos"]["riesgo_si_se_cobra_mercancia"] = (
+                f"Riesgo si se cobrara la mercancía: con el costo del panel (${c_panel:,.2f}) el margen "
+                f"{'al recomendado' if k == 'al_recomendado' else 'a hoy'} (${P:,.2f}) sería {riesgo[k]:.1%}, "
+                f"bajo el piso de {ctx.piso_margen:.0%}. Hoy no aplica (incluye_mercancia={ctx.incluye_mercancia}): "
+                f"no bloquea")
+    _aviso_principal(costo)
+    avisos.extend(costo["avisos"])
 
     visitas, vfuente, av_v = _visitas_30d(ctx, cuenta, lid)
     avisos.extend(av_v)
@@ -518,8 +601,8 @@ def _fila_ml(u: dict, ctx: _Ctx) -> dict[str, Any]:
     return {
         "id": rid, "canal": "mercado_libre", "cuenta": cuenta, "listing_id": lid, "sku": sku,
         "titulo": u.get("titulo") or kub.get("producto_nombre"),
-        "url": u.get("permalink") or kub.get("url"),
-        "thumbnail": str(u.get("thumbnail") or "").replace("http://", "https://", 1) or None,
+        "url": almacen.a_https(u.get("permalink") or kub.get("url")),
+        "thumbnail": almacen.a_https(u.get("thumbnail")),
         "categoria_id": u.get("category_id") or kub.get("ml_cat_id"),
         "estado": estado, "estado_detalle": None, "situacion": u.get("status"),
         "sub_status": list(u.get("sub_status") or []),
@@ -537,7 +620,16 @@ def _fila_ml(u: dict, ctx: _Ctx) -> dict[str, Any]:
         "competencia": _competencia(ctx, cuenta, lid, sku),
         "tags_calidad": _tags_calidad(u.get("tags")),
         "catalogo": bool(u.get("catalog_listing")), "fecha_creacion": u.get("date_created"),
+        # De `precios.json` (solo ML FULL activas y pausadas con historia): el
+        # recomendado junto al precio actual, sin cambiar de pestaña. `razones` son
+        # las de la recomendación (sobre_competencia, stock_excesivo…); null si la
+        # publicación no está en el optimizador.
         "precio_recomendado": rec.get("precio_recomendado"), "cambio_pct": rec.get("cambio_pct"),
+        # Contra qué se mide `cambio_pct` (DISENO §6): en pausadas es el precio
+        # realizado de su base, no el de hoy; la web lo dice junto al porcentaje.
+        "cambio_ref": rec.get("cambio_ref"), "cambio_vs_actual": rec.get("cambio_vs_actual"),
+        "razones": list(rec.get("razones") or []) if rec else None,
+        "autorizacion": rec.get("autorizacion") if rec else None,
         "frescura_at": u.get("leido_at"), "avisos": _dedup(avisos), "supuesto_canal": False,
     }
 
@@ -624,14 +716,15 @@ def _filas_otros(ctx: _Ctx) -> list[dict[str, Any]]:
             if v["sin_precio"]:
                 avisos.append("ingreso_30d_parcial_lineas_sin_precio")
         ml = ctx.por_sku_ml.get(sku or "") or {}
-        costo = e.get("costo") or {"unitario": None, "fuente": "sin_costo"}
-        if "marca" not in costo:
-            costo = {**costo, "marca": (ctx.costos.get(sku or "") or {}).get("marca")}
+        # Mismo costo (y mismos avisos de costo) que en ML; lo que calculó
+        # `canales.evaluar` manda en las llaves que trae.
+        costo = _aviso_principal({**_costo(ctx.costos.get(sku or "") if sku else None), **(e.get("costo") or {})})
+        avisos.extend(costo["avisos"])
         salida.append({
             "id": rid, "canal": canal, "cuenta": cuenta, "listing_id": lid, "sku": sku,
             "titulo": f.get("producto_nombre") or ml.get("titulo"),
-            "url": f.get("url"),
-            "thumbnail": str(ml.get("thumbnail") or "").replace("http://", "https://", 1) or None,
+            "url": almacen.a_https(f.get("url")),
+            "thumbnail": almacen.a_https(ml.get("thumbnail")),
             "categoria_id": f.get("category_id") or f.get("product_type"),
             "estado": estado, "estado_detalle": detalle,
             "situacion": f.get("situacion") if canal == "amazon" else f.get("status"),
@@ -653,7 +746,8 @@ def _filas_otros(ctx: _Ctx) -> list[dict[str, Any]]:
             "unidades_30d": uu, "ingreso_30d": rr, "conversion_30d": None,
             "unidades_150d": None, "vendidas_total": None,
             "competencia": None, "tags_calidad": [], "catalogo": None, "fecha_creacion": None,
-            "precio_recomendado": None, "cambio_pct": None,
+            "precio_recomendado": None, "cambio_pct": None, "cambio_ref": None, "cambio_vs_actual": None,
+            "razones": None, "autorizacion": None,
             "frescura_at": f.get("updated_at"), "avisos": _dedup(avisos), "supuesto_canal": True,
         })
     return salida
@@ -696,37 +790,31 @@ def publicaciones(ctx: _Ctx | None = None, escribir: bool = True) -> dict[str, A
 # ── historial ─────────────────────────────────────────────────────────────────
 def _snapshots_compactos(ids: set[str], hoy: str, max_dias: int = DIAS_HISTORIAL) -> dict[str, dict[str, list]]:
     """{día: {id: [cobrado, recomendado]}} de `snapshots/<día>/` (sin hoy: hoy sale
-    de la corrida en memoria). Cada día se lee UNA vez y se guarda compacto en
-    `cache/historial_snapshots/<día>.json` con la firma (mtime, tamaño) de sus dos
-    archivos: un snapshot pesa ~15 MB y re-parsear 150 cada noche no tiene caso."""
-    base = _entorno.datos_dir() / "snapshots"
+    de la corrida en memoria). Lee el formato compacto (`resumen.json`) y tolera el
+    viejo (copia de `ultimo/`) vía `almacen.leer_snapshot`. Cada día se guarda
+    reducido a ML en `cache/historial_snapshots/<día>.json` con su firma (mtime,
+    tamaño): con el formato viejo un día pesaba ~15 MB y re-parsear 150 cada noche
+    no tenía caso; con el compacto (~1 MB) la caché solo ahorra el filtrado."""
     out: dict[str, dict[str, list]] = {}
     for dia in almacen.dias_con_snapshot()[-max_dias:]:
         if dia >= hoy:
             continue
-        firma = []
-        for nombre in ("publicaciones.json", "precios.json"):
-            try:
-                st = (base / dia / nombre).stat()
-                firma.append([st.st_mtime_ns, st.st_size])
-            except FileNotFoundError:
-                firma.append(None)
+        firma = [list(x) for x in almacen.firma_snapshot(dia)]
         ruta_c = almacen.ruta("cache", "historial_snapshots", f"{dia}.json")
         cache = almacen.leer_json(ruta_c, None) or {}
         if cache.get("firma") != firma:
             puntos: dict[str, list] = {}
-            for i, (nombre, campo) in enumerate((("publicaciones.json", "precio_cobrado"),
-                                                  ("precios.json", "precio_recomendado"))):
-                try:
-                    datos = almacen.leer_json(base / dia / nombre, {}) or {}
-                except ValueError:
-                    log.warning("snapshot %s/%s ilegible", dia, nombre)
+            try:
+                filas = almacen.leer_snapshot(dia)
+            except ValueError as exc:
+                log.warning("snapshot %s ilegible (%s)", dia, exc)
+                filas = {}
+            for id_, d in filas.items():
+                if not id_.startswith("mercado_libre:"):
                     continue
-                for f in (datos.get("filas") if isinstance(datos, dict) else datos) or []:
-                    if isinstance(f, dict) and str(f.get("id") or "").startswith("mercado_libre:"):
-                        v = _f(f.get(campo))
-                        if v is not None:
-                            puntos.setdefault(f["id"], [None, None])[i] = v
+                cob, rec = _f(d.get("pc")), _f(d.get("pr"))
+                if cob is not None or rec is not None:
+                    puntos[id_] = [cob, rec]
             cache = {"firma": firma, "puntos": puntos}
             almacen.escribir_json(ruta_c, cache)
         out[dia] = {k: v for k, v in (cache.get("puntos") or {}).items() if k in ids}
@@ -964,7 +1052,7 @@ def _palancas(ctx: _Ctx, filas_ml: list[dict]) -> list[dict[str, Any]]:
             partes.append(f"equilibrio ${rec['precio_equilibrio']:.2f}")
         if piso:
             partes.append(f"piso 12% ${piso:.2f}")
-        if f["costo"].get("fuente") in ("tarifa_7500", "sin_costo") or "costo_menor_a_1_peso" in f["avisos"]:
+        if f["costo"].get("fuente") in ("tarifa_7500", "sin_costo", "sospechoso") or "costo_menor_a_1_peso" in f["avisos"]:
             partes.append(f"costo {f['costo'].get('fuente')}: revisar antes de mover el precio")
         out.append({
             "tipo": "perdiendo_dinero", "id": f["id"], "sku": f["sku"], "cuenta": f["cuenta"],
@@ -979,6 +1067,57 @@ def _palancas(ctx: _Ctx, filas_ml: list[dict]) -> list[dict[str, Any]]:
     out.sort(key=lambda p: (0 if p["tipo"] == "reactivar_full" else 1,
                             -(p.get("ventas_perdidas_dia") or 0), -(p.get("perdida_dia") or 0)))
     return out
+
+
+def _validacion_resumen(el: dict) -> dict[str, Any] | None:
+    """Lo que la web muestra de la validación fuera de muestra (reverificación #5):
+    qué pliegue, qué tope de τ², WAPE contra el ingenuo y contra predecir cero,
+    sesgo y devianza de Poisson (el WAPE solo premia predecir de menos)."""
+    v = el.get("_validacion") or {}
+    h = v.get("honesta") or {}
+    if not v or not h:
+        return None
+    cc = v.get("con_cambio_precio") or {}
+    comp = h.get("complementarias_exterior") or {}
+
+    def g(m: str, k: str) -> float | None:
+        return (cc.get(m) or {}).get(k)
+
+    return {
+        "pliegue": "exterior", "semanas_prueba": v.get("semanas_prueba"),
+        "semanas_entreno": v.get("semanas_entreno"), "tope_tau2": (h.get("eleccion") or {}).get("tope_tau2"),
+        "criterio": (h.get("eleccion") or {}).get("criterio"),
+        "item_semanas_con_cambio": v.get("item_semanas_con_cambio_precio_5pct"),
+        "wape": {"modelo": g("modelo", "wape"), "ingenuo": g("ingenuo", "wape"), "cero": 1.0},
+        "sesgo": {"modelo": g("modelo", "sesgo"), "ingenuo": g("ingenuo", "sesgo")},
+        "devianza": {"modelo": g("modelo", "devianza"), "ingenuo": g("ingenuo", "devianza")},
+        "tope_por_devianza": comp.get("tope_por_devianza_interior"),
+        "modelo_vs_ingenuo": h.get("modelo_vs_ingenuo_exterior"),
+    }
+
+
+_AVISOS_COSTO = ("costo_imposible", "costo_menor_a_1_peso", "costo_bajo_fob", "riesgo_si_se_cobra_mercancia")
+
+
+def _metricas_costos(ctx: _Ctx, filas_ml: list[dict]) -> dict[str, Any]:
+    """Conteos de costos sospechosos y avisos de costo (fase 3): por publicación ML
+    (todas, activas y activas FULL) y lo que dice `costos_resumen.json` por SKU."""
+    act = [f for f in filas_ml if f["estado"] == "activa"]
+    act_full = [f for f in act if f["es_full"]]
+
+    def cuenta(fs: list[dict]) -> dict[str, int]:
+        return {k: sum(1 for f in fs if k in (f["costo"].get("avisos") or [])) for k in _AVISOS_COSTO}
+
+    return {
+        "incluye_mercancia": ctx.incluye_mercancia,
+        "piso_margen": ctx.piso_margen,
+        "publicaciones_ml": cuenta(filas_ml), "activas": cuenta(act), "activas_full": cuenta(act_full),
+        "por_fuente_activas_full": dict(Counter(f["costo"].get("fuente") for f in act_full)),
+        "skus": ctx.costos_resumen.get("sospechosos"),
+        "nota": "costo_imposible = costo descartado (fuente 'sospechoso', sin recomendación); "
+                "costo_bajo_fob y riesgo_si_se_cobra_mercancia = solo avisos (el producto no aplica: "
+                "contenedor.incluye_mercancia); costo_menor_a_1_peso = CBM probablemente mal capturado",
+    }
 
 
 def metricas(ctx: _Ctx | None = None, pubs: list[dict] | None = None, escribir: bool = True) -> dict[str, Any]:
@@ -1023,6 +1162,9 @@ def metricas(ctx: _Ctx | None = None, pubs: list[dict] | None = None, escribir: 
             "stock_full_activas": sum(int(f["stock_full"] or 0) for f in act if f["es_full"]),
             "sin_fila_kubera": sum(1 for f in fs if "sin_fila_en_kubera" in f["avisos"]),
             "visitas_fuente": "api_cuenta" if vserie else None,
+            # Costos sospechosos y avisos de costo en las ACTIVAS (fase 3).
+            **{f"activas_{k}": sum(1 for f in act if k in (f["costo"].get("avisos") or []))
+               for k in _AVISOS_COSTO},
         }
 
     por_canal: dict[str, dict[str, Any]] = {}
@@ -1064,6 +1206,7 @@ def metricas(ctx: _Ctx | None = None, pubs: list[dict] | None = None, escribir: 
         "por_fuente": diag.get("por_fuente"),
         "validacion": {k: ((el.get("_validacion") or {}).get("con_cambio_precio") or {}).get(k)
                        for k in ("ingenuo", "modelo", "beta_global")},
+        "validacion_resumen": _validacion_resumen(el),
     }
 
     fechas = sorted({d for d, _ in ctx.dia_cuenta} | {d for s in vis_cuenta.values() for d in s})
@@ -1092,6 +1235,7 @@ def metricas(ctx: _Ctx | None = None, pubs: list[dict] | None = None, escribir: 
             "nota": "tipo=reactivar_full ordena por ventas_perdidas_dia; tipo=perdiendo_dinero trae ventas_perdidas_dia=null y perdida_dia",
         },
         "recomendaciones": {k: res_precios.get(k) for k in ("filas", "con_recomendacion", "clases", "por_confianza")},
+        "costos": _metricas_costos(ctx, filas_ml),
     }
     doc["duracion_s"] = round(time.monotonic() - t0, 2)
     if escribir:
@@ -1136,6 +1280,31 @@ def _frescura() -> dict[str, Any]:
     }
 
 
+def _parametros_clave(par: dict) -> dict[str, Any]:
+    """Los números de negocio que la web muestra junto a los resultados (de
+    parametros.json; la lista completa está en `GET /api/lab/parametros`)."""
+    cont, ml, opt = par.get("contenedor") or {}, par.get("mercado_libre") or {}, par.get("optimizador") or {}
+    return {
+        "contenedor_mxn": cont.get("costo_mxn"), "contenedor_incluye_iva": cont.get("incluye_iva"),
+        "incluye_mercancia": cont.get("incluye_mercancia"),
+        "metodo_costo": cont.get("metodo_recomendado"), "tarifa_fija_m3": cont.get("tarifa_fija_m3_referencia"),
+        "rango_m3": cont.get("rango_m3_normal"), "tipo_cambio": cont.get("tipo_cambio_referencia"),
+        "densidad_min_kg_m3": cont.get("densidad_min_kg_m3") or prorrateo.DENSIDAD_MIN_KG_M3,
+        "piso_margen": opt.get("piso_margen"), "margen_sobre": "precio_con_iva",
+        "sacrificio_utilidad_max": opt.get("sacrificio_utilidad_max"),
+        "sacrificio_liquidacion": opt.get("sacrificio_liquidacion"),
+        "paso_max_semana": opt.get("paso_max_semana"), "paso_max_dia": opt.get("paso_max_dia"),
+        "banda_competencia": opt.get("banda_competencia"),
+        "cambio_max_sin_evidencia": opt.get("cambio_max_sin_evidencia"),
+        "volumen_max_sobre_peso_facturable": opt.get("volumen_max_sobre_peso_facturable"),
+        "comision_respaldo_por_tramo": ml.get("comision_respaldo_por_tramo"),
+        "comision_corte_estricto": sorted(economia.CORTES_ESTRICTOS),
+        "umbral_envio_gratis": ml.get("umbral_envio_gratis"),
+        "envio_promo_columna_regular": ml.get("envio_promo_columna_regular"),
+        "costo_full_unitario_mes": ml.get("costo_full_unitario_mes"),
+    }
+
+
 def estado(etapas: dict[str, Any] | None = None, corrida: dict[str, Any] | None = None,
            escribir: bool = True) -> dict[str, Any]:
     """`ultimo/estado.json`. Conserva las etapas y la bitácora previas.
@@ -1163,10 +1332,17 @@ def estado(etapas: dict[str, Any] | None = None, corrida: dict[str, Any] | None 
             st = p.stat()
             archivos[nombre] = {"bytes": st.st_size, "actualizado_at": dt.datetime.fromtimestamp(
                 st.st_mtime, dt.timezone.utc).isoformat(timespec="seconds")}
+    par = _parametros()
+    cont = par.get("contenedor") or {}
     doc = {
         "generado_at": almacen.ahora_iso(), "version": VERSION, "etapas": ets, "frescura": fres,
         "contadores_ml_api": rm.get("contadores_ml_api") or {}, "snapshots": almacen.dias_con_snapshot(),
         "bitacora": bit[-BITACORA_MAX:], "archivos": archivos,
+        # Decisión de negocio que cambia cómo leer TODO el laboratorio (Brandon,
+        # 28-sep): el costo es solo el prorrateo de 525k; true = las bajadas no se
+        # bloquean con el costo del panel, solo llevan aviso.
+        "incluye_mercancia": cont.get("incluye_mercancia"),
+        "parametros_clave": _parametros_clave(par),
     }
     if escribir:
         almacen.escribir_json(almacen.ultimo("estado.json"), doc)

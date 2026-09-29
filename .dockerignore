@@ -57,3 +57,28 @@ supabase
 README.md
 *.sql
 *.csv
+
+# ── Escritores de producción que el laboratorio NO usa ────────────────────────
+# (auditoría de seguridad, fase 2): la imagen corre con las credenciales del
+# servicio; un script de mantenimiento o el `main.py` de producción ejecutados
+# por `railway ssh` escribirían SIN los candados de sandbox_precios/candados.py.
+# Verificado (fase 3, `scratchpad/fase3/seguridad/grafo.py`): importando
+# sandbox_precios.api, .pipeline, todas sus etapas y sus imports perezosos, NINGÚN
+# archivo de estas rutas entra a sys.modules; los únicos imports perezosos hacia
+# `routers.*` viven en `alertas._revisar_actas`/`censo_top_sin_costo` (vigilantes
+# que el laboratorio no llama) y `vendor.*` solo lo importa
+# `services/publicar_ready.py` (el publicador, que tampoco se carga).
+backend/scripts
+backend/tests
+backend/routers
+backend/main.py
+backend/mcp_research
+backend/cli_agrupar.py
+backend/Procfile
+backend/railway*.json
+backend/*.pkl
+backend/respaldo_lookup_huerfano.json
+# El pipeline que publicó 1,200+ productos en ML/Amazon (escribe en marketplaces)
+# y los esquemas pydantic de los routers.
+backend/vendor
+backend/models

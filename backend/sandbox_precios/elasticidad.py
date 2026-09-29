@@ -97,11 +97,24 @@ SE_ALTA = 0.5                 # DISENO: confianza alta = estimación propia con 
 # heterogeneidad + error de especificación (precio semanal ruidoso, promociones),
 # y un τ² inflado casi no encoge a los β extremos.
 TOPES_TAU2: tuple[float | None, ...] = (None, 2.0, 1.0, 0.5, 0.25, 0.1)
-# Se elige el tope MÁS ALTO (menos encogimiento) cuyo WAPE quede a ≤2% del mejor:
-# entre dos topes que predicen igual, se respeta más la heterogeneidad medida.
+# Se elige en el pliegue INTERIOR el tope MÁS BAJO (más encogimiento) cuyo WAPE
+# quede a ≤2% del mejor, y se reporta en el EXTERIOR (ver `_elegir_tope`).
 TOLERANCIA_WAPE = 0.02
 INICIO_LISTING_HISTORY = dt.date(2026, 7, 16)  # stock_hist se congeló el 15-jul
 ESTADOS_OK = {"active"}
+# P2 (auditoría del modelo, 28-sep): desde el 7-sep SANCORFASHION guarda el precio
+# NETO en `order_items` cuando la línea viene sin comisión (W37 49% de las
+# piezas, W39 78%; BEKURA 0). `sales_daily.revenue` es la suma exacta de esas
+# líneas (medido: 609 de 609 ítem-días), así que el ingreso diario también sale
+# neto. Esas líneas se RESTAN del precio realizado; sus unidades siguen contando.
+PRECIO_NETO_CUENTAS = ("SANCORFASHION",)
+PRECIO_NETO_DESDE = "2026-09-07"
+# Escalón de $299 (efecto de estar abajo, además del precio: filtros y posición
+# de búsqueda de ML). Solo se usa si es significativo (|z| ≥ 1.96).
+UMBRAL_ESCALON = 299.0
+Z_ESCALON = 1.96
+# Betas globales FIJAS que la validación compara contra el modelo (diagnóstico).
+BETAS_FIJAS = (-0.5, -1.0, -1.5, -2.0, -2.5)
 
 
 # ── utilidades ────────────────────────────────────────────────────────────────
@@ -177,14 +190,25 @@ def _mad_var(xs: list[float]) -> float:
 def _insumos() -> dict[str, Any]:
     universo = _crudo("ml_universo.jsonl") or []
     ventas = (_crudo("kubera_ventas_dia.json") or {}).get("ml_dia") or []
+    lineas = (_crudo("kubera_lineas.json") or {}).get("filas") or []
     hist = _crudo("kubera_historial_precio.json") or {}
     comp = _crudo("kubera_competencia.json") or {}
     vcuenta = _crudo("ml_visitas_cuenta.jsonl") or []
     series = almacen.leer_json(almacen.ruta("cache", "visitas_serie.json"), {}) or {}
     faltan = [n for n, v in (("ml_universo", universo), ("kubera_ventas_dia", ventas),
-                             ("visitas_serie", series), ("ml_visitas_cuenta", vcuenta)) if not v]
-    return {"universo": universo, "ventas": ventas, "hist": hist, "comp": comp,
+                             ("visitas_serie", series), ("ml_visitas_cuenta", vcuenta),
+                             ("kubera_lineas", lineas)) if not v]
+    return {"universo": universo, "ventas": ventas, "lineas": lineas, "hist": hist, "comp": comp,
             "vcuenta": vcuenta, "series": series, "faltan": faltan}
+
+
+def _es_precio_neto(f: dict) -> bool:
+    """Línea cuyo `precio_unitario` es NETO (defecto de producción, auditoría P2):
+    en SANCORFASHION, desde el 7-sep, las líneas con comisión 0 guardan
+    P0 × (1 − comisión) − envío (TEC-0801-NEG: 489 → 324.98). Sus PIEZAS sí son
+    ventas; su precio no es lo que pagó el comprador."""
+    return (f.get("cuenta") in PRECIO_NETO_CUENTAS and str(f.get("fecha") or "") >= PRECIO_NETO_DESDE
+            and not _f(f.get("comision")))
 
 
 def _mapa_categorias(comp: dict, universo: list[dict]) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
@@ -360,6 +384,51 @@ def construir_panel(hasta: dt.date | None = None, dias: int = VENTANA_DIAS,
     if sin_id:
         avisos.append(f"{sin_id} filas de venta sin item_id; {sin_casar} no se pudieron casar por sku×cuenta")
 
+    # Precio realizado LIMPIO (P2): `u_precio`/`r_precio` = ventas del día MENOS las
+    # líneas con precio neto. `u`/`r` quedan intactos (unidades reales, ingreso
+    # tal como lo guarda producción; `construir.historial` los lee).
+    neto_u: dict[str, list[int]] = {}
+    neto_r: dict[str, list[float]] = {}
+    n_neto = [0, 0.0]
+    for f in ins["lineas"]:
+        if not _es_precio_neto(f):
+            continue
+        k = pos.get(str(f.get("fecha") or ""))
+        if k is None:
+            continue
+        lid = f.get("item_id")
+        if not lid:
+            cands = por_par.get((str(f.get("sku") or "").strip().upper(), f.get("cuenta"))) or []
+            lid = cands[0] if len(cands) == 1 else None
+        if lid not in items:
+            continue
+        q = int(f.get("cantidad") or 0)
+        pu = _f(f.get("precio_unitario")) or 0.0
+        neto_u.setdefault(lid, [0] * n)[k] += q
+        neto_r.setdefault(lid, [0.0] * n)[k] += q * pu
+        n_neto[0] += q
+        n_neto[1] += q * pu
+    inconsistentes = 0
+    for lid, it in items.items():
+        nu, nr = neto_u.get(lid), neto_r.get(lid)
+        if nu is None:
+            it["u_precio"], it["r_precio"] = it["u"], it["r"]
+            continue
+        up, rp = list(it["u"]), list(it["r"])
+        for k in range(n):
+            if not nu[k]:
+                continue
+            a, b = it["u"][k] - nu[k], it["r"][k] - nr[k]
+            if a < 0 or b < -0.01 or (a == 0) != (abs(b) <= 0.01):
+                inconsistentes += 1  # el día no cuadra con sus líneas: sin precio ese día
+                a, b = 0, 0.0
+            up[k], rp[k] = a, max(0.0, b)
+        it["u_precio"], it["r_precio"] = up, rp
+    if n_neto[0]:
+        avisos.append(f"precio_neto_sancorfashion: {n_neto[0]} piezas (${n_neto[1]:,.0f} netos) desde el "
+                      f"{PRECIO_NETO_DESDE} fuera del precio realizado (sí cuentan como unidades)"
+                      + (f"; {inconsistentes} ítem-días sin cuadrar con sus líneas" if inconsistentes else ""))
+
     # Estados: stock_hist por item_id + listing_history por sku×cuenta (si es único).
     hist = ins["hist"]
     sh_por_item: dict[str, list[dict]] = defaultdict(list)
@@ -455,6 +524,9 @@ def construir_panel(hasta: dt.date | None = None, dias: int = VENTANA_DIAS,
         "publicaciones": len(items),
         "con_venta": sum(1 for it in items.values() if sum(it["u"]) > 0),
         "unidades": sum(sum(it["u"]) for it in items.values()),
+        "precio_neto_excluido": {"cuentas": list(PRECIO_NETO_CUENTAS), "desde": PRECIO_NETO_DESDE,
+                                 "piezas": n_neto[0], "ingreso_neto": round(n_neto[1], 2),
+                                 "item_dias_inconsistentes": inconsistentes},
         "dias_censurados": dict(causas),
         "item_dias": n * len(items),
         "pares_sku_cuenta_ambiguos_en_historial": len(ambiguos),
@@ -570,12 +642,17 @@ def _precio_lista(items: dict, sh_por_item: dict, precios: list[dict], por_par: 
 
 def _agregar_semanas(it: dict, semanas: list[dict], lista: list[float | None] | None) -> list[dict]:
     u, r, v, cens = it["u"], it["r"], it["v"], it["cens"]
+    up, rp = it.get("u_precio") or u, it.get("r_precio") or r
     filas = []
     for s in semanas:
         validos = [k for k in s["dias"] if not cens[k]]
         dv = len(validos)
         uu = sum(u[k] for k in validos)
         rr = sum(r[k] for k in validos)
+        # El precio sale de las piezas con precio BRUTO (P2): una semana cuyas ventas
+        # fueron todas netas no tiene precio realizado y se imputa como sin venta.
+        uup = sum(up[k] for k in validos)
+        rrp = sum(rp[k] for k in validos)
         vv = sum(v[k] or 0 for k in validos) if any(v[k] is not None for k in validos) else None
         lista_s = None
         if lista:
@@ -586,9 +663,13 @@ def _agregar_semanas(it: dict, semanas: list[dict], lista: list[float | None] | 
             "valida": dv >= MIN_DIAS_SEMANA, "u": uu, "r": round(rr, 2), "v": vv,
             "u7": uu * 7.0 / dv if dv else None,
             "v7": (vv * 7.0 / dv) if (dv and vv is not None) else None,
-            "precio": (rr / uu) if uu > 0 else None,
-            "precio_fuente": "realizado" if uu > 0 else None,
+            "precio": (rrp / uup) if uup > 0 else None,
+            "precio_fuente": "realizado" if uup > 0 else None,
+            "u_precio": uup,
             "lista": lista_s,
+            # Semanas de donde sale un precio imputado: la validación descarta las
+            # que lo toman de la ventana de prueba (fuga entre entreno y prueba).
+            "precio_de": [s["clave"]] if uup > 0 else [],
         })
     # Semanas válidas sin venta: arrastre ±2 semanas; luego lista × razón realizado/lista.
     con_precio = [f for f in filas if f["precio_fuente"] == "realizado"]
@@ -601,9 +682,10 @@ def _agregar_semanas(it: dict, semanas: list[dict], lista: list[float | None] | 
             continue
         mejor = None
         for dist in range(1, ARRASTRE_SEMANAS + 1):
-            lados = [g["precio"] for g in con_precio if abs(g["orden"] - f["orden"]) == dist]
+            lados = [g for g in con_precio if abs(g["orden"] - f["orden"]) == dist]
             if lados:
-                mejor = math.exp(sum(math.log(x) for x in lados) / len(lados))
+                mejor = math.exp(sum(math.log(g["precio"]) for g in lados) / len(lados))
+                f["precio_de"] = [g["semana"] for g in lados]
                 break
         if mejor is not None:
             f["precio"], f["precio_fuente"] = mejor, "arrastrado"
@@ -640,12 +722,106 @@ def _cv(ps: list[float]) -> float:
     return math.sqrt(var) / m if m > 0 else 0.0
 
 
+def _obs(it: dict, semanas_ok: set[str] | None = None) -> list[dict]:
+    """Semanas válidas con precio. Con ``semanas_ok`` (validación) solo las de
+    entrenamiento y sin precio arrastrado DESDE fuera de ellas (el arrastre de ±2
+    semanas cruzaba la frontera entre entrenamiento y prueba)."""
+    return [s for s in it["semanas"] if s["valida"] and s["precio"] and s["precio"] > 0
+            and (semanas_ok is None or (s["semana"] in semanas_ok
+                                        and all(w in semanas_ok for w in s.get("precio_de") or [])))]
+
+
+def _efecto_escalon(items: dict[str, dict], semanas_ok: set[str] | None = None,
+                    umbral: float = UMBRAL_ESCALON) -> dict[str, Any]:
+    """Efecto ADICIONAL de estar abajo de `umbral` ($299), además del precio.
+
+    Regresión agrupada within-item: y − ȳ_i = β·(log p − media_i) + δ·(1[p<umbral] − media_i) + e,
+    y = log(u7/I + 0.5) (unidades) o log(v7/I + 0.5) (visitas); β común, δ común.
+    Error estándar agrupado por publicación (sándwich, G/(G−1)). Solo informan δ
+    las publicaciones que CRUZAN el umbral (semanas de los dos lados); las demás
+    solo aportan a β. ``usar`` = |δ/se| ≥ 1.96 y δ > 0 (un castigo por bajar de
+    $299 no tiene mecanismo en ML: si sale, es ruido o confusión).
+
+    Medido el 28-sep (P2 aplicado, 268 publicaciones cruzan): δ unidades = +0.094
+    (se 0.076, z 1.23) → NO se usa. Robustez: índice por publicación +0.145 (z 1.84);
+    efectos cuenta×semana +0.102 (z 1.39); β PROPIA de cada publicación y δ común
+    +0.041 (se 0.112). Solo sale "significativo" si β se estima ÚNICAMENTE con las
+    que cruzan (+0.59, z 7.8; con precio realizado +0.37, z 4.1), y ahí β cae a
+    −0.67/−1.10: el escalón y la pendiente no se separan dentro de esas
+    publicaciones (el +0.33 de la auditoría es de ese tipo). No hay evidencia de un
+    salto de demanda en $299 más allá del efecto del precio."""
+    out: dict[str, Any] = {"umbral": umbral}
+    for nombre, campo in (("unidades", "u7"), ("visitas", "v7")):
+        grupos = []
+        cruzan = n_obs = n_abajo = 0
+        for it in items.values():
+            obs = [s for s in _obs(it, semanas_ok) if s[campo] is not None]
+            if len(obs) < 3 or sum(s["u"] for s in obs) <= 0:
+                continue
+            xs = [math.log(s["precio"]) for s in obs]
+            ds = [1.0 if s["precio"] < umbral else 0.0 for s in obs]
+            ys = [math.log(s[campo] / s["idx"] + 0.5) for s in obs]
+            mx, md, my = sum(xs) / len(xs), sum(ds) / len(ds), sum(ys) / len(ys)
+            g = [(x - mx, d - md, y - my) for x, d, y in zip(xs, ds, ys)]
+            if all(abs(a) < 1e-12 for a, _, _ in g):
+                continue
+            grupos.append(g)
+            n_obs += len(g)
+            n_abajo += int(sum(ds))
+            if 0 < md < 1:
+                cruzan += 1
+        sxx = sum(a * a for g in grupos for a, _, _ in g)
+        sxd = sum(a * b for g in grupos for a, b, _ in g)
+        sdd = sum(b * b for g in grupos for _, b, _ in g)
+        sxy = sum(a * c for g in grupos for a, _, c in g)
+        sdy = sum(b * c for g in grupos for _, b, c in g)
+        det = sxx * sdd - sxd * sxd
+        r: dict[str, Any] = {"n_items": len(grupos), "n_items_cruzan": cruzan, "n_obs": n_obs,
+                             "n_obs_abajo": n_abajo,
+                             "beta_agrupada_sin_escalon": _r(sxy / sxx) if sxx > 0 else None,
+                             "efecto": None, "se": None, "z": None, "usar": False}
+        if cruzan >= 10 and det > 1e-9:
+            inv = ((sdd / det, -sxd / det), (-sxd / det, sxx / det))
+            b = inv[0][0] * sxy + inv[0][1] * sdy
+            dlt = inv[1][0] * sxy + inv[1][1] * sdy
+            # Sándwich agrupado por publicación.
+            m00 = m01 = m11 = 0.0
+            for g in grupos:
+                s0 = sum(a * (c - b * a - dlt * bb) for a, bb, c in g)
+                s1 = sum(bb * (c - b * a - dlt * bb) for a, bb, c in g)
+                m00 += s0 * s0
+                m01 += s0 * s1
+                m11 += s1 * s1
+            G = len(grupos)
+            k = G / (G - 1) if G > 1 else 1.0
+            # V = inv · M · inv (2×2 simétricas); solo hacen falta V00 y V11.
+            a0, a1 = inv[0]
+            c0, c1 = inv[1]
+            v00 = k * (a0 * (a0 * m00 + a1 * m01) + a1 * (a0 * m01 + a1 * m11))
+            v11 = k * (c0 * (c0 * m00 + c1 * m01) + c1 * (c0 * m01 + c1 * m11))
+            se_d = math.sqrt(max(v11, 0.0))
+            z = dlt / se_d if se_d > 0 else None
+            r.update({"beta_agrupada": _r(b), "se_beta": _r(math.sqrt(max(v00, 0.0))),
+                      "efecto": _r(dlt), "se": _r(se_d), "z": _r(z, 2),
+                      "usar": bool(z is not None and dlt > 0 and z >= Z_ESCALON)})
+        out[nombre] = r
+    return out
+
+
+def _factor_escalon(escalon: dict | None, nombre: str, p: float | None, p_ref: float | None) -> float:
+    """exp(δ·(1[p<umbral] − 1[p_ref<umbral])) si el efecto se usa; si no, 1."""
+    e = (escalon or {}).get(nombre) or {}
+    if not e.get("usar") or not p or not p_ref:
+        return 1.0
+    u = float((escalon or {}).get("umbral") or UMBRAL_ESCALON)
+    return math.exp(float(e["efecto"]) * ((1.0 if p < u else 0.0) - (1.0 if p_ref < u else 0.0)))
+
+
 def _ajustar_items(items: dict[str, dict], semanas_ok: set[str] | None = None) -> dict[str, dict]:
     """Regresión within-item por publicación (unidades y visitas)."""
     out: dict[str, dict] = {}
     for lid, it in items.items():
-        obs = [s for s in it["semanas"] if s["valida"] and s["precio"] and s["precio"] > 0
-               and (semanas_ok is None or s["semana"] in semanas_ok)]
+        obs = _obs(it, semanas_ok)
         ps = [s["precio"] for s in obs]
         cv = _cv(ps)
         e: dict[str, Any] = {"n_semanas": len(obs), "cv_precio": round(cv, 4), "beta": None, "se": None,
@@ -791,6 +967,10 @@ def base_item(it: dict, panel: dict, dias_base: int = 28) -> dict[str, Any]:
         return {"dias": 0, "u0": None, "v0": None, "p_base": None, "factor_estacional": 1.0}
     uu = sum(it["u"][k] for k in elegidos)
     rr = sum(it["r"][k] for k in elegidos)
+    # Precio de la base = solo piezas con precio BRUTO (P2).
+    up, rp = it.get("u_precio") or it["u"], it.get("r_precio") or it["r"]
+    uup = sum(up[k] for k in elegidos)
+    rrp = sum(rp[k] for k in elegidos)
     tiene_v = any(it["v"][k] is not None for k in elegidos)
     vv = sum(it["v"][k] or 0 for k in elegidos) if tiene_v else None
     i_base = _media([idx[k] for k in elegidos if idx[k]])
@@ -800,37 +980,66 @@ def base_item(it: dict, panel: dict, dias_base: int = 28) -> dict[str, Any]:
     return {"dias": d, "desde": panel["fechas"][min(elegidos)].isoformat(),
             "hasta": panel["fechas"][max(elegidos)].isoformat(),
             "continua": max(elegidos) == n - 1, "unidades": uu, "visitas": vv, "ingreso": round(rr, 2),
+            "unidades_precio_neto": uu - uup,
             "u0": round(uu / d, 4), "v0": None if vv is None else round(vv / d, 3),
-            "p_base": round(rr / uu, 2) if uu > 0 else None, "factor_estacional": round(factor, 4)}
+            "p_base": round(rrp / uup, 2) if uup > 0 else None, "factor_estacional": round(factor, 4)}
 
 
 # ── validación fuera de muestra ───────────────────────────────────────────────
-def _validar(panel: dict, par_opt: dict, tope: float | None = None) -> dict[str, Any]:
-    """Entrena con las semanas completas 1..N−4 y predice las unidades de las
-    últimas 4 con el precio que de verdad se cobró. Modelos:
-
-    - ``ingenuo``: mismas unidades/semana que las últimas 4 de entrenamiento.
-    - ``estacional``: ingenuo × índice de la semana / índice de la base.
-    - ``modelo``: estacional × (p_t / p_base)^β  (β encogida y recortada).
-    - ``beta_global`` / ``beta_prior``: igual con una sola β para todos.
-    """
+def _pliegue(panel: dict, pliegue: int) -> tuple[list[str], list[str]] | None:
+    """(semanas de entrenamiento, semanas de prueba) del pliegue. 1 = las últimas 4
+    semanas completas (EXTERIOR, W36–39 el 28-sep); 2 = las 4 anteriores (INTERIOR,
+    W32–35), entrenando solo con lo que había antes de cada una."""
     completas = [s["clave"] for s in panel["semanas"] if s["completa"]]
-    if len(completas) < SEMANAS_PRUEBA + MIN_SEMANAS + 2:
+    fin = len(completas) - SEMANAS_PRUEBA * (pliegue - 1)
+    ini = fin - SEMANAS_PRUEBA
+    if ini < MIN_SEMANAS + 2:
+        return None
+    return completas[:ini], completas[ini:fin]
+
+
+def _validar(panel: dict, par_opt: dict, tope: float | None = None, pliegue: int = 1,
+             escalon: dict | None = None) -> dict[str, Any]:
+    """Entrena con las semanas ANTERIORES al pliegue y predice sus 4 semanas con el
+    precio que de verdad se cobró. SIN información futura (auditoría P4):
+
+    - el índice de visitas de la cuenta en las semanas de prueba NO se usa (la
+      mejor previsión del índice es el de la base: "mismas unidades");
+    - un precio arrastrado desde la ventana de prueba no entra al entrenamiento
+      ni a la base (`_obs`);
+    - el efecto del escalón de $299 se estima solo con las semanas de entrenamiento.
+
+    Modelos (u = unidades/semana normalizadas a 7 días con oferta):
+    - ``ingenuo``: u_base = promedio de las últimas 4 semanas de entrenamiento.
+    - ``modelo``: u_base × (p_t/p_base)^β_i (β encogida y recortada, con el tope τ²).
+    - ``beta_global``: igual con la β global de ese entrenamiento para todos.
+    - ``beta_fija_<b>``: igual con una β fija (diagnóstico de qué tan elástico conviene).
+    - ``modelo_escalon``: ``modelo`` × exp(δ·Δ1[p<$299]) (solo si δ es significativo).
+    - ``*_indice_futuro``: las versiones VIEJAS (índice de la semana de prueba);
+      se reportan para comparar, NO se eligen con ellas.
+    """
+    corte = _pliegue(panel, pliegue)
+    if corte is None:
         return {"error": "semanas insuficientes"}
-    prueba, entreno = completas[-SEMANAS_PRUEBA:], completas[:-SEMANAS_PRUEBA]
+    entreno, prueba = corte
+    ok = set(entreno)
     base_s = set(entreno[-4:])
     items = panel["items"]
-    raw = _ajustar_items(items, set(entreno))
+    raw = _ajustar_items(items, ok)
     res, meta = _combinar(items, raw, par_opt, tope)
     b_glob = meta["unidades"]["global"]["beta"]
     lo, hi = float(par_opt.get("elasticidad_min", -6.0)), float(par_opt.get("elasticidad_max", -0.3))
     b_glob = min(hi, max(lo, b_glob))
-    b_prior = float(par_opt.get("elasticidad_prior_unidades", -1.6))
+    if escalon is None:
+        escalon = _efecto_escalon(items, ok)
+    usa_esc = bool((escalon.get("unidades") or {}).get("usar"))
 
-    modelos = ("ingenuo", "estacional", "modelo", "beta_global", "beta_prior")
-    acc = {m: {"abs": 0.0, "err": 0.0} for m in modelos}
-    acc_cambio = {m: {"abs": 0.0, "err": 0.0} for m in modelos}
-    acc_conf: dict[str, dict[str, dict[str, float]]] = defaultdict(lambda: {m: {"abs": 0.0, "err": 0.0} for m in modelos})
+    modelos = (["ingenuo", "modelo", "beta_global"] + [f"beta_fija_{b:g}" for b in BETAS_FIJAS]
+               + (["modelo_escalon"] if usa_esc else []) + ["estacional_indice_futuro", "modelo_indice_futuro"])
+    acc = {m: {"abs": 0.0, "err": 0.0, "dev": 0.0, "n": 0} for m in modelos}
+    acc_cambio = {m: {"abs": 0.0, "err": 0.0, "dev": 0.0, "n": 0} for m in modelos}
+    acc_conf: dict[str, dict[str, dict[str, float]]] = defaultdict(
+        lambda: {m: {"abs": 0.0, "err": 0.0, "dev": 0.0, "n": 0} for m in modelos})
     real_tot = real_cambio = 0.0
     real_conf: Counter = Counter()
     ape_item = {m: [] for m in modelos}
@@ -843,7 +1052,7 @@ def _validar(panel: dict, par_opt: dict, tope: float | None = None) -> dict[str,
             continue
         ub = sum(s["u7"] for s in base) / len(base)
         ub_adj = sum(s["u7"] / s["idx"] for s in base) / len(base)
-        pb = [s["precio"] for s in base if s["precio"]]
+        pb = [s["precio"] for s in _obs({"semanas": base}, ok)]
         p_base = math.exp(sum(math.log(p) for p in pb) / len(pb)) if pb else None
         beta = res[lid]["beta"]
         conf = res[lid]["confianza"]
@@ -853,10 +1062,13 @@ def _validar(panel: dict, par_opt: dict, tope: float | None = None) -> dict[str,
         for s in test:
             real = s["u7"]
             rel = (s["precio"] / p_base) if (p_base and s["precio"]) else 1.0
-            pred = {"ingenuo": ub, "estacional": ub_adj * s["idx"],
-                    "modelo": ub_adj * s["idx"] * rel ** beta,
-                    "beta_global": ub_adj * s["idx"] * rel ** b_glob,
-                    "beta_prior": ub_adj * s["idx"] * rel ** b_prior}
+            pred = {"ingenuo": ub, "modelo": ub * rel ** beta, "beta_global": ub * rel ** b_glob,
+                    "estacional_indice_futuro": ub_adj * s["idx"],
+                    "modelo_indice_futuro": ub_adj * s["idx"] * rel ** beta}
+            for b in BETAS_FIJAS:
+                pred[f"beta_fija_{b:g}"] = ub * rel ** b
+            if usa_esc:
+                pred["modelo_escalon"] = pred["modelo"] * _factor_escalon(escalon, "unidades", s["precio"], p_base)
             cambio = abs(math.log(rel)) >= 0.05
             n_obs += 1
             real_tot += real
@@ -866,13 +1078,13 @@ def _validar(panel: dict, par_opt: dict, tope: float | None = None) -> dict[str,
                 real_cambio += real
             for m in modelos:
                 e = pred[m] - real
-                acc[m]["abs"] += abs(e)
-                acc[m]["err"] += e
-                acc_conf[conf][m]["abs"] += abs(e)
-                acc_conf[conf][m]["err"] += e
-                if cambio:
-                    acc_cambio[m]["abs"] += abs(e)
-                    acc_cambio[m]["err"] += e
+                d = _devianza_poisson(real, pred[m])
+                grupos = (acc[m], acc_conf[conf][m]) + ((acc_cambio[m],) if cambio else ())
+                for g in grupos:
+                    g["abs"] += abs(e)
+                    g["err"] += e
+                    g["dev"] += d
+                    g["n"] += 1
                 tot[m] += pred[m]
             tot_real += real
         if tot_real >= 4:
@@ -880,49 +1092,158 @@ def _validar(panel: dict, par_opt: dict, tope: float | None = None) -> dict[str,
                 ape_item[m].append(abs(tot[m] - tot_real) / tot_real)
 
     def _met(a: dict, total: float) -> dict[str, Any]:
-        return {m: {"wape": _r(a[m]["abs"] / total), "sesgo": _r(a[m]["err"] / total)} for m in modelos} if total else {}
+        return {m: {"wape": _r(a[m]["abs"] / total), "sesgo": _r(a[m]["err"] / total),
+                    "devianza": _r(a[m]["dev"] / a[m]["n"]) if a[m]["n"] else None}
+                for m in modelos} if total else {}
 
     return {
-        "semanas_entreno": [entreno[0], entreno[-1]], "semanas_prueba": [prueba[0], prueba[-1]],
+        "pliegue": pliegue, "semanas_entreno": [entreno[0], entreno[-1]], "semanas_prueba": [prueba[0], prueba[-1]],
+        "sin_indice_futuro": True,
         "publicaciones": n_items, "item_semanas": n_obs, "item_semanas_con_cambio_precio_5pct": n_cambio,
-        "beta_global_entreno": _r(b_glob), "beta_prior": b_prior,
+        "beta_global_entreno": _r(b_glob), "tope_tau2": tope if tope is not None else "formula",
+        "escalon_299": {c: (escalon.get("unidades") or {}).get(c) for c in ("efecto", "se", "z", "usar")},
         "todas": _met(acc, real_tot), "con_cambio_precio": _met(acc_cambio, real_cambio),
         "por_confianza": {c: _met(acc_conf[c], real_conf[c]) for c in acc_conf},
         "mape_item_4_semanas": {m: _r(median(v)) if v else None for m, v in ape_item.items()},
         "n_items_mape": len(ape_item["modelo"]),
         "nota": "wape = Σ|pred−real|/Σreal sobre item×semana (u normalizadas a 7 días con oferta); "
-                "sesgo = Σ(pred−real)/Σreal; mape_item = mediana del error % del total de 4 semanas "
-                "en publicaciones con ≥4 unidades reales",
+                "sesgo = Σ(pred−real)/Σreal; devianza = media de la devianza de Poisson por item×semana "
+                "(no premia predecir de menos como el WAPE: predecir 0 da WAPE 1.0 exacto); "
+                "mape_item = mediana del error % del total de 4 semanas "
+                "en publicaciones con ≥4 unidades reales. Sin índice de visitas futuro: los modelos "
+                "*_indice_futuro son la versión vieja, solo para comparar.",
     }
 
 
-# ── principal ─────────────────────────────────────────────────────────────────
-def _elegir_tope(panel: dict, par_opt: dict) -> tuple[float | None, list[dict], dict | None]:
-    """Valida cada tope de τ² fuera de muestra y elige (ver `TOLERANCIA_WAPE`)."""
-    tabla, validaciones = [], {}
+def _wape(v: dict, modelo: str = "modelo", grupo: str = "con_cambio_precio", metrica: str = "wape") -> float | None:
+    return ((v.get(grupo) or {}).get(modelo) or {}).get(metrica)
+
+
+def _devianza_poisson(real: float, pred: float) -> float:
+    """Devianza de Poisson de UNA observación (u7 no es entera: cuasi-Poisson).
+    Predecir 0 cuando hubo ventas sería infinito: la predicción se acota a 0.01.
+
+    >>> _devianza_poisson(2.0, 2.0), round(_devianza_poisson(0.0, 1.5), 3), round(_devianza_poisson(3.0, 1.0), 3)
+    (0.0, 3.0, 2.592)
+    """
+    mu = max(float(pred), 0.01)
+    y = max(float(real), 0.0)
+    return 2.0 * ((y * math.log(y / mu) if y > 0 else 0.0) - (y - mu))
+
+
+def _elegir_tope(panel: dict, par_opt: dict) -> tuple[float | None, list[dict], dict | None, dict]:
+    """Validación HONESTA (auditoría P4): el tope de τ² se elige en el pliegue
+    INTERIOR (W32–35, entrenando hasta W31) y el error se reporta en el EXTERIOR
+    (W36–39, entrenando hasta W35), que no participó en la elección. Antes se
+    elegía y reportaba en el mismo pliegue y con el índice de la semana de prueba.
+
+    Regla de elección (en el interior): WAPE de ``modelo`` en semanas con cambio
+    de precio ≥ 5%; entre los que quedan a ≤2% del mejor, el tope MÁS BAJO (más
+    encogimiento; la regla de "un error estándar": ante un empate se prefiere el
+    modelo más regularizado). La regla vieja desempataba al revés y, medido el
+    28-sep, el interior no distingue los topes (0.868–0.878) pero en el exterior
+    el de menos encogimiento ("formula") da 1.478 contra 1.018 del ingenuo: los β
+    extremos que no se encogen arruinan la predicción. OJO: esta regla se fijó
+    después de ver ese exterior; el pliegue W28–31 tampoco distingue los topes
+    (0.92–0.94), así que el número exterior no es 100% pre-registrado.
+
+    Números del 28-sep (con P2 y sin fuga): elegido 0.1 → exterior 0.910 contra
+    1.018 del ingenuo (−10.6%) y 1.478 de 'formula'; β global del entrenamiento
+    −1.30, con todas las semanas −1.42. La regla PURA (argmin interior = 2.0) daría
+    1.030 en el exterior: peor que el ingenuo. Con τ² = 0.05 (el piso, fuera de la
+    lista): interior 0.882, exterior 0.910 — no mejora. β FIJAS en el exterior:
+    −0.5 → 0.961, −1.0 → 0.926, −1.5 → 0.908, −2.0 → 0.904 (y −2.5/−2.0 son las
+    mejores en W32–35 y W28–31): una β global MENOS elástica que ~−1.5 no predice
+    mejor; lo que sí predice mejor es encoger fuerte los β extremos."""
+    tabla, interior, exterior = [], {}, {}
     for tope in TOPES_TAU2:
-        v = _validar(panel, par_opt, tope)
-        validaciones[tope] = v
-        m = (v.get("con_cambio_precio") or {}).get("modelo") or {}
-        mt = (v.get("todas") or {}).get("modelo") or {}
+        interior[tope] = _validar(panel, par_opt, tope, pliegue=2)
+        exterior[tope] = _validar(panel, par_opt, tope, pliegue=1)
+        vi, ve = interior[tope], exterior[tope]
         tabla.append({"tope_tau2": tope if tope is not None else "formula",
-                      "wape_con_cambio": m.get("wape"), "sesgo_con_cambio": m.get("sesgo"),
-                      "wape_todas": mt.get("wape"), "sesgo_todas": mt.get("sesgo"),
-                      "mape_item": (v.get("mape_item_4_semanas") or {}).get("modelo"),
-                      "beta_global_entreno": v.get("beta_global_entreno")})
-    con = [t for t in tabla if t["wape_con_cambio"] is not None]
+                      "interior_wape_con_cambio": _wape(vi), "exterior_wape_con_cambio": _wape(ve),
+                      "interior_beta_global": vi.get("beta_global_entreno"),
+                      "exterior_beta_global": ve.get("beta_global_entreno"),
+                      "exterior_wape_todas": _wape(ve, grupo="todas"),
+                      "exterior_sesgo_con_cambio": ((ve.get("con_cambio_precio") or {}).get("modelo") or {}).get("sesgo"),
+                      "interior_devianza_con_cambio": _wape(vi, metrica="devianza"),
+                      "exterior_devianza_con_cambio": _wape(ve, metrica="devianza")})
+    con = [t for t in tabla if t["interior_wape_con_cambio"] is not None]
     if not con:
-        return None, tabla, validaciones.get(None)
-    mejor = min(t["wape_con_cambio"] for t in con)
-    aceptables = [t for t in con if t["wape_con_cambio"] <= mejor * (1 + TOLERANCIA_WAPE)]
-    # "formula" = sin tope = el más alto de todos.
-    elegido = max(aceptables, key=lambda t: float("inf") if t["tope_tau2"] == "formula" else t["tope_tau2"])
+        return None, tabla, exterior.get(None), {}
+    mejor = min(t["interior_wape_con_cambio"] for t in con)
+    aceptables = [t for t in con if t["interior_wape_con_cambio"] <= mejor * (1 + TOLERANCIA_WAPE)]
+    elegido = min(aceptables, key=lambda t: float("inf") if t["tope_tau2"] == "formula" else t["tope_tau2"])
     tope = None if elegido["tope_tau2"] == "formula" else elegido["tope_tau2"]
     for t in tabla:
         t["elegido"] = t is elegido
-    return tope, tabla, validaciones[tope]
+    ve = exterior[tope]
+    wi = {m: _wape(interior[tope], m) for m in ["ingenuo", "modelo", "beta_global"] + [f"beta_fija_{b:g}" for b in BETAS_FIJAS]}
+    we = {m: _wape(ve, m) for m in wi}
+    we_ind = {m: _wape(ve, m) for m in ("estacional_indice_futuro", "modelo_indice_futuro", "modelo_escalon")}
+    formula = next((t for t in tabla if t["tope_tau2"] == "formula"), {})
+
+    def _mejor_fija(w: dict) -> float | None:
+        c = [(w.get(f"beta_fija_{b:g}"), b) for b in BETAS_FIJAS if w.get(f"beta_fija_{b:g}") is not None]
+        return min(c)[1] if c else None
+
+    honesto = {
+        "eleccion": {"pliegue": "interior", "semanas_prueba": interior[tope].get("semanas_prueba"),
+                     "criterio": "a ≤2% del menor WAPE interior, el tope más bajo (más encogimiento)",
+                     "tope_tau2": elegido["tope_tau2"]},
+        "reporte": {"pliegue": "exterior", "semanas_prueba": ve.get("semanas_prueba"), "sin_indice_futuro": True},
+        "wape_con_cambio_interior": wi, "wape_con_cambio_exterior": we,
+        "wape_con_cambio_exterior_con_indice_futuro": we_ind,
+        "modelo_vs_ingenuo_exterior": (_r(we["modelo"] / we["ingenuo"] - 1) if we.get("modelo") and we.get("ingenuo") else None),
+        # ¿El criterio de β global MENOS elástica (más encogimiento) predice mejor
+        # que la fórmula sin tope, medido donde no se eligió?
+        "menos_elastica_predice_mejor": {
+            "elegido": {"beta_global_entreno": elegido["exterior_beta_global"], "wape": elegido["exterior_wape_con_cambio"]},
+            "formula": {"beta_global_entreno": formula.get("exterior_beta_global"), "wape": formula.get("exterior_wape_con_cambio")},
+        },
+        "mejor_beta_fija_interior": _mejor_fija(wi), "mejor_beta_fija_exterior": _mejor_fija(we),
+    }
+    # Reverificación #4: el WAPE premia predecir de MENOS (predecir 0 da 1.0 exacto
+    # y el ingenuo da más; el sesgo del exterior es ≈ −44% en TODOS los modelos).
+    # Se reporta también la devianza de Poisson y qué tope elegiría ella con la
+    # misma regla; la elección sigue siendo por WAPE (no se cambia el modelo aquí).
+    dev_int = [t for t in tabla if t.get("interior_devianza_con_cambio") is not None]
+    por_dev = None
+    if dev_int:
+        mejor_d = min(t["interior_devianza_con_cambio"] for t in dev_int)
+        acept_d = [t for t in dev_int if t["interior_devianza_con_cambio"] <= mejor_d * (1 + TOLERANCIA_WAPE)]
+        por_dev = min(acept_d, key=lambda t: float("inf") if t["tope_tau2"] == "formula" else t["tope_tau2"])
+    honesto["complementarias_exterior"] = {
+        "wape_predecir_cero": 1.0,
+        "sesgo_con_cambio": {m: _wape(ve, m, metrica="sesgo") for m in ("ingenuo", "modelo", "beta_global")},
+        "devianza_con_cambio": {m: _wape(ve, m, metrica="devianza") for m in wi},
+        "tope_por_devianza_interior": por_dev["tope_tau2"] if por_dev else None,
+        "devianza_exterior_con_ese_tope": por_dev["exterior_devianza_con_cambio"] if por_dev else None,
+        "nota": "El WAPE premia predecir de menos (×0.7 lo baja); la devianza de Poisson no. Si los dos "
+                "eligen el mismo tope, la elección no depende de ese sesgo.",
+    }
+    # Veredicto en palabras (lo lee el informe): ¿más encogimiento (β global menos
+    # elástica) predice mejor donde NO se eligió? ¿Y una β global fija menos
+    # elástica que la del modelo?
+    fe, ff = elegido["exterior_wape_con_cambio"], formula.get("exterior_wape_con_cambio")
+    bg = elegido["exterior_beta_global"]
+    fijas_menos = {b: we.get(f"beta_fija_{b:g}") for b in BETAS_FIJAS if bg is not None and b > bg}
+    fijas_mas = {b: we.get(f"beta_fija_{b:g}") for b in BETAS_FIJAS if bg is not None and b < bg}
+    honesto["veredicto"] = {
+        "encoger_predice_mejor": bool(fe is not None and ff is not None and fe < ff),
+        "beta_fija_menos_elastica_predice_mejor": bool(
+            fijas_menos and min(v for v in fijas_menos.values() if v is not None) < (we.get("beta_global") or 9)),
+        "beta_fija_mas_elastica_predice_mejor": bool(
+            fijas_mas and min(v for v in fijas_mas.values() if v is not None) < (we.get("beta_global") or 9)),
+        "texto": (f"Exterior (W36–39, sin índice futuro): con el tope elegido ({elegido['tope_tau2']}) el modelo da "
+                  f"WAPE {we.get('modelo')} contra {we.get('ingenuo')} del ingenuo; sin tope ('formula', β global "
+                  f"{formula.get('exterior_beta_global')}) da {ff}. β fijas: "
+                  + ", ".join(f"{b:g}→{we.get(f'beta_fija_{b:g}')}" for b in BETAS_FIJAS) + "."),
+    }
+    return tope, tabla, ve, honesto
 
 
+# ── principal ─────────────────────────────────────────────────────────────────
 def estimar(dias_base: int | None = None, indice: str = "cuenta", escribir: bool = True,
             validar: bool = True, tope_tau2: float | str | None = "validado") -> dict[str, Any]:
     """Construye el panel, estima y escribe `ultimo/elasticidades.json`.
@@ -938,19 +1259,25 @@ def estimar(dias_base: int | None = None, indice: str = "cuenta", escribir: bool
     items = panel["items"]
     seleccion = None
     validacion = None
+    honesto: dict[str, Any] = {}
     if tope_tau2 == "validado":
-        tope, seleccion, validacion = _elegir_tope(panel, par_opt)
+        tope, seleccion, validacion, honesto = _elegir_tope(panel, par_opt)
     else:
         tope = None if tope_tau2 is None else float(tope_tau2)
         validacion = _validar(panel, par_opt, tope) if validar else None
     raw = _ajustar_items(items)
     res, meta = _combinar(items, raw, par_opt, tope)
+    # Escalón de $299 con TODAS las semanas (el optimizador lo usa solo si `usar`).
+    escalon = _efecto_escalon(items)
 
     salida: dict[str, Any] = {}
     for lid, it in items.items():
         r = dict(res[lid])
+        ps = [s["precio"] for s in _obs(it)]
         r.update({"listing_id": lid, "cuenta": it["cuenta"], "sku": it["sku"],
                   "categoria_id": it["categoria_id"], "raiz_id": it["raiz_id"],
+                  # Semanas de los dos lados de $299: el escalón aplica a esta publicación.
+                  "cruza_299": bool(ps and min(ps) < UMBRAL_ESCALON <= max(ps)),
                   "base": base_item(it, panel, dias_base)})
         salida[it["id"]] = r
 
@@ -1016,8 +1343,14 @@ def estimar(dias_base: int | None = None, indice: str = "cuenta", escribir: bool
     if validacion is not None:
         validacion = dict(validacion)
         validacion["seleccion_tope_tau2"] = seleccion
+        validacion["honesta"] = honesto
     salida["_diagnostico"] = diag
     salida["_validacion"] = validacion
+    salida["_escalon_299"] = {**escalon, "nota": (
+        "Efecto adicional de estar abajo de $299 (regresión agrupada within-item, β común, error "
+        "agrupado por publicación). El optimizador lo aplica solo si `usar` (δ > 0 y z ≥ 1.96), a "
+        "publicaciones que cruzan $299 o con precio actual entre $250 y $350: U(P) × exp(δ·(1[P<299] − "
+        "1[p_base<299])).")}
     salida["_panel"] = {k: v for k, v in panel["resumen"].items()}
     salida["_meta"] = {"generado_at": almacen.ahora_iso(), "version": "lab-0.1",
                        "modelo": "log(u7/I+0.5) within-item OLS + EB robusto → raíz → global → prior",
@@ -1059,5 +1392,5 @@ if __name__ == "__main__":
         print(json.dumps(comparar_indices(), ensure_ascii=False, indent=1, default=str))
     else:
         s = estimar(indice=a.indice)
-        print(json.dumps({k: s[k] for k in ("_global", "_diagnostico", "_validacion", "_panel", "_meta")},
+        print(json.dumps({k: s[k] for k in ("_global", "_diagnostico", "_validacion", "_escalon_299", "_panel", "_meta")},
                          ensure_ascii=False, indent=1, default=str))

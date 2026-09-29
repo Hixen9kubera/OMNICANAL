@@ -116,6 +116,7 @@ class _Corrida:
         self.muertas: dict[str, str] = {}
         self.avisos: list[str] = []
         self.etapas: dict[str, dict] = {}
+        self.sin_presupuesto = False
         self._lock = threading.Lock()
 
     # ── HTTP ──────────────────────────────────────────────────────────────────
@@ -123,8 +124,17 @@ class _Corrida:
         """GET con la cuenta; (None, motivo) si la cuenta ya fue abortada."""
         if cuenta in self.muertas:
             return None, "cuenta_abortada"
+        if self.sin_presupuesto:
+            return None, "presupuesto_agotado"
         try:
             return ml_http.get(ruta, params, cuenta)
+        except ml_http.PresupuestoAgotado as exc:
+            with self._lock:
+                if not self.sin_presupuesto:
+                    self.sin_presupuesto = True
+                    self.avisos.append(str(exc))
+                    log.error("ML: %s — se detienen las llamadas de esta corrida", exc)
+            return None, "presupuesto_agotado"
         except TokenInvalido as exc:
             with self._lock:
                 if cuenta not in self.muertas:
@@ -535,7 +545,13 @@ def _comisiones(c: _Corrida, universo: list[dict]) -> None:
     g0 = ml_http.contadores()["get"]
     par = _parametros().get("mercado_libre", {})
     muestras = [float(p) for p in par.get("precios_muestra_comision") or [199, 399, 599, 1199]]
-    tramos = [float(t) for t in par.get("tramos_comision_precio") or [0, 299, 500, 1000]]
+    # Llaves de MUESTREO (una por precio de muestra), NO `tramos_comision_precio`:
+    # esos son los tramos del respaldo ([0, 500] desde el 28-sep) y con ellos dos
+    # muestras caerían en la misma llave → `len(tramos) != len(muestras)` y TODAS
+    # las categorías se marcarían incompletas.
+    tramos = [float(t) for t in par.get("tramos_muestreo_comision") or [0, 299, 500, 1000]]
+    if len({_tramo(p, tramos) for p in muestras}) != len(muestras):
+        raise ValueError("tramos_muestreo_comision debe dar una llave distinta a cada precio de muestra")
     ruta = almacen.ruta("cache", "comisiones.json")
     cache: dict[str, dict] = almacen.leer_json(ruta, {}) or {}
     cats = sorted({u["category_id"] for u in universo
@@ -753,10 +769,11 @@ def extraer(dia: dt.date | None = None, incremental: bool = True,
     resumen = {
         "etapa": "extraer_ml", "dia": dia.isoformat(), "generado_at": almacen.ahora_iso(),
         "incremental": incremental, "etapas_pedidas": etapas,
-        "ok": not c.muertas and all(v.get("ok") for v in c.etapas.values()),
+        "ok": not c.muertas and not c.sin_presupuesto and all(v.get("ok") for v in c.etapas.values()),
         "duracion_s": round(time.monotonic() - t0, 1),
         "etapas": c.etapas, "cuentas_abortadas": c.muertas, "avisos": c.avisos,
         "contadores_ml_api": {k: cont1[k] - cont0.get(k, 0) for k in cont1},
+        "presupuesto_ml": ml_http.presupuesto(),
         "conteos": _conteos(universo, dia) if universo else {},
         "frescura": {"ml_listings": almacen.ahora_iso() if "universo" in etapas else None,
                      "visitas_api": almacen.ahora_iso() if "visitas" in c.etapas else None},

@@ -22,7 +22,7 @@ const ejeNum = (v: number) => (Math.abs(v) >= 1000 ? `${(v / 1000).toFixed(v % 1
 
 export default function CurvaPrecio({ curva }: { curva: Curva }) {
   const puntos = [...curva.puntos].sort((a, b) => a.precio - b.precio);
-  if (puntos.length < 2) return <p className="text-sm text-slate-400">Sin curva para esta publicación.</p>;
+  if (puntos.length < 2) return <p className="text-sm text-slate-500">Sin curva para esta publicación.</p>;
   const xs = puntos.map((p) => p.precio);
   const m = curva.marcadores ?? {};
   const xMin = xs[0];
@@ -43,6 +43,14 @@ export default function CurvaPrecio({ curva }: { curva: Curva }) {
   }
   const hayUtil = puntos.some((p) => p.utilidad_dia !== null);
 
+  // Precios EXACTOS que caen fuera de la rejilla (0.55·P0 – 1.45·P0): no se dibujan,
+  // se dicen. 1,216 equilibrios y 1,078 pisos quedan abajo el 28-sep.
+  const xMax = xs[xs.length - 1];
+  const NOMBRE: Record<string, string> = { equilibrio: "Equilibrio", piso: "Piso", recomendado: "Recomendado", actual: "Actual", ref_competencia: "Competencia", max_utilidad: "Máx. utilidad" };
+  const fuera = (Object.keys(NOMBRE) as (keyof typeof m)[])
+    .filter((k) => m[k] != null && ((m[k] as number) < xMin - 0.005 || (m[k] as number) > xMax + 0.005))
+    .map((k) => ({ nombre: NOMBRE[k], valor: m[k] as number, abajo: (m[k] as number) < xMin }));
+
   return (
     <div>
       <Leyenda items={[
@@ -52,6 +60,14 @@ export default function CurvaPrecio({ curva }: { curva: Curva }) {
         { nombre: "Pierde dinero", color: SERIE.perdida, tipo: "zona", valor: m.equilibrio != null ? `< ${pesos(m.equilibrio)}` : "—" },
         { nombre: "Bajo el piso", color: SERIE.delgada, tipo: "zona", valor: m.piso != null ? `< ${pesos(m.piso)}` : "—" },
       ]} />
+      {fuera.length > 0 && (
+        <p className="mt-2 rounded-lg bg-slate-50 px-2.5 py-1.5 text-[11.5px] leading-snug text-slate-600">
+          Fuera de la gráfica (la curva va de {pesos(xMin)} a {pesos(xMax)}):{" "}
+          {fuera.map((f, i) => (
+            <span key={f.nombre}>{i > 0 ? " · " : ""}<b className="font-semibold text-slate-800">{f.nombre} {pesos(f.valor)}</b> {f.abajo ? "↓ abajo" : "↑ arriba"}</span>
+          ))}. Son exactos; la curva de demanda sólo se estima dentro de ese rango.
+        </p>
+      )}
       <div className="mt-3">
         <PanelesX
           xs={xs}

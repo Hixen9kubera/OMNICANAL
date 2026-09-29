@@ -9,8 +9,13 @@ aborta con `TokenInvalido`.
 
 El cupo de la API es por APLICACIÓN y lo compartimos con producción (webhooks,
 barrido de precios, cron de visitas de las 12:00 UTC). Por eso:
-- freno global de `LAB_ML_RPS` peticiones por segundo (default 4) entre todos los hilos;
-- espera exponencial ante 429 (respeta Retry-After);
+- freno global de `LAB_ML_RPS` peticiones por segundo (default 4, TOPE 5) entre todos
+  los hilos;
+- ante un 429 se frena a TODOS los hilos (no solo al que lo recibió): espera
+  exponencial que respeta Retry-After;
+- presupuesto diario de GET (`LAB_ML_PRESUPUESTO_DIA`, default 15,000; una
+  extracción completa son ~8,500) persistido en `cache/ml_presupuesto.json`:
+  al agotarse, `get` lanza `PresupuestoAgotado` en vez de seguir;
 - pausa automática entre 11:50 y 12:30 UTC, cuando corre el cron de visitas.
 """
 from __future__ import annotations
@@ -30,13 +35,29 @@ API = "https://api.mercadolibre.com"
 CUENTAS = ("BEKURA", "SANCORFASHION")
 UID = {"BEKURA": "3072519654", "SANCORFASHION": "3064478475"}
 
-_RPS = float(os.environ.get("LAB_ML_RPS", "4"))
+_RPS_TOPE = 5.0
+
+
+def _rps() -> float:
+    try:
+        v = float(os.environ.get("LAB_ML_RPS") or 4)
+    except ValueError:
+        v = 4.0
+    return max(0.1, min(v, _RPS_TOPE))
+
+
+_RPS = _rps()
+_PRESUPUESTO_DEFECTO = 15_000
 _ESPERAS_429 = (0.5, 1, 2, 4, 8, 16)
 _VENTANA_PAUSA_UTC = ((11, 50), (12, 30))
 
 
 class TokenInvalido(RuntimeError):
     """El token de la cuenta dio 401 incluso releído. El laboratorio NO lo renueva."""
+
+
+class PresupuestoAgotado(RuntimeError):
+    """Se acabó el presupuesto diario de GET a ML del laboratorio."""
 
 
 class _Freno:
@@ -53,8 +74,84 @@ class _Freno:
         if turno > ahora:
             time.sleep(turno - ahora)
 
+    def pausar(self, segundos: float) -> None:
+        """Un 429 frena a TODOS los hilos: el siguiente turno de cualquiera es
+        después de `segundos` (antes solo esperaba el hilo que lo recibió y los
+        otros cinco seguían al ritmo normal)."""
+        with self._lock:
+            self._siguiente = max(self._siguiente, time.monotonic() + max(0.0, segundos))
+
+
+class _Presupuesto:
+    """GET por día (UTC) a ML, persistido en `cache/ml_presupuesto.json` cada
+    `_CADA` llamadas: sobrevive a reinicios y a corridas repetidas de /recalcular."""
+
+    _CADA = 50
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._dia: str | None = None
+        self._n = 0
+        self._sin_guardar = 0
+
+    @staticmethod
+    def limite() -> int:
+        try:
+            return max(0, int(os.environ.get("LAB_ML_PRESUPUESTO_DIA") or _PRESUPUESTO_DEFECTO))
+        except ValueError:
+            return _PRESUPUESTO_DEFECTO
+
+    @staticmethod
+    def _ruta():
+        from sandbox_precios import almacen
+
+        return almacen.ruta("cache", "ml_presupuesto.json")
+
+    def _cargar(self, dia: str) -> None:
+        from sandbox_precios import almacen
+
+        try:
+            d = almacen.leer_json(self._ruta(), {}) or {}
+        except (OSError, ValueError):
+            d = {}
+        self._dia, self._n = dia, int(d.get("get") or 0) if d.get("dia") == dia else 0
+
+    def _guardar(self) -> None:
+        from sandbox_precios import almacen
+
+        try:
+            almacen.escribir_json(self._ruta(), {"dia": self._dia, "get": self._n,
+                                                 "limite": self.limite(), "actualizado_at": almacen.ahora_iso()})
+            self._sin_guardar = 0
+        except OSError as exc:  # el presupuesto nunca tumba una lectura por un disco lleno
+            log.warning("ML: no se pudo guardar el presupuesto (%s)", exc)
+
+    def consumir(self) -> None:
+        dia = dt.datetime.now(dt.timezone.utc).date().isoformat()
+        with self._lock:
+            if self._dia != dia:
+                self._cargar(dia)
+            if self._n >= self.limite():
+                self._guardar()
+                raise PresupuestoAgotado(f"presupuesto diario de GET a ML agotado ({self._n}/{self.limite()}, "
+                                         "LAB_ML_PRESUPUESTO_DIA)")
+            self._n += 1
+            self._sin_guardar += 1
+            if self._sin_guardar >= self._CADA:
+                self._guardar()
+
+    def cerrar(self) -> None:
+        with self._lock:
+            if self._dia and self._sin_guardar:
+                self._guardar()
+
+    def usado(self) -> dict[str, Any]:
+        with self._lock:
+            return {"dia": self._dia, "get": self._n, "limite": self.limite()}
+
 
 _freno = _Freno(_RPS)
+_presupuesto = _Presupuesto()
 _cliente: httpx.Client | None = None
 _cliente_lock = threading.Lock()
 _contador = {"get": 0, "429": 0, "401": 0, "error": 0}
@@ -95,7 +192,8 @@ def get(ruta: str, params: dict[str, Any] | None = None, cuenta: str = "BEKURA",
         autenticado: bool = True) -> tuple[int, Any]:
     """GET a la API de ML. Devuelve (status, json|texto). Nunca renueva tokens.
 
-    Lanza `TokenInvalido` si la cuenta da 401 después de releer el token.
+    Lanza `TokenInvalido` si la cuenta da 401 después de releer el token y
+    `PresupuestoAgotado` si ya se gastó el presupuesto diario de GET.
     Errores de red: reintenta 2 veces y devuelve (0, str(error)).
     """
     cuenta = (cuenta or "BEKURA").upper()
@@ -104,6 +202,7 @@ def get(ruta: str, params: dict[str, Any] | None = None, cuenta: str = "BEKURA",
     intento_red = 0
     while True:
         _pausa_ventana()
+        _presupuesto.consumir()
         _freno.esperar()
         headers = {"Authorization": f"Bearer {token(cuenta, releer=releido)}"} if autenticado else {}
         try:
@@ -123,7 +222,7 @@ def get(ruta: str, params: dict[str, Any] | None = None, cuenta: str = "BEKURA",
             ra = r.headers.get("Retry-After")
             espera = float(ra) if ra and ra.replace(".", "", 1).isdigit() else _ESPERAS_429[intento_429]
             intento_429 += 1
-            time.sleep(min(espera, 30))
+            _freno.pausar(min(espera, 30))  # frena a todos los hilos; `esperar()` duerme este
             continue
         if r.status_code == 401 and autenticado:
             _contador["401"] += 1
@@ -143,3 +242,9 @@ def get(ruta: str, params: dict[str, Any] | None = None, cuenta: str = "BEKURA",
 
 def contadores() -> dict[str, int]:
     return dict(_contador)
+
+
+def presupuesto() -> dict[str, Any]:
+    """{dia, get, limite} del presupuesto diario (y lo deja guardado en disco)."""
+    _presupuesto.cerrar()
+    return _presupuesto.usado()

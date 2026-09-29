@@ -20,7 +20,7 @@ const ejeNum = (v: number) => (Math.abs(v) >= 1000 ? `${(v / 1000).toFixed(v % 1
 
 export default function GraficaHistorial({ serie, compacta = false }: { serie: PuntoHistorial[]; compacta?: boolean }) {
   if (!serie.length) {
-    return <p className="rounded-lg border border-dashed border-slate-300 px-3 py-6 text-center text-xs text-slate-400">Sin historia para esta publicación.</p>;
+    return <p className="rounded-lg border border-dashed border-slate-300 px-3 py-6 text-center text-xs text-slate-500">Sin historia para esta publicación.</p>;
   }
   const xs = serie.map((_, i) => i);
   const hayRec = serie.some((p) => p.precio_recomendado !== null);

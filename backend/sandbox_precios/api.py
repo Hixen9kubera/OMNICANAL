@@ -11,12 +11,21 @@ Qué garantiza:
 - **Métodos**: solo GET/HEAD/OPTIONS, salvo `POST /api/lab/sesion` y
   `POST /api/lab/recalcular`. Cualquier otro método se rechaza en el middleware
   ANTES del ruteo (405), exista o no la ruta.
-- **Llave compartida** `LAB_ACCESS_KEY`: cookie httpOnly `lab_sesion` (HMAC de la
-  llave) o `Authorization: Bearer <llave>`. Sin llave: abierto SOLO fuera de
-  Railway (modo local, con aviso en /estado). En Railway sin llave TODO responde
-  503 (falla cerrado) salvo `/salud`, que contesta 200 con `cerrado: true`: si el
-  healthcheck fallara, Railway mantendría vivo el deploy anterior CON llave y
-  quitar la llave no apagaría el laboratorio.
+- **Llave compartida** `LAB_ACCESS_KEY`: cookie httpOnly `lab_sesion`
+  (`v1.<emitida>.<HMAC>`, con edad verificada en el servidor, revocable con
+  `LAB_SESION_VERSION` y con el logout) o `Authorization: Bearer <llave>`. Sin
+  llave el laboratorio está CERRADO (todo 503) en cualquier host; solo se abre sin
+  llave fuera de Railway con `LAB_MODO_LOCAL=1` y únicamente para peticiones de
+  loopback. En Railway sin llave TODO responde 503 salvo `/salud`, que contesta
+  200 con `cerrado: true`: si el healthcheck fallara, Railway mantendría vivo el
+  deploy anterior CON llave y quitar la llave no apagaría el laboratorio.
+- **Freno de intentos**: toda credencial inválida cuenta como fallo — cada llave
+  del formulario y cada Bearer; una cookie inválida, una vez por IP y valor (y se
+  le borra al navegador) —: 10 por IP cada 15 min y 60 por minuto en total. La IP,
+  en Railway, es `X-Real-IP` (la que documenta Railway) o el ÚLTIMO salto de
+  `X-Forwarded-For` (los de la izquierda los escribe el cliente); fuera, el socket.
+- **POST**: exigen `application/json`, mismo origen (en cualquier modo) y un
+  cuerpo de ≤ 4 KB.
 - **Regla 11**: los endpoints de datos son `def` (FastAPI los corre en su pool de
   hilos) y el pipeline corre en `asyncio.to_thread`; nada de disco ni red en el loop.
 - **Caché** en memoria invalidada por (mtime, tamaño). El pipeline escribe con
@@ -24,6 +33,15 @@ Qué garantiza:
 - `NaN`/`Infinity` (que `json.dump` escribe por omisión) se leen como `null`: un
   `NaN` en la respuesta rompe el `JSON.parse` del navegador, y la regla del
   laboratorio es que un dato ausente es `null`, nunca un número inventado.
+- **Errores**: una excepción no manejada sale como 500 JSON genérico
+  `{"detail", "ref"}` con las cabeceras de seguridad; la traza va SOLO al log
+  (con la referencia y las credenciales tachadas). `/estado` sale sin trazas y
+  con cualquier DSN, token o `password=` tachado; no expone variables de entorno.
+- **Snapshots**: lee el formato compacto (`snapshots/<día>/resumen.json`) y
+  tolera el viejo (copia de `ultimo/`), vía `almacen.leer_snapshot`.
+- `GET /historial?ids=a,b,c&dias=90` devuelve varias series en una llamada
+  (máx. 100 ids) para las mini-gráficas; `/precios` trae `titulo`, `thumbnail`
+  (https) y `url` por fila.
 
 Cómo se corre (cwd = backend/):
 
@@ -37,15 +55,18 @@ import datetime as dt
 import hashlib
 import hmac
 import io
+import ipaddress
 import json
 import logging
 import math
 import mimetypes
 import os
 import re
+import secrets
 import sys
 import threading
 import time
+import traceback
 import unicodedata
 import zlib
 from array import array
@@ -67,6 +88,7 @@ _entorno.cargar()
 
 from fastapi import FastAPI, Query, Request  # noqa: E402
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response  # noqa: E402
+from starlette.middleware.gzip import GZipMiddleware  # noqa: E402
 
 from sandbox_precios import almacen  # noqa: E402
 
@@ -103,8 +125,57 @@ def _llave() -> str:
     return (os.environ.get("LAB_ACCESS_KEY") or "").strip()
 
 
+_SI = {"1", "true", "si", "sí", "yes"}
+
+
+def _modo_local_pedido() -> bool:
+    return (os.environ.get("LAB_MODO_LOCAL") or "").strip().lower() in _SI
+
+
+def _es_loopback(valor: str | None) -> bool:
+    v = (valor or "").strip().lower().strip("[]").split("%")[0]
+    if v == "localhost" or v.endswith(".localhost"):
+        return True
+    try:
+        ip = ipaddress.ip_address(v)
+    except ValueError:
+        return False
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_loopback
+
+
+def _nombre_host(cabecera: str) -> str:
+    """'localhost:3010' → 'localhost'; '[::1]:8010' → '::1'; '127.0.0.1' → igual."""
+    v = cabecera.split(",")[0].strip()
+    if v.startswith("["):
+        return v[1:v.find("]")] if "]" in v else v
+    return v.rsplit(":", 1)[0] if v.count(":") == 1 else v
+
+
+def _desde_loopback(request: Request) -> bool:
+    """Modo local abierto: la conexión tiene que haber ENTRADO por loopback —el
+    socket del servidor (`scope['server']`), que ninguna cabecera de proxy
+    cambia—, venir de loopback y nombrar a localhost en `Host` (y en
+    `X-Forwarded-Host`, que pone el proxy de `next dev`). Sin lo último, una web
+    cualquiera con DNS rebinding (evil.example → 127.0.0.1) leería los costos."""
+    servidor = (request.scope.get("server") or ("",))[0]
+    cliente = request.client.host if request.client else ""
+    if not (_es_loopback(servidor) and _es_loopback(cliente)):
+        return False
+    for cabecera in (request.headers.get("host"), request.headers.get("x-forwarded-host")):
+        if cabecera is not None and not _es_loopback(_nombre_host(cabecera)):
+            return False
+    return True
+
+
 def _modo_auth() -> tuple[str, str | None]:
-    """("llave" | "abierto" | "cerrado", motivo). "cerrado" = todo 503."""
+    """("llave" | "abierto" | "cerrado", motivo). "cerrado" = todo 503.
+
+    Sin llave el laboratorio está CERRADO en cualquier parte (un `docker run` sin
+    llave o un despliegue en otro host publicaría los costos). "abierto" solo
+    fuera de Railway, con `LAB_MODO_LOCAL=1`, y el portero además exige que la
+    petición venga de loopback."""
     llave = _llave()
     if llave:
         if _entorno.EN_RAILWAY and len(llave) < _LLAVE_MIN_RAILWAY:
@@ -112,12 +183,60 @@ def _modo_auth() -> tuple[str, str | None]:
         return "llave", None
     if _entorno.EN_RAILWAY:
         return "cerrado", "LAB_ACCESS_KEY no está definida en Railway"
-    return "abierto", None
+    if _modo_local_pedido():
+        return "abierto", None
+    return "cerrado", "sin LAB_ACCESS_KEY: define una llave, o LAB_MODO_LOCAL=1 para abrirlo solo en loopback"
 
 
-def _firma_sesion(llave: str) -> str:
-    """Valor de la cookie. Determinista a propósito: rotar la llave cierra TODAS las sesiones."""
-    return hmac.new(llave.encode("utf-8"), b"lab", hashlib.sha256).hexdigest()
+# ── Cookie de sesión firmada con fecha ────────────────────────────────────────
+# `v1.<emitida_epoch>.<hmac>`: el HMAC cubre la versión de sesiones
+# (`LAB_SESION_VERSION`, subirla cierra TODAS), la fecha y la llave. La edad se
+# verifica en el servidor (no solo el `max_age` del navegador) y un logout pone
+# la cookie en una lista negra en memoria hasta que caduque.
+def _version_sesion() -> str:
+    return (os.environ.get("LAB_SESION_VERSION") or "1").strip()[:32]
+
+
+def _hmac_sesion(llave: str, emitida: int) -> str:
+    msg = f"lab|{_version_sesion()}|{emitida}".encode("utf-8")
+    return hmac.new(llave.encode("utf-8"), msg, hashlib.sha256).hexdigest()
+
+
+def _firma_sesion(llave: str, emitida: int | None = None) -> str:
+    """Valor de la cookie para `llave` emitida en `emitida` (epoch; ahora por omisión)."""
+    t = int(time.time()) if emitida is None else int(emitida)
+    return f"v1.{t}.{_hmac_sesion(llave, t)}"
+
+
+_revocadas: dict[str, float] = {}
+_revocadas_lock = threading.Lock()
+
+
+def _huella_cookie(valor: str) -> str:
+    return hashlib.sha256(valor.encode("utf-8")).hexdigest()
+
+
+def _revocar(valor: str) -> None:
+    ahora = time.time()
+    with _revocadas_lock:
+        for k in [k for k, exp in _revocadas.items() if exp < ahora]:
+            _revocadas.pop(k, None)
+        if len(_revocadas) < 10_000:
+            _revocadas[_huella_cookie(valor)] = ahora + _DURACION_SESION_S
+
+
+def _cookie_valida(valor: str, llave: str) -> bool:
+    partes = valor.split(".")
+    if len(partes) != 3 or partes[0] != "v1" or not partes[1].isdigit():
+        return False
+    emitida = int(partes[1])
+    edad = time.time() - emitida
+    if edad < -300 or edad > _DURACION_SESION_S:
+        return False
+    if not _iguales(partes[2], _hmac_sesion(llave, emitida)):
+        return False
+    with _revocadas_lock:
+        return _huella_cookie(valor) not in _revocadas
 
 
 def _iguales(a: str, b: str) -> bool:
@@ -130,7 +249,7 @@ def _autenticado(request: Request) -> str | None:
     if not llave:
         return None
     cookie = request.cookies.get(COOKIE)
-    if cookie and _iguales(cookie, _firma_sesion(llave)):
+    if cookie and _cookie_valida(cookie, llave):
         return "cookie"
     auth = request.headers.get("authorization") or ""
     if auth[:7].lower() == "bearer " and _iguales(auth[7:].strip(), llave):
@@ -139,40 +258,126 @@ def _autenticado(request: Request) -> str | None:
 
 
 def _mismo_origen(request: Request) -> bool:
-    """Defensa extra contra CSRF en los POST con cookie (SameSite=Lax ya lo frena).
+    """Defensa contra CSRF en TODO POST (SameSite=Lax ya frena los de cookie).
 
     Sin cabecera Origin se acepta: los navegadores la mandan en todo POST, y un
     cliente sin navegador que no la manda tampoco lleva la cookie de nadie.
-    `x-forwarded-host` primero: el proxy de `next dev` (3010 → 8010) la pone.
+    `x-forwarded-host` solo cuenta fuera de Railway y desde loopback: es el proxy
+    de `next dev` (3010 → 8010) el que la pone. En Railway manda `Host` (el proxy
+    de Railway lo conserva); una `X-Forwarded-Host` que escriba el cliente no.
     """
     origen = request.headers.get("origin")
     if not origen:
         return True
-    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or ""
+    host = request.headers.get("host") or ""
+    xfh = request.headers.get("x-forwarded-host")
+    if xfh and not _entorno.EN_RAILWAY and _es_loopback(request.client.host if request.client else ""):
+        host = xfh
     return urlsplit(origen).netloc.lower() == host.split(",")[0].strip().lower()
 
 
-_fallos: dict[str, deque] = defaultdict(deque)
+def _es_json(request: Request) -> bool:
+    tipo = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+    return tipo == "application/json"
+
+
+# Tope GLOBAL de fallos por minuto (todas las IP juntas): falsificar IPs no
+# multiplica los intentos. Pasado el tope, las credenciales inválidas reciben 429
+# (una cookie VÁLIDA sigue entrando: el tope frena adivinanzas, no a quien ya
+# tiene sesión). Costo aceptado: quien mande 60 intentos por minuto deja el
+# formulario de la llave en 429 mientras insista.
+_FALLOS_GLOBAL_MAX = 60
+_FALLOS_GLOBAL_VENTANA_S = 60
+_FALLOS_IPS_MAX = 5_000
+# Solo cuentan los N fallos más recientes (con eso basta para decidir): memoria
+# acotada por IP y en el global aunque lluevan millones de intentos.
+_fallos: dict[str, deque] = defaultdict(lambda: deque(maxlen=_FALLOS_MAX))
+_fallos_global: deque = deque(maxlen=_FALLOS_GLOBAL_MAX)
 _fallos_lock = threading.Lock()
+# Una cookie inválida (vieja, de antes de rotar la llave o de `LAB_SESION_VERSION`)
+# cuenta UNA vez por IP y valor: la web dispara varias peticiones a la vez con la
+# misma cookie y, si cada una contara, quien solo tenía la sesión vencida quedaría
+# bloqueado 15 min sin haber adivinado nada. Adivinar un HMAC-SHA256 no es un
+# ataque práctico; la llave se adivina por el formulario o por Bearer, y esos
+# cuentan en cada intento.
+_cookies_contadas: dict[tuple[str, str], float] = {}
+
+
+def _ip_valida(valor: str) -> str | None:
+    try:
+        return str(ipaddress.ip_address(valor.strip().strip("[]")))
+    except ValueError:
+        return None
 
 
 def _ip(request: Request) -> str:
-    # Con `--proxy-headers` uvicorn ya pone aquí la IP real que trae Railway.
+    """IP del cliente para el freno de intentos.
+
+    En Railway: `X-Real-IP`, que es la cabecera que Railway DOCUMENTA para "la IP
+    remota del cliente" (docs.railway.com → Public Networking → Specs & Limits) y
+    la escribe su edge. Si no viene, el ÚLTIMO salto de `X-Forwarded-For` (el que
+    añade el proxy); los de la izquierda los escribe el cliente — uvicorn con
+    `--forwarded-allow-ips='*'` tomaba el de más a la izquierda y así se
+    falsificaba. Solo se aceptan IPs bien formadas (nada de texto libre como
+    llave del diccionario). Fuera de Railway, el socket (`--no-proxy-headers`).
+    Aunque una IP se falsificara, el tope GLOBAL de fallos por minuto sigue."""
+    if _entorno.EN_RAILWAY:
+        real = _ip_valida(request.headers.get("x-real-ip") or "")
+        if real:
+            return real
+        saltos = [s.strip() for s in (request.headers.get("x-forwarded-for") or "").split(",") if s.strip()]
+        if saltos and (ultimo := _ip_valida(saltos[-1])):
+            return ultimo
     return request.client.host if request.client else "?"
+
+
+def _podar(cola: deque, ventana: float) -> None:
+    limite = time.monotonic() - ventana
+    while cola and cola[0] < limite:
+        cola.popleft()
 
 
 def _bloqueado(ip: str) -> bool:
     with _fallos_lock:
-        cola = _fallos[ip]
-        limite = time.monotonic() - _FALLOS_VENTANA_S
-        while cola and cola[0] < limite:
-            cola.popleft()
+        _podar(_fallos_global, _FALLOS_GLOBAL_VENTANA_S)
+        if len(_fallos_global) >= _FALLOS_GLOBAL_MAX:
+            return True
+        cola = _fallos.get(ip)
+        if cola is None:
+            return False
+        _podar(cola, _FALLOS_VENTANA_S)
+        if not cola:
+            _fallos.pop(ip, None)
+            return False
         return len(cola) >= _FALLOS_MAX
 
 
-def _registrar_fallo(ip: str) -> None:
+def _registrar_fallo(ip: str, cookie: str | None = None) -> None:
+    """Un intento fallido de `ip`. Con `cookie` (valor de una cookie inválida),
+    cuenta solo la primera vez que esa IP la presenta dentro de la ventana."""
     with _fallos_lock:
-        _fallos[ip].append(time.monotonic())
+        if cookie is not None:
+            ahora = time.monotonic()
+            clave = (ip, _huella_cookie(cookie))
+            if _cookies_contadas.get(clave, 0.0) > ahora:
+                return
+            if len(_cookies_contadas) >= _FALLOS_IPS_MAX:
+                for k in [k for k, exp in _cookies_contadas.items() if exp <= ahora]:
+                    del _cookies_contadas[k]
+                if len(_cookies_contadas) >= _FALLOS_IPS_MAX:
+                    _cookies_contadas.clear()
+            _cookies_contadas[clave] = ahora + _FALLOS_VENTANA_S
+        if ip not in _fallos and len(_fallos) >= _FALLOS_IPS_MAX:
+            # Poda las colas vencidas; si aún no cabe, se descarta la más vieja.
+            for k in list(_fallos):
+                _podar(_fallos[k], _FALLOS_VENTANA_S)
+                if not _fallos[k]:
+                    del _fallos[k]
+            if len(_fallos) >= _FALLOS_IPS_MAX:
+                del _fallos[min(_fallos, key=lambda k: _fallos[k][-1])]
+        ahora = time.monotonic()
+        _fallos[ip].append(ahora)
+        _fallos_global.append(ahora)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -326,13 +531,14 @@ def _del_indice(indice: dict[str, bytes] | None, id_: str) -> Any:
 # ══════════════════════════════════════════════════════════════════════════════
 
 class _SerieSnapshots:
-    """Índice compacto de `snapshots/<día>/{publicaciones,precios}.json`.
+    """Índice compacto de los snapshots diarios (precio cobrado y recomendado).
 
-    Cada snapshot trae ~9k publicaciones; tenerlas como dicts sería ~1.5 MB por
-    día y crece sin fin. Aquí cada id tiene una columna fija y cada día guarda
-    dos `array('d')` (8 bytes por publicación): un año ≈ 50 MB en vez de ~500.
-    Solo se parsea el día nuevo o el que cambió (el pipeline re-fotografía HOY
-    si se recalcula).
+    Lee `snapshots/<día>/resumen.json` (formato compacto: {id: {pc, pr, …}}) y
+    tolera el formato viejo (`publicaciones.json` + `precios.json` copiados de
+    `ultimo/`) vía `almacen.leer_snapshot`. Cada id tiene una columna fija y cada
+    día guarda dos `array('d')` (8 bytes por publicación): un año ≈ 50 MB en
+    memoria en vez de ~500. Solo se parsea el día nuevo o el que cambió (el
+    pipeline re-fotografía HOY si se recalcula).
     """
 
     def __init__(self) -> None:
@@ -343,15 +549,7 @@ class _SerieSnapshots:
 
     @staticmethod
     def _firma(dia: str) -> tuple:
-        base = _entorno.datos_dir() / "snapshots" / dia
-        firma = []
-        for nombre in ("publicaciones.json", "precios.json"):
-            try:
-                st = (base / nombre).stat()
-                firma.append((st.st_mtime_ns, st.st_size))
-            except FileNotFoundError:
-                firma.append(None)
-        return tuple(firma)
+        return almacen.firma_snapshot(dia)
 
     def _col(self, id_: str) -> int:
         col = self._columna.get(id_)
@@ -360,23 +558,17 @@ class _SerieSnapshots:
         return col
 
     def _cargar_dia(self, dia: str) -> tuple[array, array]:
-        base = _entorno.datos_dir() / "snapshots" / dia
         valores: list[tuple[int, int, float]] = []  # (col, 0=cobrado|1=recomendado, valor)
-        for nombre, campo, cual in (("publicaciones.json", "precio_cobrado", 0),
-                                    ("precios.json", "precio_recomendado", 1)):
-            try:
-                datos = _cargar_json(base / nombre)
-            except (FileNotFoundError, ValueError, UnicodeDecodeError) as exc:
-                if not isinstance(exc, FileNotFoundError):
-                    log.warning("laboratorio: snapshot %s/%s ilegible (%s)", dia, nombre, exc)
-                continue
-            filas = datos.get("filas") if isinstance(datos, dict) else datos
-            for f in filas or []:
-                if not isinstance(f, dict) or not f.get("id"):
-                    continue
-                v = f.get(campo)
+        try:
+            filas = almacen.leer_snapshot(dia)
+        except (ValueError, UnicodeDecodeError) as exc:
+            log.warning("laboratorio: snapshot %s ilegible (%s)", dia, exc)
+            filas = {}
+        for id_, d in filas.items():
+            for campo, cual in (("pc", 0), ("pr", 1)):
+                v = d.get(campo)
                 if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v):
-                    valores.append((self._col(str(f["id"])), cual, float(v)))
+                    valores.append((self._col(str(id_)), cual, float(v)))
         n = len(self._columna)
         cobrado, recomendado = array("d", [math.nan]) * n, array("d", [math.nan]) * n
         for col, cual, v in valores:
@@ -401,23 +593,34 @@ class _SerieSnapshots:
             if ent is None or ent[0] != firma:
                 self._dias[d] = (firma, *self._cargar_dia(d))
 
+    def _puntos_sin_lock(self, id_: str, desde: str | None = None) -> list[dict]:
+        col = self._columna.get(id_)
+        if col is None:
+            return []
+        salida = []
+        for dia in sorted(self._dias):
+            if desde and dia < desde:
+                continue
+            _, cobrado, recomendado = self._dias[dia]
+            c = cobrado[col] if col < len(cobrado) else math.nan
+            r = recomendado[col] if col < len(recomendado) else math.nan
+            if math.isnan(c) and math.isnan(r):
+                continue
+            salida.append({"fecha": dia,
+                           "precio_cobrado": None if math.isnan(c) else c,
+                           "precio_recomendado": None if math.isnan(r) else r})
+        return salida
+
     def puntos(self, id_: str) -> list[dict]:
         with self._lock:
             self._actualizar()
-            col = self._columna.get(id_)
-            if col is None:
-                return []
-            salida = []
-            for dia in sorted(self._dias):
-                _, cobrado, recomendado = self._dias[dia]
-                c = cobrado[col] if col < len(cobrado) else math.nan
-                r = recomendado[col] if col < len(recomendado) else math.nan
-                if math.isnan(c) and math.isnan(r):
-                    continue
-                salida.append({"fecha": dia,
-                               "precio_cobrado": None if math.isnan(c) else c,
-                               "precio_recomendado": None if math.isnan(r) else r})
-            return salida
+            return self._puntos_sin_lock(id_)
+
+    def puntos_varios(self, ids: Iterable[str], desde: str | None = None) -> dict[str, list[dict]]:
+        """Los puntos de varios ids con UNA revisión de firmas (para el lote)."""
+        with self._lock:
+            self._actualizar()
+            return {i: self._puntos_sin_lock(i, desde) for i in ids}
 
     def dias(self) -> int:
         return len(self._dias)
@@ -451,6 +654,8 @@ def _fusionar_historial(serie: list[dict], puntos: list[dict]) -> list[dict]:
             por_fecha[s["fecha"]] = q
         if q.get("precio_ofrecido") is None:
             q["precio_ofrecido"] = s["precio_cobrado"]
+        if s["precio_cobrado"] is not None:
+            q["precio_cobrado"] = s["precio_cobrado"]
         if s["precio_recomendado"] is not None:
             q["precio_recomendado"] = s["precio_recomendado"]
         q["snapshot"] = True
@@ -572,6 +777,127 @@ def _error_parametros(exc: Exception) -> JSONResponse:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  Nada de secretos ni trazas en las respuestas
+# ══════════════════════════════════════════════════════════════════════════════
+# `estado.json` guarda, por etapa fallida, el error y las últimas líneas de la
+# traza (útiles en disco). Hacia afuera: sin traza y con cualquier cosa que
+# parezca credencial tachada — un error de psycopg2 o de httpx puede traer el
+# DSN, una URL con token o una cabecera Authorization.
+_LLAVES_OCULTAS = {"traza", "traceback", "stack", "exc_info"}
+_NOMBRES_SECRETOS = (r"password|passwd|pwd|secret|client_secret|consumer_secret|consumer_key|"
+                     r"token|access_token|refresh_token|api[_-]?key|apikey|llave|authorization|"
+                     r"x-api-key|access-token|dsn|service_role_key|encryption_key|private_key")
+_PATRONES_SECRETOS: tuple[tuple[re.Pattern, str], ...] = (
+    (re.compile(r"\b(?:postgres(?:ql)?|mysql(?:\+\w+)?|redis|amqp|mongodb(?:\+srv)?)://[^\s'\"<>]+", re.I), "<dsn>"),
+    # Antes que "nombre: valor": en `Authorization: Bearer x` el valor es "Bearer x".
+    (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+"), "Bearer <oculto>"),
+    # Credenciales en cualquier URL: https://usuario:clave@host
+    (re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^\s/:@'\"<>]+:[^\s/@'\"<>]+@"), r"\1<oculto>@"),
+    # JSON / dict: "password": "hunter2" · 'client_secret': 'x'
+    (re.compile(r"(?i)(['\"](?:\w*(?:" + _NOMBRES_SECRETOS + r"))['\"]\s*:\s*)(['\"])(?:[^'\"\\]|\\.)*\2"),
+     r"\1\2<oculto>\2"),
+    (re.compile(r"(?i)\b(\w*(?:" + _NOMBRES_SECRETOS + r"))\b(\s*[=:]\s*)(['\"]?)[^\s,'\";&)}]+"),
+     r"\1\2\3<oculto>"),
+    (re.compile(r"\bAPP_USR-[A-Za-z0-9-]+"), "<token_ml>"),
+    (re.compile(r"\bTG-[A-Za-z0-9-]{16,}"), "<token_ml>"),
+    (re.compile(r"\bsk-[A-Za-z0-9_-]{12,}"), "<llave>"),
+    (re.compile(r"\bsb_(?:secret|publishable)_[A-Za-z0-9_-]{8,}"), "<llave_supabase>"),
+    (re.compile(r"\bgAAAAA[A-Za-z0-9_=-]{20,}"), "<fernet>"),
+    (re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+"), "<jwt>"),
+    (re.compile(r"(?i)([?&](?:access_token|token|key|sig|signature|consumer_secret|consumer_key)=)[^&\s'\"]+"),
+     r"\1<oculto>"),
+    (re.compile(r"(?i)\b[A-Z]:\\Users\\[^\\\s'\"]+"), "~"),
+)
+
+
+def _sin_secretos(texto: str) -> str:
+    """Tacha lo que parezca credencial en un texto que va a salir por la API o al log.
+
+    >>> _sin_secretos("OperationalError: connection to postgresql://u:p@h:6543/db failed")
+    'OperationalError: connection to <dsn> failed'
+    >>> _sin_secretos("401 {'Authorization': 'Bearer APP_USR-123-abc'} password=hunter2")
+    "401 {'Authorization': '<oculto>'} password=<oculto>"
+    >>> _sin_secretos('{"password": "hunter2", "client_secret": "abc def"}')
+    '{"password": "<oculto>", "client_secret": "<oculto>"}'
+    >>> _sin_secretos("https://yo:clave@host/x consumer_secret=cs_123 sb_secret_abcdefghij gAAAAABkZXRlc3RfdG9rZW5fZmVybmV0")
+    'https://<oculto>@host/x consumer_secret=<oculto> <llave_supabase> <fernet>'
+    """
+    for patron, reemplazo in _PATRONES_SECRETOS:
+        texto = patron.sub(reemplazo, texto)
+    return texto
+
+
+class _FiltroSecretos(logging.Filter):
+    """Pasa TODO registro por `_sin_secretos` antes de que un handler lo escriba
+    (logs de Railway): mensaje ya formateado y traza incluidos.
+
+    Solo reescribe el registro si había algo que tachar, y a `uvicorn.access` le
+    tacha los argumentos UNO POR UNO sin quitarlos: su formateador desempaca
+    `record.args` en 5 valores y con `args=None` cada línea de acceso reventaría
+    ("--- Logging error ---")."""
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
+        try:
+            original = record.getMessage()
+            limpio = _sin_secretos(original)
+            if limpio != original:
+                if record.name == "uvicorn.access" and isinstance(record.args, tuple):
+                    record.args = tuple(_sin_secretos(a) if isinstance(a, str) else a for a in record.args)
+                else:
+                    record.msg, record.args = limpio, None
+                    record.__dict__.pop("color_message", None)  # la versión a color trae los %s crudos
+            if record.exc_info:
+                texto = "".join(traceback.format_exception(*record.exc_info))
+                record.exc_text = _sin_secretos(texto)
+                record.exc_info = None
+            elif record.exc_text:
+                record.exc_text = _sin_secretos(record.exc_text)
+            if record.stack_info:
+                record.stack_info = _sin_secretos(record.stack_info)
+        except Exception:  # noqa: BLE001 — un filtro nunca tumba un log
+            pass
+        return True
+
+
+_FILTRO_SECRETOS = _FiltroSecretos()
+
+
+def _filtrar_logs() -> None:
+    """Instala el filtro en los handlers de la raíz y de uvicorn (idempotente)."""
+    for nombre in ("", "uvicorn", "uvicorn.error", "uvicorn.access"):
+        for h in logging.getLogger(nombre).handlers:
+            if _FILTRO_SECRETOS not in h.filters:
+                h.addFilter(_FILTRO_SECRETOS)
+
+
+_filtrar_logs()
+
+
+def _saneado(obj: Any, _prof: int = 0) -> Any:
+    """Copia de `obj` sin llaves de traza y con los textos pasados por `_sin_secretos`."""
+    if _prof > 12:
+        return None
+    if isinstance(obj, dict):
+        return {k: _saneado(v, _prof + 1) for k, v in obj.items() if str(k).lower() not in _LLAVES_OCULTAS}
+    if isinstance(obj, list):
+        return [_saneado(v, _prof + 1) for v in obj]
+    if isinstance(obj, str):
+        return _sin_secretos(obj)
+    return obj
+
+
+def _error_interno(request: Request, exc: BaseException) -> JSONResponse:
+    """500 genérico: el detalle (con traza) va al log con una referencia corta;
+    la respuesta solo lleva la referencia para cruzarla."""
+    ref = secrets.token_hex(4)
+    # La traza también pasa por `_sin_secretos`: los logs de Railway los lee más gente.
+    traza = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__, limit=12))
+    log.error("laboratorio: error no manejado en %s %s (ref %s)\n%s", request.method, request.url.path, ref,
+              _sin_secretos(traza))
+    return _json({"detail": "error interno del laboratorio", "ref": ref}, 500)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  Pipeline programado (en un hilo, una corrida a la vez)
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -677,6 +1003,20 @@ def _hay_estado() -> bool:
     return _ultimo("estado.json").exists()
 
 
+def _recalcular_permitido(modo: str) -> tuple[bool, str | None]:
+    """¿La web puede ofrecer «Recalcular datos»? Lo lee la web en `/estado`
+    (`servidor.recalcular`) para mostrar u ocultar el botón, y `POST /recalcular`
+    lo vuelve a exigir. `LAB_RECALCULAR_WEB=false` lo apaga sin tocar el horario
+    diario del pipeline (que no pasa por aquí)."""
+    if modo == "cerrado":
+        return False, "laboratorio cerrado"
+    if (os.environ.get("LAB_RECALCULAR_WEB") or "true").strip().lower() in {"0", "false", "no"}:
+        return False, "desactivado con LAB_RECALCULAR_WEB=false"
+    if not (Path(__file__).resolve().parent / "pipeline.py").is_file():
+        return False, "pipeline.py no está en el paquete"
+    return True, None
+
+
 async def _bucle_pipeline() -> None:
     h, m = _hora_programada()
     await asyncio.sleep(3)  # que el servidor termine de arrancar y conteste el healthcheck
@@ -714,13 +1054,15 @@ def _precalentar() -> None:
 
 @asynccontextmanager
 async def _vida(_app: FastAPI):
+    _filtrar_logs()  # por si uvicorn configuró sus handlers después del import
     modo, motivo = _modo_auth()
     tareas: list[asyncio.Task] = []
     if modo == "cerrado":
         log.error("LABORATORIO CERRADO: %s — todas las rutas responden 503 y el pipeline no corre", motivo)
     else:
         if modo == "abierto":
-            log.warning("laboratorio: sin LAB_ACCESS_KEY — modo local ABIERTO (solo se permite fuera de Railway)")
+            log.warning("laboratorio: sin LAB_ACCESS_KEY y con LAB_MODO_LOCAL=1 — modo local ABIERTO "
+                        "(solo fuera de Railway y solo desde loopback)")
         tareas.append(asyncio.create_task(asyncio.to_thread(_precalentar)))
         if _auto_pipeline():
             tareas.append(asyncio.create_task(_bucle_pipeline()))
@@ -753,6 +1095,8 @@ def _cabeceras_seguridad(resp: Response, ruta: str) -> None:
     h.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
     h.setdefault("X-Robots-Tag", "noindex, nofollow")
     h.setdefault("Content-Security-Policy", _CSP)
+    h.setdefault("Cross-Origin-Resource-Policy", "same-origin")
+    h.setdefault("X-Permitted-Cross-Domain-Policies", "none")
     if _entorno.EN_RAILWAY:
         h.setdefault("Strict-Transport-Security", "max-age=31536000")
     if ruta.startswith(PREFIJO):
@@ -777,19 +1121,68 @@ async def _portero(request: Request, call_next):
         permitido = "GET, HEAD, OPTIONS" + (", POST" if ruta in _RUTAS_POST else "")
         resp = _json({"detail": "laboratorio de solo lectura: método no permitido"}, 405,
                      headers={"Allow": permitido})
+    elif modo == "abierto" and not _desde_loopback(request):
+        # Modo local abierto: solo desde la misma máquina (loopback) y a nombre de localhost.
+        resp = _json({"detail": "modo local: solo se atiende desde loopback"}, 403)
+    elif metodo == "POST" and not _mismo_origen(request):
+        # En CUALQUIER modo: un POST de otra web (CSRF contra localhost o con cookie).
+        resp = _json({"detail": "origen no permitido"}, 403)
+    elif metodo == "POST" and not _es_json(request):
+        # `text/plain` es un "simple request" que el navegador manda sin preflight.
+        resp = _json({"detail": "los POST deben ser application/json"}, 415)
     elif es_api and modo == "llave" and ruta not in _RUTAS_SIN_AUTH:
         via = _autenticado(request)
         if via is None:
-            resp = _json({"detail": "falta la llave del laboratorio", "requiere_llave": True}, 401,
-                         headers={"WWW-Authenticate": 'Bearer realm="laboratorio"'})
-        elif via == "cookie" and metodo == "POST" and not _mismo_origen(request):
-            resp = _json({"detail": "origen no permitido"}, 403)
+            ip = _ip(request)
+            bearer = bool((request.headers.get("authorization") or "").strip())
+            cookie = request.cookies.get(COOKIE)
+            if bearer:
+                _registrar_fallo(ip)  # cada Bearer malo cuenta
+                log.warning("laboratorio: credencial inválida (Bearer) desde %s en %s", ip, ruta)
+            elif cookie:
+                _registrar_fallo(ip, cookie=cookie)  # la misma cookie vieja cuenta una vez
+                log.warning("laboratorio: cookie inválida o vencida desde %s en %s", ip, ruta)
+            if _bloqueado(ip):
+                resp = _json({"detail": "demasiados intentos; espera 15 minutos"}, 429,
+                             headers={"Retry-After": str(_FALLOS_VENTANA_S)})
+            else:
+                resp = _json({"detail": "falta la llave del laboratorio", "requiere_llave": True}, 401,
+                             headers={"WWW-Authenticate": 'Bearer realm="laboratorio"'})
+            if cookie:
+                # Que el navegador suelte la cookie vencida en vez de repetirla en cada petición.
+                resp.delete_cookie(COOKIE, path="/", secure=_entorno.EN_RAILWAY, httponly=True, samesite="lax")
+        elif via == "bearer" and _bloqueado(_ip(request)):
+            # Una IP bloqueada no recibe el oráculo "esta llave sí era": 429 igual.
+            resp = _json({"detail": "demasiados intentos; espera 15 minutos"}, 429,
+                         headers={"Retry-After": str(_FALLOS_VENTANA_S)})
         else:
-            resp = await call_next(request)
+            resp = await _seguir(request, call_next)
     else:
-        resp = await call_next(request)
+        resp = await _seguir(request, call_next)
     _cabeceras_seguridad(resp, ruta)
     return resp
+
+
+# Registrado DESPUÉS del portero → queda por FUERA: comprime la respuesta ya con
+# sus cabeceras. El lote de /historial (100 ids × 90 días) pesa ~1.1 MB en JSON
+# y una página de 1,000 publicaciones varios MB; comprimidos, una décima parte.
+app.add_middleware(GZipMiddleware, minimum_size=2048)
+
+
+async def _seguir(request: Request, call_next) -> Response:
+    """`call_next` con red: una excepción de una ruta NO sale como la página de
+    error de Starlette ni con su traza; sale un 500 JSON genérico con referencia
+    y con las mismas cabeceras de seguridad que cualquier otra respuesta."""
+    try:
+        return await call_next(request)
+    except Exception as exc:  # noqa: BLE001
+        return _error_interno(request, exc)
+
+
+@app.exception_handler(Exception)
+async def _manejador_500(request: Request, exc: Exception) -> JSONResponse:
+    # Segunda red (errores fuera de las rutas, p. ej. en el propio middleware).
+    return _error_interno(request, exc)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -804,29 +1197,63 @@ def salud() -> JSONResponse:
 
 @app.get(f"{PREFIJO}/sesion")
 def sesion_estado(request: Request) -> JSONResponse:
+    """Solo mira la COOKIE. Un Bearer aquí no se evalúa: esta ruta no pasa por el
+    portero (no cuenta fallos ni bloquea), y contestar "autenticado" a un Bearer
+    la volvía un oráculo para adivinar la llave sin límite (reverificación A)."""
     modo, _ = _modo_auth()
+    llave = _llave()
+    cookie = request.cookies.get(COOKIE)
+    con_cookie = bool(llave and cookie and _cookie_valida(cookie, llave))
     return _json({"modo": modo, "requiere_llave": modo == "llave",
-                  "autenticado": modo == "abierto" or _autenticado(request) is not None})
+                  "autenticado": modo == "abierto" or con_cookie})
+
+
+_CUERPO_MAX = 4096  # {"llave": …} o {"etapas": […], "sin_ml": …}: nada legítimo pasa de 4 KB
+
+
+class CuerpoGrande(ValueError):
+    """El cuerpo del POST pasa de `_CUERPO_MAX`."""
+
+
+async def _leer_cuerpo(request: Request, maximo: int = _CUERPO_MAX) -> Any:
+    """JSON del cuerpo SIN leer más de `maximo` bytes (Content-Length o en flujo)."""
+    largo = request.headers.get("content-length")
+    if largo and (not largo.isdigit() or int(largo) > maximo):
+        raise CuerpoGrande()
+    crudo = bytearray()
+    async for trozo in request.stream():
+        crudo.extend(trozo)
+        if len(crudo) > maximo:
+            raise CuerpoGrande()
+    return json.loads(bytes(crudo)) if crudo else {}
 
 
 @app.post(f"{PREFIJO}/sesion")
 async def sesion(request: Request) -> JSONResponse:
-    """{"llave": "..."} → cookie `lab_sesion`. {"salir": true} → borra la cookie."""
+    """{"llave": "..."} → cookie `lab_sesion`. {"salir": true} → borra (y revoca) la cookie."""
     try:
-        crudo = await request.body()
-        cuerpo = json.loads(crudo) if crudo else {}
+        cuerpo = await _leer_cuerpo(request)
+    except CuerpoGrande:
+        return _json({"detail": "cuerpo demasiado grande"}, 413)
     except ValueError:
         return _json({"detail": "cuerpo JSON inválido"}, 422)
     if not isinstance(cuerpo, dict):
         return _json({"detail": "se esperaba un objeto JSON"}, 422)
     if cuerpo.get("salir"):
+        actual = request.cookies.get(COOKIE)
+        llave = _llave()
+        # Solo se revoca una cookie VÁLIDA (firmada con la llave y vigente): sin esto
+        # cualquiera llenaba la lista negra con basura y los logouts legítimos dejaban
+        # de revocar (reverificación B). Una cookie inválida no necesita revocarse.
+        if actual and llave and _cookie_valida(actual, llave):
+            _revocar(actual)
         resp = _json({"ok": True, "salir": True})
         resp.delete_cookie(COOKIE, path="/", secure=_entorno.EN_RAILWAY, httponly=True, samesite="lax")
         return resp
     modo, _ = _modo_auth()
     if modo == "abierto":
         return _json({"ok": True, "modo": "abierto",
-                      "aviso": "sin LAB_ACCESS_KEY: el laboratorio está abierto (solo en local)"})
+                      "aviso": "sin LAB_ACCESS_KEY: el laboratorio está abierto (solo en local, loopback)"})
     ip = _ip(request)
     if _bloqueado(ip):
         return _json({"detail": "demasiados intentos; espera 15 minutos"}, 429,
@@ -861,10 +1288,12 @@ def estado() -> JSONResponse:
         except FileNotFoundError:
             archivos[nombre] = None
     h, m = _hora_programada()
+    permitido, motivo_rec = _recalcular_permitido(modo)
     res["servidor"] = {
         "version": VERSION_API,
         "en_railway": _entorno.EN_RAILWAY,
         "modo_auth": modo,
+        "recalcular": {"permitido": permitido, "motivo": motivo_rec},
         "aviso": ("Sin LAB_ACCESS_KEY: laboratorio ABIERTO en modo local. En Railway esto "
                   "sería 503.") if modo == "abierto" else None,
         "auto_pipeline": _auto_pipeline(),
@@ -874,7 +1303,10 @@ def estado() -> JSONResponse:
         "archivos": archivos,
         "web": str(_dir_web()) if (_dir_web() and not _entorno.EN_RAILWAY) else bool(_dir_web()),
     }
-    return _json(res)
+    # Sin trazas (estado.json las guarda por etapa fallida) y sin nada que parezca
+    # credencial en los mensajes de error. Tampoco se expone ninguna variable de
+    # entorno: solo banderas derivadas (modo_auth, auto_pipeline, hora).
+    return _json(_saneado(res))
 
 
 def _predicados_publicaciones(tabla: _Tabla, canal, cuenta, estado_, full, fuente_costo, q):
@@ -962,6 +1394,47 @@ _FACETAS_PRECIOS = {
 }
 
 
+_idx_pub_lock = threading.Lock()
+
+
+def _info_publicaciones() -> dict[str, tuple[Any, Any, Any]]:
+    """{id: (titulo, thumbnail https, url)} de `publicaciones.json`, calculado una
+    vez por versión del archivo (se guarda en la `_Tabla` cacheada)."""
+    tabla = _cache.leer(_ultimo("publicaciones.json"), _cargar_tabla)
+    if tabla is None:
+        return {}
+    idx = tabla.extra.get("_por_id")
+    if idx is None:
+        with _idx_pub_lock:
+            idx = tabla.extra.get("_por_id")
+            if idx is None:
+                idx = {str(f["id"]): (f.get("titulo"), almacen.a_https(f.get("thumbnail")),
+                                      almacen.a_https(f.get("url")))
+                       for f in tabla.filas if f.get("id")}
+                tabla.extra["_por_id"] = idx
+    return idx
+
+
+def _con_miniatura(filas: list[dict]) -> list[dict]:
+    """Copias de las filas de precios con `titulo`, `thumbnail` (https) y `url`.
+    `precios.json` ya los trae desde el 28-sep; los que falten (archivos
+    anteriores) se toman de `publicaciones.json` por id. No toca la caché."""
+    idx: dict[str, tuple] | None = None
+    salida = []
+    for f in filas:
+        g = dict(f)
+        th, url = almacen.a_https(g.get("thumbnail")), almacen.a_https(g.get("url"))
+        if th is None or url is None or not g.get("titulo"):
+            if idx is None:
+                idx = _info_publicaciones()
+            t2, th2, u2 = idx.get(str(g.get("id")), (None, None, None))
+            g["titulo"] = g.get("titulo") or t2
+            th, url = th or th2, url or u2
+        g["thumbnail"], g["url"] = th, url
+        salida.append(g)
+    return salida
+
+
 def _precios_filtrados(cuenta, estado_, razon, confianza, q, orden):
     tabla = _cache.leer(_ultimo("precios.json"), _cargar_tabla)
     if tabla is None:
@@ -987,7 +1460,7 @@ def precios(cuenta: str | None = None, estado: str | None = None, razon: str | N
     filas, paginas = _pagina(elegidas, page, per_page)
     conteos = facetas.pop("conteos", {})
     return _json({"generado_at": tabla.generado_at, "total": len(elegidas), "page": page,
-                  "per_page": per_page, "paginas": paginas, "orden": orden, "filas": filas,
+                  "per_page": per_page, "paginas": paginas, "orden": orden, "filas": _con_miniatura(filas),
                   "conteos": conteos, "facetas": facetas, "parametros": tabla.extra.get("parametros"),
                   "sin_datos": False})
 
@@ -1001,6 +1474,64 @@ def curva(id_: str) -> JSONResponse:
     if valor is None:
         return _json({"detail": f"sin curva para {id_}"}, 404)
     return _json(valor)
+
+
+_HISTORIAL_LOTE_MAX = 100
+_HISTORIAL_DIAS_MAX = 400
+_RE_ID = re.compile(r"^[A-Za-z0-9_.:\-]{1,200}$")
+_CAMPOS_HISTORIAL = ("precio_realizado", "unidades", "visitas", "precio_ofrecido", "precio_recomendado",
+                     "precio_cobrado", "snapshot", "sin_oferta", "ofrecido_de_promo")
+
+
+@app.get(f"{PREFIJO}/historial")
+def historial_lote(ids: str | None = None, dias: int = Query(90, ge=1, le=_HISTORIAL_DIAS_MAX),
+                   campos: str | None = None) -> JSONResponse:
+    """Varias series de una vez (para las mini-gráficas): `?ids=a,b,c&dias=90`.
+
+    Máximo 100 ids por llamada (422 si pasan: la web parte en lotes). Cada serie
+    es la misma de `/historial/{id}` (historial.json + un punto por snapshot)
+    recortada a los últimos `dias` días (hoy incluido). `campos` (opcional,
+    separados por coma) deja solo esos campos además de `fecha`, para aligerar:
+    p. ej. `campos=precio_ofrecido,precio_cobrado,unidades`.
+
+    Respuesta: ``{dias, desde, hasta, total, series: {id: {serie: [...]}},
+    sin_historial: [ids], dias_snapshot}``. Un id sin datos va en
+    ``sin_historial`` (no es error).
+    """
+    lista = list(dict.fromkeys(i.strip() for i in (ids or "").split(",") if i.strip()))
+    if not lista:
+        return _error_parametros(ValueError("falta ids (separados por coma)"))
+    if len(lista) > _HISTORIAL_LOTE_MAX:
+        return _error_parametros(ValueError(f"máximo {_HISTORIAL_LOTE_MAX} ids por llamada (llegaron {len(lista)})"))
+    malos = [i for i in lista if not _RE_ID.match(i)]
+    if malos:
+        return _error_parametros(ValueError(f"ids inválidos: {malos[:5]}"))
+    elegidos = None
+    if campos:
+        elegidos = {c.strip() for c in campos.split(",") if c.strip()}
+        raros = sorted(elegidos - set(_CAMPOS_HISTORIAL))
+        if raros:
+            return _error_parametros(ValueError(f"campos desconocidos: {raros}; válidos: {list(_CAMPOS_HISTORIAL)}"))
+    hoy = almacen.hoy_cdmx()
+    desde = (hoy - dt.timedelta(days=dias - 1)).isoformat()
+    indice = _cache.leer(_ultimo("historial.json"), _cargar_indice_por_id)
+    puntos = _snapshots.puntos_varios(lista, desde)
+    series: dict[str, dict[str, list]] = {}
+    sin: list[str] = []
+    for i in lista:
+        base = _del_indice(indice, i)
+        serie_base = (base or {}).get("serie") if isinstance(base, dict) else None
+        serie = [p for p in serie_base or [] if isinstance(p, dict) and str(p.get("fecha") or "")[:10] >= desde]
+        fusion = _fusionar_historial(serie, puntos.get(i) or [])
+        if not fusion:
+            sin.append(i)
+            continue
+        if elegidos is not None:
+            fusion = [{"fecha": p.get("fecha"), **{c: p.get(c) for c in elegidos if c in p}} for p in fusion]
+        series[i] = {"serie": fusion}
+    return _json({"dias": dias, "desde": desde, "hasta": hoy.isoformat(), "total": len(series),
+                  "series": series, "sin_historial": sin, "dias_snapshot": _snapshots.dias(),
+                  "sin_datos": indice is None and not series})
 
 
 @app.get(f"{PREFIJO}/historial/{{id_:path}}")
@@ -1057,9 +1588,12 @@ def parametros() -> JSONResponse:
 
 _COLUMNAS_CSV: list[tuple[str, str]] = [
     ("id", "id"), ("sku", "sku"), ("cuenta", "cuenta"), ("listing_id", "listing_id"),
-    ("titulo", "titulo"), ("estado", "estado"),
+    ("titulo", "titulo"), ("url", "url"), ("estado", "estado"),
     ("precio_actual", "precio_actual"), ("precio_recomendado", "precio_recomendado"),
-    ("cambio_pct", "cambio_pct"), ("precio_equilibrio", "precio_equilibrio"),
+    ("cambio_pct", "cambio_pct"),
+    # En pausadas `cambio_pct` es contra el precio realizado de su base (DISENO §6).
+    ("cambio_ref", "cambio_ref"), ("cambio_vs_actual", "cambio_vs_actual"),
+    ("precio_equilibrio", "precio_equilibrio"),
     ("precio_piso", "precio_piso"), ("precio_max_utilidad", "precio_max_utilidad"),
     ("precio_max_volumen", "precio_max_volumen"), ("precio_ref_competencia", "precio_ref_competencia"),
     ("fuente_ref", "fuente_ref"),
@@ -1072,7 +1606,7 @@ _COLUMNAS_CSV: list[tuple[str, str]] = [
     ("elasticidad_fuente", "elasticidad.fuente"), ("elasticidad_confianza", "elasticidad.confianza"),
     ("elasticidad_n_semanas", "elasticidad.n_semanas"),
     ("stock_full", "stock.full"), ("stock_odoo", "stock.odoo"), ("cobertura_dias", "stock.cobertura_dias"),
-    ("razones", "razones"), ("plan_modo", "plan.modo"), ("plan_pasos", "plan.pasos"),
+    ("razones", "razones"), ("avisos", "avisos"), ("plan_modo", "plan.modo"), ("plan_pasos", "plan.pasos"),
     ("autorizacion", "autorizacion"),
 ]
 
@@ -1116,7 +1650,7 @@ def exportar_precios(cuenta: str | None = None, estado: str | None = None, razon
     buf = io.StringIO()
     w = csv.writer(buf, lineterminator="\r\n")
     w.writerow([c for c, _ in _COLUMNAS_CSV])
-    for f in filas:
+    for f in _con_miniatura(filas):
         w.writerow([_celda(_valor(f, ruta)) for _, ruta in _COLUMNAS_CSV])
     nombre = f"precios_laboratorio_{almacen.hoy_cdmx().isoformat()}.csv"
     return Response(("﻿" + buf.getvalue()).encode("utf-8"), media_type="text/csv; charset=utf-8",
@@ -1126,9 +1660,13 @@ def exportar_precios(cuenta: str | None = None, estado: str | None = None, razon
 @app.post(f"{PREFIJO}/recalcular")
 async def recalcular(request: Request) -> JSONResponse:
     """Dispara una corrida: {"etapas": [...]|null, "sin_ml": bool}. 202 si arranca, 409 si ya corre."""
+    permitido, motivo = _recalcular_permitido(_modo_auth()[0])
+    if not permitido:
+        return _json({"detail": f"recalcular no está disponible: {motivo}"}, 403)
     try:
-        crudo = await request.body()
-        cuerpo = json.loads(crudo) if crudo else {}
+        cuerpo = await _leer_cuerpo(request)
+    except CuerpoGrande:
+        return _json({"detail": "cuerpo demasiado grande"}, 413)
     except ValueError:
         return _json({"detail": "cuerpo JSON inválido"}, 422)
     if not isinstance(cuerpo, dict):
@@ -1192,6 +1730,11 @@ def estaticos(ruta: str, request: Request) -> Response:
             return _json({"laboratorio": VERSION_API, "web": "no construida (LAB_WEB_DIR o laboratorio/web/out)",
                           "api": f"{PREFIJO}/estado"})
         return _json({"detail": "no existe"}, 404)
+    # `ruta` llega DECODIFICADA (%2F → /, %5C → \). Una barra invertida o una
+    # ruta que empieza con "/" (//host) no son de la web exportada, y armadas en
+    # un `Location` el navegador las lee como otro dominio (redirect abierto).
+    if "\\" in ruta or ruta.startswith("/") or "\x00" in ruta:
+        return _json({"detail": "no existe"}, 404)
     try:
         destino = (web / ruta).resolve()
     except (OSError, ValueError):  # bytes nulos, nombres imposibles en el sistema de archivos
@@ -1203,7 +1746,14 @@ def estaticos(ruta: str, request: Request) -> Response:
     if destino.is_dir() and (destino / "index.html").is_file():
         if ruta and not ruta.endswith("/"):
             # El export usa trailingSlash: /precios → /precios/ para que el router del cliente cuadre.
-            url = "/" + ruta + "/" + (f"?{request.url.query}" if request.url.query else "")
+            # La URL se arma con la ruta RESUELTA dentro de la web (sin `..` ni
+            # barras dobles), nunca con lo que mandó el cliente.
+            rel = destino.relative_to(web).as_posix()
+            if not re.fullmatch(r"[A-Za-z0-9._\-/]*", rel):
+                return _json({"detail": "no existe"}, 404)
+            url = "/" + (rel + "/" if rel and rel != "." else "")
+            if request.url.query:
+                url += "?" + request.url.query
             return RedirectResponse(url, status_code=308)
         return _archivo(destino / "index.html")
     if ruta:

@@ -59,7 +59,7 @@ from sandbox_precios import _entorno  # noqa: E402
 
 _entorno.cargar()
 
-from sandbox_precios import almacen, prorrateo  # noqa: E402
+from sandbox_precios import almacen, economia, prorrateo  # noqa: E402
 from services import costos as costos_srv  # noqa: E402  (solo funciones puras: tarifa y peso)
 from services import embarques, odoo  # noqa: E402
 from services import packing_comparador as comp  # noqa: E402  (_bajar_imagen: un GET)
@@ -88,6 +88,14 @@ _TOLERANCIA_VOLTOT = 1.25
 # Razón kg/m³ de un 40' HC lleno por peso (carga útil / 70 m³ nominales): el W/M
 # "de contenedor completo", informativo junto al W/M clásico de 1,000 kg/m³.
 KG_POR_M3_FCL = CARGA_UTIL_KG / 70.0
+# Contenedores con menos de esto (kg/m³) traen la columna de peso POR CAJA leída
+# como total del renglón (auditoría de números, fase 2, #8): su peso no se usa.
+DENSIDAD_MIN_KG_M3 = float(_C.get("densidad_min_kg_m3") or prorrateo.DENSIDAD_MIN_KG_M3)
+# Desde el 7-sep SANCORFASHION guarda el precio NETO en `order_items` de las
+# líneas con comisión 0 (auditoría del modelo, fase 2, P2: precio_unitario =
+# P0 × (1 − comisión) − envío, exacto al centavo). Esas líneas no sirven para
+# medir la comisión: ni su comisión (0) ni su precio (neto).
+FECHA_NETO_SANCORFASHION = "2026-09-07"
 _CONFIABLES = ("alta", "media")
 _PEOR = {"alta": 0, "media": 1, "baja": 2}
 
@@ -128,8 +136,14 @@ select upper(l.sku::text) as sku, a.legacy_code as cuenta, l.listing_id, l.logis
    and nullif(l.listing_id, '') is not null"""
 
 # 30 días por publicación (cuenta, item). `sales_daily` excluye canceladas.
+# `rev_con_fee`: el ingreso SOLO de los días con `sale_fee` > 0. Desde el 7-sep
+# entre 20% y 35% de los renglones diarios de ML traen `sale_fee` = 0 con venta
+# (medido el 28-sep: el día 27, 26 de 92; ML no ha liquidado o la ingesta no la
+# rellenó). Dividir la comisión de unos días entre el ingreso de TODOS daba
+# 0.058 en MLM4700224434 (19 de 24 días sin fee), cuando lo cobrado es 19.5%.
 _SQL_VENTAS = """
-select cuenta, item_id, sum(units_sold) as u, sum(revenue) as rev, sum(sale_fee) as fee
+select cuenta, item_id, sum(units_sold) as u, sum(revenue) as rev, sum(sale_fee) as fee,
+       sum(revenue) filter (where sale_fee > 0) as rev_con_fee
   from channel.sales_daily
  where canal = 'mercado_libre' and date > current_date - 30
  group by 1, 2"""
@@ -166,15 +180,81 @@ def _publicaciones() -> dict[str, dict[str, Any]]:
             "precio_cobrado": ps or pl, "precio_fuente": "price_sale" if ps else "price",
             "precio_lista": pl, "categoria_id": r["category_id"], "stock_full": r["stock_full"],
             "u30": float(v.get("u") or 0), "rev30": float(v.get("rev") or 0),
-            "fee30": float(v.get("fee") or 0)})
+            "fee30": float(v.get("fee") or 0), "rev30_con_fee": float(v.get("rev_con_fee") or 0)})
     for e in out.values():
         ls = e["listings"]
         e["es_full"] = any(x["es_full"] for x in ls)
         e["unidades_30d"] = sum(x["u30"] for x in ls)
         rev, fee = sum(x["rev30"] for x in ls), sum(x["fee30"] for x in ls)
+        rev_f = sum(x["rev30_con_fee"] for x in ls)
         e["ingreso_30d"] = round(rev, 2)
-        e["comision_real_30d"] = round(fee / rev, 4) if rev > 0 and fee > 0 else None
+        # Respaldo (solo si no hay crudo de líneas): comisión / ingreso de los
+        # MISMOS días de `sales_daily` (los que traen sale_fee). Sesgada hacia
+        # abajo con días de fee PARCIAL (TEC-0874-NEG: 5.36% contra 11.0% por línea).
+        e["comision_real_30d_diaria"] = round(fee / rev_f, 4) if rev_f > 0 and fee > 0 else None
+        e["comision_real_cobertura_diaria"] = round(rev_f / rev, 4) if rev > 0 else None
         e["principal"] = max(ls, key=lambda x: (x["es_full"], x["u30"], x["cuenta"] == "BEKURA"))
+    lineas = _comision_por_lineas(out)
+    for s, e in out.items():
+        d = (lineas or {}).get(s)
+        if lineas is None:
+            e["comision_real_30d"] = e["comision_real_30d_diaria"]
+            e["comision_real_cobertura"] = e["comision_real_cobertura_diaria"]
+            e["comision_real_detalle"] = {"fuente": "sales_daily"}
+            continue
+        d = d or {"lineas": 0, "unidades": 0.0, "bruto": 0.0, "fee": 0.0, "lineas_con_comision": 0,
+                  "unidades_con_comision": 0.0, "lineas_netas_excluidas": 0, "lineas_sin_comision": 0}
+        e["comision_real_30d"] = round(d["fee"] / d["bruto"], 4) if d["bruto"] > 0 and d["fee"] > 0 else None
+        # Cobertura en PIEZAS: el ingreso de las líneas netas sale deprimido ~30%.
+        e["comision_real_cobertura"] = round(d["unidades_con_comision"] / d["unidades"], 4) if d["unidades"] else None
+        e["comision_real_detalle"] = {"fuente": "kubera_lineas", **{k: (round(v, 2) if isinstance(v, float) else v)
+                                                                  for k, v in d.items()}}
+    return out
+
+
+def _comision_por_lineas(pubs: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]] | None:
+    """Comisión real de 30 días POR LÍNEA de pedido (crudo `kubera_lineas.json`
+    de `extraer_kubera`, `channel.order_items`): Σ comisión / Σ precio × cantidad
+    de las líneas con comisión > 0, de las publicaciones del SKU.
+
+    Por qué no `sales_daily`: su `sale_fee` viene en 0 en 20–35% de los días
+    desde el 7-sep, y en días con fee PARCIAL dividir entre el ingreso de esos
+    días subestima (TEC-0874-NEG: 5.36% por día contra 11.0% por línea = la API).
+    Se excluyen y se cuentan aparte las líneas NETAS de SANCORFASHION (comisión
+    0 desde el 7-sep: precio neto de comisión y envío) y las que aún no traen
+    comisión (el día en curso). ``None`` si no hay crudo de líneas (el llamador
+    cae al cálculo por día).
+    """
+    p = almacen.ultimo_crudo("kubera_lineas.json")
+    if not p:
+        return None
+    filas = (almacen.leer_json(p, {}) or {}).get("filas") or []
+    if not filas:
+        return None
+    # Misma ventana que `_SQL_VENTAS` (date > current_date − 30).
+    desde = (almacen.hoy_cdmx() - dt.timedelta(days=30)).isoformat()
+    item_sku = {x["listing_id"]: s for s, e in pubs.items() for x in e["listings"]}
+    out: dict[str, dict[str, Any]] = {}
+    for l in filas:
+        fecha = str(l.get("fecha") or "")
+        s = item_sku.get(l.get("item_id"))
+        if not s or fecha <= desde:
+            continue
+        pu, q, c = _f(l.get("precio_unitario")) or 0.0, _f(l.get("cantidad")) or 0.0, _f(l.get("comision")) or 0.0
+        a = out.setdefault(s, {"lineas": 0, "unidades": 0.0, "bruto": 0.0, "fee": 0.0, "lineas_con_comision": 0,
+                               "unidades_con_comision": 0.0, "lineas_netas_excluidas": 0,
+                               "lineas_sin_comision": 0})
+        a["lineas"] += 1
+        a["unidades"] += q
+        if c > 0 and pu > 0 and q > 0:
+            a["fee"] += c
+            a["bruto"] += pu * q
+            a["lineas_con_comision"] += 1
+            a["unidades_con_comision"] += q
+        elif l.get("cuenta") == "SANCORFASHION" and fecha >= FECHA_NETO_SANCORFASHION:
+            a["lineas_netas_excluidas"] += 1
+        else:
+            a["lineas_sin_comision"] += 1
     return out
 
 
@@ -533,34 +613,91 @@ def _por_foto(foto: dict | None, fids: list[str], resumenes: dict[str, dict]) ->
 
 
 # ── Economía por unidad (DISENO §4, sin llamar a ML) ─────────────────────────
-def _pct_tramo(precio: float) -> float:
-    """Comisión Premium aproximada por tramo (parametros.json): medido en 35,028
-    líneas de 90 días, la tasa real baja de 19.5% a 18/16/15% en 299/500/1000."""
-    tramos = sorted(_ML["tramos_comision_precio"])
-    t = max((x for x in tramos if precio >= x), default=tramos[0])
-    return float(_ML["comision_respaldo_por_tramo"][str(t)])
+_CTX_COMISION: dict[str, Any] = {}
+
+
+def _contexto_comision() -> dict[str, Any]:
+    """Lo mismo que usan costos_lab, optimizador y construir: `cache/comisiones.json`
+    (listing_prices por categoría), las tasas reales de `ultimo/comisiones_reales.json`
+    y el respaldo por tramo de parametros.json; más, de los crudos de la API de ML:
+    la categoría VIVA de cada publicación (`ml_universo`, para cuando
+    `channel.listings` no la trae), su peso facturable (`ml_envio.billable_weight`
+    y los atributos PACKAGE_* de `ml_universo`, igual que `costos_lab`) y su precio
+    cobrado medido (`ml_precios`: sale_price y regular de la promoción).
+    Se lee una vez por proceso (solo archivos locales)."""
+    if not _CTX_COMISION:
+        from sandbox_precios import costos_lab   # perezoso: solo sus funciones puras de peso
+
+        comisiones = almacen.leer_json(almacen.ruta("cache", "comisiones.json"), {}) or {}
+        reales_doc = almacen.leer_json(almacen.ultimo("comisiones_reales.json"), {}) or {}
+        p_uni = almacen.ultimo_crudo("ml_universo.jsonl")
+        universo = [u for u in (almacen.leer_jsonl(p_uni) if p_uni else []) if u.get("id") and not u.get("error")]
+        cat_item = {u["id"]: u.get("category_id") for u in universo if u.get("category_id")}
+        atributos = {u["id"]: kg for u in universo if (kg := costos_lab.peso_atributos(u))}
+        p_env = almacen.ultimo_crudo("ml_envio.jsonl")
+        billable = {e["id"]: e["billable_weight"] / 1000.0 for e in (almacen.leer_jsonl(p_env) if p_env else [])
+                    if e.get("id") and e.get("status") == 200 and (e.get("billable_weight") or 0) > 0}
+        p_pre = almacen.ultimo_crudo("ml_precios.jsonl")
+        precios = {p["id"]: p for p in (almacen.leer_jsonl(p_pre) if p_pre else []) if p.get("id")}
+        _CTX_COMISION.update(comisiones=comisiones, respaldo=economia.respaldo_desde_doc(_ML, reales_doc),
+                             cat_item=cat_item, atributos=atributos, billable=billable, precios=precios,
+                             crudos={"ml_universo": str(p_uni.parent.name) if p_uni else None,
+                                     "ml_envio": str(p_env.parent.name) if p_env else None,
+                                     "ml_precios": str(p_pre.parent.name) if p_pre else None})
+    return _CTX_COMISION
+
+
+def _precio_ml(pr: dict[str, Any]) -> tuple[float | None, str, float | None, float | None]:
+    """(precio cobrado, fuente, regular de la promoción, ancla de envío) de la
+    publicación principal.
+
+    Precio: el MEDIDO en la API (`ml_precios.precio_cobrado`, sale_price) — el que
+    usan publicaciones.json y el optimizador —; si la API no lo trae, el de
+    `channel.listings` (price_sale → price). Ancla: el regular de la promoción
+    si es ≥ $299 y mayor que el precio, con `envio_promo_columna_regular`
+    (misma regla que `optimizador`: abajo de $299 ML cobra en ~30% de las ventas
+    con promoción la columna de envío del regular; se toma el peor caso).
+    """
+    mp = _contexto_comision()["precios"].get(pr["listing_id"]) or {}
+    p = _f(mp.get("precio_cobrado"))
+    if p:
+        fuente = "ml_sale_price"
+    else:
+        p, fuente = pr["precio_cobrado"], pr["precio_fuente"]
+    promo = mp.get("promo") or None
+    regular = _f((promo or {}).get("regular")) if promo else None
+    if regular is not None and p and regular <= p + 1e-9:
+        regular = None
+    ancla = (regular if (_ML.get("envio_promo_columna_regular", True) and regular
+                         and regular >= float(_ML.get("umbral_envio_gratis") or 299)) else None)
+    return p, fuente, regular, ancla
 
 
 def _economia(precio: float | None, costo: float | None, peso_ef: float | None,
-              es_full: bool) -> dict[str, Any] | None:
-    """utilidad = P − P×pct(tramo) − envío(peso, P) − IVA − costo − costo FULL.
-    La comisión va sobre el precio CON IVA (medido: el cargo fijo implícito sale
-    ≈0 así, y el panel la calcula sin IVA y se infla 2–3 puntos)."""
-    if not precio or costo is None or peso_ef is None:
+              es_full: bool, categoria: str | None = None,
+              ancla: float | None = None) -> dict[str, Any] | None:
+    """utilidad = P − comisión(categoría, tramo) − envío(peso, P) − IVA − costo − costo FULL,
+    con `economia.utilidad`: la MISMA fórmula que el resto del laboratorio
+    (comisión sobre el precio CON IVA, % de `listing_prices` de la categoría →
+    tasa real de la categoría → respaldo 19.5%/16% con escalón en $500, redondeo
+    al centavo par; envío FULL también debajo de $299). Antes usaba un 18% fijo en
+    $299–499 que la API no respalda (MUE-0163-TEL a $337 va al 19.5%).
+
+    ``None`` sin precio; con precio devuelve siempre el desglose, y si falta
+    costo o peso, ``utilidad``/``margen`` van en ``None`` con el motivo en ``faltan``.
+    ``ancla``: regular de la promoción para el envío (ver `_precio_ml`).
+    """
+    if not precio:
         return None
-    iva_t = float(_ML["iva"])
-    pct = _pct_tramo(precio)
-    com = precio * pct
-    # En FULL el vendedor paga el envío también debajo de $299 (99% de los
-    # pedidos FULL medidos). Fuera de FULL, debajo del umbral lo paga el comprador.
-    envio = (costos_srv.calc_fee_envio_ml(peso_ef, precio)
-             if (es_full or precio >= float(_ML["umbral_envio_gratis"])) else 0.0)
-    iva = precio - precio / (1 + iva_t)
+    ctx = _contexto_comision()
     full = float(_ML.get("costo_full_unitario_mes") or 0.0) if es_full else 0.0
-    util = precio - com - envio - iva - costo - full
-    return {"precio": round(precio, 2), "comision_pct": pct, "comision": round(com, 2),
-            "envio": round(envio, 2), "iva": round(iva, 2), "costo": round(costo, 4),
-            "utilidad": round(util, 2), "margen": round(util / precio, 4)}
+    e = economia.utilidad(float(precio), costo, categoria, peso_ef, full,
+                          comisiones_cache=ctx["comisiones"], respaldo=ctx["respaldo"],
+                          es_full=es_full, iva=float(_ML["iva"]), ancla_envio=ancla)
+    return {"precio": e["precio"], "categoria_id": categoria,
+            "comision_pct": e["pct"], "comision_fuente": e["fuente_pct"], "comision": e["comision"],
+            "envio": e["envio"], "envio_ancla_regular": ancla, "iva": e["iva"], "costo": e["costo"],
+            "costo_full": e["costo_full"], "utilidad": e["utilidad"], "margen": e["margen"], "faltan": e["faltan"]}
 
 
 def _peso_kubera(val: dict | None) -> float | None:
@@ -572,22 +709,56 @@ def _peso_kubera(val: dict | None) -> float | None:
     return None
 
 
-def _peso_efectivo(val: dict | None, fila: dict) -> tuple[float | None, str | None]:
-    """Peso facturable: packing list → kubera → None (`sin_peso`).
-
-    DESVÍO de DISENO §4 (que pone kubera primero), a propósito y SOLO aquí, donde
-    hay renglón del packing list: las medidas de `costos_validados` son el CBM
-    reconstruido, no medidas reales, y en esta muestra dieron 212 kg facturables
-    a MUE-0126-NEG (el packing list dice 1.1 kg y 0.006 m³ por pieza → envío de
-    $1,472 en vez de ~$60) y 0.62 kg a SIL-0008-NEG (20 kg por pieza en el
-    packing list). El packing list trae peso bruto por caja ÷ piezas y el CBM de
-    la caja ÷ piezas: max(kg, cbm×200) es el volumétrico /5000 de ML con el aire
-    del cartón incluido (cota alta, del lado seguro). El 0.5 kg de respaldo de
-    `costos._peso_efectivo` NO se usa: haría el envío barato y el margen optimista.
-    """
+def _peso_packing(fila: dict) -> float | None:
+    """max(kg, cbm × 200) del renglón del packing list (None sin peso)."""
     kg, cbm = _f(fila.get("peso_pieza_kg")) or 0.0, _f(fila.get("cbm_pieza")) or 0.0
-    if kg > 0:
-        return max(kg, cbm * 200.0), "packing"
+    return max(kg, cbm * 200.0) if kg > 0 else None
+
+
+def _peso_ml(pub: dict[str, Any]) -> tuple[float | None, str | None, str | None]:
+    """(kg, fuente, listing) del peso facturable que da ML para el SKU publicado.
+
+    Mismo orden que `costos_lab.pesos_por_listing` / `peso_de`: primero la
+    publicación PRINCIPAL (la del precio), `ml_billable` y luego `ml_atributos`;
+    si esa no trae ninguno, el de las otras publicaciones del SKU en el mismo
+    orden, y entre dos del mismo nivel el MAYOR (envío del lado seguro)."""
+    ctx = _contexto_comision()
+    pr = pub["principal"]
+    niveles = (("ml_billable", ctx["billable"]), ("ml_atributos", ctx["atributos"]))
+    for fuente, tabla in niveles:
+        if tabla.get(pr["listing_id"]):
+            return tabla[pr["listing_id"]], fuente, pr["listing_id"]
+    for fuente, tabla in niveles:
+        ks = [(tabla[x["listing_id"]], x["listing_id"]) for x in pub["listings"] if tabla.get(x["listing_id"])]
+        if ks:
+            kg, lid = max(ks)
+            return kg, fuente, lid
+    return None, None, None
+
+
+def _peso_efectivo(val: dict | None, fila: dict, pub: dict[str, Any] | None = None,
+                   packing_ok: bool = True) -> tuple[float | None, str | None]:
+    """Peso facturable: ML (billable → atributos) → packing list → kubera → None (`sin_peso`).
+
+    Fase 3 (auditoría de números #5): antes el packing list iba PRIMERO y en 36
+    de 98 filas el envío no cuadraba con el de publicaciones.json para la misma
+    publicación y el mismo precio (JUGU-0271-ROJ-CAF: 0.271 kg del packing contra
+    7.94 kg facturables de ML; margen 21.4% contra −11.5%). Lo que ML COBRA es su
+    `billable_weight`; los atributos PACKAGE_* dan la misma tarifa en 85% de las
+    publicaciones (costos_lab). El packing list queda de respaldo (``packing_ok``
+    False si el contenedor tiene el peso por caja mal leído: densidad < 30 kg/m³)
+    y kubera al final: sus medidas son el CBM reconstruido (212 kg facturables a
+    MUE-0126-NEG). El 0.5 kg de respaldo de `costos._peso_efectivo` NO se usa:
+    haría el envío barato y el margen optimista.
+    """
+    if pub is not None:
+        kg, fuente, _lid = _peso_ml(pub)
+        if kg:
+            return kg, fuente
+    if packing_ok:
+        pp = _peso_packing(fila)
+        if pp:
+            return pp, "packing"
     pk = _peso_kubera(val)
     if pk:
         return pk, "kubera"
@@ -895,17 +1066,28 @@ def correr(n: int = 100, usar_ia: bool = True, tope_ia: int = 30, max_mb: float 
     for fid, res in resumenes.items():
         rens = [{"sku": None, "fe": x["fe"], "cbm_pieza": x["cbm_pieza"], "piezas": x["piezas_fila"],
                  "peso_pieza_kg": x["peso_pieza_kg"], "usd_pieza": x["precio_usd"]} for x in res["filas"]]
-        pr = prorrateo.prorratear(rens, costo_contenedor=COSTO_CONTENEDOR, tarifa_m3=TARIFA_M3,
-                                  rango_m3=RANGO_M3, carga_util_kg=CARGA_UTIL_KG)
-        pr_fcl = prorrateo.prorratear(rens, costo_contenedor=COSTO_CONTENEDOR, tarifa_m3=TARIFA_M3,
-                                      rango_m3=RANGO_M3, carga_util_kg=CARGA_UTIL_KG,
-                                      kg_por_m3=KG_POR_M3_FCL)
+        voltot = res.get("voltot_columna")
+        # Densidad < 30 kg/m³ → peso por caja leído como total: el reparto va SIN
+        # pesos (W/M = volumétrico). Columna de volumen total en rango y a menos
+        # de 10% de la suma por cartón → el rango se juzga con ella (NYKU4803479).
+        kw_pr = {"costo_contenedor": COSTO_CONTENEDOR, "tarifa_m3": TARIFA_M3, "rango_m3": RANGO_M3,
+                 "carga_util_kg": CARGA_UTIL_KG, "densidad_min_kg_m3": DENSIDAD_MIN_KG_M3,
+                 "voltot_columna": voltot}
+        pr = prorrateo.prorratear(rens, **kw_pr)
+        pr_fcl = prorrateo.prorratear(rens, **kw_pr, kg_por_m3=KG_POR_M3_FCL)
         prorr[fid] = {"totales": pr["totales"], "invariante": pr["invariante"],
                       "por_fe": {x["fe"]: x["costos"] for x in pr["renglones"]},
                       "wm_fcl": {x["fe"]: x["costos"]["peso_volumen_wm"] for x in pr_fcl["renglones"]}}
         t = pr["totales"]
         cods = sorted(carpeta.codigos_de(res["nombre"]))
-        voltot = res.get("voltot_columna")
+        # Informativo: el peso si la columna que se leyó como TOTAL del renglón
+        # fuera POR CAJA (`packing_indice` la dividió entre las cajas). Reproduce
+        # la auditoría: OOLU9155398 509 → 7,320 kg; CSNU6409280 463 → 23,080 kg.
+        # NO se usa para nada: solo dice si la explicación cuadra.
+        peso_x_caja = None
+        if t.get("peso_sospechoso") and not (res.get("columnas") or {}).get("peso_caja"):
+            peso_x_caja = sum((x["peso_pieza_kg"] or 0.0) * (x["piezas_fila"] or 0.0) * (x["cajas"] or 1.0)
+                              for x in res["filas"])
         cont_filas.append({
             "codigo": cods[0] if cods else Path(res["nombre"]).stem[:40], "codigos": cods,
             "numero_kubera": embarques.numero(res["nombre"]),
@@ -915,7 +1097,9 @@ def correr(n: int = 100, usar_ia: bool = True, tope_ia: int = 30, max_mb: float 
             "total_peso_kg": t["total_peso_kg"], "total_usd": t["total_usd"],
             "costo_m3": t["costo_m3"], "costo_m3_wm": t["costo_m3_wm"],
             "diferencia_vs_7500": _r((t["costo_m3"] - TARIFA_M3) / TARIFA_M3, 4) if t["costo_m3"] else None,
-            "rango_ok": t["rango_ok"], "renglones": t["renglones"],
+            "rango_ok": t["rango_ok"], "rango_por": t.get("rango_por"),
+            "total_cbm_columna": t.get("total_cbm_columna"), "costo_m3_columna": t.get("costo_m3_columna"),
+            "renglones": t["renglones"],
             "renglones_sin_cbm": t["renglones_sin_cbm"], "renglones_sin_piezas": t["renglones_sin_piezas"],
             "cajas_mixtas": sum(1 for x in res["filas"] if x.get("grupo")),
             "renglones_no_confiables": sum(1 for x in res["filas"] if not x.get("confiable")),
@@ -934,6 +1118,14 @@ def correr(n: int = 100, usar_ia: bool = True, tope_ia: int = 30, max_mb: float 
             "cobertura_usd": t["cobertura_usd"], "cobertura_peso": t["cobertura_peso"],
             "densidad_kg_m3": t["densidad_kg_m3"], "filas_densas": t["filas_densas"],
             "limitado_por_peso": t["limitado_por_peso"], "peso_vs_carga_util": t["peso_vs_carga_util"],
+            # Peso ilegible (densidad < 30 kg/m³): `total_peso_kg`/`densidad_kg_m3` en
+            # null y lo leído del archivo aparte; W/M y envío no usan ese peso.
+            "peso_sospechoso": bool(t.get("peso_sospechoso")),
+            "total_peso_kg_leido": (t.get("peso_leido") or {}).get("total_peso_kg"),
+            "densidad_leida_kg_m3": (t.get("peso_leido") or {}).get("densidad_kg_m3"),
+            "peso_si_columna_por_caja_kg": _r(peso_x_caja, 1),
+            "densidad_si_columna_por_caja_kg_m3": (_r(peso_x_caja / t["total_cbm"], 1)
+                                                   if (peso_x_caja and t["total_cbm"]) else None),
             "invariante": pr["invariante"], "avisos": res.get("avisos", [])[:5]})
 
     # ── Filas del contrato ──────────────────────────────────────────────────
@@ -953,22 +1145,33 @@ def correr(n: int = 100, usar_ia: bool = True, tope_ia: int = 30, max_mb: float 
         costos = prorr[e["fid"]]["por_fe"][e["fe"]]
         pub, pr_ = c["pub"], c["pub"]["principal"]
         val = validados.get(c["sku"])
-        precio = pr_["precio_cobrado"]
-        pe, pe_fuente = _peso_efectivo(val, fila)
+        tot_c = prorr[e["fid"]]["totales"]
+        peso_sosp = bool(tot_c.get("peso_sospechoso"))
+        precio, precio_fuente, regular, ancla = _precio_ml(pr_)
+        pe, pe_fuente = _peso_efectivo(val, fila, pub, packing_ok=not peso_sosp)
+        kg_ml, fuente_ml, lid_ml = _peso_ml(pub)
         cods = sorted(carpeta.codigos_de(res["nombre"]))
         cod = next((x for x in cods if x in c["codigos"]), cods[0] if cods else None)
         costo_total = _f((val or {}).get("costo_total"))
-        econ_525 = _economia(precio, costos["volumetrico_real"], pe, pr_["es_full"])
-        econ_panel = _economia(precio, costo_total, pe, pr_["es_full"]) if costo_total else None
+        # Categoría VIVA de la API (ml_universo) y, si no, la de channel.listings.
+        cat = _contexto_comision()["cat_item"].get(pr_["listing_id"]) or pr_["categoria_id"]
+        econ_525 = _economia(precio, costos["volumetrico_real"], pe, pr_["es_full"], cat, ancla)
+        econ_panel = _economia(precio, costo_total, pe, pr_["es_full"], cat, ancla) if costo_total else None
         avisos = []
         if pe is None:
             avisos.append("sin_peso")
-        if not prorr[e["fid"]]["totales"]["rango_ok"]:
+        if not tot_c["rango_ok"]:
             avisos.append("contenedor_fuera_de_rango")
+        elif tot_c.get("rango_por") == "columna_total":
+            avisos.append("rango_por_columna_total")
+        if peso_sosp:
+            avisos.append("peso_packing_sospechoso_densidad")
         if fila.get("reconciliado"):
             avisos.append("cbm_reconciliado_con_volumen_total")
-        if pr_["precio_fuente"] != "price_sale":
+        if precio_fuente not in ("ml_sale_price", "price_sale"):
             avisos.append("precio_sin_price_sale")
+        if ancla is not None and precio and precio < float(_ML.get("umbral_envio_gratis") or 299):
+            avisos.append("envio_con_columna_del_regular")
         rev_at = (val or {}).get("revisado_at")
         upd_at = (val or {}).get("updated_at")
         pkr = pk["skus"].get(c["sku"]) or {}
@@ -979,7 +1182,9 @@ def correr(n: int = 100, usar_ia: bool = True, tope_ia: int = 30, max_mb: float 
             "listing_ids": [x["listing_id"] for x in pub["listings"]],
             "listing_principal": pr_["listing_id"], "cuenta_principal": pr_["cuenta"],
             "es_full": pr_["es_full"], "categoria_id": pr_["categoria_id"],
-            "precio_cobrado": precio, "precio_lista": pr_["precio_lista"],
+            "precio_cobrado": precio, "precio_fuente": precio_fuente,
+            "precio_cobrado_kubera": pr_["precio_cobrado"], "precio_lista": pr_["precio_lista"],
+            "precio_regular_promo": regular, "envio_ancla_regular": ancla,
             "unidades_30d": pub["unidades_30d"], "unidades_30d_de": "publicacion",
             "odoo": {"container_numbers": c["container_numbers"], "codigos": c["codigos"],
                      "numero_kubera": c["numero_kubera"]},
@@ -994,7 +1199,11 @@ def correr(n: int = 100, usar_ia: bool = True, tope_ia: int = 30, max_mb: float 
             "piezas_grupo": _r(fila["piezas_grupo"], 3), "caja_mixta": bool(fila.get("grupo")),
             "cbm_caja": _r(fila["cbm_caja"], 6), "cbm_pieza": _r(fila["cbm_pieza"], 8),
             "cbm_origen": fila["cbm_origen"],
-            "peso_pieza_kg": _r(fila["peso_pieza_kg"], 4), "precio_usd": _r(fila["precio_usd"], 4),
+            # Con el peso del contenedor ilegible (densidad < 30 kg/m³) el del
+            # renglón va en null; lo leído queda en `peso_pieza_kg_leido`.
+            "peso_pieza_kg": None if peso_sosp else _r(fila["peso_pieza_kg"], 4),
+            "peso_pieza_kg_leido": _r(fila["peso_pieza_kg"], 4) if peso_sosp else None,
+            "precio_usd": _r(fila["precio_usd"], 4),
             "costos": {k: _r(v, 2) for k, v in costos.items()},
             # Informativo: W/M con la razón de un 40' HC lleno por peso (≈379 kg/m³).
             "costo_wm_fcl": _r(prorr[e["fid"]]["wm_fcl"].get(e["fe"]), 2),
@@ -1010,12 +1219,25 @@ def correr(n: int = 100, usar_ia: bool = True, tope_ia: int = 30, max_mb: float 
             "prorrateo_kubera": {"costo": pkr.get("costo"), "fuente": pkr.get("fuente"),
                                  "marca": pkr.get("marca"), "m3_contenedor": pkr.get("m3_contenedor")},
             "peso_facturable_kg": _r(pe, 3), "peso_fuente": pe_fuente,
+            # Los otros pesos, para comparar (no deciden si hay uno de ML).
+            "peso_facturable_ml_kg": _r(kg_ml, 3), "peso_ml_fuente": fuente_ml, "peso_ml_listing": lid_ml,
+            "peso_facturable_packing_kg": None if peso_sosp else _r(_peso_packing(fila), 3),
             "peso_facturable_kubera_kg": _r(_peso_kubera(val), 3),
+            # Comisión real POR LÍNEA (kubera_lineas, sin las netas de SANCORFASHION);
+            # `_diaria` es el cálculo anterior por día de sales_daily, para comparar.
             "comision_real_30d": pub["comision_real_30d"],
+            "comision_real_cobertura": pub.get("comision_real_cobertura"),
+            "comision_real_detalle": pub.get("comision_real_detalle"),
+            "comision_real_30d_diaria": pub.get("comision_real_30d_diaria"),
             "economia_525k": econ_525, "economia_panel": econ_panel,
             "margen_con_525k": econ_525["margen"] if econ_525 else None,
+            # El envío con la columna del regular es el PEOR caso (ML lo cobró en
+            # ~30% de las ventas con promoción): el margen sin ese supuesto, al lado.
+            "margen_con_525k_sin_ancla": ((_economia(precio, costos["volumetrico_real"], pe, pr_["es_full"], cat)
+                                           or {}).get("margen") if ancla is not None
+                                          else (econ_525["margen"] if econ_525 else None)),
             "margen_panel": econ_panel["margen"] if econ_panel else None,
-            "margenes_por_metodo": {k: ((_economia(precio, v, pe, pr_["es_full"]) or {}).get("margen")
+            "margenes_por_metodo": {k: ((_economia(precio, v, pe, pr_["es_full"], cat, ancla) or {}).get("margen")
                                         if v is not None else None) for k, v in costos.items()},
             "avisos": avisos})
 
@@ -1088,7 +1310,15 @@ def _resumen(filas: list[dict], saltados: list[dict], conts: list[dict], stats: 
             "invariante_ok": sum(1 for x in usados if x["invariante"]["ok"]),
             "cuadra_voltot": dict(Counter(str(x["cuadra_voltot"]) for x in usados)),
             "limitados_por_peso": [x["codigo"] for x in usados if x["limitado_por_peso"]],
-            "peso_vs_carga_util_max": max((x["peso_vs_carga_util"] or 0) for x in usados) if usados else None},
+            "peso_vs_carga_util_max": max((x["peso_vs_carga_util"] or 0) for x in usados) if usados else None,
+            "rango_por_columna_total": [x["codigo"] for x in usados if x.get("rango_por") == "columna_total"],
+            "peso_sospechoso": [x["codigo"] for x in usados if x.get("peso_sospechoso")],
+            "peso_sospechoso_todos": [x["codigo"] for x in conts if x.get("peso_sospechoso")]},
+        "peso_por_fuente": dict(Counter(f.get("peso_fuente") for f in filas)),
+        "con_peso_ml": sum(1 for f in filas if str(f.get("peso_fuente") or "").startswith("ml_")),
+        "peso_packing_sospechoso": sum(1 for f in filas if "peso_packing_sospechoso_densidad" in f["avisos"]),
+        "envio_con_columna_del_regular": sum(1 for f in filas if "envio_con_columna_del_regular" in f["avisos"]),
+        "precio_por_fuente": dict(Counter(f.get("precio_fuente") for f in filas)),
         "vs_kubera": {
             "n_con_costo_total": len(dif_total),
             "dif_media_vs_costo_total": prom(dif_total), "dif_mediana_vs_costo_total": med(dif_total),
@@ -1101,9 +1331,34 @@ def _resumen(filas: list[dict], saltados: list[dict], conts: list[dict], stats: 
             "razon_mediana_wm_fcl_vs_vol": med(rat_fcl),
             "wm_fcl_distinto_de_vol_mas_10pct": sum(1 for x in rat_fcl if abs(x - 1) > 0.10)},
         "cbm_reconciliados": sum(1 for f in filas if f["cbm_reconciliado"]),
+        # La comisión del modelo (economia) contra la cobrada de verdad en 30 días,
+        # POR LÍNEA de pedido (sin las netas de SANCORFASHION): diferencia en
+        # puntos, por publicación. `*_diaria` = el cálculo anterior por día.
+        "comision": {
+            "fuente_real": dict(Counter((f.get("comision_real_detalle") or {}).get("fuente") for f in filas)),
+            "fuentes_modelo": dict(Counter((f.get("economia_525k") or {}).get("comision_fuente")
+                                           for f in filas)),
+            "pct_modelo_mediana": med([(f.get("economia_525k") or {}).get("comision_pct") for f in filas]),
+            "real_30d_mediana": med([f.get("comision_real_30d") for f in filas]),
+            "real_30d_diaria_mediana": med([f.get("comision_real_30d_diaria") for f in filas]),
+            "dif_modelo_menos_real_mediana": med(difs := [
+                (f["economia_525k"]["comision_pct"] - f["comision_real_30d"]) for f in filas
+                if f.get("economia_525k") and f["economia_525k"].get("comision_pct") is not None
+                and f.get("comision_real_30d") is not None]),
+            "n_comparables": len(difs),
+            "dif_mas_de_2_puntos": sum(1 for x in difs if abs(x) > 0.02),
+            "real_menor_que_12pct": sum(1 for f in filas if (f.get("comision_real_30d") or 1) < 0.12),
+            "real_cobertura_mediana": med([f.get("comision_real_cobertura") for f in filas]),
+            "lineas_netas_excluidas": sum((f.get("comision_real_detalle") or {}).get("lineas_netas_excluidas") or 0
+                                          for f in filas),
+        },
         "margen_mediano_525k": med([f["margen_con_525k"] for f in filas]),
+        "margen_mediano_525k_sin_ancla": med([f.get("margen_con_525k_sin_ancla") for f in filas]),
         "margen_mediano_panel": med([f["margen_panel"] for f in filas]),
         "perdiendo_con_525k": sum(1 for f in filas if (f["margen_con_525k"] or 0) < 0),
+        "perdiendo_con_525k_sin_ancla": sum(1 for f in filas if (f.get("margen_con_525k_sin_ancla") or 0) < 0),
+        "bajo_piso_con_525k": sum(1 for f in filas if f["margen_con_525k"] is not None
+                                  and f["margen_con_525k"] < float((PARAMS.get("optimizador") or {}).get("piso_margen") or 0.12)),
         "perdiendo_con_panel": sum(1 for f in filas if (f["margen_panel"] or 0) < 0 and f["margen_panel"] is not None),
         "sin_peso": sum(1 for f in filas if "sin_peso" in f["avisos"]),
         "ia": ({"llamadas": ia.llamadas, "errores": ia.errores, "tope": ia.tope, "tokens_in": ia.tokens_in,

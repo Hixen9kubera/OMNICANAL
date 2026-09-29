@@ -54,8 +54,21 @@ MIN_COBERTURA_USD = 0.90
 # LCL). Para un 40' HC que se llena por PESO la razón real es carga útil /
 # volumen ≈ 26,500/70 ≈ 379 kg/m³; se deja como parámetro para medir ese caso.
 KG_POR_M3_WM = 1000.0
+# Densidad mínima creíble de un contenedor (kg/m³). Medido el 28-sep en 40
+# packing lists: 36 dan 92–382 kg/m³ y 4 dan 6.8–13.8 (CSNU6409280, OOLU9155398,
+# WHSU6230286, CAAU5061672). En esos 4 la columna "G.W." es POR CAJA y
+# `packing_indice` la toma como total del renglón (`PAT_TOTAL` casa con
+# `g.w.`) y la divide entre las cajas: OOLU9155398 suma 509 kg cuando son
+# ~7,320. No se corrige aquí ni en `packing_indice` (producción): el peso de
+# esos contenedores se marca `peso_sospechoso` y NO se usa (W/M = volumétrico,
+# envío con el peso de ML).
+DENSIDAD_MIN_KG_M3 = 30.0
+# Tolerancia para creerle a la columna de volumen TOTAL del archivo cuando la
+# suma por cartón se sale del rango solo por redondeo (NYKU4803479: Σ cartones
+# 76.85 m³ contra 71.00 de su propia columna total, 8.2%).
+TOLERANCIA_VOLTOT_RANGO = 0.10
 
-METODOS = ("volumetrico_real", "tarifa_fija_7500", "peso_volumen_wm", "valor_fob", "hibrido_70_30")
+METODOS =("volumetrico_real", "tarifa_fija_7500", "peso_volumen_wm", "valor_fob", "hibrido_70_30")
 
 
 def _f(v: Any) -> float | None:
@@ -79,7 +92,9 @@ def totales(renglones: Iterable[dict[str, Any]], *,
             costo_contenedor: float = COSTO_CONTENEDOR,
             rango_m3: tuple[float, float] = RANGO_M3_PACKING,
             carga_util_kg: float = CARGA_UTIL_KG,
-            kg_por_m3: float = KG_POR_M3_WM) -> dict[str, Any]:
+            kg_por_m3: float = KG_POR_M3_WM,
+            voltot_columna: float | None = None,
+            tolerancia_voltot: float = TOLERANCIA_VOLTOT_RANGO) -> dict[str, Any]:
     """Totales de UN contenedor: CBM, piezas, peso, USD, $/m³ y banderas.
 
     `limitado_por_peso` responde "¿el contenedor se llenó por kilos antes que
@@ -88,6 +103,20 @@ def totales(renglones: Iterable[dict[str, Any]], *,
     productos densos consumieron la capacidad real y los ligeros pagan por ellos.
     `filas_densas` cuenta los renglones cuya tonelada pesa más que su m³ (W/M):
     son los que el método de peso-volumen encarece.
+
+    ``voltot_columna``: Σ de la columna de volumen TOTAL del archivo (si la
+    trae). Si la suma por cartón queda FUERA del rango pero la columna total cae
+    DENTRO y las dos difieren menos de ``tolerancia_voltot``, la diferencia es
+    redondeo del CBM por caja × cajas y el contenedor sí está lleno:
+    ``rango_ok`` pasa a True con ``rango_por = "columna_total"``. El reparto
+    volumétrico no cambia (solo depende de las PROPORCIONES y el denominador
+    sigue siendo la suma, así Σ costo × piezas = 525,000 exacto); lo que cambia
+    es que el renglón deja de caer al prorrateo de kubera por un rango falso.
+    >>> t = totales([{"cbm_pieza": 0.0076846, "piezas": 10000}], voltot_columna=71.0)
+    >>> (t["total_cbm"], t["rango_ok"], t["rango_por"], t["desvio_columna"])
+    (76.846, True, 'columna_total', 0.0823)
+    >>> totales([{"cbm_pieza": 0.0076846, "piezas": 10000}], voltot_columna=None)["rango_ok"]
+    False
     """
     rs = list(renglones)
     cbm = piezas = peso = usd = wm = cbm_con_usd = cbm_con_peso = 0.0
@@ -117,6 +146,12 @@ def totales(renglones: Iterable[dict[str, Any]], *,
         else:
             sin_usd += 1
     rango_ok = bool(cbm) and rango_m3[0] <= cbm <= rango_m3[1]
+    rango_por = "suma_cartones" if rango_ok else None
+    vt = _f(voltot_columna)
+    desvio = (cbm - vt) / vt if (vt and cbm) else None
+    if (not rango_ok and vt and cbm and rango_m3[0] <= vt <= rango_m3[1]
+            and abs(desvio) < tolerancia_voltot):
+        rango_ok, rango_por = True, "columna_total"
     return {
         "renglones": len(rs),
         "renglones_sin_cbm": sin_cbm,
@@ -132,6 +167,11 @@ def totales(renglones: Iterable[dict[str, Any]], *,
         "costo_m3_wm": _r(costo_contenedor / wm, 2) if wm else None,
         "rango_m3": list(rango_m3),
         "rango_ok": rango_ok,
+        "rango_por": rango_por,
+        "total_cbm_columna": _r(vt, 4) if vt else None,
+        "desvio_columna": _r(desvio, 4),
+        # Informativo: $/m³ si el volumen verdadero es el de la columna total.
+        "costo_m3_columna": _r(costo_contenedor / vt, 2) if (vt and rango_por == "columna_total") else None,
         "cobertura_usd": _r(cbm_con_usd / cbm, 4) if cbm else None,
         "cobertura_peso": _r(cbm_con_peso / cbm, 4) if cbm else None,
         "densidad_kg_m3": _r(peso / cbm_con_peso, 1) if cbm_con_peso else None,
@@ -179,19 +219,47 @@ def prorratear(renglones: list[dict[str, Any]], *,
                rango_m3: tuple[float, float] = RANGO_M3_PACKING,
                carga_util_kg: float = CARGA_UTIL_KG,
                min_cobertura_usd: float = MIN_COBERTURA_USD,
-               kg_por_m3: float = KG_POR_M3_WM) -> dict[str, Any]:
+               kg_por_m3: float = KG_POR_M3_WM,
+               densidad_min_kg_m3: float | None = DENSIDAD_MIN_KG_M3,
+               voltot_columna: float | None = None,
+               tolerancia_voltot: float = TOLERANCIA_VOLTOT_RANGO) -> dict[str, Any]:
     """UN contenedor → costo por pieza de cada renglón con los 5 métodos + totales.
 
     ``renglones``: TODOS los del packing list, ``[{sku|None, cbm_pieza, piezas,
     peso_pieza_kg, usd_pieza}]`` (``piezas`` = piezas TOTALES del renglón). El
     ``sku`` solo se arrastra para identificar la salida; el reparto no lo usa.
 
+    Peso sospechoso: si la densidad del contenedor (kg / m³ con peso) queda
+    debajo de ``densidad_min_kg_m3``, el peso del archivo se declara ilegible
+    (``totales.peso_sospechoso``) y el reparto se hace SIN pesos: el W/M cae al
+    volumétrico en vez de repartir con kilos 10–50× menores a los reales. Lo
+    leído se conserva en ``totales.peso_leido``.
+
     Devuelve ``{"totales": {...}, "renglones": [{...renglón, "costos": {metodo: MXN}}],
     "invariante": verificar_invariante(...)}``. Los costos van redondeados a 4
     decimales en la salida; el invariante se mide sin redondear.
+
+    >>> rs = [{"cbm_pieza": 0.01, "piezas": 3500, "peso_pieza_kg": 0.002},
+    ...       {"cbm_pieza": 0.01, "piezas": 3500, "peso_pieza_kg": 0.5}]
+    >>> p = prorratear(rs)
+    >>> (p["totales"]["peso_sospechoso"], p["totales"]["peso_leido"]["densidad_kg_m3"], p["totales"]["total_peso_kg"])
+    (True, 25.1, None)
+    >>> [r["costos"]["peso_volumen_wm"] == r["costos"]["volumetrico_real"] for r in p["renglones"]]
+    [True, True]
     """
-    tot = totales(renglones, costo_contenedor=costo_contenedor, rango_m3=rango_m3,
-                  carga_util_kg=carga_util_kg, kg_por_m3=kg_por_m3)
+    kw = {"costo_contenedor": costo_contenedor, "rango_m3": rango_m3, "carga_util_kg": carga_util_kg,
+          "kg_por_m3": kg_por_m3, "voltot_columna": voltot_columna, "tolerancia_voltot": tolerancia_voltot}
+    tot = totales(renglones, **kw)
+    dens = tot.get("densidad_kg_m3")
+    sospechoso = bool(densidad_min_kg_m3 and dens is not None and dens < densidad_min_kg_m3)
+    if sospechoso:
+        leido = {k: tot.get(k) for k in ("total_peso_kg", "densidad_kg_m3", "cobertura_peso", "filas_densas",
+                                         "limitado_por_peso", "peso_vs_carga_util")}
+        renglones = [{**r, "peso_pieza_kg": None} for r in renglones]
+        tot = totales(renglones, **kw)
+        tot["peso_leido"] = leido
+    tot["peso_sospechoso"] = sospechoso
+    tot["densidad_min_kg_m3"] = densidad_min_kg_m3
     salida, crudos = [], []
     for r in renglones:
         cs = costos_pieza(r, tot, costo_contenedor=costo_contenedor, tarifa_m3=tarifa_m3,

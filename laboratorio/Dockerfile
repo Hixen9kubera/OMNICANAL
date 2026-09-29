@@ -54,6 +54,10 @@ COPY backend/requirements.txt ./requirements.txt
 COPY backend/sandbox_precios/requirements.txt ./sandbox_precios/requirements.txt
 RUN pip install -r sandbox_precios/requirements.txt
 
+# backend/ SIN scripts/, tests/, routers/, main.py, mcp_research/, vendor/ ni
+# models/ (los corta /.dockerignore; verificado que el laboratorio no importa
+# ninguno): con `railway ssh` y las credenciales del servicio, esos escritores de
+# producción correrían sin los candados del laboratorio.
 COPY backend/ ./
 COPY --from=web /web/out/ /app/web/
 
@@ -66,6 +70,14 @@ ENV LAB_WEB_DIR=/app/web \
 RUN mkdir -p /data
 
 EXPOSE 8080
-# --proxy-headers: la IP real (freno de intentos de llave) y el esquema https
-# llegan del proxy de Railway, el único que alcanza el contenedor.
-CMD ["sh", "-c", "exec uvicorn sandbox_precios.api:app --host 0.0.0.0 --port ${PORT:-8080} --proxy-headers --forwarded-allow-ips='*'"]
+# --no-proxy-headers: uvicorn NO reescribe la IP del cliente con X-Forwarded-For.
+# Con `--forwarded-allow-ips='*'` tomaba el salto de más a la IZQUIERDA, que lo
+# escribe el cliente: falsificaba la IP del freno de intentos y, en un
+# `docker run` con LAB_MODO_LOCAL=1, pasaba por loopback con
+# `X-Forwarded-For: 127.0.0.1`. Así `request.client` es el socket real;
+# `api._ip` lee en Railway `X-Real-IP` (la cabecera que Railway documenta para la
+# IP del cliente) o, si falta, el ÚLTIMO salto de X-Forwarded-For (el que agrega
+# su proxy). Nada depende del esquema https: la cookie `Secure` sale de
+# EN_RAILWAY y las redirecciones son relativas.
+# --no-server-header: sin `Server: uvicorn` en las respuestas.
+CMD ["sh", "-c", "exec uvicorn sandbox_precios.api:app --host 0.0.0.0 --port ${PORT:-8080} --no-proxy-headers --no-server-header"]

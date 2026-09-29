@@ -12,10 +12,23 @@ import { useRouter } from "next/navigation";
 import { Eye, EyeOff, FlaskConical, Loader2, ShieldCheck } from "lucide-react";
 import { estadoSesion, iniciarSesion, USA_FIXTURES } from "@/lib/api";
 
-/** Sólo rutas internas: un `volver` a otro dominio sería una redirección abierta. */
+/**
+ * Sólo rutas internas: un `volver` a otro dominio sería una redirección abierta.
+ * Revisar el texto no basta (`/\example.com` o `/<TAB>/example.com`: el navegador
+ * los normaliza a `//example.com`), así que se RESUELVE contra el origen actual,
+ * se exige el mismo origen y se navega con la ruta ya resuelta, nunca con el texto.
+ */
 function destinoSeguro(v: string | null): string {
-  if (!v || !v.startsWith("/") || v.startsWith("//") || v.startsWith("/login")) return "/publicaciones";
-  return v;
+  const porOmision = "/publicaciones";
+  if (!v || !v.startsWith("/")) return porOmision;
+  try {
+    const u = new URL(v, window.location.origin);
+    if (u.origin !== window.location.origin) return porOmision;
+    if (u.pathname.startsWith("//") || u.pathname.startsWith("/login")) return porOmision;
+    return `${u.pathname}${u.search}${u.hash}`;
+  } catch {
+    return porOmision;
+  }
 }
 
 export default function Login() {
@@ -69,7 +82,7 @@ export default function Login() {
                    autoComplete="current-password" autoFocus disabled={enviando} placeholder="••••••••••"
                    className="h-[43px] w-full rounded-[10px] border-[1.5px] border-[#e3e6ef] bg-[#fbfbfd] pl-3.5 pr-11 text-[14.5px] text-slate-900 outline-none transition placeholder:text-slate-300 focus:border-indigo-600 focus:bg-white focus:shadow-[0_0_0_3.5px_rgba(79,70,229,0.13)] disabled:opacity-60" />
             <button type="button" onClick={() => setVer((v) => !v)} aria-label={ver ? "Ocultar llave" : "Mostrar llave"}
-                    className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-slate-400 hover:bg-indigo-50 hover:text-indigo-600">
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-slate-500 hover:bg-indigo-50 hover:text-indigo-600">
               {ver ? <EyeOff size={16} /> : <Eye size={16} />}
             </button>
           </span>
@@ -85,7 +98,7 @@ export default function Login() {
           {enviando ? "Entrando…" : "Entrar"}
         </button>
 
-        <p className="mt-5 flex items-center justify-center gap-1.5 border-t border-slate-100 pt-4 text-center text-[12px] text-slate-400">
+        <p className="mt-5 flex items-center justify-center gap-1.5 border-t border-slate-100 pt-4 text-center text-[12px] text-slate-500">
           <ShieldCheck size={13} /> Solo lectura · ningún precio se aplica sin autorización
         </p>
         {USA_FIXTURES && (

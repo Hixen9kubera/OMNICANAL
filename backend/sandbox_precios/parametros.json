@@ -4,30 +4,59 @@
     "costo_mxn": 525000,
     "incluye_iva": false,
     "metodo_recomendado": "volumetrico_real",
-    "rango_m3_normal": [55, 76],
+    "rango_m3_normal": [
+      55,
+      76
+    ],
     "tarifa_fija_m3_referencia": 7500,
     "carga_util_kg_40hc": 26500,
-    "tipo_cambio_referencia": 19.0
+    "tipo_cambio_referencia": 19.0,
+    "incluye_mercancia": true,
+    "_incluye_mercancia": "Regla de Brandon (28-sep-2026, al pedir el laboratorio): 'a nosotros no nos cobran el producto… cada contenedor cuesta 525,000 MXN… ESE COSTO [el del producto en el packing list] no nos aplica'. Por eso el costo del laboratorio es SOLO el prorrateo de 525k y true = las bajadas NO se bloquean. La auditoría del 28-sep midió que la factura (CI) vale más de 525k en 28 de 29 contenedores (mediana $1.70 M): si algún día se cobrara la mercancía, poner false y el optimizador bloquea toda bajada que con el costo del panel quede bajo el piso. Con true, ese riesgo sale solo como AVISO en la fila."
   },
   "mercado_libre": {
     "iva": 0.16,
     "comision_sobre_precio_con_iva": true,
-    "tramos_comision_precio": [0, 299, 500, 1000],
-    "precios_muestra_comision": [199, 399, 599, 1199],
-    "comision_respaldo_por_tramo": {"0": 0.195, "299": 0.18, "500": 0.16, "1000": 0.15},
+    "tramos_comision_precio": [
+      0,
+      500
+    ],
+    "comision_respaldo_por_tramo": {
+      "0": 0.195,
+      "500": 0.16
+    },
+    "_comision_respaldo": "Medido con listing_prices (gold_pro + fulfillment) en 718 categorías FULL el 28-sep-2026: el % a $199 es igual al de $399 en las 718 y el de $599 igual al de $1,199 en 691. El escalón real es $500: 19.5% → 16% en 353 categorías (patrón más común; también la mediana de cada tramo). 27 categorías bajan después de $599; 19 de ellas son las que ML subió de 19.5% a 21.5% el 13–14-sep. El respaldo solo se usa en categorías SIN tabla de la API; las que la tienen se buscan con sus 4 llaves de muestreo.",
+    "precios_muestra_comision": [
+      199,
+      399,
+      599,
+      1199
+    ],
+    "tramos_muestreo_comision": [
+      0,
+      299,
+      500,
+      1000
+    ],
+    "_tramos_muestreo_comision": "Llaves con que extraer_ml guarda cada precio de muestra en cache/comisiones.json (una por muestra). NO son los tramos del respaldo: se muestrean 4 precios para ver si ML mueve un escalón.",
     "umbral_envio_gratis": 299,
+    "envio_promo_columna_regular": true,
+    "_envio_promo_columna_regular": "Debajo de $299 con precio regular de $299 o más, ML cobró la columna de envío del regular en ~30% de las ventas con promoción (auditoría 28-sep). true = el optimizador usa el PEOR caso (columna del regular) para cualquier precio < $299 de esas publicaciones.",
     "costo_full_unitario_mes": 0.0,
     "_costo_full_unitario_mes": "supuesto: almacenaje FULL no modelado (sin API de billing); dejar en 0 hasta tener la tarifa real"
   },
   "optimizador": {
     "piso_margen": 0.12,
-    "sacrificio_utilidad_max": 0.10,
+    "sacrificio_utilidad_max": 0.1,
     "paso_max_semana": 0.05,
     "paso_max_dia": 0.02,
     "rejilla_min_factor": 0.55,
     "rejilla_max_factor": 1.45,
     "rejilla_paso": 0.01,
-    "banda_competencia": [0.70, 1.15],
+    "banda_competencia": [
+      0.7,
+      1.15
+    ],
     "elasticidad_prior_unidades": -1.6,
     "elasticidad_prior_visitas": -0.6,
     "elasticidad_min": -6.0,
@@ -36,12 +65,48 @@
     "cobertura_dias_escasez": 10,
     "cobertura_dias_exceso": 120,
     "sacrificio_liquidacion": 0.25,
-    "terminaciones_psicologicas": true
+    "terminaciones_psicologicas": true,
+    "_guardarrailes": "Fase 2 (auditoría del modelo, 28-sep). Evitan recomendaciones dañinas; ninguno cambia el objetivo del modelo.",
+    "cobertura_minima_al_recomendado": 21,
+    "dias_reabasto_full": 21,
+    "cambio_max_sin_evidencia": 0.1,
+    "evidencia_se_max": 0.5,
+    "evidencia_dias_base_min": 14,
+    "promo_dias_para_renovar": 7,
+    "brecha_max_entre_cuentas": 0.1,
+    "descuento_aviso_sobre_regular": 0.7,
+    "volumen_max_sobre_peso_facturable": 3.0,
+    "densidad_max_kg_m3": 3000,
+    "_densidad_max_kg_m3": "Remate 28-sep: arriba de esta densidad implícita (kg de ML ÷ m³ por pieza) el m³ probablemente está chico y el costo de 525k subestimado. Solo AVISO (costo_densidad_alta); bloquear como costo_imposible es decisión de Brandon.",
+    "escalon_299_rango_p0": [
+      250,
+      350
+    ],
+    "_escalon_299_rango_p0": "El efecto de demanda de estar abajo de $299 (elasticidades._escalon_299) entra en la curva SOLO si es significativo (δ > 0, z ≥ 1.96) y solo en publicaciones que ya cruzaron $299 o con precio actual en este rango. 28-sep: δ = +0.094, z 1.23 → no se usa."
   },
   "canales": {
-    "amazon": {"comision": 0.15, "envio_unitario": 0, "supuesto": true, "_nota": "referral fee típico MX; FBA no aplica (FULL es ML)"},
-    "walmart": {"comision": 0.15, "envio_unitario": 0, "supuesto": true},
-    "tiktok": {"comision": 0.08, "envio_unitario": 0, "supuesto": true, "_nota": "el precio guardado puede venir SIN IVA (tax_exclusive_price)"},
-    "temu": {"comision": 0.0, "envio_unitario": 0, "supuesto": true, "_nota": "basePrice = lo que Temu nos paga (neto)"}
+    "amazon": {
+      "comision": 0.15,
+      "envio_unitario": 0,
+      "supuesto": true,
+      "_nota": "referral fee típico MX; FBA no aplica (FULL es ML)"
+    },
+    "walmart": {
+      "comision": 0.15,
+      "envio_unitario": 0,
+      "supuesto": true
+    },
+    "tiktok": {
+      "comision": 0.08,
+      "envio_unitario": 0,
+      "supuesto": true,
+      "_nota": "el precio guardado puede venir SIN IVA (tax_exclusive_price)"
+    },
+    "temu": {
+      "comision": 0.0,
+      "envio_unitario": 0,
+      "supuesto": true,
+      "_nota": "basePrice = lo que Temu nos paga (neto)"
+    }
   }
 }

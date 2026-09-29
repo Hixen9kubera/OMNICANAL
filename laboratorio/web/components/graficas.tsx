@@ -28,9 +28,13 @@ export function useAncho<T extends HTMLElement>(): [React.RefObject<T>, number] 
     if (!el) return;
     const medir = () => setAncho(Math.floor(el.getBoundingClientRect().width));
     medir();
+    // Segunda medida cuando el marco ya se asentó (la rejilla de la página cambia de
+    // columnas al cargar los datos); el ResizeObserver cubre el resto.
+    const t = window.setTimeout(medir, 120);
     const ro = new ResizeObserver(medir);
     ro.observe(el);
-    return () => ro.disconnect();
+    window.addEventListener("resize", medir);
+    return () => { ro.disconnect(); window.clearTimeout(t); window.removeEventListener("resize", medir); };
   }, []);
   return [ref, ancho];
 }
@@ -191,9 +195,10 @@ export function PanelesX({ xs, paneles, formatoX, formatoXLargo, marcadores = []
   return (
     <div ref={ref} className="relative w-full select-none">
       {ancho > 0 && (
-        <svg width={W} height={altoTotal} viewBox={`0 0 ${W} ${altoTotal}`} role="img" tabIndex={0}
+        <svg width="100%" viewBox={`0 0 ${W} ${altoTotal}`} role="img" tabIndex={0}
              aria-label={`Gráfica: ${paneles.map((p) => p.titulo).join(", ")}. Usa las flechas para recorrerla.`}
              className="block outline-none focus-visible:ring-2 focus-visible:ring-indigo-300 rounded"
+             style={{ width: "100%", height: "auto" }}
              onPointerMove={(e) => moverA(e.clientX, (e.currentTarget as SVGSVGElement).getBoundingClientRect())}
              onPointerDown={(e) => moverA(e.clientX, (e.currentTarget as SVGSVGElement).getBoundingClientRect())}
              onPointerLeave={() => setCursor(null)}
@@ -217,7 +222,7 @@ export function PanelesX({ xs, paneles, formatoX, formatoXLargo, marcadores = []
                 {g.esc.marcas.map((m) => (
                   <g key={m}>
                     <line x1={M.izq} x2={W - M.der} y1={g.sy(m)} y2={g.sy(m)} stroke={m === 0 && g.esc.ini < 0 ? SERIE.eje : SERIE.rejilla} strokeWidth={1} />
-                    <text x={M.izq - 6} y={g.sy(m) + 3.5} textAnchor="end" fontSize="10" className="fill-slate-400 tabular-nums">{p.formatoEje(m)}</text>
+                    <text x={M.izq - 6} y={g.sy(m) + 3.5} textAnchor="end" fontSize="10" className="fill-slate-500 tabular-nums">{p.formatoEje(m)}</text>
                   </g>
                 ))}
                 {p.series.map((s) => {
@@ -256,7 +261,7 @@ export function PanelesX({ xs, paneles, formatoX, formatoXLargo, marcadores = []
           {/* eje X */}
           <line x1={M.izq} x2={W - M.der} y1={fondo} y2={fondo} stroke={SERIE.eje} strokeWidth={1} />
           {marcasX.map((m) => (
-            <text key={m} x={sx(m)} y={fondo + 15} textAnchor="middle" fontSize="10" className="fill-slate-400 tabular-nums">{formatoX(m)}</text>
+            <text key={m} x={sx(m)} y={fondo + 15} textAnchor="middle" fontSize="10" className="fill-slate-500 tabular-nums">{formatoX(m)}</text>
           ))}
           {/* marcadores verticales con su letra arriba */}
           {etiquetas.map((m) => (
@@ -327,9 +332,10 @@ export function Columnas({ etiquetas, series, formato, formatoEje, alto = 170, e
   return (
     <div ref={ref} className="relative w-full select-none">
       {ancho > 0 && (
-        <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} role="img" tabIndex={0}
+        <svg width="100%" viewBox={`0 0 ${W} ${H}`} role="img" tabIndex={0}
              aria-label={`Columnas: ${series.map((s) => s.nombre).join(", ")}`}
              className="block rounded outline-none focus-visible:ring-2 focus-visible:ring-indigo-300"
+             style={{ width: "100%", height: "auto" }}
              onKeyDown={(e) => {
                if (e.key === "ArrowRight") { setActivo((c) => Math.min(n - 1, (c ?? -1) + 1)); e.preventDefault(); }
                if (e.key === "ArrowLeft") { setActivo((c) => Math.max(0, (c ?? n) - 1)); e.preventDefault(); }
@@ -338,7 +344,7 @@ export function Columnas({ etiquetas, series, formato, formatoEje, alto = 170, e
           {esc.marcas.map((m) => (
             <g key={m}>
               <line x1={M.izq} x2={W - M.der} y1={sy(m)} y2={sy(m)} stroke={m === 0 ? SERIE.eje : SERIE.rejilla} strokeWidth={1} />
-              <text x={M.izq - 6} y={sy(m) + 3.5} textAnchor="end" fontSize="10" className="fill-slate-400 tabular-nums">{formatoEje(m)}</text>
+              <text x={M.izq - 6} y={sy(m) + 3.5} textAnchor="end" fontSize="10" className="fill-slate-500 tabular-nums">{formatoEje(m)}</text>
             </g>
           ))}
           {etiquetas.map((et, i) => {
@@ -363,7 +369,7 @@ export function Columnas({ etiquetas, series, formato, formatoEje, alto = 170, e
                   </text>
                 )}
                 {i % cada === 0 && (
-                  <text x={x + bw / 2} y={M.arriba + alto + 15} textAnchor="middle" fontSize="10" className="fill-slate-400">{et}</text>
+                  <text x={x + bw / 2} y={M.arriba + alto + 15} textAnchor="middle" fontSize="10" className="fill-slate-500">{et}</text>
                 )}
                 {/* zona de pulso más grande que la barra */}
                 <rect x={M.izq + slot * i} y={M.arriba} width={slot} height={alto} fill="transparent"

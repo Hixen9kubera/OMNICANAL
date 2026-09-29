@@ -11,6 +11,13 @@ precio USD del packing list. Prioridad de la fuente:
                          costos_validados (prorrateo.prorrateo_kubera)
     tarifa_7500          cbm_pieza × 7,500 (contenedor fuera de rango o sin contenedor)
     sin_costo            no hay CBM: no se inventa
+    sospechoso           había costo pero es FÍSICAMENTE IMPOSIBLE (marca
+                         ``costo_imposible``: cbm_pieza > 3× kg_facturable_ML/200);
+                         ``unitario`` = null y el número en ``unitario_descartado``
+
+Marca informativa (no bloquea): ``costo_bajo_fob`` = el costo de 525k es menor
+que la mercancía sola (USD × 19 del packing list o `costo_producto`). Brandon:
+el producto del packing list no les aplica (`contenedor.incluye_mercancia`).
 
 `costo_panel` es `costos_validados.costo_total` (producto USD×19 + flete) — lo que
 usa hoy el panel — y `costo_producto_excluido` la parte USD que este modelo quita.
@@ -231,6 +238,50 @@ def peso_de(costos: dict[str, dict], sku: str, listing_id: str | None = None) ->
 def leer() -> dict[str, dict]:
     """`ultimo/costos.json` ({} si aún no se calcula)."""
     return almacen.leer_json(almacen.ultimo("costos.json"), {}) or {}
+
+
+# ── costo imposible (volumen contra peso facturable) ─────────────────────────
+_FUENTES_PESO_ML = ("ml_billable", "ml_atributos")
+
+
+def peso_ml_tope(e: dict) -> tuple[float | None, str | None]:
+    """El peso facturable de ML más PERMISIVO del SKU: el mayor `ml_billable` de
+    sus publicaciones; si ninguna lo tiene, el mayor de `ml_atributos`. Nunca el
+    de costos_validados: sus medidas SON el CBM reconstruido (sería circular)."""
+    pl = e.get("pesos_listing") or {}
+    for fuente in _FUENTES_PESO_ML:
+        ks = [p["kg"] for p in pl.values() if p.get("fuente") == fuente and p.get("kg")]
+        if ks:
+            return max(ks), fuente
+    return None, None
+
+
+def _marcar_costo_imposible(e: dict, factor: float = 3.0) -> bool:
+    """Marca `costo_imposible` si el cbm_pieza detrás del costo pasa de ``factor`` ×
+    (kg facturable de ML / 200). Deja el costo sin usar (fuente `sospechoso`).
+
+    >>> e = {"unitario": 417.0, "fuente": "prorrateo_kubera", "marca": None, "cbm_pieza": 0.0557,
+    ...      "pesos_listing": {"MLM1": {"kg": 1.28, "fuente": "ml_billable"}}}
+    >>> _marcar_costo_imposible(e), e["unitario"], e["fuente"], e["unitario_descartado"], e["costo_imposible"]["veces"]
+    (True, None, 'sospechoso', 417.0, 8.7)
+    >>> _marcar_costo_imposible({"unitario": 20.0, "fuente": "tarifa_7500", "cbm_pieza": 0.02,
+    ...                          "pesos_listing": {"MLM1": {"kg": 1.5, "fuente": "ml_billable"}}})
+    False
+    """
+    if e.get("unitario") is None:
+        return False
+    cbm = _f(e.get("cbm_pieza"))
+    kg, fuente = peso_ml_tope(e)
+    if not (cbm and kg):
+        return False
+    tope = kg / 200.0
+    if cbm <= factor * tope:
+        return False
+    e["costo_imposible"] = {"cbm_pieza": cbm, "kg_facturable": kg, "fuente_peso": fuente,
+                            "tope_m3": round(tope, 6), "veces": round(cbm / tope, 2), "factor": factor}
+    e.update(unitario_descartado=e["unitario"], fuente_descartada=e["fuente"], marca_previa=e.get("marca"),
+             unitario=None, fuente="sospechoso", marca="costo_imposible")
+    return True
 
 
 # ── costo ────────────────────────────────────────────────────────────────────
@@ -466,10 +517,23 @@ def calcular(dia: dt.date | None = None, refrescar_validados: bool = False) -> d
                  marca="m3_del_packing_list", m3_kubera_descartado=e.get("m3_contenedor"))
         recuperados += 1
 
+    # 5c. costo físicamente IMPOSIBLE (auditoría de números, fase 2, #2): ML
+    # factura max(peso, L×A×H/5000), así que el paquete de una pieza no puede
+    # medir más de kg_facturable/200 m³. Un cbm_pieza 3× arriba de eso es un CBM
+    # de caja maestra o un contenedor mal reconstruido (ACC-0652-AZL: 0.0557 m³
+    # con 1.28 kg, 8.7×; su costo de $417 salía de TRHU6472913 reconstruido en
+    # 329 m³ y recomendaba +100%). El costo NO se usa: `unitario` = None con
+    # fuente `sospechoso` (el optimizador no recomienda sin costo) y el número
+    # queda en `unitario_descartado`. Antes de derivar padres: un padre no hereda
+    # el costo imposible de una variante.
+    par_opt = _parametros().get("optimizador") or {}
+    factor_vol = float(par_opt.get("volumen_max_sobre_peso_facturable") or 3.0)
+    imposibles = [s for s, e in costos.items() if _marcar_costo_imposible(e, factor_vol)]
+
     # 6. padres sin costo propio ← variantes
     derivados = 0
     for sku, e in costos.items():
-        if e["unitario"] is not None or sku not in hijos:
+        if e["unitario"] is not None or e["fuente"] == "sospechoso" or sku not in hijos:
             continue
         vs = [costos[h] for h in set(hijos[sku]) if h in costos and costos[h]["unitario"] is not None]
         if not vs:
@@ -480,24 +544,59 @@ def calcular(dia: dt.date | None = None, refrescar_validados: bool = False) -> d
                  marca="derivado_de_variantes",
                  variantes={"n": len(vs), "min": min(x["unitario"] for x in vs),
                             "max": peor["unitario"]})
+        if e.get("cbm_pieza") is None:
+            # El CBM detrás del costo heredado: sin él la prueba de volumen no ve al padre.
+            e["cbm_pieza"] = peor.get("cbm_pieza")
         if e["costo_panel"] is None:
             e["costo_panel_variantes_max"] = max((x["costo_panel"] or 0) for x in vs) or None
         derivados += 1
+        if _marcar_costo_imposible(e, factor_vol):
+            imposibles.append(sku)
+    n_imp_ml = sum(1 for s in imposibles if costos[s].get("pesos_listing"))
+    avisos.append(f"{len(imposibles)} SKUs con costo_imposible (cbm_pieza > {factor_vol:g}× kg_facturable/200; "
+                  f"{n_imp_ml} publicados en ML): costo descartado, fuente 'sospechoso'")
+
+    # 6b. ¿El costo de 525k es MENOR que la mercancía sola? (auditoría del modelo,
+    # fase 2: en packing100, 47 de 58 SKUs con precio USD; MUE-0163-TEL: 525k da
+    # $94.96 y el FOB es $93.7). Si el contenedor de 525k no incluye la mercancía,
+    # ese costo está incompleto y una bajada de precio puede perder dinero. La
+    # mercancía: USD del renglón del packing list × TC de referencia; si no, el
+    # `costo_producto` de costos_validados (la parte que el panel suma al flete).
+    # SOLO INFORMATIVO: Brandon (28-sep) dijo que el producto del packing list NO
+    # les aplica (`contenedor.incluye_mercancia` = true); la marca no bloquea nada.
+    tc = float((_parametros().get("contenedor") or {}).get("tipo_cambio_referencia") or 19.0)
+    bajo_fob = Counter()
+    for sku, e in costos.items():
+        usd = _f((packing.get(sku) or {}).get("precio_usd"))
+        if usd and usd > 0:
+            merc, mfuente = round(usd * tc, 4), "packing_usd"
+        elif e.get("costo_producto_excluido"):
+            merc, mfuente = e["costo_producto_excluido"], "costos_validados"
+        else:
+            merc, mfuente = None, None
+        e["mercancia_mxn"], e["mercancia_fuente"] = merc, mfuente
+        e["costo_bajo_fob"] = bool(e["unitario"] is not None and merc and e["unitario"] < merc)
+        if e["costo_bajo_fob"]:
+            bajo_fob[mfuente] += 1
+    avisos.append(f"{sum(bajo_fob.values())} SKUs con el costo de 525k menor que su mercancía (costo_bajo_fob, "
+                  f"informativo: {dict(bajo_fob)})")
 
     almacen.escribir_json(almacen.ultimo("costos.json"), costos)
 
     # 7. validación y resumen
     cat_item = {u["id"]: u.get("category_id") for u in universo if u.get("id")}
     par_ml = _parametros().get("mercado_libre") or {}
+    tramos_resp = [float(t) for t in par_ml.get("tramos_comision_precio") or economia.TRAMOS_COMISION]
     reales = economia.tasas_reales(_ultimos_dias(lineas, DIAS_VALIDACION), min_lineas=MIN_LINEAS_TASA_REAL,
-                                   categoria_de_item=cat_item)
+                                   categoria_de_item=cat_item, tramos=tramos_resp)
     almacen.escribir_json(almacen.ultimo("comisiones_reales.json"),
                           {"generado_at": almacen.ahora_iso(), "dias": DIAS_VALIDACION,
                            "min_lineas": MIN_LINEAS_TASA_REAL, "solo_full": True,
-                           "nota": "mediana de order_items.comision/(precio×cantidad) por categoría y tramo; "
-                                   "respaldo 'real_orders' de economia.pct_comision",
+                           "tramos": tramos_resp,
+                           "nota": "mediana de order_items.comision/(precio×cantidad) por categoría y tramo "
+                                   "(tramos = `tramos`); respaldo 'real_orders' de economia.pct_comision",
                            "categorias": reales})
-    respaldo = {"real_orders": reales, "por_tramo": par_ml.get("comision_respaldo_por_tramo")}
+    respaldo = economia.respaldo_de(par_ml, reales, tramos_resp)
 
     pct_panel = {_sku(f["sku"]): _f(f.get("ml_pct_comision")) for f in publicaciones
                  if f.get("canal") == "mercado_libre" and f.get("sku")}
@@ -510,6 +609,8 @@ def calcular(dia: dt.date | None = None, refrescar_validados: bool = False) -> d
         "skus": len(costos), "por_fuente": dict(fuentes),
         "derivados_de_variantes": derivados,
         "m3_del_packing_list": recuperados,
+        # Costos que NO se usan / avisos sobre el costo (fase 3).
+        "sospechosos": _resumen_sospechosos(costos, universo, imposibles),
         "marcas": dict(Counter(e["marca"] for e in costos.values() if e.get("marca"))),
         "por_fuente_peso": dict(Counter(e["peso_fuente"] for e in costos.values())),
         "contenedores": {"total": len(pr["contenedores"]),
@@ -529,6 +630,31 @@ def calcular(dia: dt.date | None = None, refrescar_validados: bool = False) -> d
     resumen["duracion_s"] = round(time.monotonic() - t0, 1)
     almacen.escribir_json(almacen.ultimo("costos_resumen.json"), resumen)
     return resumen
+
+
+def _resumen_sospechosos(costos: dict[str, dict], universo: list[dict], imposibles: list[str]) -> dict[str, Any]:
+    """Cuántos costos quedan sin usar por imposibles y cuántos llevan aviso, en
+    todo el catálogo y en las publicaciones ML activas FULL."""
+    act = {_sku(u.get("sku")) for u in _activas_full(universo) if u.get("sku")}
+    imp = [costos[s] for s in imposibles]
+    return {
+        "costo_imposible": len(imposibles),
+        "costo_imposible_activas_full_skus": sum(1 for s in imposibles if s in act),
+        "costo_imposible_por_fuente_descartada": dict(Counter(e.get("fuente_descartada") for e in imp)),
+        "costo_imposible_por_fuente_peso": dict(Counter((e.get("costo_imposible") or {}).get("fuente_peso")
+                                                        for e in imp)),
+        "costo_imposible_ejemplos": [
+            {"sku": s, **{k: costos[s]["costo_imposible"][k] for k in ("cbm_pieza", "kg_facturable", "veces")},
+             "unitario_descartado": costos[s].get("unitario_descartado"),
+             "fuente_descartada": costos[s].get("fuente_descartada")}
+            for s in sorted(imposibles, key=lambda s: -costos[s]["costo_imposible"]["veces"])[:10]],
+        "costo_bajo_fob": sum(1 for e in costos.values() if e.get("costo_bajo_fob")),
+        "costo_bajo_fob_activas_full_skus": sum(1 for s in act if (costos.get(s) or {}).get("costo_bajo_fob")),
+        "costo_menor_a_1_peso": sum(1 for e in costos.values()
+                                    if e.get("unitario") is not None and e["unitario"] < 1.0),
+        "nota": "costo_imposible: el costo NO se usa (fuente 'sospechoso'); costo_bajo_fob: solo aviso "
+                "(el producto del packing list no aplica, contenedor.incluye_mercancia=true)",
+    }
 
 
 def _ultimos_dias(lineas: list[dict], dias: int) -> list[dict]:
@@ -572,7 +698,7 @@ def validar_comision(lineas: list[dict], cat_item: dict[str, str], comisiones: d
     eso se reporta por quincena: la última es la que valida el presente.
     """
     ls = _ultimos_dias(lineas, dias)
-    sin_real = {"por_tramo": respaldo.get("por_tramo")}
+    sin_real = {"por_tramo": respaldo.get("por_tramo"), "tramos": respaldo.get("tramos")}
     res: dict[str, list] = defaultdict(list)
     por_tramo: dict[str, list] = defaultdict(list)
     por_fuente: Counter = Counter()
@@ -594,7 +720,8 @@ def validar_comision(lineas: list[dict], cat_item: dict[str, str], comisiones: d
         res[clave].append(err)
         res[f"{clave}_rel"].append(err / c)
         if clave == "full":
-            por_tramo[economia.tramo(pu)].append(err / c)
+            # Desglose con los 4 tramos de muestreo (diagnóstico: más fino que el respaldo).
+            por_tramo[economia.tramo(pu, (0, 299, 500, 1000))].append(err / c)
             por_fuente[fuente] += 1
             n += 1
             exactas += abs(err) <= 0.011 * q
