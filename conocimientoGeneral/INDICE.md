@@ -23,6 +23,7 @@ chat va a volver a hacer desde cero.
 | Armar el payload completo de una publicación | SE SABE CÓMO | [ML_PUBLICACIONES_IA/04_PIPELINE_PUBLICAR.md](ML_PUBLICACIONES_IA/04_PIPELINE_PUBLICAR.md) |
 | Calcular el precio de venta desde el costo | SE SABE CÓMO | [ML_PUBLICACIONES_IA/05_PRECIO_Y_COSTO.md](ML_PUBLICACIONES_IA/05_PRECIO_Y_COSTO.md) |
 | **Generar contenido + atributos de una lista de SKUs** | **PUEDE** | [ML_PUBLICACIONES_IA/scripts/](ML_PUBLICACIONES_IA/scripts/) |
+| **Precio óptimo ML FULL (elasticidad precio → visitas → conversión) y costo por prorrateo de 525k por contenedor, con 100 SKUs ubicados en su packing list** | **PUEDE** (solo lectura: propone, no aplica) | Rama `sandbox/precios-optimos`: `backend/sandbox_precios/DISENO.md` y `laboratorio/README.md`. En vivo desde el 28-sep-2026: servicio Railway `laboratorio-precios` |
 
 ## Imágenes
 
