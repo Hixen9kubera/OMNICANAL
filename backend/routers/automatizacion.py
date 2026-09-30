@@ -88,8 +88,26 @@ async def estado(canal: str | None = Query(None, description="acota los contador
             "resumen": odoo_ventas_log.resumen(canal),
             "publicaciones": _publicaciones(),
             "tiktok_respaldos": _tiktok_respaldos(),
+            "temu_cancelaciones": _temu_cancelaciones(),
         }
     return await asyncio.to_thread(_leer)
+
+
+def _temu_cancelaciones() -> dict:
+    """
+    El vigilante de cancelaciones de Temu (30-sep-2026): sus banderas y lo que
+    dijo su última vuelta EN ESTE PROCESO. Sólo lectura de `settings` y de
+    memoria; sin datos del comprador (ids de venta, estados y conteos). La
+    lista `detalle` NO sale aquí —es de diagnóstico, va en
+    `GET /temu/cancelaciones`—. Nunca rompe la pantalla.
+    """
+    try:
+        from services import temu_cancelaciones as tc
+        ultima = {k: v for k, v in tc.estado().items() if k != "detalle"}
+        return {"banderas": tc.banderas(), "ultima_vuelta": ultima}
+    except Exception as exc:  # noqa: BLE001
+        log.debug("automatizacion: vigilante de Temu ilegible (%s)", exc)
+        return {}
 
 
 def _tiktok_respaldos() -> dict:
@@ -486,6 +504,52 @@ async def canceladas_confirmadas(
     from services import odoo_ventas_conciliacion as oc
 
     return await oc.canceladas_confirmadas(canal, dias)
+
+
+@router.get("/temu/cancelaciones", dependencies=[Depends(requiere_api_key)])
+async def temu_cancelaciones_estado():
+    """
+    El vigilante de cancelaciones de Temu: banderas, la última vuelta del
+    trabajo y la última simulación, con su `detalle` (venta → decisión). Sólo
+    lectura; sin datos del comprador. Ver services/temu_cancelaciones.py.
+    """
+    from services import temu_cancelaciones as tc
+
+    return {"banderas": tc.banderas(), "ultima_vuelta": tc.estado(),
+            "ultima_simulacion": tc.estado_simulacion()}
+
+
+@router.post("/temu/cancelaciones/vigilar", dependencies=[Depends(requiere_api_key)])
+async def temu_cancelaciones_vigilar(
+    simular: bool = Query(True, description="true (por omisión): LEE Temu y Odoo y "
+                                            "dice qué haría, sin escribir nada"),
+    venta: str | None = Query(None, description="acota a esta(s) venta(s), separadas "
+                                                "por coma; las mira aunque estén en reposo"),
+    tope: int | None = Query(None, ge=0, le=100,
+                             description="llamadas a Temu en esta vuelta (por omisión, "
+                                         "TEMU_CANCELACIONES_MAX_LLAMADAS)"),
+    como_si_cancelar_odoo: bool = Query(
+        False, description="SÓLO con simular=true: decide como si "
+                           "TEMU_CANCELACIONES_CANCELAR_ODOO estuviera encendida y dice "
+                           "qué órdenes S… cancelaría, rezago incluido. Con "
+                           "simular=false se ignora."),
+):
+    """
+    Una vuelta del vigilante A MANO — la prueba en vivo.
+
+    Por omisión SIMULA: le pregunta a Temu y a Odoo y contesta, venta por venta,
+    qué haría (`detalle`), sin tocar la bitácora ni Odoo. Con `simular=false`
+    hace lo mismo que el trabajo programado, con SUS banderas: marca la
+    bitácora sólo si `TEMU_CANCELACIONES_ENABLED`, y cancela en Odoo sólo si
+    `TEMU_CANCELACIONES_CANCELAR_ODOO` (nace apagada). No hay forma de saltarse
+    una bandera desde aquí: `como_si_cancelar_odoo` sólo cambia lo que la
+    SIMULACIÓN dice, para ver antes del dale qué haría la bandera.
+    """
+    from services import temu_cancelaciones as tc
+
+    ventas = [v.strip() for v in (venta or "").split(",") if v.strip()][:50] or None
+    return await tc.vigilar(tope=tope, solo=ventas, simular=simular,
+                            como_si_cancelar_odoo=bool(simular and como_si_cancelar_odoo))
 
 
 @router.post("/backfill")

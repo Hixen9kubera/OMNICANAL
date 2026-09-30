@@ -57,7 +57,7 @@ import {
   Link2, Package, PackageX, Power, Printer, Radio, RotateCw, Truck, Undo2, X,
 } from "lucide-react";
 import { API_BASE, descargar, fetchSesion, mensajeDeError } from "@/lib/api";
-import { claveOrden, combinadosDe, type Combinado } from "@/lib/combinados";
+import { ACCIONES_CANCELADA, claveOrden, combinadosDe, type Combinado } from "@/lib/combinados";
 import { ddmm, revisarPdf, type AvisoPdf, type GuiaGrupo, type GuiasDia } from "@/lib/guiasDelDia";
 import AppNavbar from "@/components/AppNavbar";
 import { quienSoy } from "@/lib/sesion";
@@ -130,6 +130,17 @@ const ESTADOS: Record<string, { txt: string; v: Variante; urgente?: string }> = 
   // nace sola. En ROJO y no en cian: la espera dejó de ser "esperar es lo
   // normal" y pasó a ser una venta que nadie va a surtir si no la capturan.
   espera_caducada:        { txt: "Esperó su guía y caducó", v: "rojo", urgente: "Nadie va a crear esta orden" },
+  // El canal CANCELÓ una venta que ya tenía orden en Odoo (vigilante de Temu,
+  // 30-sep). Sin surtir: la orden reserva stock para nadie y hay que
+  // cancelarla. Ya surtida (PICK/PACK hecho) o enviada: la mercancía salió del
+  // anaquel con una venta muerta y hay que regresarla o esperar la devolución.
+  // Odoo no la encuentra: no se sabe dónde está — no se afirma que salió.
+  cancelada_por_cancelar: { txt: "Cancelada en el canal · falta cancelar en Odoo", v: "rojo",
+                            urgente: "Orden viva, venta muerta" },
+  cancelada_revisar:      { txt: "Cancelada con la mercancía ya surtida o enviada", v: "rojo",
+                            urgente: "Revisar regreso" },
+  cancelada_sin_rastro:   { txt: "Cancelada en el canal · la orden no aparece en Odoo", v: "rojo",
+                            urgente: "Revisar a mano" },
   // ── En curso: no salió nada mal, todavía no termina ──────────────────
   // La venta apartó su lugar y su orden nace cuando el canal dé la guía
   // (creación diferida, 23-sep). El almacén no tiene nada que surtir de ésta.
@@ -145,6 +156,8 @@ const ESTADOS: Record<string, { txt: string; v: Variante; urgente?: string }> = 
   // Es la mitad buena de la creación diferida —TikTok cancela el 58% de sus
   // ventas—: esa orden fantasma ya no llega al tablero del almacén.
   cancelada_sin_orden:    { txt: "Cancelada esperando guía", v: "inerte" },
+  // Salió, el canal la canceló y la devolución ya está validada en Odoo.
+  cancelada_devuelta:     { txt: "Cancelada · la mercancía regresó", v: "inerte" },
   ya_cancelada:           { txt: "Ya estaba cancelada", v: "inerte" },
   cancelada:              { txt: "Cancelada", v: "inerte" },
   apagado:                { txt: "Apagado", v: "inerte" },
@@ -214,6 +227,9 @@ interface OrdenOdoo {
   total: number | null;
   motivo: string | null;
   creado_at: string;
+  /** La última vez que cambió la fila. En una cancelación es CUÁNDO SE
+   *  DETECTÓ (la fila es vieja: la marca el vigilante, no la crea). */
+  actualizado_at?: string | null;
   /** Cuándo COMPRÓ el cliente. Null si la venta no está en channel.orders. */
   venta_at: string | null;
   lineas: Linea[];
@@ -279,8 +295,22 @@ interface Estado {
   };
   resumen: { total_30d: number; parciales: number; errores: number; nota?: string;
              espacios_30d?: number; caducadas_30d?: number;
-             por_accion?: Record<string, number> };
+             por_accion?: Record<string, number>;
+             /** Las canceladas en el canal de los últimos 30 días, contadas en
+              *  el backend sobre TODA la bitácora (la lista está recortada a
+              *  `limite` filas y no sirve para contar). */
+             canceladas_30d?: { total: number; sin_orden: number; orden_cancelada: number;
+                                devueltas?: number; por_revisar: number; observando: number } };
   publicaciones?: Record<string, { total: number; activas: number | null }>;
+  /** El vigilante de cancelaciones de Temu (30-sep): banderas y última vuelta. */
+  temu_cancelaciones?: {
+    banderas?: { enabled: boolean; cancelar_odoo: boolean; minutos: number;
+                 max_llamadas: number; lote: boolean };
+    ultima_vuelta?: { estado?: string; ts?: string | null; error?: string | null;
+                      vigilables?: number; consultadas?: number; llamadas?: number;
+                      canceladas_detectadas?: number; sin_consultar?: number;
+                      temu_caido?: boolean };
+  };
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -338,10 +368,54 @@ function pideAccion(o: OrdenOdoo): boolean {
      vuelve a calcular con el stock del día en que nazca la orden: alarmar por él
      es alarmar por una reserva que ni se ha intentado. Y `espera_caducada` SÍ
      pide: pasaron los 14 días, nadie va a crear esa orden sola. */
-  return (!esperandoGuia(o) && o.cobertura === "parcial")
-    || ["error", "sku_sin_producto", "no_se_pudo_cancelar", "no_se_pudo_confirmar",
-        "espera_caducada"]
-        .includes(o.accion);
+  return (!esperandoGuia(o) && !esCancelada(o) && o.cobertura === "parcial")
+    || ["error", "sku_sin_producto", "no_se_pudo_confirmar", "espera_caducada"]
+        .includes(o.accion)
+    || ACCIONES_CANCELADA_PIDE.has(o.accion)
+    || parcialPorRevisar(o);
+}
+
+/** Las canceladas que piden a una PERSONA. La MISMA lista que
+ *  `ACCIONES_CANCELADA_PIDE` del backend (services/odoo_ventas_log.py), que
+ *  es la que usa `solo_problemas`. */
+const ACCIONES_CANCELADA_PIDE: ReadonlySet<string> = new Set([
+  "no_se_pudo_cancelar", "cancelada_por_cancelar", "cancelada_revisar", "cancelada_sin_rastro",
+]);
+
+/** ¿El canal canceló esta venta? La lista vive en lib/combinados.ts
+ *  (`ACCIONES_CANCELADA`, gemela de `ACCIONES_CANCELADA_CANAL` del backend):
+ *  el contador, el filtro y los envíos combinados cuentan lo mismo. */
+const esCancelada = (o: OrdenOdoo) => ACCIONES_CANCELADA.has(o.accion);
+
+/** El momento de la detección que el backend escribe en el motivo
+ *  ("… detectada 2026-09-30 14:05 CDMX …"). CDMX es UTC-6 fijo. Se prefiere a
+ *  `actualizado_at`, que también se mueve cuando la fila cambia DESPUÉS (p. ej.
+ *  de «por cancelar» a «ya cancelada»). */
+function detectadaEn(o: OrdenOdoo): string | null {
+  const m = /detectada (\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) CDMX/.exec(o.motivo ?? "");
+  return m ? `${m[1]}T${m[2]}:00-06:00` : (o.actualizado_at ?? null);
+}
+
+/** Temu canceló PIEZAS y la orden de Odoo ya existía con las originales: el
+ *  backend lo deja al principio del motivo con este prefijo exacto
+ *  (`PREFIJO_PARCIAL_REVISAR`). */
+const parcialPorRevisar = (o: OrdenOdoo) =>
+  Boolean(o.odoo_order_id) && (o.motivo ?? "").startsWith("REVISAR · Temu canceló parte");
+
+/** "Cancelada en Temu · detectada hace 3 min": el MOMENTO de la cancelación.
+ *  La fila es vieja —el vigilante la marca, no la crea—, así que su fecha de
+ *  proceso no dice cuándo se canceló; el motivo (o `actualizado_at`) sí. */
+function ChipCancelada({ o }: { o: OrdenOdoo }) {
+  const quien = o.canal === "temu" ? "Temu" : o.canal === "tiktok" ? "TikTok" : "el canal";
+  const cuando = detectadaEn(o);
+  return (
+    <span className="inline-flex shrink-0 items-center gap-[5px] rounded-full px-[8px] py-[2px] text-[10.5px] font-extrabold"
+          title={cuando ? `Detectada el ${fecha(cuando)}` : undefined}
+          style={{ background: "#F1F5F9", color: "#475569", boxShadow: "inset 0 0 0 1px #CBD5E1" }}>
+      <X className="h-3 w-3 shrink-0" />
+      Cancelada en {quien}{cuando ? ` · detectada ${haceCuanto(cuando)}` : ""}
+    </span>
+  );
 }
 
 /** ¿Esta venta sólo tiene su ESPACIO? Es decir: quedó registrada, se le calculó
@@ -367,6 +441,13 @@ const esperandoGuia = (o: OrdenOdoo) => o.accion === "espera_guia" && !o.odoo_or
  *    3. la acción, para todo lo demás. */
 function desenlace(o: OrdenOdoo): { txt: string; v: Variante; urgente?: string } {
   if (esperandoGuia(o)) return ESTADOS.espera_guia;
+  /* 0b. La CANCELACIÓN gana sobre la cobertura y el surtido: una venta muerta
+         "sin respaldo de inventario" o "dividida" ya no es lo que hay que
+         saber de ella. */
+  if (esCancelada(o)) return ESTADOS[o.accion] ?? { txt: o.accion, v: "inerte" };
+  if (parcialPorRevisar(o)) {
+    return { txt: "Temu canceló parte · revisar la orden", v: "rojo", urgente: "Lleva piezas de más" };
+  }
   if (o.cobertura === "parcial") {
     return { txt: "Sin respaldo de inventario", v: "ambar" };
   }
@@ -986,8 +1067,12 @@ function FilaOrden({
               </span>
             )}
           </div>
+          {esCancelada(o) && (
+            <div className="mt-[3px] pl-[14px]"><ChipCancelada o={o} /></div>
+          )}
           {o.motivo && (
-            <div className="mt-[3px] truncate pl-[14px] text-[11.5px]" style={{ color: s.motivoColor }}>
+            <div className="mt-[3px] truncate pl-[14px] text-[11.5px]" style={{ color: s.motivoColor }}
+                 title={o.motivo}>
               {o.motivo}
             </div>
           )}
@@ -1080,6 +1165,9 @@ function FilaOrden({
             <Chevron className="h-[15px] w-[15px] shrink-0 text-slate-300" />
           </div>
           <div className="pl-[15px]"><IdVenta id={o.external_order_id} url={ventaUrl} /></div>
+          {esCancelada(o) && (
+            <div className="mt-1 pl-[15px]"><ChipCancelada o={o} /></div>
+          )}
           {o.motivo && (
             <div className="mt-1 pl-[15px] text-[11.5px]" style={{ color: s.motivoColor }}>{o.motivo}</div>
           )}
@@ -1466,11 +1554,46 @@ function Detalle({ o, odooUrl, ventaUrl = "", combinado, onVerJuntas }: {
 
 /* ── La tarjeta de un canal ─────────────────────────────────────────────── */
 
+/** Una línea bajo el nombre del canal: el vigilante de cancelaciones está
+ *  mirando, cada cuánto, y qué vio en su última vuelta. Sin esto, "0
+ *  canceladas" no distingue "no hay" de "nadie está preguntando". */
+function LineaVigilante({ v }: { v: NonNullable<Estado["temu_cancelaciones"]> }) {
+  const b = v.banderas!;
+  const u = v.ultima_vuelta ?? {};
+  if (!b.enabled) {
+    return (
+      <div className="mt-[2px] text-[11px] font-semibold" style={{ color: "#B45309" }}>
+        Vigilante de cancelaciones apagado (TEMU_CANCELACIONES_ENABLED): una venta
+        cancelada sigue esperando su guía.
+      </div>
+    );
+  }
+  const partes = [`Vigilante de cancelaciones cada ${b.minutos} min`];
+  if (u.ts) {
+    partes.push(`última vuelta ${haceCuanto(u.ts)}`);
+    if (typeof u.consultadas === "number") partes.push(`${u.consultadas} consultadas`);
+    if (u.canceladas_detectadas) partes.push(`${u.canceladas_detectadas} canceladas`);
+  } else {
+    partes.push("todavía sin vuelta en este arranque");
+  }
+  partes.push(b.cancelar_odoo ? "cancela en Odoo" : "no cancela en Odoo (sólo marca)");
+  const problema = u.estado === "error" || u.temu_caido;
+  return (
+    <div className="mt-[2px] text-[11px]" style={{ color: problema ? "#9F1239" : "#64748B" }}
+         title={u.error ?? undefined}>
+      {partes.join(" · ")}
+      {u.temu_caido ? " · Temu no contestó" : u.estado === "error" ? ` · error: ${u.error ?? "?"}` : ""}
+    </div>
+  );
+}
+
 function TarjetaCanal({
   canal, ordenes, encendido, escalonId, moviendo, abierta, onAbrir, onSwitch, odooUrl, filtrando,
   buscando = "", enOtroCanal = 0, otroCanal = "", ventaUrl = "", arriba = 0,
-  combinados = {}, onVerJuntas, esperaGuia,
+  combinados = {}, onVerJuntas, esperaGuia, vigilante,
 }: {
+  /** El vigilante de cancelaciones del canal (hoy sólo Temu). */
+  vigilante?: Estado["temu_cancelaciones"];
   canal: (typeof CANALES)[number];
   ordenes: OrdenOdoo[];
   encendido: boolean;
@@ -1540,7 +1663,21 @@ function TarjetaCanal({
                   </span>
                 : null;
             })()}
+            {/* LAS CANCELADAS, por canal (30-sep): cuántas, y cuántas piden
+                que alguien haga algo en Odoo. */}
+            {(() => {
+              const cs = ordenes.filter(esCancelada);
+              if (!cs.length) return null;
+              const piden = cs.filter(pideAccion).length;
+              return (
+                <span className="font-bold" style={{ color: piden ? "#9F1239" : "#475569" }}>
+                  {` · ${cs.length} cancelada${cs.length === 1 ? "" : "s"}`}
+                  {piden ? ` (${piden} ${piden === 1 ? "pide" : "piden"} acción)` : ""}
+                </span>
+              );
+            })()}
           </div>
+          {vigilante?.banderas && <LineaVigilante v={vigilante} />}
         </div>
         <div className="ml-auto flex items-center gap-3">
           {/* EL MODO DEL CANAL, no un botón: se enciende desde el backend
@@ -1731,7 +1868,8 @@ const pideAccionCancelada = (o: CanceladaConfirmada) => o.que_hacer !== "devuelt
 /** Los estados que guarda channel.orders, dichos para quien no leyó el código.
  *  Temu no publica su enum: 2/4/5 están medidos (pedidos_temu.py). */
 const ESTADO_CANAL_TXT: Record<string, Record<string, string>> = {
-  temu: { "2": "pagada, por enviar", "4": "enviada", "5": "entregada", pending: "pendiente (M2E)" },
+  temu: { "2": "pagada, por enviar", "3": "cancelada", "4": "enviada", "5": "entregada",
+          pending: "pendiente (M2E)" },
   tiktok: {
     UNPAID: "sin pagar", ON_HOLD: "en espera", AWAITING_SHIPMENT: "por enviar",
     PARTIALLY_SHIPPING: "envío parcial", AWAITING_COLLECTION: "por recolectar",
@@ -2742,6 +2880,7 @@ export default function AutomatizacionPage() {
   const [soloAccion, setSoloAccion] = useState(false);
   const [soloSinGuia, setSoloSinGuia] = useState(false);
   const [soloEsperando, setSoloEsperando] = useState(false);
+  const [soloCanceladas, setSoloCanceladas] = useState(false);
   const [busqueda, setBusqueda] = useState("");
   const [dias, setDias] = useState(30);
   const [abierta, setAbierta] = useState<string | null>(null);
@@ -2803,6 +2942,18 @@ export default function AutomatizacionPage() {
   }, [dias]);
 
   useEffect(() => { void cargar(); }, [cargar]);
+
+  /* LA BITÁCORA SE REFRESCA SOLA cada 5 min mientras la pestaña está a la
+     vista (30-sep). El vigilante de cancelaciones marca cada 10 min: sin esto,
+     una venta cancelada seguía diciendo «Esperando guía» en una pantalla
+     abierta hasta que alguien picara Actualizar. Sólo la bitácora (rápida);
+     la sección de canceladas-confirmadas lee Odoo en vivo y sigue a mano. */
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      if (document.visibilityState === "visible") void cargar();
+    }, 5 * 60_000);
+    return () => window.clearInterval(id);
+  }, [cargar]);
 
   /* LAS PARTES DE CADA SURTIDO DIVIDIDO van en su propia carga, DESPUÉS de
      pintar la lista y fuera del `Promise.all` de arriba: leen Odoo en vivo, y
@@ -2943,12 +3094,24 @@ export default function AutomatizacionPage() {
      órdenes también piden acción y también se buscan: si el contador de "Sólo
      lo que requiere acción" o la píldora del canal dijeran 0 con órdenes rojas
      a la vista, la pantalla se contradiría. `pideAccion` NO cambia (sigue
-     siendo el `solo_problemas` del backend): aquí se SUMA la otra sección. */
+     siendo el `solo_problemas` del backend): aquí se SUMA la otra sección.
+
+     …PERO UNA VENTA CUENTA UNA VEZ (30-sep). Desde el vigilante de Temu, una
+     cancelada con orden viva está en las DOS: en la lista (roja, «falta
+     cancelar en Odoo») y en esta sección (que la lee de la misma bitácora).
+     Se suman sólo las de la sección que la lista no pide ya. La sección se
+     refresca aparte (lee Odoo en vivo; su «leído hace» lo dice), así que la
+     parte que aporta puede ir unos minutos atrás de la lista. */
   const canc = useMemo(() => {
     const de = (id: CanalId) => canceladas?.canales?.[id]?.ordenes ?? [];
+    const yaPide = (id: CanalId) =>
+      new Set(porCanal[id].filter(pideAccion).map((o) => o.external_order_id));
+    const aparte = (id: CanalId) => {
+      const ya = yaPide(id);
+      return de(id).filter((o) => pideAccionCancelada(o) && !ya.has(o.venta)).length;
+    };
     return {
-      accion: { tiktok: de("tiktok").filter(pideAccionCancelada).length,
-                temu: de("temu").filter(pideAccionCancelada).length },
+      accion: { tiktok: aparte("tiktok"), temu: aparte("temu") },
       buscadas: { tiktok: de("tiktok").filter((o) => coincideCancelada(o, busqueda)).length,
                   temu: de("temu").filter((o) => coincideCancelada(o, busqueda)).length },
       // Lo que la tarjeta deja a la vista con el buscador Y la casilla a la vez.
@@ -2957,15 +3120,16 @@ export default function AutomatizacionPage() {
                   temu: de("temu").filter((o) => coincideCancelada(o, busqueda)
                                                && (!soloAccion || pideAccionCancelada(o))).length },
     };
-  }, [canceladas, busqueda, soloAccion]);
+  }, [canceladas, busqueda, soloAccion, porCanal]);
   const pendientesTotal = pendientes.tiktok + pendientes.temu + canc.accion.tiktok + canc.accion.temu;
 
   const visibles = useMemo(() => {
     const l = porCanal[canal].filter((o) => coincide(o, busqueda));
     const a = soloAccion ? l.filter(pideAccion) : l;
     const b = soloSinGuia ? a.filter(faltaGuia) : a;
-    return soloEsperando ? b.filter(esperandoGuia) : b;
-  }, [porCanal, canal, soloAccion, busqueda, soloSinGuia, soloEsperando]);
+    const c = soloEsperando ? b.filter(esperandoGuia) : b;
+    return soloCanceladas ? c.filter(esCancelada) : c;
+  }, [porCanal, canal, soloAccion, busqueda, soloSinGuia, soloEsperando, soloCanceladas]);
 
   // Órdenes vivas que esperan que alguien genere el envío en el canal.
   const sinGuia = useMemo(() => ({
@@ -2981,6 +3145,24 @@ export default function AutomatizacionPage() {
     tiktok: porCanal.tiktok.filter(esperandoGuia).length,
     temu: porCanal.temu.filter(esperandoGuia).length,
   }), [porCanal]);
+
+  /* Las CANCELADAS EN EL CANAL, por canal (30-sep). Salen de la MISMA lista que
+     pinta la pantalla, como `esperando`: el filtro y la línea de cada canal
+     nunca contradicen a las filas. `piden` son las que esperan a una persona
+     (cancelar en Odoo o revisar el regreso de la mercancía). */
+  const canceladasCanal = useMemo(() => {
+    const de = (l: OrdenOdoo[]) => {
+      const cs = l.filter(esCancelada);
+      return { n: cs.length, piden: cs.filter(pideAccion).length };
+    };
+    return { tiktok: de(porCanal.tiktok), temu: de(porCanal.temu) };
+  }, [porCanal]);
+  /* EL KPI «· 30 d» SALE DEL BACKEND (`resumen.canceladas_30d`), NO de la
+     lista: la lista trae a lo más `limite` filas (400) y en 30 días hay más,
+     así que contar sobre ella decía "30 d" sumando unos nueve. El propio
+     `resumen` existe para no deducir contadores de la lista paginada. */
+  const canc30 = estado?.resumen.canceladas_30d;
+  const canceladasTotal = canc30?.total ?? 0;
 
   // Si lo buscado vive en el OTRO canal, se avisa en vez de mostrar "nada".
   const enOtroCanal = useMemo(() => {
@@ -3070,8 +3252,9 @@ export default function AutomatizacionPage() {
                 creación diferida apagada sería un 0 permanente ocupando un
                 cuarto de la fila. Sale de la misma lista que pinta la pantalla
                 —los dos canales—, así que nunca se contradice con las tarjetas. */}
-            <div className={`grid grid-cols-1 border-t ${esperando.tiktok + esperando.temu > 0
-                             ? "sm:grid-cols-4" : "sm:grid-cols-3"}`}
+            <div className={`grid grid-cols-1 border-t ${
+                   ["sm:grid-cols-3", "sm:grid-cols-4", "sm:grid-cols-5"][
+                     (esperando.tiktok + esperando.temu > 0 ? 1 : 0) + (canceladasTotal > 0 ? 1 : 0)]}`}
                  style={{ borderColor: "#eef1f6" }}>
               {/* ⚠️ "Órdenes creadas" cuenta SÓLO las que tienen orden en Odoo
                   (`resumen.total_30d` ya viene filtrado por `odoo_order_id is
@@ -3087,6 +3270,18 @@ export default function AutomatizacionPage() {
               {esperando.tiktok + esperando.temu > 0 && (
                 <Kpi rotulo="Esperando guía" valor={esperando.tiktok + esperando.temu}
                      pie="sin orden en Odoo todavía" tono="espera" />
+              )}
+              {/* Sólo cuando hay: como "Esperando guía", un 0 permanente sería
+                  un cuarto de fila muerto. Los números son del BACKEND (toda la
+                  bitácora de 30 días, los dos canales): el pie dice cuántas
+                  fueron antes de tener orden y cuántas esperan a una persona.
+                  El desglose por canal está en la línea de cada tarjeta. */}
+              {canceladasTotal > 0 && canc30 && (
+                <Kpi rotulo="Canceladas en el canal · 30 d" valor={canceladasTotal}
+                     pie={[`${canc30.sin_orden} antes de tener orden`,
+                            canc30.por_revisar > 0 ? `${canc30.por_revisar} piden acción` : "",
+                          ].filter(Boolean).join(" · ")}
+                     tono={canc30.por_revisar > 0 ? "rojo" : undefined} />
               )}
               {/* "Creadas sin respaldo": la cobertura de una venta que espera es
                   el plan del dry-run y se recalcula al nacer la orden. Sólo se
@@ -3181,6 +3376,19 @@ export default function AutomatizacionPage() {
             {/* Sólo aparece cuando hay alguna: mientras la creación diferida esté
                 apagada, este filtro contaría siempre 0 y sería un control muerto
                 en una barra que ya está llena. */}
+            {/* Igual que "Sólo esperando guía": sólo aparece cuando hay alguna. */}
+            {canceladasCanal[canal].n > 0 && (
+              <label className="inline-flex cursor-pointer items-center gap-2 rounded-[10px] border px-[13px] py-2 text-[13px] font-bold"
+                     title="Ventas que el canal CANCELÓ: antes de tener orden (nada que hacer) o con orden en Odoo (cancelada, o por cancelar / revisar)."
+                     style={{ borderColor: "#CBD5E1", background: "#F8FAFC", color: "#334155" }}>
+                <input type="checkbox" checked={soloCanceladas} style={{ accentColor: "#475569" }}
+                       onChange={(e) => { setSoloCanceladas(e.target.checked); setAbierta(null); }} />
+                Sólo canceladas
+                <span className="rounded-full px-[7px] font-mono text-[11px]" style={{ background: "#E2E8F0" }}>
+                  {canceladasCanal[canal].n}
+                </span>
+              </label>
+            )}
             {esperando[canal] > 0 && (
               <label className="inline-flex cursor-pointer items-center gap-2 rounded-[10px] border px-[13px] py-2 text-[13px] font-bold"
                      title="Ventas apartadas SIN orden en Odoo: su orden nace cuando el canal dé la guía. No hay nada que surtir todavía."
@@ -3282,7 +3490,7 @@ export default function AutomatizacionPage() {
               onAbrir={setAbierta}
               odooUrl={ov?.odoo_url_orden ?? ""}
               ventaUrl={ov?.url_venta?.[canal] ?? ""}
-              filtrando={soloAccion || soloSinGuia || soloEsperando}
+              filtrando={soloAccion || soloSinGuia || soloEsperando || soloCanceladas}
               buscando={busqueda}
               enOtroCanal={enOtroCanal}
               otroCanal={otro.nombre}
@@ -3298,6 +3506,7 @@ export default function AutomatizacionPage() {
                 huerfanas: Number(ov?.canales_estado?.[canal]?.espera_huerfanas ?? 0),
               }}
               onSwitch={() => setConfirmar({ que: canal, encender: !canalEncendido(canal) })}
+              vigilante={canal === "temu" ? estado?.temu_cancelaciones : undefined}
             />
           )}
         </div>

@@ -1001,6 +1001,55 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.602.0 — Temu: las cancelaciones se capturan en minutos (estado 3) y dejan de esconder stock
+
+Brandon, 30-sep: *"veo que algunas tienen cancelaciones, tenemos que capturarlas
+inmediatamente y mostrarlas en el panel"*. Su ejemplo, PO-128-09246640169592260,
+decía "Pedido cancelado" en Temu y "Esperando guía · hace 4 d" en el panel.
+
+**Medido en vivo** (desde producción, /investigacion): Temu marca la cancelada
+con `parentOrderStatus`/`orderStatus` **3**, y por renglón
+`canceledQuantityBeforeShipment` y `quantity` (lo que queda vivo). El código sólo
+conocía 2/4/5: un 3 se quedaba "esperando" hasta caducar a los 14 días — y
+mientras tanto `stock_watch` seguía RESTANDO su pieza de Woo y de los canales.
+De 48 canceladas en 10 días: 4 seguían esperando y escondiendo stock; 2 (S39472,
+S39475) ya estaban surtidas en Odoo cuando Temu aprobó la cancelación sola
+("según tus registros no se ha enviado"); 3 más antiguas, igual pero después de
+enviadas.
+
+- **Vigilante cada 10 min** (`services/temu_cancelaciones.py`): lote por
+  `bg.order.list.v2.get` con `parentOrderStatus: 3` + detalle por venta con tope
+  de llamadas y reparto justo. Una cancelada es un 3 VERIFICADO (padre 3 y ningún
+  renglón vivo); lo desconocido, un error o cantidades que no cuadran no deciden
+  nada. Por cada una:
+  · esperaba guía → `cancelada_sin_orden`: sale de la cola de guías y de la resta
+    de stock en la misma escritura (antes pregunta a Odoo si alguien la capturó a
+    mano; si sí, la vincula);
+  · con orden en Odoo sin surtir → la cancela en Odoo **sólo con
+    `TEMU_CANCELACIONES_CANCELAR_ODOO`** (nace APAGADA, regla 3); apagada, queda
+    roja "falta cancelar en Odoo". Al encenderla, cancela por id, releyendo antes
+    y después, y nunca lo que ya tiene PICK/PACK/salida validados;
+  · ya surtida o enviada → `cancelada_revisar` (posible reclamo/devolución), Odoo
+    intacto; si la devolución se valida pasa a `cancelada_devuelta`.
+  · cancelación parcial de una venta que espera → sus renglones bajan a las piezas
+    vivas y se renumeran con su foto de stock.
+- El sondeo de 15 min reconoce el 3 cuando ve la venta por primera vez (no crea
+  nada), y `crear_con_guia` ya no crea la orden de una fila marcada cancelada
+  (carrera con el vigilante).
+- **Panel**: estados rojos "Cancelada en el canal · falta cancelar en Odoo" y
+  "Cancelada después de salir del almacén", chip con el momento de la detección,
+  KPI y contador por canal, filtro "Sólo canceladas", línea de estado del vigilante
+  en la tarjeta de Temu; la sección "Confirmadas en Odoo · canceladas en el canal"
+  ya cubre Temu; la lista se refresca sola cada 5 min con la pestaña visible. El
+  Excel de Guías del día y los envíos combinados ya no cuentan canceladas como
+  caja viva.
+
+Probado sin red: **274 comprobaciones** + 14 mutaciones detectadas; suites previas
+en verde (espera de guía 190, resta de stock 70, notas combinadas, guías del día,
+vincular, confirmadas). Simulacro de sólo lectura contra la bitácora real: 297
+ventas vigiladas (93 esperan guía), 30 llamadas en la primera vuelta,
+PO-128-09246640169592260 entra en la primera.
+
 ### v0.601.0 — Las variantes procesadas en Crear no se encontraban en el Publicador
 
 Reportado el 30-sep con 14 familias (`ROP-0246`, `ROP-0351`, `VAR-0004`,

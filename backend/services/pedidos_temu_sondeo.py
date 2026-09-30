@@ -62,6 +62,14 @@ Por eso la marca sale del REGISTRO (`channel.orders`), igual que en Amazon, y
 **cuando no hay nada registrado NO se va al principio de los tiempos: se queda
 en AHORA**. Recuperar el histórico es una decisión aparte, deliberada, con su
 propio parámetro — no algo que ocurra por el solo hecho de encender el job.
+
+LAS CANCELADAS (30-sep-2026)
+────────────────────────────
+El 3 es "cancelada" (medido; ver `pedidos_temu._ESTADOS_WC`). Una venta que el
+sondeo ve por PRIMERA vez ya en 3 no crea nada. Y toda orden que pase por aquí
+cancelada —o con piezas canceladas—, registrada o no, nueva o vieja, se le pasa
+al vigilante (`temu_cancelaciones.atender_vistas`) al final de la pasada, sin
+gastar otra llamada a Temu.
 """
 from __future__ import annotations
 
@@ -177,8 +185,16 @@ async def revisar(paginas: int | None = None, desde: datetime | None = None,
     from services import pedidos_temu, pedidos_ml
 
     vistas = nuevas = creadas = viejas = sin_sku = sin_mapear = 0
-    ya_registradas = 0
+    ya_registradas = nacidas_canceladas = 0
     errores: list[str] = []
+    # CANCELACIONES QUE PASAN POR AQUÍ (30-sep). El sondeo ve ~150 órdenes por
+    # pasada, registradas o no, nuevas o viejas. Las que vengan canceladas (o
+    # con piezas canceladas) se le pasan al vigilante AL FINAL, en un solo
+    # paquete: una consulta a la bitácora y cero llamadas extra a Temu. Es lo
+    # que hace inmediata la captura de lo que el sondeo alcanza a ver; lo que
+    # no ve lo sigue buscando `temu_cancelaciones.vigilar`.
+    para_vigilante: list[tuple[str, dict[str, Any]]] = []
+    vigilante: dict[str, Any] | None = None
     # La venta MAS NUEVA descartada por vieja. Si se acerca a "ahora", la
     # ventana se esta quedando corta y hay que mirarlo: asi se vio que la lista
     # de Temu no viene ordenada por fecha.
@@ -197,6 +213,10 @@ async def revisar(paginas: int | None = None, desde: datetime | None = None,
                          or (cruda.get("orderList") or [{}])[0].get("orderSn") or "")
                 if not sn:
                     continue
+                estado_crudo = pedidos_temu.estado_de(cruda)
+                if (estado_crudo == pedidos_temu.ESTADO_CANCELADA
+                        or pedidos_temu.analizar_cancelacion(cruda)["piezas_canceladas"]):
+                    para_vigilante.append((sn, cruda))
                 fecha = _creada_en(cruda)
                 if fecha and fecha < corte:
                     viejas += 1
@@ -215,7 +235,19 @@ async def revisar(paginas: int | None = None, desde: datetime | None = None,
                     ya_registradas += 1
                     continue
 
-                orden = pedidos_temu._normalizar(sn, cruda)  # noqa: SLF001
+                # NACE CANCELADA (orderStatus 3, medido el 30-sep): no hay nada
+                # que registrar — ni pedido de Woo, ni espacio, ni orden. Se
+                # pregunta ANTES de normalizar: una venta cancelada entera no
+                # tiene piezas vivas y saldría contada como "sin SKU".
+                if estado_crudo == pedidos_temu.ESTADO_CANCELADA:
+                    nacidas_canceladas += 1
+                    log.info("TEMU sondeo: la orden %s nació cancelada (orderStatus 3): "
+                             "no se crea nada", sn)
+                    continue
+
+                # En un hilo (regla 11): `_normalizar` lee el precio de catálogo
+                # en kubera con psycopg2, y eso BLOQUEA el backend entero.
+                orden = await asyncio.to_thread(pedidos_temu._normalizar, sn, cruda)  # noqa: SLF001
                 if not any(i["sku"] for i in orden["items"]):
                     sin_sku += 1
                     continue
@@ -224,10 +256,12 @@ async def revisar(paginas: int | None = None, desde: datetime | None = None,
                     destino = pedidos_temu._ESTADOS_WC.get(int(estado_num))  # noqa: SLF001
                 except (TypeError, ValueError):
                     destino = None
-                if not destino:
+                if not destino or destino == "cancelled":
                     # Mismo criterio que el webhook: un código que no conocemos
                     # NO crea pedido. Descontar stock por una venta que quizá se
                     # canceló cuesta dinero; no crearla solo cuesta reprocesar.
+                    # ("cancelled" aquí sería un 3 que `estado_de` no vio: por
+                    # si acaso, tampoco crea.)
                     sin_mapear += 1
                     log.warning("TEMU sondeo: orden %s con orderStatus=%s SIN MAPEAR",
                                 sn, estado_num)
@@ -241,10 +275,22 @@ async def revisar(paginas: int | None = None, desde: datetime | None = None,
                     creadas += 1
                 else:
                     errores.append(f"{sn}: {str(r.get('motivo'))[:80]}")
+        if para_vigilante:
+            # Nunca tumba el sondeo: `atender_vistas` no lanza, y esto es un
+            # extra sobre lo que el vigilante encontraría de todos modos.
+            try:
+                from services import temu_cancelaciones
+                vigilante = await temu_cancelaciones.atender_vistas(
+                    para_vigilante, origen="sondeo")
+                vigilante = {k: v for k, v in vigilante.items() if k != "detalle"}
+            except Exception as exc:  # noqa: BLE001
+                vigilante = {"estado": "error", "error": str(exc)[:150]}
         _ultimo.update(estado="ok", ts=datetime.now(timezone.utc).isoformat(),
                        vistas=vistas, nuevas=nuevas, creadas=creadas,
                        ya_registradas=ya_registradas,
                        viejas=viejas, sin_sku=sin_sku, sin_mapear=sin_mapear,
+                       nacidas_canceladas=nacidas_canceladas,
+                       canceladas_vistas=len(para_vigilante), vigilante=vigilante,
                        solo_registro=solo_registro, desde=corte.isoformat(),
                        paginas_leidas=paginas_leidas,
                        vieja_mas_nueva=(vieja_mas_nueva.isoformat()
@@ -252,11 +298,13 @@ async def revisar(paginas: int | None = None, desde: datetime | None = None,
                        errores=errores[:10])
         log.info("TEMU sondeo: %d vistas en %d pág · %d en ventana · %d ya estaban · "
                  "%d %s · %d fuera de ventana (la más nueva: %s) · %d sin SKU · "
-                 "%d sin mapear · desde %s",
+                 "%d sin mapear · %d nacieron canceladas · %d con cancelación al "
+                 "vigilante · desde %s",
                  vistas, paginas_leidas, nuevas, ya_registradas, creadas,
                  "habría creado" if solo_registro else "creadas", viejas,
                  vieja_mas_nueva.strftime("%m-%d %H:%M") if vieja_mas_nueva else "-",
-                 sin_sku, sin_mapear, corte.strftime("%m-%d %H:%M"))
+                 sin_sku, sin_mapear, nacidas_canceladas, len(para_vigilante),
+                 corte.strftime("%m-%d %H:%M"))
     except Exception as exc:  # noqa: BLE001
         log.exception("pedidos_temu_sondeo.revisar falló")
         _ultimo.update(estado="error", ts=datetime.now(timezone.utc).isoformat(),

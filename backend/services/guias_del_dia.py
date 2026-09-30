@@ -181,11 +181,24 @@ PALETA: tuple[tuple[str, str], ...] = (
 # sólo la devuelve `odoo_ventas.cancelar_orden`: el canal canceló y Odoo no se
 # tocó (modo observación), así que la orden sigue en 'sale' y sin esto pasaba
 # por viva.
+#
+# Las cuatro `cancelada_*` son del vigilante de cancelaciones de Temu (30-sep):
+# con TEMU_CANCELACIONES_CANCELAR_ODOO apagada —como nace— la orden de Odoo
+# sigue en 'sale', y sin esto el Excel la listaba como caja viva, sumaba su
+# pieza y la metía en el envío combinado de su hermana. La nota de envío
+# combinado que ya esté escrita EN ODOO sólo se limpia cuando la orden se
+# cancela allá (a mano o con la bandera). ⚠️ GEMELA de
+# `odoo_ventas_log.ACCIONES_CANCELADA_CANAL`.
 _NOTA_CANCELADA = {
     "cancelada": "cancelada en Odoo",
     "ya_cancelada": "cancelada en Odoo",
     "no_se_pudo_cancelar": "venta cancelada en el canal · no enviar",
     "solo_registro_cancelar": "venta cancelada en el canal · no enviar",
+    "cancelada_por_cancelar": "venta cancelada en Temu · no enviar (falta cancelar en Odoo)",
+    "cancelada_sin_rastro": "venta cancelada en Temu · no enviar (la orden no aparece en Odoo)",
+    # La caja YA salió (o ya se surtió): no hay nada que empacar; es aviso.
+    "cancelada_revisar": "venta cancelada en Temu después de surtir · revisar devolución",
+    "cancelada_devuelta": "venta cancelada en Temu · la mercancía ya regresó",
 }
 _NOTA_CANAL = "venta cancelada en el canal · no enviar"
 

@@ -48,6 +48,49 @@ ACCION_ESPERA_CADUCADA = "espera_caducada"
 # La orden EXISTE en Odoo pero se quedó en borrador: no reserva. Para el stock
 # cuenta igual que si no existiera — ver `piezas_sin_orden`.
 ACCION_SIN_RESERVA = "no_se_pudo_confirmar"
+# CANCELADAS CON ORDEN (vigilante de Temu, 30-sep-2026). El canal canceló una
+# venta que YA tenía orden en Odoo:
+#   · `cancelada_por_cancelar` → la orden sigue viva y SIN surtir: hay que
+#     cancelarla (la automática nace apagada, o no pudo). Pide acción.
+#   · `cancelada_revisar` → la entrega YA SALIÓ del almacén (o ya se surtió:
+#     PICK/PACK hechos): posible devolución, o mercancía que hay que regresar
+#     al anaquel. La orden de Odoo NO se toca; pide que alguien revise.
+#   · `cancelada_sin_rastro` → la bitácora dice que tenía orden y Odoo no la
+#     encuentra (ni por id ni por referencia): revisar a mano. NO se rotula
+#     como "salió del almacén", porque no se sabe.
+#   · `cancelada_devuelta` → era `cancelada_revisar` y la devolución ya está
+#     validada en Odoo: la mercancía regresó, no pide nada.
+# Ninguna está en `_ACCIONES_SIN_ORDEN` ni en la resta de stock: la venta está
+# muerta, no hay nada que vincular ni que esconder.
+ACCION_CANCELADA_POR_CANCELAR = "cancelada_por_cancelar"
+ACCION_CANCELADA_REVISAR = "cancelada_revisar"
+ACCION_CANCELADA_SIN_RASTRO = "cancelada_sin_rastro"
+ACCION_CANCELADA_DEVUELTA = "cancelada_devuelta"
+# Todas las formas en que la bitácora dice "el canal canceló esta venta". Es lo
+# que cuenta el panel como canceladas y lo que el historial deja ver por la
+# fecha en que se DETECTÓ (no sólo por la de la venta).
+# ⚠️ GEMELA de `ACCIONES_CANCELADA` en frontend/lib/combinados.ts y de
+# `_NOTA_CANCELADA` en services/guias_del_dia.py: sumar una acción aquí es
+# sumarla allá (si no, el Excel del día y los envíos combinados la tratan como
+# caja viva).
+ACCIONES_CANCELADA_CANAL = (
+    ACCION_CANCELADA_SIN_ORDEN, "nacio_cancelada", "sin_orden",
+    "cancelada", "ya_cancelada", "solo_registro_cancelar", "no_se_pudo_cancelar",
+    ACCION_CANCELADA_POR_CANCELAR, ACCION_CANCELADA_REVISAR,
+    ACCION_CANCELADA_SIN_RASTRO, ACCION_CANCELADA_DEVUELTA)
+# De ésas, las que piden que una PERSONA haga algo.
+ACCIONES_CANCELADA_PIDE = ("no_se_pudo_cancelar", ACCION_CANCELADA_POR_CANCELAR,
+                           ACCION_CANCELADA_REVISAR, ACCION_CANCELADA_SIN_RASTRO)
+# Las que el vigilante sigue mirando SÓLO del lado de Odoo (sin volver a
+# preguntarle al canal: una cancelación no se deshace) hasta que dejan de pedir.
+ACCIONES_CANCELADA_REMIRAR = (ACCION_CANCELADA_POR_CANCELAR, ACCION_CANCELADA_REVISAR,
+                              ACCION_CANCELADA_SIN_RASTRO)
+# El aviso de CANCELACIÓN PARCIAL con orden ya creada va al PRINCIPIO del
+# motivo con este prefijo exacto: el panel y `solo_problemas` lo reconocen por
+# él. Sin prefijo "REVISAR" es la parcial de una venta que todavía espera su
+# guía, que se resuelve sola (la resta y la orden usan las piezas vivas).
+PREFIJO_PARCIAL = "Temu canceló parte"
+PREFIJO_PARCIAL_REVISAR = "REVISAR · Temu canceló parte"
 
 # Acciones que sólo MIRAN: nadie escribió en Odoo y nadie lo va a hacer por
 # ellas. Son las que NO pueden pisar un `espera_guia`; ver `_GUARDA_ESPERA`.
@@ -589,7 +632,7 @@ def anotar_intento(canal: str, cuenta: str, order_id: str, motivo: str) -> bool:
 
 
 def marcar_cancelada_sin_orden(canal: str, cuenta: str, order_id: str,
-                               estado: str = "") -> bool:
+                               estado: str = "", motivo: str | None = None) -> bool:
     """
     La venta se canceló mientras esperaba su guía: sale de la cola y NO se crea.
     ⚠️ BLOQUEA. Nunca lanza.
@@ -601,6 +644,11 @@ def marcar_cancelada_sin_orden(canal: str, cuenta: str, order_id: str,
     Sólo toca filas SIN orden. Si la orden ya nació —alguien la creó a mano, o
     la carrera se perdió por segundos— esto no la toca y la cancelación la
     atiende `odoo_ventas.cancelar_orden`, que es quien sabe hablar con Odoo.
+
+    UN SOLO UPDATE SACA A LA VENTA DE LAS DOS COLAS: la de creación
+    (`pendientes_sin_orden`) y la resta de stock (`piezas_sin_orden`) filtran
+    por `accion = 'espera_guia'`. `motivo` reemplaza el texto por omisión (el
+    vigilante de Temu escribe ahí cuándo lo detectó).
     """
     from services import supabase_db as sdb
     try:
@@ -614,14 +662,288 @@ def marcar_cancelada_sin_orden(canal: str, cuenta: str, order_id: str,
             {"c": (canal or "").lower(), "cu": cuenta, "o": str(order_id),
              "a": ACCION_CANCELADA_SIN_ORDEN, "e": (estado or "")[:60],
              "esp": ACCION_ESPERA,
-             "m": ("El canal la canceló mientras esperaba su guía: no se crea "
-                   "orden en Odoo" + (f" (estado {estado})" if estado else "") + ".")})
+             "m": (motivo or
+                   ("El canal la canceló mientras esperaba su guía: no se crea "
+                    "orden en Odoo" + (f" (estado {estado})" if estado else "") + "."))[:300]})
         if n:
             log.info("Odoo %s: la venta %s se canceló esperando guía — no se crea "
                      "orden", canal, order_id)
         return bool(n)
     except Exception as exc:  # noqa: BLE001
         log.debug("marcar_cancelada_sin_orden(%s, %s): %s", canal, order_id, exc)
+        return False
+
+
+# ── El vigilante de cancelaciones (Temu, 30-sep-2026) ───────────────────────
+# Ver `services/temu_cancelaciones.py`. Aquí sólo viven sus lecturas y
+# escrituras de la bitácora; las decisiones son de allá.
+
+def vigilables_cancelacion(canal: str, dias_espera: int, dias_orden: int,
+                           acciones_orden: tuple[str, ...] | list[str],
+                           limite: int = 600) -> list[dict[str, Any]]:
+    """
+    Las ventas a las que el vigilante tiene que volver a preguntarle al canal
+    "¿sigue viva?". ⚠️ BLOQUEA. **LANZA** si la bitácora no contesta: el
+    vigilante no puede confundir "no hay nada que vigilar" con "no sé".
+
+    Los grupos, dichos en `tipo`:
+      · `espera`       — `espera_guia` sin orden, dentro de la ventana de la
+                         espera (la MISMA de la resta de stock);
+      · `con_orden`    — orden viva en Odoo (`acciones_orden`), de los últimos
+                         `dias_orden` días;
+      · `por_cancelar`, `revisar`, `sin_rastro` — ya se sabe cancelada y
+                         todavía pide algo (`ACCIONES_CANCELADA_REMIRAR`). A
+                         éstas NO se les vuelve a preguntar al canal (una
+                         cancelación no se deshace): sólo se re-mira Odoo, para
+                         que salgan del rojo cuando alguien ya hizo lo suyo;
+      · `parcial`      — orden viva con el aviso "REVISAR · Temu canceló
+                         parte…" y más vieja que `dias_orden`: se re-mira sólo
+                         Odoo, para retirar el aviso cuando la orden ya lleva
+                         las piezas vivas.
+    Las ya marcadas y las parciales se miran hasta 30 días.
+    Sin datos del comprador: ids, acción, motivo y fechas.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from services import supabase_db as sdb
+    tipos_marcadas = {ACCION_CANCELADA_POR_CANCELAR: "por_cancelar",
+                      ACCION_CANCELADA_REVISAR: "revisar",
+                      ACCION_CANCELADA_SIN_RASTRO: "sin_rastro"}
+    dp = max(int(dias_orden), 30)
+    filas = sdb.fetch_all(
+        """select cuenta, external_order_id, odoo_order_id, odoo_name, accion,
+                  motivo, creado_at, actualizado_at
+             from ops.odoo_sale_orders
+            where canal = %(c)s
+              and ((odoo_order_id is null and accion = %(esp)s
+                    and creado_at > now() - make_interval(days => %(de)s))
+                or (odoo_order_id is not null and accion = any(%(ao)s)
+                    and (creado_at > now() - make_interval(days => %(do)s)
+                         or (motivo like %(prev)s
+                             and creado_at > now() - make_interval(days => %(dp)s))))
+                or (odoo_order_id is not null and accion = any(%(marc)s)
+                    and creado_at > now() - make_interval(days => %(dp)s)))
+            order by creado_at desc
+            limit %(l)s""",
+        {"c": (canal or "").lower(), "esp": ACCION_ESPERA,
+         "de": int(dias_espera), "do": int(dias_orden),
+         "ao": list(acciones_orden), "marc": list(ACCIONES_CANCELADA_REMIRAR),
+         "prev": PREFIJO_PARCIAL_REVISAR + "%", "dp": dp, "l": int(limite)})
+    corte_orden = datetime.now(timezone.utc) - timedelta(days=int(dias_orden))
+    fuera: list[dict[str, Any]] = []
+    for f in filas:
+        acc = f.get("accion")
+        creado = f.get("creado_at")
+        if isinstance(creado, datetime) and creado.tzinfo is None:
+            creado = creado.replace(tzinfo=timezone.utc)
+        if acc == ACCION_ESPERA and f.get("odoo_order_id") is None:
+            tipo = "espera"
+        elif acc in tipos_marcadas:
+            tipo = tipos_marcadas[acc]
+        elif isinstance(creado, datetime) and creado <= corte_orden:
+            tipo = "parcial"
+        else:
+            tipo = "con_orden"
+        fuera.append({"order_id": str(f["external_order_id"]), "cuenta": f["cuenta"],
+                      "tipo": tipo, "odoo_order_id": f.get("odoo_order_id"),
+                      "odoo_name": f.get("odoo_name"), "accion": acc,
+                      "motivo": f.get("motivo"), "creado_at": f.get("creado_at"),
+                      "actualizado_at": f.get("actualizado_at")})
+    return fuera
+
+
+def marcar_cancelacion_con_orden(canal: str, cuenta: str, order_id: str,
+                                 accion: str, motivo: str, estado: str = "",
+                                 desde: tuple[str, ...] | list[str] = ()) -> bool:
+    """
+    El canal canceló una venta que YA TIENE orden en Odoo: la fila lo dice.
+    ⚠️ BLOQUEA. Nunca lanza.
+
+    Sólo filas CON orden, y sólo si su acción sigue siendo una de `desde` (la
+    que el vigilante leyó): si otro camino la movió entre la lectura y ahora,
+    no se pisa. Si ya dice exactamente lo mismo, no se toca — ni
+    `actualizado_at`, que es el momento de la cancelación que ve el panel.
+
+    Salir de `no_se_pudo_confirmar` libera además la resta de stock de esa venta
+    (`piezas_sin_orden`): la venta está muerta, ya no hay pieza que esconder.
+    """
+    from services import supabase_db as sdb
+    if not desde:
+        return False
+    try:
+        n = sdb.execute(
+            """update ops.odoo_sale_orders
+                  set accion = %(a)s, motivo = %(m)s,
+                      estado = coalesce(nullif(%(e)s, ''), estado),
+                      actualizado_at = now()
+                where canal = %(c)s and cuenta = %(cu)s
+                  and external_order_id = %(o)s
+                  and odoo_order_id is not null
+                  and accion = any(%(desde)s)
+                  and (accion is distinct from %(a)s
+                       or motivo is distinct from %(m)s)""",
+            {"c": (canal or "").lower(), "cu": cuenta, "o": str(order_id),
+             "a": accion, "m": (motivo or "")[:300], "e": (estado or "")[:60],
+             "desde": list(desde)})
+        return bool(n)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("marcar_cancelacion_con_orden(%s, %s): %s", canal, order_id,
+                    str(exc)[:150])
+        return False
+
+
+# Quita del motivo el aviso de cancelación parcial que hubiera antes (con o sin
+# "REVISAR · "), para que el nuevo lo sustituya en vez de apilarse. El aviso
+# nunca lleva "|": es el separador.
+_RE_PARCIAL = r"^(REVISAR · )?Temu canceló parte[^|]*(\| )?"
+
+
+def _anteponer_motivo(canal: str, cuenta: str, order_id: str, texto: str,
+                      con_orden: bool) -> bool:
+    """Pone `texto` al PRINCIPIO del motivo, quitando un aviso parcial previo.
+    Idempotente: si el motivo ya lo trae, no toca nada. ⚠️ BLOQUEA. LANZA."""
+    from services import supabase_db as sdb
+    cond = ("odoo_order_id is not null" if con_orden
+            else "odoo_order_id is null and accion = %(esp)s")
+    return bool(sdb.execute(
+        f"""update ops.odoo_sale_orders
+               set motivo = %(t)s || coalesce(' | ' || nullif(regexp_replace(
+                                coalesce(motivo, ''), %(re)s, ''), ''), ''),
+                   actualizado_at = now()
+             where canal = %(c)s and cuenta = %(cu)s
+               and external_order_id = %(o)s and {cond}
+               and position(%(t)s in coalesce(motivo, '')) = 0""",
+        {"c": (canal or "").lower(), "cu": cuenta, "o": str(order_id),
+         "t": texto, "re": _RE_PARCIAL, "esp": ACCION_ESPERA}))
+
+
+def ajustar_piezas_espera(canal: str, cuenta: str, order_id: str,
+                          vivas: dict[str, int], nota: str) -> dict[str, Any]:
+    """
+    Una venta que ESPERA su guía y a la que el canal le canceló PIEZAS (no la
+    venta entera): sus renglones bajan a las piezas VIVAS, que son las que
+    resta `piezas_sin_orden`. ⚠️ BLOQUEA. Nunca lanza.
+
+    · Sólo BAJA. Una cantidad mayor en el canal no es algo que se haya medido.
+    · Sólo filas que siguen esperando sin orden (la guarda va DENTRO de cada
+      sentencia, no sólo en la lectura de antes).
+    · Un SKU con más de un renglón no se toca: sería adivinar cuál bajar. Se
+      devuelve en `ambiguos`.
+    · Un renglón que queda en 0 se BORRA —la tabla exige `cantidad > 0`—, y con
+      él su foto de stock, que ya no describe ninguna venta.
+    · …Y LOS QUE QUEDAN SE RE-NUMERAN sin huecos (1, 2, 3…), en su mismo orden.
+      `registrar` escribe las líneas POR POSICIÓN (`linea` = lugar en `items`) y
+      `pedidos_temu._normalizar` ya no trae el renglón cancelado: sin esto, al
+      nacer la orden el renglón C caía en el hueco de B (C dos veces) o —si
+      nadie había borrado B— la línea 2 quedaba con el SKU de B y la cantidad
+      de C. Cada fila se mueve con SU foto de stock.
+
+    Cada sentencia es su propia transacción corta: con `get_cursor` y varias
+    sentencias, SteadyDB puede cambiar de conexión a media transacción y perder
+    lo anterior sin error. La re-numeración va de menor a mayor, así que el
+    lugar de destino siempre está libre, y un corte a media re-numeración deja
+    renglones únicos que la llamada siguiente termina de compactar.
+    """
+    from services import supabase_db as sdb
+    r: dict[str, Any] = {"ok": False, "cambios": [], "ambiguos": []}
+    base = {"c": (canal or "").lower(), "cu": cuenta, "o": str(order_id),
+            "esp": ACCION_ESPERA}
+    guarda = """and exists (select 1 from ops.odoo_sale_orders h
+                             where h.canal = %(c)s and h.cuenta = %(cu)s
+                               and h.external_order_id = %(o)s
+                               and h.odoo_order_id is null and h.accion = %(esp)s)"""
+    try:
+        cab = sdb.fetch_one(
+            """select accion, odoo_order_id from ops.odoo_sale_orders
+                where canal = %(c)s and cuenta = %(cu)s and external_order_id = %(o)s""",
+            base)
+        if not cab or cab.get("accion") != ACCION_ESPERA or cab.get("odoo_order_id") is not None:
+            return {**r, "motivo": "ya no espera su guía"}
+        lineas = sdb.fetch_all(
+            """select linea, sku, cantidad from ops.odoo_sale_order_items
+                where canal = %(c)s and cuenta = %(cu)s and external_order_id = %(o)s
+                order by linea""", base)
+        por_sku: dict[str, list[dict[str, Any]]] = {}
+        for l in lineas:
+            por_sku.setdefault(str(l.get("sku") or "").strip(), []).append(l)
+        for sku, viva in sorted((vivas or {}).items()):
+            ls = por_sku.get(str(sku).strip()) or []
+            if not ls:
+                continue
+            if len(ls) > 1:
+                r["ambiguos"].append(sku)
+                continue
+            antes = int(ls[0].get("cantidad") or 0)
+            ahora = max(0, int(viva or 0))
+            if ahora >= antes:
+                continue
+            p = {**base, "l": ls[0]["linea"], "n": ahora}
+            if ahora == 0:
+                n = sdb.execute(
+                    f"""delete from ops.odoo_sale_order_items
+                         where canal = %(c)s and cuenta = %(cu)s
+                           and external_order_id = %(o)s and linea = %(l)s {guarda}""", p)
+            else:
+                n = sdb.execute(
+                    f"""update ops.odoo_sale_order_items set cantidad = %(n)s
+                         where canal = %(c)s and cuenta = %(cu)s
+                           and external_order_id = %(o)s and linea = %(l)s
+                           and cantidad > %(n)s {guarda}""", p)
+            if n:
+                r["cambios"].append({"sku": sku, "antes": antes, "ahora": ahora})
+        r["renumeradas"] = _compactar_lineas_espera(base, guarda)
+        if r["cambios"]:
+            texto = (f"{nota}: "
+                     + ", ".join(f"{c['sku']} {c['antes']}→{c['ahora']}" for c in r["cambios"])
+                     + ". La resta de stock y la orden usan las piezas vivas.")
+            _anteponer_motivo(canal, cuenta, order_id, texto.replace("|", "/")[:250],
+                              con_orden=False)
+        r["ok"] = True
+    except Exception as exc:  # noqa: BLE001
+        log.warning("ajustar_piezas_espera(%s, %s): %s", canal, order_id, str(exc)[:150])
+        r["error"] = str(exc)[:150]
+    return r
+
+
+def _compactar_lineas_espera(base: dict[str, Any], guarda: str) -> int:
+    """
+    Re-numera sin huecos (1, 2, 3…) los renglones de una venta que ESPERA su
+    guía, en su mismo orden; cada fila se mueve con su foto. Devuelve cuántas se
+    movieron. ⚠️ BLOQUEA. **LANZA**: la llama `ajustar_piezas_espera`, que
+    atrapa. Ver allá el porqué (`registrar` escribe por posición).
+    """
+    from services import supabase_db as sdb
+    lineas = sdb.fetch_all(
+        """select linea, sku, cantidad from ops.odoo_sale_order_items
+            where canal = %(c)s and cuenta = %(cu)s and external_order_id = %(o)s
+            order by linea""", base)
+    movidas = 0
+    for nueva, l in enumerate(lineas, start=1):
+        vieja = int(l.get("linea") or 0)
+        if vieja == nueva:
+            continue
+        movidas += int(bool(sdb.execute(
+            f"""update ops.odoo_sale_order_items set linea = %(nl)s
+                 where canal = %(c)s and cuenta = %(cu)s
+                   and external_order_id = %(o)s and linea = %(l)s {guarda}""",
+            {**base, "l": vieja, "nl": nueva})))
+    return movidas
+
+
+def anotar_parcial_con_orden(canal: str, cuenta: str, order_id: str,
+                             texto: str) -> bool:
+    """
+    El canal canceló PIEZAS de una venta cuya orden de Odoo YA EXISTE: la orden
+    lleva de más. Esto NO toca Odoo (ajustar una orden confirmada es decisión
+    de una persona); deja el aviso al principio del motivo, con el prefijo que
+    el panel y `solo_problemas` reconocen. Idempotente. ⚠️ BLOQUEA. Nunca lanza.
+    """
+    try:
+        return _anteponer_motivo(canal, cuenta, order_id,
+                                 texto.replace("|", "/")[:250], con_orden=True)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("anotar_parcial_con_orden(%s, %s): %s", canal, order_id,
+                    str(exc)[:150])
         return False
 
 
@@ -836,7 +1158,8 @@ def historial(limite: int = 100, canal: str | None = None,
     """Lo que pinta el tab: una fila por venta, con sus líneas anidadas."""
     from services import supabase_db as sdb
 
-    donde, params = ["1=1"], {"lim": int(limite)}
+    donde, params = ["1=1"], {"lim": int(limite),
+                              "canc": list(ACCIONES_CANCELADA_CANAL)}
     if canal:
         donde.append("o.canal = %(canal)s")
         params["canal"] = canal
@@ -844,7 +1167,14 @@ def historial(limite: int = 100, canal: str | None = None,
         # Se acota por la fecha en que NOSOTROS la procesamos, no por la de
         # compra: "las últimas 24 h" quiere decir lo que el automatismo hizo
         # en 24 h, y ahí puede aparecer la cancelación de una venta de agosto.
-        donde.append(f"o.creado_at >= now() - interval '{int(dias)} days'")
+        #
+        # …Y UNA CANCELACIÓN DETECTADA HOY ENTRA AUNQUE LA FILA SEA VIEJA. El
+        # vigilante de Temu (30-sep) no crea filas: marca la que ya existía, que
+        # conserva su `creado_at` de hace días. Sin esto, "últimas 24 h" no
+        # mostraría justo lo que acaba de pasar.
+        donde.append(f"(o.creado_at >= now() - interval '{int(dias)} days' "
+                     f"or (o.accion = any(%(canc)s) "
+                     f"and o.actualizado_at >= now() - interval '{int(dias)} days'))")
     if solo_problemas:
         # Lo que alguien TIENE QUE HACER ALGO AL RESPECTO. El criterio no es
         # "salió raro", es "queda trabajo pendiente para una persona":
@@ -872,15 +1202,32 @@ def historial(limite: int = 100, canal: str | None = None,
         #
         # La `cobertura parcial` se pide SÓLO de las que ya tienen orden: en una
         # espera ese dato es el plan del dry-run, que se recalcula al crear.
+        #
+        #   cancelada_por_cancelar    → el canal canceló y la orden de Odoo
+        #                               sigue viva sin surtir (vigilante, 30-sep).
+        #   cancelada_revisar         → el canal canceló y la entrega YA SALIÓ
+        #                               (o ya se surtió): posible devolución.
+        #   cancelada_sin_rastro      → el canal canceló y Odoo no encuentra la
+        #                               orden que la bitácora dice que tiene.
+        #   "REVISAR · Temu canceló parte…" en el motivo → Temu canceló piezas y
+        #                               la orden ya existía con las originales.
+        # Las canceladas que piden salen de `ACCIONES_CANCELADA_PIDE` (la misma
+        # lista que el contador del panel), no de una copia a mano.
         donde.append("(o.accion in ('error','sku_sin_producto',"
-                     "'no_se_pudo_cancelar','no_se_pudo_confirmar',"
-                     "'espera_caducada') "
-                     "or (o.cobertura = 'parcial' and o.odoo_order_id is not null))")
+                     "'no_se_pudo_confirmar','espera_caducada') "
+                     "or o.accion = any(%(canc_pide)s) "
+                     "or (o.cobertura = 'parcial' and o.odoo_order_id is not null) "
+                     "or (o.odoo_order_id is not null and o.motivo like %(parcial_rev)s))")
+        params["canc_pide"] = list(ACCIONES_CANCELADA_PIDE)
+        params["parcial_rev"] = PREFIJO_PARCIAL_REVISAR + "%"
     try:
         filas = sdb.fetch_all(
             f"""select o.canal, o.cuenta, o.external_order_id, o.odoo_order_id,
                        o.odoo_name, o.estado, o.accion, o.almacen, o.cobertura,
                        o.guia, o.paqueteria, o.total, o.motivo, o.creado_at,
+                       -- La última vez que la fila cambió. En una cancelación
+                       -- es CUÁNDO SE DETECTÓ (el panel lo pinta así).
+                       o.actualizado_at,
                        -- CUÁNDO COMPRÓ EL CLIENTE, que NO es `creado_at`: ése es
                        -- cuándo lo procesamos nosotros. La cancelación de una
                        -- venta de agosto entra hoy, y con una sola fecha en
@@ -902,7 +1249,14 @@ def historial(limite: int = 100, canal: str | None = None,
                          '[]'::json) as lineas
                   from ops.odoo_sale_orders o
                  where {' and '.join(donde)}
-                 order by o.creado_at desc
+                 -- UNA CANCELACIÓN RECIÉN DETECTADA VA ARRIBA aunque la fila
+                 -- sea vieja: con el orden por `creado_at` a secas quedaba al
+                 -- final y era lo PRIMERO que cortaba el `limit` (en 30 días
+                 -- hay más filas que el tope de la pantalla). `greatest`
+                 -- ignora el NULL de las que no son cancelación.
+                 order by greatest(o.creado_at,
+                                   case when o.accion = any(%(canc)s)
+                                        then o.actualizado_at end) desc
                  limit %(lim)s""", params)
         return [dict(f) for f in filas]
     except Exception as exc:  # noqa: BLE001
@@ -965,9 +1319,29 @@ def resumen(canal: str | None = None) -> dict[str, Any]:
                                 if f["accion"] == ACCION_ESPERA and not f["en_odoo"]),
             "caducadas_30d": sum(f["n"] for f in filas
                                  if f["accion"] == ACCION_ESPERA_CADUCADA),
+            # LAS CANCELADAS EN EL CANAL, partidas por lo que significan para
+            # el almacén (30-sep): antes de tener orden (nada que hacer), con
+            # orden ya cancelada en Odoo, y las que piden a una persona.
+            "canceladas_30d": _canceladas(por_accion),
         }
     except Exception as exc:  # noqa: BLE001
         log.warning("odoo_ventas_log.resumen: %s", exc)
         return {"total_30d": 0, "por_accion": {}, "parciales": 0, "errores": 0,
                 "espacios_30d": 0, "caducadas_30d": 0,
+                "canceladas_30d": _canceladas({}),
                 "nota": "la tabla ops.odoo_sale_orders todavía no existe"}
+
+
+def _canceladas(por_accion: dict[str, int]) -> dict[str, int]:
+    """El contador de canceladas del panel, desde el conteo por acción. Pura."""
+    def s(*acciones: str) -> int:
+        return sum(int(por_accion.get(a) or 0) for a in acciones)
+    return {
+        "total": s(*ACCIONES_CANCELADA_CANAL),
+        "sin_orden": s(ACCION_CANCELADA_SIN_ORDEN, "nacio_cancelada", "sin_orden"),
+        "orden_cancelada": s("cancelada", "ya_cancelada"),
+        # Salió del almacén, se canceló y la mercancía ya REGRESÓ: no pide nada.
+        "devueltas": s(ACCION_CANCELADA_DEVUELTA),
+        "por_revisar": s(*ACCIONES_CANCELADA_PIDE),
+        "observando": s("solo_registro_cancelar"),
+    }

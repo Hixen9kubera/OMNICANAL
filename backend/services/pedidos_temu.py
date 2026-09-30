@@ -40,6 +40,9 @@ Por eso el mapa de abajo tiene UN código y el resto cae en "registrar sin
 crear". El modo de fallo importa: un código desconocido que no crea pedido se
 arregla reprocesando; un código desconocido que SÍ crea pedido descuenta stock
 de una venta que quizá se canceló, y eso ya cuesta dinero.
+
+(Actualización: hoy el mapa conoce 2, 3, 4 y 5 — ver `_ESTADOS_WC`. El 3,
+cancelada, se midió el 30-sep-2026.)
 """
 from __future__ import annotations
 
@@ -80,11 +83,173 @@ CUENTA = "TEMU"      # `pedidos_ml._ESPEJO_ORIGEN` ya lo mapea al canal temu
 # cuando alcanzaba el 4 —el único que conocíamos— ya se había enviado sola, así
 # que la orden de venta llegaba tarde o no llegaba. Nueve de cada diez órdenes
 # de la muestra caían fuera.
+#
+# EL 3 ES CANCELADA (medido el 30-sep-2026, en producción, con
+# `bg.order.detail.v2.get` vía `/api/investigacion/temu`). La venta
+# PO-128-09246640169592260 dice "Pedido cancelado" en el seller center —Temu
+# aprobó sola la cancelación porque todavía no se enviaba— y su detalle trae:
+#
+#   parentOrderMap.parentOrderStatus        = 3
+#   orderList[0].orderStatus                = 3
+#   orderList[0].quantity                   = 0     ← lo que queda VIVO
+#   orderList[0].originalOrderQuantity      = 1
+#   orderList[0].canceledQuantityBeforeShipment = 1
+#   orderList[0].isCancelledDuringPending   = false
+#   orderList[0].packageSnInfo              = []
+#
+# Hasta hoy el 3 caía en "sin mapear": la venta muerta se quedaba ESPERANDO su
+# guía los 14 días enteros, escondiendo su pieza de Woo y de los canales (la
+# resta de `stock_watch`). Lo atiende `temu_cancelaciones`, el vigilante que le
+# vuelve a preguntar a Temu por las ventas vivas.
+#
+# ⚠️ "cancelled" NO crea pedido en ningún camino de Temu —ni el sondeo, ni el
+# webhook, ni el trabajo de guías—: una venta que nace cancelada no tiene nada
+# que registrar, y la que se cancela después la atiende el vigilante, con sus
+# propias banderas. Ver `temu_cancelaciones`.
+#
+# LA CANCELACIÓN PUEDE SER PARCIAL, por renglón: `quantity` baja y
+# `canceledQuantityBeforeShipment` sube aunque la venta siga en 2. Lo único
+# medido es la invariante `quantity + canceledQuantityBeforeShipment ==
+# originalOrderQuantity` (0 + 1 == 1; la documentación de Temu la da como
+# definición de `quantity`). Donde no se cumple, el renglón es "no fiable" y
+# NADA se decide con él — ver `_cantidad_renglon`.
+#
+# EL ENUM COMPLETO, según la documentación de `bg.order.detail.v2.get` y
+# `bg.order.list.v2.get` (padre y renglón usan el mismo):
+#   1 PENDING · 2 UN_SHIPPING · 3 CANCELED · 4 SHIPPED · 41 PARTIALLY_SHIPPED ·
+#   5 DELIVERED · 51 PARTIALLY_DELIVERED
+# Medidos en producción: 2, 3, 4 y 5. El 1, el 41 y el 51 NO se han visto: no
+# están en el mapa, así que no crean nada ni se dan por cancelados (falla
+# cerrado; quedan contados en `estados_sin_mapear`).
 _ESTADOS_WC: dict[int, str] = {
     2: "processing",   # pagada y sin enviar: ES la que hay que surtir
+    3: "cancelled",    # cancelada (30-sep): NO se crea nada; ver temu_cancelaciones
     4: "processing",   # ya enviada; si no la vimos en 2, la venta sigue siendo real
     5: "completed",    # entregada: se registra, pero ya no hay nada que surtir
 }
+ESTADO_CANCELADA = 3
+
+
+def estado_de(det: dict[str, Any] | None) -> int | None:
+    """El `orderStatus` de una venta de Temu: el del padre y, si no viene, el
+    del primer renglón. Pura. None si no hay nada legible.
+
+    ⚠️ Sirve para CONTAR y para NO crear. Para DECIDIR que una venta está
+    cancelada se usa `es_cancelada`, que exige el padre explícito."""
+    if not isinstance(det, dict):
+        return None
+    padre = det.get("parentOrderMap") or {}
+    v = padre.get("parentOrderStatus")
+    if v is None:
+        renglones = det.get("orderList") or []
+        if renglones and isinstance(renglones[0], dict):
+            v = renglones[0].get("orderStatus")
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def es_cancelada(det: dict[str, Any] | None) -> bool:
+    """¿Temu dice que la venta ENTERA está cancelada? Pura.
+
+    Lo MEDIDO y nada más: `parentOrderStatus` explícito en 3 Y TODOS los
+    renglones con `orderStatus` explícito en 3. Cualquier otra combinación —el
+    padre ausente (y el 3 sale del primer renglón), un renglón en 2/4/5, en 41
+    (parcialmente enviado) o en 1, uno sin estado legible, o ningún renglón— no
+    se ha visto: se trata como NO cancelada (falla cerrado — cancelar de más en
+    Odoo es peor que esperar una vuelta)."""
+    if not isinstance(det, dict):
+        return False
+    padre = det.get("parentOrderMap") or {}
+    if _entero(padre.get("parentOrderStatus")) != ESTADO_CANCELADA:
+        return False
+    renglones = det.get("orderList") or []
+    if not renglones:
+        return False
+    return all(isinstance(o, dict) and _entero(o.get("orderStatus")) == ESTADO_CANCELADA
+               for o in renglones)
+
+
+def _cantidad_renglon(o: dict[str, Any]) -> dict[str, Any]:
+    """
+    Cuántas piezas de este renglón siguen VIVAS. Pura.
+
+    Devuelve `{viva, original, cancelada, fiable}`.
+
+    SIN RASTRO DE CANCELACIÓN (`canceledQuantityBeforeShipment` en 0 o ausente,
+    y `quantity` distinto de 0) se usa la regla de siempre —`quantity`, o la
+    original, o 1— y es fiable: así se crearon todas las órdenes de Temu hasta
+    hoy. Y `original` es ESA MISMA cantidad: un `quantity` menor que la
+    original SIN piezas canceladas no es algo medido, así que no cuenta como
+    cancelación parcial (no recorta la resta ni avisa).
+
+    CON RASTRO (algo cancelado, o `quantity == 0`) sólo se cree lo que cuadra
+    con lo medido: `quantity + cancelada == original`. Entonces `viva =
+    quantity`, y puede ser 0 (renglón entero cancelado). Si NO cuadra, el
+    renglón es `fiable=False` y `viva` conserva la regla de siempre: quien lea
+    esto no debe crear, recortar ni liberar nada con él — no se sabe qué quedó.
+
+    UN RENGLÓN EN 3 CON PIEZAS VIVAS tampoco es fiable, cuadren o no sus
+    cantidades: Temu dice que ese renglón está cancelado y a la vez que queda
+    algo que surtir. Lo medido es el 3 con `quantity = 0`; lo otro, si se cree,
+    manda a Odoo la pieza de un renglón cancelado.
+    """
+    q = _entero(o.get("quantity"))
+    orig = _entero(o.get("originalOrderQuantity"))
+    canc = _entero(o.get("canceledQuantityBeforeShipment")) or 0
+    antes = q or orig or 1           # la regla de siempre (`quantity or original or 1`)
+    if canc == 0 and q != 0:
+        c = {"viva": antes, "original": antes, "cancelada": 0, "fiable": True}
+    elif q is not None and orig is not None and q + canc == orig:
+        c = {"viva": q, "original": orig, "cancelada": canc, "fiable": True}
+    else:
+        return {"viva": antes, "original": orig, "cancelada": canc, "fiable": False}
+    if _entero(o.get("orderStatus")) == ESTADO_CANCELADA and c["viva"] > 0:
+        return {**c, "fiable": False}
+    return c
+
+
+def analizar_cancelacion(det: dict[str, Any] | None) -> dict[str, Any]:
+    """
+    Qué canceló Temu en esta venta, renglón por renglón. Pura; sin PII (sólo
+    SKUs, números de renglón y cantidades).
+
+      estado            el `orderStatus` (padre o primer renglón)
+      cancelada         la venta ENTERA está cancelada (`es_cancelada`)
+      vivas             {sku: piezas vivas} (un renglón no fiable cuenta con la
+                        regla de siempre: quien lee revisa `no_fiables` antes)
+      originales        {sku: piezas originales}
+      piezas_canceladas cuántas piezas canceló Temu antes del envío
+      parcial           hay piezas canceladas Y quedan piezas vivas
+      sin_piezas_vivas  hay renglones y ninguno conserva piezas
+      no_fiables        `orderSn` de los renglones cuyas cantidades no cuadran
+                        (o que están en 3 con piezas vivas)
+    """
+    renglones = [o for o in ((det or {}).get("orderList") or []) if isinstance(o, dict)]
+    vivas: dict[str, int] = {}
+    originales: dict[str, int] = {}
+    canceladas = 0
+    no_fiables: list[str] = []
+    total_vivo = 0
+    for o in renglones:
+        c = _cantidad_renglon(o)
+        if not c["fiable"]:
+            no_fiables.append(str(o.get("orderSn") or "?"))
+        canceladas += int(c["cancelada"] or 0)
+        total_vivo += int(c["viva"] or 0)
+        for p in (o.get("productList") or []):
+            sku = str((p or {}).get("extCode") or "").strip()
+            if not sku:
+                continue
+            vivas[sku] = vivas.get(sku, 0) + int(c["viva"] or 0)
+            originales[sku] = originales.get(sku, 0) + int(c["original"] or c["viva"] or 0)
+    return {"estado": estado_de(det), "cancelada": es_cancelada(det),
+            "vivas": vivas, "originales": originales,
+            "piezas_canceladas": canceladas,
+            "parcial": canceladas > 0 and total_vivo > 0,
+            "sin_piezas_vivas": bool(renglones) and total_vivo == 0,
+            "no_fiables": no_fiables}
 
 _ultimo: dict[str, Any] = {"estado": "sin correr", "ts": None, "pedidos": 0}
 
@@ -542,15 +707,15 @@ async def _crear_al_tener_guia(item: dict[str, Any], det: dict[str, Any],
     EL ORDEN IMPORTA y es el del encargo: primero se RE-LEE el estado de la venta,
     después se mira si hay guía, y sólo entonces se crea.
 
-    ⚠️ LO QUE TEMU NO DEJA SABER. El código de "cancelada" de Temu no está
-    mapeado —nunca se ha visto uno; ver el encabezado de `_ESTADOS_WC` y
-    `odoo_ventas_conciliacion`—, así que aquí no se puede preguntar "¿está
-    cancelada?". Se pregunta lo contrario, que sí se puede: **¿sigue en un estado
-    que conocemos y que significa venta viva?** Un código fuera del mapa NO crea
-    nada y queda contado y en el log. Falla cerrado: si el día de mañana Temu
-    empieza a mandar el código de cancelada, esto ya no crea esa orden hoy, sin
-    tocar una línea. Y el día que alguien mapee `N: "cancelled"`, la rama de
-    cancelar de abajo se enciende sola.
+    LA GUARDA ES DOBLE. Se pregunta "¿está cancelada?" —el 3, medido el
+    30-sep— y además lo contrario: **¿sigue en un estado que conocemos y que
+    significa venta viva?** Un código fuera del mapa NO crea nada y queda contado
+    y en el log (falla cerrado).
+
+    Y LA CANTIDAD ES LA VIVA. Si Temu canceló parte de un renglón, `_normalizar`
+    ya trae las piezas que quedan; si un renglón no cuadra
+    (`analizar_cancelacion(...)["no_fiables"]`), NO se crea: no se sabe cuántas
+    piezas mandar al almacén, y esperar una vuelta no cuesta nada.
     """
     from services import odoo_ventas, odoo_ventas_log
 
@@ -568,10 +733,23 @@ async def _crear_al_tener_guia(item: dict[str, Any], det: dict[str, Any],
         destino = _ESTADOS_WC.get(int(estado_num))
     except (TypeError, ValueError):
         destino = None
+    if destino == "cancelled" and not es_cancelada(det):
+        # Padre en 3 con algún renglón vivo: no está medido. No se crea y no se
+        # marca; se queda esperando y el vigilante lo vuelve a mirar.
+        r["estado_sin_mapear"] += 1
+        _contar_espera(r, "estados_sin_mapear", f"{estado_num}_contradictorio")
+        log.warning("TEMU espera de guía: %s tiene el padre en 3 pero algún renglón "
+                    "vivo: NO se crea ni se marca.", sn)
+        return None, None
     if destino == "cancelled":
         r["canceladas_sin_crear"] += 1
-        await asyncio.to_thread(odoo_ventas_log.marcar_cancelada_sin_orden,
-                                CANAL, cuenta, sn, str(estado_num))
+        # Se marca con la MISMA bandera que el vigilante: apagarla detiene toda
+        # marca nueva. Apagada, la venta NO se crea igual — sólo sigue esperando.
+        if bool(getattr(settings, "temu_cancelaciones_enabled", True)):
+            from services import temu_cancelaciones
+            await asyncio.to_thread(odoo_ventas_log.marcar_cancelada_sin_orden,
+                                    CANAL, cuenta, sn, str(estado_num),
+                                    temu_cancelaciones.motivo_sin_orden())
         return None, None
     if not destino:
         r["estado_sin_mapear"] += 1
@@ -583,6 +761,26 @@ async def _crear_al_tener_guia(item: dict[str, Any], det: dict[str, Any],
                     "está en el mapa verificado: NO se crea la orden y sigue "
                     "esperando.", sn, estado_num)
         return None, None
+
+    # 1b · ¿CUÁNTAS PIEZAS SIGUEN VIVAS? Una cancelación parcial baja la
+    #      cantidad de un renglón sin cambiar el estado de la venta.
+    an = analizar_cancelacion(det)
+    if an["no_fiables"]:
+        r["cantidades_no_fiables"] = r.get("cantidades_no_fiables", 0) + 1
+        log.warning("TEMU espera de guía: %s — las cantidades de %d renglón(es) no "
+                    "cuadran (quantity + cancelada != original): NO se crea esta "
+                    "vuelta.", sn, len(an["no_fiables"]))
+        return None, None
+    if an["sin_piezas_vivas"]:
+        r["sin_piezas_vivas"] = r.get("sin_piezas_vivas", 0) + 1
+        log.warning("TEMU espera de guía: %s sigue en %s pero sin piezas vivas: NO se "
+                    "crea; el vigilante de cancelaciones la vuelve a mirar.",
+                    sn, estado_num)
+        return None, None
+    if an["parcial"]:
+        r["parciales"] = r.get("parciales", 0) + 1
+        log.info("TEMU espera de guía: %s tiene %d pieza(s) canceladas antes del "
+                 "envío; la orden nace con las VIVAS.", sn, an["piezas_canceladas"])
 
     # 2 · ¿HAY GUÍA? Los paquetes de la venta entera, que es lo que después
     #     necesita el emparejador si la orden nace partida.
@@ -605,6 +803,19 @@ async def _crear_al_tener_guia(item: dict[str, Any], det: dict[str, Any],
         r["sin_guia_aun"] += 1
         return None, None
     r["con_guia"] += 1
+
+    # 2b · LA BITÁCORA AL DÍA ANTES DE CREAR. `registrar` escribe los renglones
+    #      POR POSICIÓN y `_normalizar` ya no trae el renglón que Temu canceló
+    #      entero: si la espera todavía lo tiene, el de después caería en su
+    #      lugar (el SKU cancelado con la cantidad de otro, o un SKU dos veces).
+    #      `ajustar_piezas_espera` baja los renglones a las piezas vivas, borra
+    #      los que quedan en 0 y re-numera sin huecos, mientras la fila sigue en
+    #      espera. No es una marca de cancelación (la venta está viva): es
+    #      alinear la bitácora con la orden que está por nacer.
+    if an["piezas_canceladas"]:
+        await asyncio.to_thread(
+            odoo_ventas_log.ajustar_piezas_espera, CANAL, cuenta, sn, an["vivas"],
+            f"{odoo_ventas_log.PREFIJO_PARCIAL} de la venta · antes de crear la orden")
 
     # 3 · NACE LA ORDEN. `crear_con_guia` recalcula el plan de almacenes con el
     #     stock de HOY (bloquea: por eso va en un hilo, regla 11).
@@ -779,7 +990,14 @@ def _normalizar(parent_sn: str, det: dict[str, Any]) -> dict[str, Any]:
 
     crudas: list[dict[str, Any]] = []
     for o in renglones:
-        cantidad = int(o.get("quantity") or o.get("originalOrderQuantity") or 1)
+        # LAS PIEZAS VIVAS (30-sep). Antes era `quantity or original or 1`, y con
+        # un renglón cancelado entero (`quantity = 0`) el `or` saltaba a la
+        # ORIGINAL: la pieza cancelada se volvía a pedir. Ver `_cantidad_renglon`;
+        # un renglón que no cuadra conserva la regla vieja y lo frena quien crea.
+        c = _cantidad_renglon(o)
+        cantidad = int(c["viva"])
+        if c["fiable"] and cantidad <= 0:
+            continue          # Temu canceló el renglón entero: no se pide
         # El SKU vive en productList[].extCode, no en el renglón.
         for p in (o.get("productList") or []):
             sku = str(p.get("extCode") or "").strip()
@@ -926,17 +1144,18 @@ async def refrescar_guias(dias: int = 14, limite: int = 60,
                          # esta vuelta.
                          "esperando": 0, "creadas": 0, "creadas_fallidas": 0,
                          "canceladas_sin_crear": 0, "estado_sin_mapear": 0,
-                         # POR CÓDIGO, no sólo el total. En Temu no hay ningún
-                         # `orderStatus` mapeado a "cancelada" (`_ESTADOS_WC`
-                         # sólo conoce {2,4,5}), así que una venta muerta no
-                         # tiene HOY ninguna vía de salir de la espera: se queda
-                         # restando sus ~9.5 piezas hasta caducar. La guarda
-                         # inversa ("sólo creo estados que conozco") es la
-                         # decisión correcta mientras el código no se conozca;
-                         # lo que faltaba era MEDIRLO. Con este contador el
-                         # primer código de cancelada se identifica solo y se
-                         # puede mapear.
+                         # POR CÓDIGO, no sólo el total. Con este contador se
+                         # identificó el código de cancelada (el 3, mapeado el
+                         # 30-sep): lo que siga apareciendo aquí es un código
+                         # que todavía no se sabe leer, y la guarda inversa
+                         # ("sólo creo estados que conozco") lo deja esperando.
                          "estados_sin_mapear": {},
+                         # CANCELACIÓN PARCIAL (30-sep): ventas con piezas
+                         # canceladas que nacen con las VIVAS, las que no se
+                         # crean porque sus cantidades no cuadran, y las que
+                         # siguen "vivas" sin una sola pieza.
+                         "parciales": 0, "cantidades_no_fiables": 0,
+                         "sin_piezas_vivas": 0,
                          "espera_incompleta": 0, "espera_mas_vieja_h": 0.0,
                          "mantenimiento": {}, "fallos_al_crear": {}}
     if not temu.disponible():
@@ -1085,7 +1304,27 @@ async def procesar(parent_sn: str) -> dict[str, Any]:
         return {"ok": False, "id": parent_sn,
                 "motivo": "no se pudo leer el detalle de la orden en Temu"}
 
-    orden = _normalizar(parent_sn, det)
+    # CANCELADA (30-sep). ANTES de normalizar: una venta cancelada entera no
+    # tiene piezas vivas y "no trae SKU" la escondería. Y NO pasa por
+    # `pedidos_ml.sincronizar`: ese camino llamaría a `odoo_ventas.cancelar_orden`
+    # sin la bandera de Temu, y cancelar órdenes en Odoo nace APAGADO (regla 3).
+    # Lo atiende el vigilante, con sus banderas y sus guardas.
+    if estado_de(det) == ESTADO_CANCELADA:
+        if not es_cancelada(det):
+            log.warning("TEMU orden %s: padre en 3 con algún renglón vivo — no está "
+                        "medido; no se crea ni se marca.", parent_sn)
+            return {"ok": False, "id": parent_sn, "accion": "sin_mapear",
+                    "estado_temu": ESTADO_CANCELADA,
+                    "motivo": "padre cancelado con renglones vivos: no medido"}
+        from services import temu_cancelaciones
+        r = await temu_cancelaciones.atender_vistas([(parent_sn, det)],
+                                                   origen="webhook")
+        return {"ok": True, "id": parent_sn, "accion": "cancelada_temu",
+                "estado_temu": ESTADO_CANCELADA, "vigilante": r}
+
+    # En un hilo (regla 11): `_normalizar` consulta el precio de catálogo en
+    # kubera con psycopg2, y eso BLOQUEA.
+    orden = await asyncio.to_thread(_normalizar, parent_sn, det)
     if not any(i["sku"] for i in orden["items"]):
         return {"ok": False, "id": parent_sn,
                 "motivo": "la orden no trae extCode (SKU) en ninguna línea"}
@@ -1104,7 +1343,7 @@ async def procesar(parent_sn: str) -> dict[str, Any]:
         destino = _ESTADOS_WC.get(int(estado_num))
     except (TypeError, ValueError):
         destino = None
-    if not destino:
+    if not destino or destino == "cancelled":
         # Ver el encabezado: un código que no conocemos NO crea pedido. Queda el
         # registro para poder mapearlo cuando se sepa qué era.
         log.warning("TEMU orden %s con orderStatus=%s SIN MAPEAR: se registra y "

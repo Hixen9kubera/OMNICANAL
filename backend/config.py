@@ -463,6 +463,43 @@ class Settings(BaseSettings):
     # explícito.
     pedidos_temu_sondeo_max_dias: int = 2
 
+    # ── VIGILANTE DE CANCELACIONES DE TEMU (30-sep-2026) ───────────────────
+    # "Tenemos que capturarlas INMEDIATAMENTE y mostrarlas en el panel"
+    # (Brandon). Cada N minutos le vuelve a preguntar a Temu por las ventas
+    # vivas —las que esperan guía y las que tienen orden en Odoo— y atiende las
+    # que encuentre en orderStatus 3 (cancelada, medido el 30-sep). Ver
+    # services/temu_cancelaciones.py.
+    #
+    # DOS BANDERAS, porque escriben en sitios distintos (regla 3):
+    #   · ENABLED nace ENCENDIDA: sólo escribe NUESTRA bitácora — marca la venta
+    #     cancelada y con eso sale de la cola de guías y de la resta de stock;
+    #     vincula la captura a mano que encuentre; y re-mira en Odoo (SÓLO
+    #     LECTURA) las ya marcadas para sacarlas del rojo cuando alguien ya las
+    #     resolvió. Apagada, nada se marca (tampoco desde el trabajo de guías ni
+    #     el sondeo), y una venta cancelada sigue sin crearse.
+    #   · CANCELAR_ODOO nace APAGADA: cancela la orden de Odoo de una venta
+    #     cancelada que todavía no se surte (ni PICK/PACK ni salida hechos). Escribe
+    #     en Odoo: dale de Brandon. Además exige el interruptor general y el DEL
+    #     CANAL Temu encendidos y ODOO_VENTAS_SOLO_REGISTRO apagado. ⚠️ Al
+    #     encenderla cancela también el REZAGO de "por cancelar" (hasta 30 días,
+    #     20 por vuelta): verlo antes con
+    #     POST /api/automatizacion/temu/cancelaciones/vigilar?simular=true&como_si_cancelar_odoo=true
+    temu_cancelaciones_enabled: bool = True
+    temu_cancelaciones_cancelar_odoo: bool = False
+    temu_cancelaciones_min: int = 10
+    # Llamadas a Temu por vuelta (lote + detalle). La cuota es de la app y la
+    # comparten el sondeo, las guías y el investigador.
+    temu_cancelaciones_max_llamadas: int = 30
+    # Ventana de las ventas CON orden que se vigilan (las que esperan guía usan
+    # la de la espera, `odoo_ventas_espera_guia_dias`, la misma de la resta).
+    temu_cancelaciones_dias: int = 14
+    # Una lectura por lote (`bg.order.list.v2.get` pidiendo sólo canceladas).
+    # Lo que devuelva se verifica venta por venta: el filtro no se da por bueno.
+    # Las páginas son un TOPE: de la 2ª en adelante sólo se piden si todo lo
+    # recibido viene en 3 (Temu respeta el filtro); si no, el lote cuesta 1.
+    temu_cancelaciones_lote: bool = True
+    temu_cancelaciones_lote_paginas: int = 4
+
     # ── SONDEO DE VENTAS DE WALMART (pieza 6) ─────────────────────
     # NO hay webhook: `GET /v3/webhooks/eventTypes` contesta 200 con PO_CREATED y
     # compañía, pero `/v3/webhooks/subscriptions` devuelve 520 "Internal Error

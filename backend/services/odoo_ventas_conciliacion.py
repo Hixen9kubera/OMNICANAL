@@ -36,8 +36,21 @@ Además, en los dos canales, `estado_wc = 'cancelled'`: es la traducción de la
 propia tubería (`_ESTADOS_WC` de cada canal), no un código ajeno. En TikTok
 coincide 1:1 con CANCELLED.
 
-TEMU NO ES DETECTABLE HOY — Y NO SE VA A ENCENDER SOLO
-------------------------------------------------------
+ACTUALIZACIÓN 30-sep-2026: TEMU YA ES DETECTABLE
+------------------------------------------------
+El 3 es "cancelada" (medido en producción con `bg.order.detail.v2.get`; ver
+`pedidos_temu._ESTADOS_WC`), y el vigilante `temu_cancelaciones` le vuelve a
+preguntar a Temu por las ventas vivas y deja la marca en la BITÁCORA
+(`ops.odoo_sale_orders`), no en channel.orders. Por eso, para Temu, las ventas
+canceladas salen de las dos fuentes: channel.orders (estado 3, por si algún día
+llega) y la bitácora (las acciones de cancelación). Lo de abajo es la historia
+de por qué hizo falta.
+
+Alcance: sólo ventas con fila en la bitácora (las que creó la automatización o
+que `vincular_sin_orden` amarró). Una captura a mano SIN fila no la vigila nadie.
+
+TEMU NO ERA DETECTABLE (14-sep) — Y NO SE IBA A ENCENDER SOLO
+-------------------------------------------------------------
 Una versión anterior de este encabezado prometía que el día que alguien mapeara
 el código de cancelada de Temu "esta lista se enciende sola". Es FALSO, por dos
 razones que se suman:
@@ -122,17 +135,19 @@ _CUENTA = {"tiktok": "TIKTOK", "temu": "TEMU"}
 # Ver el encabezado: medido con un SELECT el 14-sep-2026. Se compara en MAYÚSCULAS.
 _CANCELADA_ESTADO_CANAL: dict[str, frozenset[str]] = {
     "tiktok": frozenset({"CANCELLED"}),
-    "temu": frozenset(),
+    # El 3, medido el 30-sep-2026. Ver el encabezado ("ACTUALIZACIÓN").
+    "temu": frozenset({"3"}),
 }
+
+# Canales cuyas cancelaciones se leen ADEMÁS de la bitácora: el vigilante marca
+# ahí, no en channel.orders. Ver el encabezado.
+_CANCELADA_EN_BITACORA = frozenset({"temu"})
 
 # Canales cuya cancelación HOY no se puede ver, con la razón que lee la pantalla.
 # Ver el encabezado ("TEMU NO ES DETECTABLE HOY"). Sacar a Temu de aquí exige
 # antes que su sondeo actualice el estado de lo ya registrado.
-_NO_DETECTABLE: dict[str, str] = {
-    "temu": ("el sondeo de Temu salta las ventas que ya registró sin volver a leer su "
-             "estado, así que channel.orders se queda con el estado con que nació cada "
-             "venta y nunca ve una cancelación"),
-}
+# (Vacío desde el 30-sep: Temu salió de aquí cuando nació su vigilante.)
+_NO_DETECTABLE: dict[str, str] = {}
 
 # Estados TERMINALES por canal, para decidir a quién preguntarle el estado vivo.
 # Sólo los canales listados se consultan en vivo (TikTok llega desde Railway).
@@ -198,6 +213,10 @@ def _ahora_iso() -> str:
 
 def criterio(canal: str) -> str:
     """Qué cuenta como cancelada en ese canal, dicho para quien lee la pantalla."""
+    if canal in _CANCELADA_EN_BITACORA:
+        return ("orderStatus 3 de Temu (cancelada, medido el 30-sep), marcado en la "
+                "bitácora por el vigilante de cancelaciones — sólo ventas con fila en "
+                "la bitácora; una captura a mano sin fila no se vigila")
     estados = sorted(_CANCELADA_ESTADO_CANAL.get(canal, frozenset()))
     if estados:
         return (f"estado en el canal {', '.join(estados)} (o el pedido de Woo quedó "
@@ -328,6 +347,21 @@ def _ventas_canceladas(canal: str, dias: int) -> dict[str, Any]:
             ventas[vid] = {"estado_canal": f.get("estado_canal"),
                            "venta_at": _iso(f.get("creado_at")),
                            "_creado": f.get("creado_at")}
+    if canal in _CANCELADA_EN_BITACORA:
+        # LA MARCA DEL VIGILANTE (30-sep). Sólo las que tienen orden: sin orden
+        # no hay nada que conciliar. Las acciones son las de la bitácora.
+        from services import odoo_ventas_log as ovl
+        for f in sdb.fetch_all(
+                """select external_order_id, creado_at
+                     from ops.odoo_sale_orders
+                    where canal = %(canal)s and creado_at >= %(desde)s
+                      and odoo_order_id is not null
+                      and accion = any(%(acciones)s)""",
+                {**base, "acciones": list(ovl.ACCIONES_CANCELADA_CANAL)}):
+            vid = str(f.get("external_order_id") or "").strip()
+            if vid and vid not in ventas:
+                ventas[vid] = {"estado_canal": "3", "venta_at": _iso(f.get("creado_at")),
+                               "_creado": f.get("creado_at")}
     ultimos = [v.get("ultimo") for v in vistos if isinstance(v.get("ultimo"), datetime)]
     abiertas: dict[str, dict[str, Any]] = {}
     abiertas_total = 0

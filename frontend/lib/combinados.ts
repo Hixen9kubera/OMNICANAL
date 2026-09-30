@@ -108,10 +108,19 @@ export function diaMX(ms: number): string {
  *
  *  `espera_guia` NO está aquí a propósito: esa venta SÍ va a salir, y si el
  *  canal ya le puso la misma guía que a otra, es la misma caja — verlo desde
- *  antes de que nazca su orden es justo lo útil. */
+ *  antes de que nazca su orden es justo lo útil.
+ *
+ *  Las `cancelada_*` con orden son del vigilante de cancelaciones de Temu
+ *  (30-sep): con la cancelación automática en Odoo apagada la orden sigue en
+ *  'sale', así que `o.estado === "cancel"` no las atrapa.
+ *
+ *  ⚠️ ES LA LISTA ÚNICA del front de "el canal canceló esta venta" (la pestaña
+ *  de Automatización la importa de aquí) y GEMELA de
+ *  `ACCIONES_CANCELADA_CANAL` en backend/services/odoo_ventas_log.py. */
 export const ACCIONES_CANCELADA: ReadonlySet<string> = new Set([
   "cancelada", "ya_cancelada", "no_se_pudo_cancelar", "solo_registro_cancelar", "nacio_cancelada",
-  "cancelada_sin_orden",
+  "cancelada_sin_orden", "sin_orden",
+  "cancelada_por_cancelar", "cancelada_revisar", "cancelada_sin_rastro", "cancelada_devuelta",
 ]);
 
 /** Lo mínimo de una fila de la bitácora para agruparla. */

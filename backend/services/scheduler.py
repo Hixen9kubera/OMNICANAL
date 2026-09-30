@@ -291,6 +291,30 @@ def iniciar() -> None:
                  settings.pedidos_temu_sondeo_min,
                  settings.pedidos_temu_sondeo_paginas,
                  settings.pedidos_temu_sondeo_solo_registro)
+    # VIGILANTE DE CANCELACIONES DE TEMU (30-sep-2026). Le vuelve a preguntar a
+    # Temu por las ventas vivas y atiende las canceladas: las que esperaban guía
+    # salen de la cola y de la resta de stock; las que tienen orden en Odoo se
+    # cancelan allá SÓLO con TEMU_CANCELACIONES_CANCELAR_ODOO (nace apagada).
+    # Nace ENCENDIDO porque sólo escribe nuestra bitácora. Ver
+    # services/temu_cancelaciones.py.
+    if getattr(settings, "temu_cancelaciones_enabled", True):
+        from services import temu_cancelaciones
+        _min_canc = max(5, int(getattr(settings, "temu_cancelaciones_min", 10) or 10))
+        _scheduler.add_job(
+            temu_cancelaciones.vigilar,
+            "interval",
+            minutes=_min_canc,
+            id="temu_cancelaciones",
+            # 150 s: después del sondeo de Temu (120 s), para no pedirle a Temu
+            # dos listados en el mismo segundo del arranque.
+            next_run_time=datetime.now() + timedelta(seconds=150),
+            max_instances=1,
+            coalesce=True,
+        )
+        log.info("Vigilante de cancelaciones de Temu cada %s min (cancelar en "
+                 "Odoo: %s).", _min_canc,
+                 "SÍ" if getattr(settings, "temu_cancelaciones_cancelar_odoo", False)
+                 else "no")
     # ── RESPALDOS DEL AVISO DE PEDIDOS DE TIKTOK (14-sep-2026) ─────────────────
     # Los tres nacen APAGADOS (regla 3) y cada uno cuelga de su propia bandera:
     # con la bandera apagada el job NI SE REGISTRA. Ver config.py.

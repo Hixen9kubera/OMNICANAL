@@ -1894,6 +1894,21 @@ def crear_con_guia(canal: str, cuenta: str, order_id: str, fecha: str | None,
         log.debug("crear_con_guia: no se pudo leer el plan guardado de %s (%s)",
                   order_id, exc)
 
+    # ¿LA CANCELARON MIENTRAS SE PEDÍA LA GUÍA? (30-sep) El trabajo de guías leyó
+    # el estado de la venta, después pidió los paquetes (varias llamadas,
+    # segundos) y ahora crea. En esa ventana el vigilante de cancelaciones puede
+    # haberla marcado: crearla igual haría nacer la orden de una venta muerta, y
+    # `registrar` pisaría la marca con "confirmada". Esta lectura es la de
+    # arriba —ya estaba, para el motivo—, así que no cuesta nada más.
+    acc_antes = str(antes.get("accion") or "")
+    if acc_antes in odoo_ventas_log.ACCIONES_CANCELADA_CANAL:
+        log.warning("Odoo %s: la venta %s ya tiene guía pero la bitácora dice '%s' "
+                    "(se canceló en el canal): NO se crea la orden.",
+                    canal, order_id, acc_antes)
+        return {"ok": False, "accion": "cancelada_antes_de_crear", "resultado": {},
+                "cola": None,
+                "motivo": f"la venta se canceló en el canal ({acc_antes}) antes de crear"}
+
     r = crear_orden(canal, str(order_id), fecha, items, esperar_guia=False)
     if not r.get("odoo_id"):
         # No nació. Se deja la fila como está —sigue en espera— y la vuelta
@@ -2064,7 +2079,8 @@ def notar_combinados(canal: str, dias: int = 21, limite: int = 300,
                                                  dry_run=dry_run)
 
 
-def cancelar_orden(canal: str, order_id: str) -> dict[str, Any]:
+def cancelar_orden(canal: str, order_id: str,
+                   odoo_id: int | None = None) -> dict[str, Any]:
     """
     El marketplace canceló: la orden de Odoo se cancela también.
 
@@ -2072,12 +2088,22 @@ def cancelar_orden(canal: str, order_id: str) -> dict[str, Any]:
     terminó cancelada; una orden viva por una venta muerta deja al almacén
     surtiendo lo que nadie compró y —con "Odoo descuenta"— deja la reserva
     mordiendo stock que sí se podía vender.
+
+    `odoo_id` (vigilante de Temu, 30-sep): cancela ESA orden, la que quien
+    llama ya verificó como la única viva de la venta. Sin él se busca por
+    referencia exacta (`buscar_por_ref`, `limit 1`, sin filtrar estado), que
+    con una `<venta>` cancelada y una `<venta>#2` viva encontraba la cancelada
+    y contestaba `ya_cancelada` con la viva intacta.
     """
     if not habilitado():
         return {"ok": False, "accion": "apagado",
                 "motivo": "el interruptor de órdenes en Odoo está apagado"}
     try:
-        previa = buscar_por_ref(canal, order_id)
+        if odoo_id:
+            leidas = _kw("sale.order", "read", [[int(odoo_id)], ["name", "state"]]) or []
+            previa = leidas[0] if leidas else None
+        else:
+            previa = buscar_por_ref(canal, order_id)
         if not previa:
             return {"ok": False, "accion": "sin_orden",
                     "motivo": "no hay orden en Odoo para esa venta"}
