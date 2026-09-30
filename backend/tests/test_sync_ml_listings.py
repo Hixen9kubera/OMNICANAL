@@ -193,6 +193,18 @@ class CondicionDuenoEstable(unittest.TestCase):
         # estrictamente mayor: en empate se queda el que ya estaba
         self.assertIn("end) > (case lower(coalesce(listings.situacion", c)
 
+    def test_reclamo_compartido_suelta_en_empate_pero_nunca_a_peor(self):
+        """v0.598.0: si OTRA fila reclama el mismo item, el empate deja cambiar;
+        un item peor, no. (El caso real se prueba contra Postgres en el
+        sandbox: CAM-0030-IND con el item de MAT.)"""
+        with mock.patch.object(settings, "channel_dueno_estable", True):
+            c = " ".join(cm._condicion_dueno_estable("mercado_libre").split())
+        self.assertIn("end) >= (case lower(coalesce(listings.situacion", c)
+        self.assertIn("exists (select 1 from channel.listings o", c)
+        self.assertIn("o.listing_id = listings.listing_id and o.sku <> listings.sku", c)
+        self.assertIn("o.account_id = listings.account_id", c)
+        self.assertEqual(c.count("("), c.count(")"))
+
     def test_rango(self):
         r = cm._rango_situacion("x")
         for estado, rango in (("active", 3), ("paused", 2), ("under_review", 1)):

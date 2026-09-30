@@ -126,15 +126,31 @@ def _condicion_dueno_estable(canal: str) -> str:
     otro xd_drop_off, los dos pausados con 0 piezas; `is_fulfillment` cambió en
     cada ronda de 15 min desde agosto). Mismo listing_id, o uno de los dos sin
     id, escribe como siempre. Vacía (sin condición) fuera de ML o con el flag
-    apagado."""
+    apagado.
+
+    RECLAMO COMPARTIDO (v0.598.0). Si el item que la fila tiene hoy lo reclama
+    OTRA fila de la cuenta, el empate sí deja cambiar (a igual o mejor, nunca a
+    peor). Sin esto, un reclamo equivocado se congelaba: CAM-0030-IND apuntaba
+    al item de CAM-0030-MAT (que ML declara MAT) y su item propio,
+    MLM3183258785, no podía entrar porque los dos estaban pausados. Medido el
+    30-sep-2026 contra ML: de las 224 filas con item compartido, solo esa
+    cambia; ninguna dueña tiene otro item de su SKU que la pueda mudar. Ya sin
+    compartir, la regla estricta vuelve a mandar: no hay aleteo."""
     if canal != "mercado_libre" or not settings.channel_dueno_estable:
         return ""
+    nuevo = _rango_situacion('excluded.situacion')
+    actual = _rango_situacion('listings.situacion')
     return f"""
                        and (nullif(excluded.listing_id, '') is null
                             or nullif(listings.listing_id, '') is null
                             or excluded.listing_id = listings.listing_id
-                            or {_rango_situacion('excluded.situacion')}
-                               > {_rango_situacion('listings.situacion')})"""
+                            or {nuevo} > {actual}
+                            or ({nuevo} >= {actual}
+                                and exists (select 1 from channel.listings o
+                                             where o.canal = listings.canal
+                                               and o.account_id = listings.account_id
+                                               and o.listing_id = listings.listing_id
+                                               and o.sku <> listings.sku)))"""
 
 
 _SQL_SITUACION_GEMELAS = """

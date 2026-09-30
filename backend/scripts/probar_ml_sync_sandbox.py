@@ -182,6 +182,23 @@ def main() -> None:
         sync(s, "MLMZZ31", "paused", full=False, qty=8)
         check("encendido: el dueño que se pausa se actualiza (mismo item)",
               leer(s)["situacion"] == "paused")
+        # Reclamo compartido (v0.598.0): IND apunta al item de MAT; aparece su
+        # item propio, pausado igual que el de MAT (empate).
+        mat, ind = f"{P}CMP-MAT", f"{P}CMP-IND"
+        poner(mat, "MLMZZ70", "paused", full=True)
+        poner(ind, "MLMZZ70", "paused", full=True)
+        sync(ind, "MLMZZ71", "paused", full=True)
+        check("encendido: con el item COMPARTIDO, el empate sí deja pasar a su item propio",
+              leer(ind)["listing_id"] == "MLMZZ71", str(dict(leer(ind))))
+        check("encendido: la dueña se queda con el suyo", leer(mat)["listing_id"] == "MLMZZ70")
+        sync(ind, "MLMZZ72", "paused", full=True)
+        check("encendido: ya sin compartir, el empate vuelve a no entrar (sin aleteo)",
+              leer(ind)["listing_id"] == "MLMZZ71")
+        poner(f"{P}CMP-S", "MLMZZ80", "active", full=True)
+        poner(f"{P}CMP-T", "MLMZZ80", "active", full=True)
+        sync(f"{P}CMP-S", "MLMZZ81", "paused", full=False)
+        check("encendido: compartido o no, jamás a un item PEOR",
+              leer(f"{P}CMP-S")["listing_id"] == "MLMZZ80")
         sync(f"{P}NUEVO", "MLMZZ40", "active", full=False, qty=1)
         check("encendido: un SKU nuevo se inserta", (leer(f"{P}NUEVO") or {}).get("listing_id") == "MLMZZ40")
         poner(f"{P}SINID", None, "paused", full=False)

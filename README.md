@@ -1001,6 +1001,30 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.598.0 — Dueño estable: un reclamo compartido ya no se congela
+
+Hallado revisando CAM-0030-MAT (30-sep). La fila de CAM-0030-IND apuntaba al
+item de MAT (MLM3188977035, que ML declara MAT), y el item propio de IND
+(MLM3183258785) no podía entrar: con `CHANNEL_DUENO_ESTABLE` una fila solo
+cambia de item a uno ESTRICTAMENTE mejor, y los dos estaban pausados.
+
+**Ajuste** (`channel_mirror._condicion_dueno_estable`, bajo el mismo flag, que
+ya está encendido): si el item que la fila tiene hoy lo reclama OTRA fila de la
+cuenta, un empate también deja cambiar, pero nunca a un item peor. Ya sin
+compartir, vuelve la regla estricta, así que no regresa el aleteo. La consulta
+usa `idx_channel_listings_listing_id`.
+
+**Qué cambia en producción** (medido el 30-sep contra ML, solo lectura): de las
+224 filas con item compartido, solo CAM-0030-IND se muda a su item propio,
+cuando la rotación lo lea. Ninguna dueña tiene otro item de su SKU que pudiera
+llevársela.
+
+Pruebas: `tests/test_sync_ml_listings.py` (27; suite completa OK) y
+`scripts/probar_ml_sync_sandbox.py` contra Postgres del sandbox (transacción
+revertida). Con item compartido, el empate pasa al item propio y la dueña se
+queda con el suyo. Sin compartir, el empate no entra. Nunca cambia a un item
+peor.
+
 ### v0.597.0 — Sync de ML: rotación que sí avanza, la fila dueña de cada publicación y fin del aleteo (3 flags apagados)
 
 Revisión de Eduardo (29-sep): «qué tan desfasado está ML». Medido ese día contra
