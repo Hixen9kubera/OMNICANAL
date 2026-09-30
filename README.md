@@ -1001,6 +1001,22 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.600.0 — El Publicador mostraba las características de una variante vacías
+
+Reportado con `VEH-0315-CHR`: el nombre del atributo salía bien ("Modelo") pero
+el valor llegaba en blanco, aunque la variante sí lo tenía ("Chr") — confirmado
+directo contra WooCommerce (`{"name": "Modelo", "option": "Chr"}`).
+
+Causa: `_atributos()` (la normalización que usa `obtener_producto_por_sku`,
+la lectura detrás del Publicador) solo leía `options` (plural) — la forma en
+que un producto PADRE lista los valores POSIBLES de un eje. Una VARIACIÓN
+manda el valor ya elegido en `option` (singular, un string, no una lista); sin
+ese caso, el valor quedaba `''` para cualquier atributo de cualquier variante.
+Las imágenes no compartían el bug — se verificaron frescas por separado.
+
+Fix (`services/woocommerce.py`, `_atributos`): cae a `option` cuando no hay
+`options`. Solo lectura/UI.
+
 ### v0.599.0 — Vigilante de cobertura del sync: avisa si deja de recorrer el catálogo
 
 Los syncs de ML y Amazon pasaron semanas releyendo las mismas 80 publicaciones

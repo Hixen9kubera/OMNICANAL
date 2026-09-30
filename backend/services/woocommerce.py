@@ -913,14 +913,25 @@ async def imagenes_por_wc_id(wc_ids: list[int]) -> dict[int, str]:
 
 
 def _atributos(producto: dict[str, Any]) -> list[dict[str, Any]]:
-    """Normaliza los atributos de WooCommerce a [{nombre, valor}]."""
+    """Normaliza los atributos de WooCommerce a [{nombre, valor}].
+
+    Un producto PADRE trae `options` (la lista de valores posibles del eje,
+    plural); una VARIACIÓN trae `option` (el valor YA elegido para esa pieza,
+    singular) — son dos formas de API distintas para el mismo campo
+    `attributes`. Leer solo `options` deja el valor de cada atributo de
+    variante en '' (VEH-0315-CHR, sep-2026: "Modelo" salía vacío en el
+    Publicador aunque el Estudio sí mostraba "Chr").
+    """
     salida: list[dict[str, Any]] = []
     for a in producto.get("attributes") or []:
         nombre = a.get("name")
         if not nombre:
             continue
         opciones = a.get("options") or []
-        valor = ", ".join(str(o) for o in opciones) if opciones else ""
+        if opciones:
+            valor = ", ".join(str(o) for o in opciones)
+        else:
+            valor = str(a.get("option") or "")
         salida.append({"nombre": nombre, "valor": valor})
     return salida
 
