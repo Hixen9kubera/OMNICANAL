@@ -1931,6 +1931,11 @@ _PLAN_CACHE: dict[str, Any] = {"ts": 0.0, "clave": None, "res": None}
 _PLAN_TTL = 45.0
 
 
+# Cuántas ventas en espera puede planear una vista previa (antes 60). El
+# default sigue siendo `temu_guias_plan_limite` (20).
+_LIMITE_MAX = 120
+
+
 def _limite_omision() -> int:
     return max(1, min(60, int(getattr(settings, "temu_guias_plan_limite", 20) or 20)))
 
@@ -1959,7 +1964,14 @@ async def plan_guias(limite: int | None = None, *, solo: str | None = None,
     en el panel ({clave de caja: {peso_kg, largo_cm, ancho_cm, alto_cm}}).
     `emitida` la pasa `comprar()` para rehacer la huella que se aprobó.
     """
-    lim = _limite_omision() if limite is None else max(1, min(60, int(limite)))
+    lim = _limite_omision() if limite is None else max(1, min(_LIMITE_MAX, int(limite)))
+    if lim > 60:
+        # "¿Se puede comprar la guía de TODAS?" (Brandon, 30-sep, con ~92 en
+        # espera): más de 60 ventas piden más lecturas (detalle + cotización por
+        # caja ≈ 3 por venta) y más tiempo. Sólo se sube cuando se pide; lo que
+        # no alcance a leerse sale en `no_leidas`, nunca en silencio.
+        tope_llamadas = max(tope_llamadas, 3 * lim + 30)
+        segundos_max = max(segundos_max, 270.0)
     try:
         med = leer_medidas(medidas)
     except (ValueError, TypeError) as exc:

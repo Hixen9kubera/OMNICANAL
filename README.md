@@ -1001,6 +1001,16 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.604.0 — Plan de guías de Temu: la vista previa puede calcular TODAS las que esperan (hasta 120)
+
+Brandon, 30-sep, con 92 ventas esperando guía: *"¿se puede comprar la guía de
+todas?"*. La vista previa sólo planeaba las 60 más viejas, así que las más nuevas
+—justo las que todavía tienen margen frente al límite de envío de Temu— no se
+veían. Ahora `GET/POST /api/automatizacion/temu/plan-guias` acepta `limite`
+hasta 120 y el selector del panel trae "Todas (hasta 120)". Arriba de 60 se
+suben las lecturas permitidas (≈3 por venta) y el tiempo (270 s); lo que no
+alcance a leerse sale en `no_leidas`. Sólo lectura: no compra nada.
+
 ### v0.603.0 — Temu: plan de compra de guías por bodega (vista previa con el payload exacto; la compra nace APAGADA)
 
 Brandon, 30-sep: automatizar la compra de guías de Temu con **paquetes divididos

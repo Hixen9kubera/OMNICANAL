@@ -900,7 +900,7 @@ async def temu_guia(sn: str = Query(..., description="parentOrderSn")):
 
 
 @router.get("/temu/plan-guias", dependencies=[Depends(requiere_api_key)])
-async def temu_plan_guias(limite: int = Query(20, ge=1, le=60,
+async def temu_plan_guias(limite: int = Query(20, ge=1, le=120,
                                               description="ventas en espera a planear")):
     """
     VISTA PREVIA de la compra de guías de Temu. **No compra nada.**
@@ -948,7 +948,7 @@ async def temu_plan_guias_con_medidas(request: Request):
     if not isinstance(cuerpo, dict):
         raise HTTPException(status_code=422, detail="el cuerpo tiene que ser un objeto")
     try:
-        limite = max(1, min(60, int(cuerpo.get("limite") or 20)))
+        limite = max(1, min(120, int(cuerpo.get("limite") or 20)))
         medidas = tgc.leer_medidas(cuerpo.get("medidas"))
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)[:300])

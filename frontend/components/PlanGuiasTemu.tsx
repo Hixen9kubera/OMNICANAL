@@ -614,6 +614,7 @@ export default function PlanGuiasTemu() {
                   <option value={20}>20 ventas</option>
                   <option value={40}>40 ventas</option>
                   <option value={60}>60 ventas</option>
+                  <option value={120}>Todas (hasta 120)</option>
                 </select>
                 <label className="inline-flex items-center gap-2 text-[12.5px] font-semibold text-slate-600">
                   <input type="checkbox" checked={soloComprables}
