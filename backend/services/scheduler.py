@@ -13,6 +13,7 @@ POST /api/sync/leer, en vez de este scheduler embebido.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from datetime import datetime, timedelta, timezone
@@ -356,6 +357,19 @@ def iniciar() -> None:
         _scheduler.add_job(_descubrir_amazon, "cron", hour=hh, minute=mm,
                            id="amazon_descubrir", max_instances=1, coalesce=True)
         log.info("Descubrimiento de Amazon diario a las %02d:%02d UTC.", hh, mm)
+    # Vigilante de COBERTURA del sync (v0.599.0): ¿recorre el catálogo o relee
+    # las mismas 80? Cada hora; la primera, 20 min después de arrancar.
+    if getattr(settings, "vigilante_sync_enabled", False):
+        from services import vigilante_sync
+
+        async def _vigilante_sync() -> None:
+            await asyncio.to_thread(vigilante_sync.revisar)   # regla 11: lee la base
+
+        _scheduler.add_job(_vigilante_sync, "interval", minutes=60, id="vigilante_sync",
+                           next_run_time=datetime.now() + timedelta(minutes=20),
+                           max_instances=1, coalesce=True)
+        log.info("Vigilante de cobertura del sync cada 60 min (mínimo %.0f%% en %s h).",
+                 100 * settings.vigilante_sync_min_cobertura, settings.vigilante_sync_horas)
     # Guía + etiqueta PDF de TikTok en Odoo. Cada 20 min: el PDF sólo existe
     # entre el agendado de la recolección y la recolección.
     if getattr(settings, "tiktok_guias_enabled", False):

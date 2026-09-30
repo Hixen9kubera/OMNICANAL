@@ -1001,6 +1001,40 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.599.0 — Vigilante de cobertura del sync: avisa si deja de recorrer el catálogo
+
+Los syncs de ML y Amazon pasaron semanas releyendo las mismas 80 publicaciones
+sin un solo error: cada vuelta «terminaba bien» (ver v0.594.0 y v0.597.0).
+Mirar si el sync corrió no sirve; hay que medir QUÉ leyó.
+
+**Qué hace** (`services/vigilante_sync.py`, flag `VIGILANTE_SYNC_ENABLED`, nace
+apagado):
+- Cada vuelta de `sincronizar_ml` y `sincronizar_amazon` anota en
+  `ops.process_log` (proceso `sync_cobertura`, accion `canal|cuenta`): el tamaño
+  del universo, los ids que VISITÓ y cuántos contestó el canal. El barrido de
+  cierre de ML no cuenta.
+- Cada hora, `revisar()` cuenta las publicaciones distintas de las últimas 24 h
+  contra el universo y avisa por Slack con `alertas.avisar_estado`: solo al
+  cambiar de estado, con mensaje de recuperación y un recordatorio al día.
+  Estados:
+  - `baja`: cobertura menor a `VIGILANTE_SYNC_MIN_COBERTURA` (0.9).
+  - `sin_vueltas`: más de `VIGILANTE_SYNC_MAX_SILENCIO_MIN` (60) sin una vuelta.
+  - `sin_respuesta`: visitó publicaciones y el canal no contestó ninguna.
+  - `calentando`: menos de 24 h de historia. No avisa.
+- Guarda 7 días; lo más viejo se borra en la misma revisión.
+- `GET /api/sync/cobertura?horas=24` enseña el estado de cada sync.
+
+Con la rotación por reloj, lo sano es ~100 %: ML recorre sus ~2,550 por cuenta
+cada ~8 h y Amazon sus ~1,840 cada ~6 h. El estado atorado del 29-sep habría
+dado ~4 % (80 de 2,000) y alerta desde la primera revisión con historia.
+
+Pruebas: `tests/test_vigilante_sync.py` (11: anotar, estados, revisar y los
+ganchos en los dos syncs; suite completa OK) y
+`scripts/probar_vigilante_sync_sandbox.py`. Este último corre contra Postgres
+del sandbox con 26 h simuladas de cinco syncs: RELOJ ok, ATORADO baja, NUEVO
+calentando, CALLADO sin_vueltas y MUDO sin_respuesta. También comprueba el
+insert real y la poda. Transacción revertida y Slack simulado.
+
 ### v0.598.0 — Dueño estable: un reclamo compartido ya no se congela
 
 Hallado revisando CAM-0030-MAT (30-sep). La fila de CAM-0030-IND apuntaba al

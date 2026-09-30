@@ -64,6 +64,22 @@ async def descubrir_amazon(
     return await inventario.descubrir_amazon(aplicar=aplicar)
 
 
+@router.get("/cobertura")
+async def cobertura_sync(horas: int = Query(24, ge=1, le=168)):
+    """
+    Cuántas publicaciones DISTINTAS visitó cada sync en las últimas `horas`
+    contra su universo, y su estado (ok / baja / sin_vueltas / sin_respuesta /
+    calentando). Lo alimenta el vigilante de cobertura (v0.599.0); con
+    VIGILANTE_SYNC_ENABLED apagado no hay vueltas anotadas y sale vacío.
+    """
+    import asyncio
+
+    from services import vigilante_sync
+    filas = await asyncio.to_thread(vigilante_sync.cobertura, horas)
+    return {"habilitado": settings.vigilante_sync_enabled, "horas": horas,
+            "min_cobertura": settings.vigilante_sync_min_cobertura, "filas": filas}
+
+
 @router.post("/woo")
 async def sincronizar_woo(
     limite: int | None = Query(None, ge=1, description="Máx. de SKUs (para pruebas); vacío = todos"),

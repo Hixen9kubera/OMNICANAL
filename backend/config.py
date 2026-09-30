@@ -688,6 +688,20 @@ class Settings(BaseSettings):
     # `inventario._tajada_por_reloj`. Nace apagado: cambia qué se le pregunta
     # a ML y qué se escribe en channel.listings (flujo vivo, regla 3).
     sync_ml_rotacion_reloj: bool = False
+    # VIGILANTE DE COBERTURA DEL SYNC (v0.599.0). Los syncs de ML y Amazon
+    # pasaron semanas releyendo las mismas 80 publicaciones sin un solo error:
+    # cada vuelta «terminaba bien». Encendido: cada vuelta anota en
+    # ops.process_log (proceso `sync_cobertura`) el tamaño del universo y QUÉ
+    # leyó, y cada hora `vigilante_sync.revisar` cuenta cuántas publicaciones
+    # DISTINTAS se leyeron en `vigilante_sync_horas` y avisa por Slack al
+    # cambiar de estado: cobertura menor a `vigilante_sync_min_cobertura`, más
+    # de `vigilante_sync_max_silencio_min` sin vueltas, o visitas sin una sola
+    # respuesta del canal. Sin 24 h de historia no avisa (calentando). Guarda 7
+    # días. Nace apagado: escribe en la bitácora en cada vuelta.
+    vigilante_sync_enabled: bool = False
+    vigilante_sync_horas: int = 24
+    vigilante_sync_min_cobertura: float = 0.9
+    vigilante_sync_max_silencio_min: int = 60
 
     # ── Refresco de precio AL ABRIR el cajón de un producto ───
     # `services/precio_al_abrir.py`. Al abrir el cajón de un SKU se le pregunta

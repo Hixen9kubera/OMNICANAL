@@ -29,9 +29,13 @@ import httpx
 
 from config import settings
 from services import (alertas, amazon, channel_read, db, lecturas_fuente, meli,
-                      odoo, woocommerce)
+                      odoo, vigilante_sync, woocommerce)
 
 log = logging.getLogger("omnicanal.inventario")
+
+# Tamaño del universo de la última vuelta por `canal|cuenta`: lo anota
+# vigilante_sync para medir cuánto del catálogo se recorre (v0.599.0).
+_UNIVERSO: dict[str, int] = {}
 
 _EPOCA = datetime(1970, 1, 1)
 
@@ -372,6 +376,7 @@ async def _lote_desde_ml(cli: httpx.AsyncClient, cuenta: str, token: str,
     ids = await _universo_ml(cli, cuenta, token)
     if not ids:
         return []
+    _UNIVERSO[f"mercado_libre|{cuenta}"] = len(set(ids))   # para vigilante_sync
     # PASO 0 del desmantelamiento (12-ago-2026): la rotación se ordena con
     # `channel.listings`, que es donde este mismo sync escribe. Leerlo del
     # espejo MySQL funcionaba solo mientras el espejo estuviera fresco.
@@ -410,7 +415,7 @@ async def _lote_desde_ml(cli: httpx.AsyncClient, cuenta: str, token: str,
             log.info("barrido de cierre %s: %d fila(s) viva(s) sin publicación "
                      "en el catálogo — se les lee el estado final", cuenta,
                      len(congeladas))
-            lote.extend({"sku": None, "ml_item_id": i}
+            lote.extend({"sku": None, "ml_item_id": i, "cierre": True}
                         for i in congeladas[:_CIERRES_POR_RONDA])
     except Exception:  # noqa: BLE001 — el barrido nunca frena la ronda normal
         pass
@@ -425,6 +430,7 @@ async def sincronizar_ml(cuenta: str, limite: int = 60) -> dict[str, Any]:
 
     rows: list[dict[str, Any]] = []
     sin_sku = 0
+    respondidos = 0
     async with httpx.AsyncClient(base_url=_ML_API, timeout=20.0) as cli:
         if settings.sync_desde_ml:
             # F. UNIVERSO: el catálogo real de ML decide qué existe.
@@ -455,6 +461,7 @@ async def sincronizar_ml(cuenta: str, limite: int = 60) -> dict[str, Any]:
             item = await _leer_ml_item(cli, lst["ml_item_id"], token, cuenta)
             if not item:
                 continue
+            respondidos += 0 if lst.get("cierre") else 1
             # Identidad: en modo universo, del propio item (con ml_progress de
             # respaldo); en modo histórico viene de la bitácora, como siempre.
             sku = lst["sku"] or _sku_de_item(item) or respaldo.get(str(lst["ml_item_id"]))
@@ -484,6 +491,13 @@ async def sincronizar_ml(cuenta: str, limite: int = 60) -> dict[str, Any]:
                 "fecha_publicacion": item.get("date_created"),
             })
     n = await _upsert_async(rows)
+    if settings.vigilante_sync_enabled:
+        # Qué se VISITÓ, no qué cambió: ver vigilante_sync. El barrido de cierre
+        # no cuenta, son filas que ya no están en el catálogo vivo.
+        await asyncio.to_thread(
+            vigilante_sync.anotar_ronda, "mercado_libre", cuenta,
+            _UNIVERSO.get(f"mercado_libre|{cuenta}", 0),
+            [str(x["ml_item_id"]) for x in listings if not x.get("cierre")], respondidos)
     salida = {"canal": "mercado_libre", "cuenta": cuenta, "ok": True, "actualizados": n}
     if sin_sku:
         salida["sin_sku"] = sin_sku
@@ -522,6 +536,7 @@ def _listings_historico_ml(cuenta: str, limite: int) -> list[dict[str, Any]]:
     if settings.supabase_read_channel:
         vistos = channel_read.vistos_ml(cuenta)
         listings.sort(key=lambda r: _turno(vistos.get(str(r["ml_item_id"]))))
+        _UNIVERSO[f"mercado_libre|{cuenta}"] = len(listings)   # para vigilante_sync
         listings = listings[:limite]
         lecturas_fuente.anotar("channel", "kubera")
     return listings
@@ -575,7 +590,12 @@ async def sincronizar_amazon(limite: int = 100) -> dict[str, Any]:
     # `stock_real` se mandaba NULL a propósito — por eso la tarjeta de Amazon
     # mostraba "—" en stock aunque Amazon sí devuelve la cantidad.
     skus_pub = [p["sku"] for p in pubs if p.get("sku")]
-    return await _sincronizar_amazon_resto(pubs, skus_pub, fba)
+    r = await _sincronizar_amazon_resto(pubs, skus_pub, fba)
+    if settings.vigilante_sync_enabled:
+        await asyncio.to_thread(
+            vigilante_sync.anotar_ronda, "amazon", "", _UNIVERSO.get("amazon|", 0),
+            skus_pub, int(r.get("skus_leidos_en_vivo") or 0))
+    return r
 
 
 def _tajada_reloj(filas: list[dict[str, Any]], limite: int,
@@ -621,6 +641,7 @@ def _pubs_amazon(limite: int) -> list[dict[str, Any]]:
                     """SELECT ap.sku, ap.asin, ap.status
                        FROM amazon_progress ap WHERE ap.success=1"""))
         vistos = channel_read.vistos_amazon()
+        _UNIVERSO["amazon|"] = len(pubs)   # para vigilante_sync
         if settings.sync_amazon_rotacion_reloj:
             pubs = _tajada_reloj(pubs, limite)
         else:
