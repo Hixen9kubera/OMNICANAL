@@ -743,7 +743,8 @@ class Settings(BaseSettings):
     # acta, así que con el código en main y todo apagado no cambia NADA.
     #
     #   · _enabled  → tras cada medición de búsqueda, juzga los rivales de ese
-    #                 término (gasta IA: centavos por término, con tope diario).
+    #                 término (gasta IA: centavos por término, con tope diario),
+    #                 y registra al arrancar la COLA del juez (ver abajo).
     #   · _visible  → el detalle de Competencia enseña los veredictos y el
     #                 «N de M son competencia real». Es lo que ven los KAM; por
     #                 eso va aparte de la que enciende el juez.
@@ -757,14 +758,37 @@ class Settings(BaseSettings):
     # Tiene que ser una llave de `ia_json.MODELOS`: un modelo sin precio no se
     # llama (dejaría ciego al tope de gasto).
     competencia_juez_modelo: str = "deepseek-flash"
-    # Tope de IA en 24 h que frena al camino AUTOMÁTICO (el enganche a la
-    # captura). OJO: descuenta TODO lo que el juez gastó en las últimas 24 h —el
-    # script por lotes, el botón «Juzgar rivales» y la mejora de términos
-    # incluidos—, no solo lo del enganche: es una sola bolsa. Tras un lote que
-    # gaste el tope, las capturas del día quedan con `juez: 'tope'` y lo
-    # pendiente lo recoge el siguiente lote o el botón. Los scripts por lotes
-    # traen además su propio tope por corrida, que este no limita.
+    # Tope de IA en 24 h que frena a los caminos AUTOMÁTICOS (el enganche a la
+    # captura y la cola). OJO: descuenta TODO lo que el juez gastó en las
+    # últimas 24 h —el script por lotes, el botón «Juzgar rivales» y lo que
+    # juzga la mejora de términos incluidos (sus propuestas van a 'terminos' y
+    # no cuentan)—, no solo lo de esos dos: es una sola bolsa. El botón y la
+    # mejora NO lo consultan ($0.05 por clic cada uno). Frena trabajo NUEVO: cada
+    # corrida toma lo que quede al arrancar (con lo que otra corrida del proceso
+    # ya pagó y aún no registra) y la que ya estaba en vuelo termina, así que si
+    # el gancho y una vuelta de la cola coinciden la bolsa puede pasarse por lo
+    # que gaste la primera después de que arranque la segunda: a lo más el techo
+    # de una vuelta (0.10) más centavos: el techo real de los caminos
+    # automáticos es ≈ 1.10 USD/24 h, más los clics de arriba. Tras un lote
+    # que gaste el tope, las capturas del día quedan con `juez: 'tope'` y lo
+    # pendiente lo recoge la cola cuando la ventana libere saldo, o el botón. Los
+    # scripts por lotes traen además su propio tope por corrida, que este no
+    # limita.
     competencia_juez_tope_diario_usd: float = 1.0
+    # COLA DEL JUEZ: job del scheduler que cada `_cola_min` minutos toma hasta
+    # `_cola_skus` SKUs con pares pendientes y los juzga. Sin ella casi nada se
+    # juzgaría en producción: el gancho solo corre tras un «Medir» (a mano, ~35
+    # términos al mes) y el script por lotes tiene candado de sandbox. Su primera
+    # pasada ES el backfill inicial (≈12.7k pares ≈ $0.91 a precio de lista,
+    # medido en el sandbox; ~1 día a este ritmo) y después es el mantenimiento:
+    # títulos que cambian, términos re-medidos, una `VERSION_PROMPT` nueva. La
+    # acota el tope diario de arriba —misma bolsa, con su margen— y, a partir de
+    # `competencia_juez.COLA_TOPE_VUELTA_USD` (0.10), una vuelta no empieza SKUs
+    # nuevos; los que están en vuelo (hasta 2, con todos sus trozos) terminan,
+    # así que puede pasarse por centavos. Solo existe si `_enabled` estaba
+    # encendida AL ARRANCAR.
+    competencia_juez_cola_min: int = 30
+    competencia_juez_cola_skus: int = 40
 
     # ── Base de datos MySQL (cache híbrido) ───────────────────
     db_host: str = ""

@@ -1042,12 +1042,35 @@ panel espera al juez antes de recargar.
 `scripts/competencia_mejorar_terminos.py`): candado en código (solo el DSN del
 sandbox), llaves solo por stdin, en seco por omisión.
 
+**Cola del juez** (`competencia_juez.drenar_cola`, job `competencia_juez_cola` del
+scheduler, registrado solo si `COMPETENCIA_JUEZ_ENABLED` está encendida al
+arrancar): sin ella casi nada se juzgaría en producción, porque el gancho solo
+corre tras un «Medir» (~35 términos al mes) y el script tiene candado de sandbox.
+Cada 30 min (`COMPETENCIA_JUEZ_COLA_MIN`) toma hasta 40 SKUs con pares pendientes
+(`COMPETENCIA_JUEZ_COLA_SKUS`) y los juzga con 2 hilos, en `asyncio.to_thread`. Su
+primera pasada ES el backfill (~12.7k pares ≈ $0.91 a precio de lista, medido en el
+sandbox; ~1 día a este ritmo) y después es el mantenimiento: títulos que cambian,
+términos re-medidos, una `VERSION_PROMPT` nueva. La acota el mismo tope diario que
+al gancho (1 USD/24 h), una bolsa que también descuenta lo que el juez gasta por el
+botón y la mejora; esos dos no consultan ese tope ($0.05 por clic). El tope frena
+trabajo NUEVO: si el gancho y una vuelta coinciden, la bolsa puede pasarse por lo
+que gaste la primera después de que arranque la segunda (≤ 0.10 USD más centavos;
+lo que ya pagó sí lo ve, aunque aún no esté en la bitácora). Techo real de los
+caminos automáticos: ≈ 1.10 USD/24 h. A partir de 0.10 USD la vuelta no empieza
+SKUs nuevos; los que están en vuelo (hasta 2, con todos sus trozos) terminan, así
+que puede pasarse por centavos. Anti-atasco: un SKU que se intentó y quedó con
+pendientes —o que no tenía nada que juzgar— se salta 24 h para que avance el
+resto; ese recuerdo vive en memoria y **un reinicio lo olvida** (esos SKUs se
+reintentan una vez más). Un SKU sin título nuestro (NULL o vacío) ni entra a la
+cola. En la bitácora es la misma fila `competencia`/`juez`, con `origen: 'cola'` en
+el detalle.
+
 **Tres banderas, las tres APAGADAS** (regla 3): `COMPETENCIA_JUEZ_ENABLED` (juzga
-tras cada medición, tope 1 USD/24 h que descuenta TODO el gasto del juez),
-`COMPETENCIA_JUEZ_VISIBLE` (lo ven los KAM) y `COMPETENCIA_JUEZ_ESCRITURA` (botones
-de admin que gastan o escriben). Y aunque se enciendan, nada corre si la tabla no
-existe: **la 0063 está aplicada SOLO en el sandbox**; producción la necesita con
-su acta.
+tras cada medición y enciende la cola, tope 1 USD/24 h que descuenta TODO el gasto
+del juez), `COMPETENCIA_JUEZ_VISIBLE` (lo ven los KAM) y
+`COMPETENCIA_JUEZ_ESCRITURA` (botones de admin que gastan o escriben). Y aunque se
+enciendan, nada corre si la tabla no existe: **la 0063 está aplicada SOLO en el
+sandbox**; producción la necesita con su acta.
 
 **De paso:** `httpx`/`httpcore` pasan a WARNING en `main.py`. En INFO escribían
 cada URL completa y la llave de Apify viaja en la URL (`?token=`): cada medición la
@@ -1064,8 +1087,8 @@ dejaba en los logs de Railway.
 - Piloto de términos: 15 grupos → **11 sugerencias** (p. ej. 1 → 10 rivales
   reales), 4 sin mejora; Apify ~$0.49, IA $0.006.
 - Revisión adversarial (13 agentes): 31 hallazgos confirmados + 8 de regresión,
-  todos arreglados o documentados, con verificador por área. **1,463 pruebas en
-  verde**, `tsc` limpio.
+  todos arreglados o documentados, con verificador por área. **1,495 pruebas en
+  verde** (1,463 + 32 de la cola), `tsc` limpio.
 
 **Pendiente antes de producción:** acta de la 0063 + encender banderas (sí de
 Eduardo); confirmar si un vendedor con títulos idénticos a los nuestros es otra

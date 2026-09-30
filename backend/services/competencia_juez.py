@@ -65,6 +65,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import threading
 import time
@@ -503,7 +504,11 @@ def skus_de_termino(termino: str) -> tuple[int | None, list[str]]:
 
 
 def skus_con_pendientes(limite: int | None = None) -> list[str]:
-    """SKUs con al menos un rival por juzgar, en su término asignado."""
+    """SKUs con al menos un rival por juzgar, en su término asignado.
+
+    Sin título nuestro —NULL o '' (`core.products.name` admite los dos)— no
+    entra: `juzgar_skus` lo salta sin llamar al LLM (`por_juzgar` pide título
+    no vacío), y la cola lo volvería a pedir en cada vuelta sin avanzar."""
     fs = supabase_db.fetch_all(
         "select cfg.sku::text as sku, count(*) as n "
         "  from enrich.market_sku_config cfg "
@@ -512,7 +517,7 @@ def skus_con_pendientes(limite: int | None = None) -> list[str]:
         "  left join enrich.market_rival_juicio j "
         "    on j.sku = cfg.sku and j.canal = cfg.canal and j.externo_id = r.externo_id "
         " where cfg.canal = %s and not coalesce(r.es_nuestro, false) and r.precio > 0 "
-        "   and t.titulo is not null "
+        "   and coalesce(t.titulo, '') <> '' "
         "   and (j.sku is null or j.version_prompt is distinct from %s "
         "        or j.titulo_rival is distinct from r.titulo "
         "        or j.titulo_nuestro is distinct from t.titulo) "
@@ -615,28 +620,50 @@ def registrar(accion: str, estado: str, detalle: dict[str, Any], duracion_s: flo
         log.warning("juez: no se pudo registrar el gasto: %s", exc)
 
 
+# Gasto del juez YA PAGADO que aún no está en la bitácora: `juzgar_skus` escribe
+# su fila al TERMINAR, así que sin esto una corrida que arranca mientras otra va
+# a medias (una vuelta de la cola y el gancho de una captura, que coinciden) lee
+# la bolsa sin lo que la otra ya gastó. `gastado_24h('juez')` lo suma. Solo ve
+# ESTE proceso (el script por lotes corre aparte) y no vuelve absoluto el tope:
+# lo que la primera gaste DESPUÉS de que arranque la segunda no lo ve nadie.
+_en_vuelo = {"usd": 0.0, "corridas": 0}
+_en_vuelo_lock = threading.Lock()
+
+
 def gastado_24h(accion: str = "juez") -> float:
-    """USD que esa acción lleva en las últimas 24 h, según la bitácora."""
+    """USD que esa acción lleva en las últimas 24 h, según la bitácora; para
+    'juez', más lo que las corridas en curso de este proceso ya pagaron y todavía
+    no registran (`_en_vuelo`)."""
     try:
         v = supabase_db.fetch_scalar(
             "select coalesce(sum((detalle->>'usd')::numeric), 0) from ops.process_log "
             " where proceso = 'competencia' and accion = %s "
             "   and created_at >= now() - interval '24 hours'", (accion,))
-        return float(v or 0)
+        total = float(v or 0)
     except Exception as exc:                                        # noqa: BLE001
         log.warning("juez: no se pudo leer el gasto de 24 h: %s", exc)
         return float("inf")     # sin poder medir, no se gasta
+    if accion == "juez":
+        with _en_vuelo_lock:
+            total += _en_vuelo["usd"]
+    return total
 
 
 def juzgar_skus(skus: Iterable[str], *, presupuesto: Presupuesto, termino_id: int | None = None,
                 modelo: str | None = None, hilos: int = 4, plazo_s: float | None = None,
-                timeout: float = 120.0, intentos: int = 3) -> dict[str, Any]:
+                timeout: float = 120.0, intentos: int = 3, origen: str | None = None,
+                resultados: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     """Juzga lo PENDIENTE de esos SKUs y lo guarda. Reentrante e idempotente.
 
     Se detiene cuando se agota el `presupuesto` o el `plazo_s` de reloj, o cuando
     un SKU no consigue turno del LLM en `timeout` segundos («IA ocupada»); lo que
     no alcanzó queda pendiente para la siguiente pasada. Devuelve el resumen de la
-    corrida y deja UNA fila en `ops.process_log`."""
+    corrida y deja UNA fila en `ops.process_log`.
+
+    Opcionales, para la cola (`drenar_cola`) y sin efecto para los demás:
+    `origen` viaja en el resumen —y con él al detalle de la bitácora— para saber
+    quién gastó; `resultados`, si se pasa, se llena con lo que pasó con cada SKU
+    que llegó al juez: {pendientes, guardados, llamadas, motivo}."""
     t0 = time.monotonic()
     modelo = modelo or settings.competencia_juez_modelo
     skus = sorted({s for s in skus if s})
@@ -644,6 +671,8 @@ def juzgar_skus(skus: Iterable[str], *, presupuesto: Presupuesto, termino_id: in
         "skus": len(skus), "juzgados_skus": 0, "veredictos": 0, "sin_juzgar": 0,
         "llamadas": 0, "usd": 0.0, "entrada": 0, "salida": 0, "fallidos": 0,
         "detenido": None, "modelo": modelo, "proveedor": ia_json.proveedor_de(modelo)}
+    if origen:
+        res["origen"] = origen
     if not skus:
         return res
     if modelo not in ia_json.MODELOS:
@@ -655,6 +684,7 @@ def juzgar_skus(skus: Iterable[str], *, presupuesto: Presupuesto, termino_id: in
         por_sku.setdefault(f["sku"], []).append(f)
     lock = threading.Lock()
     seguidos = {"n": 0}
+    mio = {"usd": 0.0}          # lo que ESTA corrida puso en `_en_vuelo`
 
     def uno(sku: str) -> None:
         fs = por_sku.get(sku) or []
@@ -680,6 +710,9 @@ def juzgar_skus(skus: Iterable[str], *, presupuesto: Presupuesto, termino_id: in
         r = juzgar_lote(nuestro, por_juzgar, modelo=modelo, unidades_nuestras=ya,
                         timeout=timeout, intentos=intentos)
         presupuesto.sumar(r["usd"])
+        with _en_vuelo_lock:
+            _en_vuelo["usd"] += float(r["usd"] or 0)
+            mio["usd"] += float(r["usd"] or 0)
         n = 0
         no_guardo = False
         if r["veredictos"]:
@@ -689,6 +722,9 @@ def juzgar_skus(skus: Iterable[str], *, presupuesto: Presupuesto, termino_id: in
                 no_guardo = True
                 log.warning("juez: no se pudo guardar %s: %s", sku, exc)
         with lock:
+            if resultados is not None:
+                resultados[sku] = {"pendientes": len(por_juzgar), "guardados": n,
+                                   "llamadas": r["llamadas"], "motivo": r.get("motivo")}
             res["llamadas"] += r["llamadas"]
             res["usd"] += r["usd"]
             res["entrada"] += r["uso"]["entrada"]
@@ -728,6 +764,8 @@ def juzgar_skus(skus: Iterable[str], *, presupuesto: Presupuesto, termino_id: in
                 # Lo que sigue esperaría lo mismo: se detiene y queda pendiente.
                 res["detenido"] = res["detenido"] or IA_OCUPADA
 
+    with _en_vuelo_lock:
+        _en_vuelo["corridas"] += 1
     try:
         with ThreadPoolExecutor(max_workers=max(1, hilos)) as ex:
             # Lo que devolvió la BASE, no lo pedido: el SKU se empareja por citext
@@ -735,12 +773,20 @@ def juzgar_skus(skus: Iterable[str], *, presupuesto: Presupuesto, termino_id: in
             # se respondía «la IA no contestó» sin haberla llamado.
             list(ex.map(uno, sorted(por_sku)))
     finally:
-        res["usd"] = round(res["usd"], 6)
-        res["duracion_s"] = round(time.monotonic() - t0, 1)
-        if res["llamadas"]:
-            registrar("juez", "parcial" if (res["detenido"] or res["fallidos"]
-                                            or res.get("sin_guardar")) else "ok",
-                      res, res["duracion_s"])
+        try:
+            res["usd"] = round(res["usd"], 6)
+            res["duracion_s"] = round(time.monotonic() - t0, 1)
+            if res["llamadas"]:
+                registrar("juez", "parcial" if (res["detenido"] or res["fallidos"]
+                                                or res.get("sin_guardar")) else "ok",
+                          res, res["duracion_s"])
+        finally:
+            # DESPUÉS de registrar: en el instante entre las dos cosas se cuenta
+            # doble (del lado seguro), nunca se deja de contar. Sin corridas vivas
+            # vuelve a 0 exacto, sin residuos de redondeo.
+            with _en_vuelo_lock:
+                _en_vuelo["corridas"] -= 1
+                _en_vuelo["usd"] = (_en_vuelo["usd"] - mio["usd"]) if _en_vuelo["corridas"] else 0.0
     return res
 
 
@@ -749,3 +795,139 @@ def juzgar_termino(termino: str, *, presupuesto: Presupuesto, **kw: Any) -> dict
     Es lo que se engancha después de una captura."""
     _, skus = skus_de_termino(termino)
     return juzgar_skus(skus, presupuesto=presupuesto, **kw)
+
+
+# ── La cola: lo pendiente, sin esperar a que alguien vuelva a medir ─────────
+#
+# Sin ella el juez solo corre tras un «Medir» (a mano: ~35 términos al mes), con
+# el botón de admin o con el script por lotes, que tiene candado de SANDBOX. En
+# producción eso deja 12,736 pares (1,462 SKUs) que nadie juzgaría nunca, y un
+# par vuelve a quedar pendiente cada vez que cambia un título, se re-mide su
+# término o se sube `VERSION_PROMPT`. La cola es un job del scheduler (solo con
+# COMPETENCIA_JUEZ_ENABLED) que en cada vuelta toma los primeros SKUs con
+# pendientes y los juzga: la primera pasada ES el backfill (~12.7k pares ≈ $0.91
+# a precio de lista, medido en el sandbox) y después es el mantenimiento. Gasta
+# de la MISMA bolsa de 24 h que el gancho (`gastado_24h`), que también descuenta
+# lo que el juez gasta por el botón y la mejora, aunque esos dos no la consultan.
+
+# Una vuelta normal (40 SKUs, ~350 pares) cuesta ~$0.025. Este techo es para lo
+# anormal —un SKU con cientos de rivales, un modelo que cobra de más—. Se revisa
+# ANTES de cada SKU, no entre trozos: a partir de él la vuelta no empieza SKUs
+# nuevos, y los que están en vuelo (hasta 2, con TODOS sus trozos) terminan, así
+# que puede pasarse por centavos. Cortar entre trozos dejaría SKUs a medias que el
+# anti-atasco enfriaría 24 h como si fueran tercos.
+COLA_TOPE_VUELTA_USD = 0.10
+
+# ANTI-ATASCO. `skus_con_pendientes` ordena por SKU: si los primeros de la lista
+# son pares que el modelo nunca contesta bien (o que el proveedor rechaza
+# siempre, p. ej. por su filtro de contenido), cada vuelta los volvería a pagar y
+# lo de atrás no avanzaría jamás. Un SKU que se INTENTÓ (hubo llamada) y quedó
+# con pendientes se salta durante este enfriamiento; uno que quedó completo sale
+# de la lista. No cuenta el que no consiguió turno («IA ocupada»): no es suyo.
+# Tampoco se escapa el que la vuelta visitó y no tenía NADA que juzgar (p. ej.
+# sin título nuestro, si el SQL de `skus_con_pendientes` y `filas()` llegaran a
+# discrepar): sin llamada no entra a `resultados` y, sin enfriarlo, ocuparía un
+# lugar del lote para siempre, gratis pero sin dejar avanzar a nadie.
+#
+# Con el proveedor caído también se enfrían: la vuelta se detiene a los 5 fallos
+# seguidos y esos 5 esperan 24 h. Es demora, no pérdida, y es lo que evita que 5
+# SKUs que el proveedor rechaza siempre frenen la cola para siempre.
+#
+# Vive en MEMORIA del proceso: un reinicio (cada deploy, cada variable de
+# Railway) la olvida y esos SKUs se reintentan una vez más. Olvidar cuesta
+# centavos; no tenerla costaba la cola entera.
+COLA_ENFRIAMIENTO_S = 24 * 3600
+_enfriando: dict[str, float] = {}       # SKU → time.monotonic() hasta el que se salta
+_enfriando_lock = threading.Lock()
+
+
+def drenar_cola(*, max_skus: int, tope_diario: float, plazo_s: float | None = None,
+                hilos: int = 2, timeout: float = 60.0, intentos: int = 2) -> dict[str, Any]:
+    """UNA vuelta de la cola: juzga lo pendiente de hasta `max_skus` SKUs con lo
+    que quede del tope de 24 h, y con `COLA_TOPE_VUELTA_USD` de techo para SKUs
+    NUEVOS (los que estén en vuelo al llegar a él terminan: puede pasarse por
+    centavos). SÍNCRONA —desde el scheduler va en `asyncio.to_thread`, regla 11—
+    y NUNCA lanza: un job que revienta deja una traza de APScheduler que nadie
+    busca.
+
+    `hilos=2` deja 2 de los 4 turnos del semáforo `_turno` para el gancho y el
+    botón (si el gancho usa los suyos, que también son 2, el botón espera turno).
+    `plazo_s` se revisa antes de cada SKU, no durante: el que ya arrancó termina
+    todos sus trozos, así que quien llama deja margen hasta la vuelta siguiente.
+    Si `juzgar_skus` se detiene (tope, 5 fallos del proveedor, plazo), la vuelta
+    termina ahí y lo dice en el log; la siguiente vuelve a intentar.
+
+    → {motivo, pendientes_skus, en_enfriamiento, skus, veredictos, sin_juzgar,
+       usd, detenido, enfriados}. `motivo` dice por qué NO se juzgó nada."""
+    out: dict[str, Any] = {"motivo": None, "pendientes_skus": 0, "en_enfriamiento": 0,
+                           "skus": 0, "veredictos": 0, "sin_juzgar": 0, "usd": 0.0,
+                           "detenido": None, "enfriados": 0}
+    try:
+        if not tablas_listas():
+            out["motivo"] = "sin tablas"
+            log.info("cola del juez: sin %s en esta base (o sin poder comprobarla); "
+                     "no se juzga nada", TABLA_JUICIO)
+            return out
+        gastado = gastado_24h()
+        restante = float(tope_diario) - gastado
+        if restante < 0.01:
+            if math.isfinite(gastado):
+                out["motivo"] = "tope diario"
+                log.info("cola del juez: tope diario alcanzado (%.4f de %.2f USD en 24 h, gancho, "
+                         "botón y mejora incluidos); sigue cuando la ventana libere saldo",
+                         gastado, tope_diario)
+            else:
+                out["motivo"] = "gasto sin medir"
+                log.info("cola del juez: no se pudo medir el gasto de 24 h; sin medir no se gasta")
+            return out
+
+        ahora = time.monotonic()
+        with _enfriando_lock:
+            for s in [s for s, hasta in _enfriando.items() if hasta <= ahora]:
+                del _enfriando[s]
+            enfriando = set(_enfriando)
+        pendientes = skus_con_pendientes()
+        elegibles = [s for s in pendientes if s not in enfriando]
+        out["pendientes_skus"] = len(pendientes)
+        out["en_enfriamiento"] = len(pendientes) - len(elegibles)
+        lote = elegibles[:max(1, int(max_skus))]
+        if not lote:
+            out["motivo"] = "todo en enfriamiento" if pendientes else "nada pendiente"
+            # Es el estado normal tras el backfill: nada en INFO cada media hora.
+            log.debug("cola del juez: %s (%d SKUs con pendientes)", out["motivo"], len(pendientes))
+            return out
+
+        por_sku: dict[str, dict[str, Any]] = {}
+        r = juzgar_skus(lote, presupuesto=Presupuesto(min(restante, COLA_TOPE_VUELTA_USD)),
+                        hilos=hilos, plazo_s=plazo_s, timeout=timeout, intentos=intentos,
+                        origen="cola", resultados=por_sku)
+        ahora = time.monotonic()
+        with _enfriando_lock:
+            for sku, x in por_sku.items():
+                if x["guardados"] >= x["pendientes"]:
+                    _enfriando.pop(sku, None)
+                elif x["llamadas"] and x["motivo"] != IA_OCUPADA:
+                    _enfriando[sku] = ahora + COLA_ENFRIAMIENTO_S
+                    out["enfriados"] += 1
+            if not r["detenido"]:
+                # Sin detención la vuelta visitó TODO el lote: el que falta en
+                # `resultados` no tenía nada que juzgar (ver ANTI-ATASCO).
+                for sku in lote:
+                    if sku not in por_sku:
+                        _enfriando[sku] = ahora + COLA_ENFRIAMIENTO_S
+                        out["enfriados"] += 1
+        out.update(skus=len(lote), veredictos=r["veredictos"], sin_juzgar=r["sin_juzgar"],
+                   usd=r["usd"], detenido=r["detenido"])
+        detenido = ""
+        if r["detenido"]:
+            detenido = f" — se detuvo: {r['detenido']}"
+            if r.get("ultimo_motivo"):
+                detenido += f" ({r['ultimo_motivo']})"
+        log.info("cola del juez: %d SKUs → %d veredictos, %d sin juzgar, $%.4f; quedaban %d SKUs "
+                 "con pendientes (%d en enfriamiento), %d más se enfrían 24 h%s",
+                 len(lote), r["veredictos"], r["sin_juzgar"], r["usd"], len(pendientes),
+                 out["en_enfriamiento"], out["enfriados"], detenido)
+    except Exception as exc:                                        # noqa: BLE001
+        out["motivo"] = "error"
+        log.warning("cola del juez: la vuelta falló (sigue en la próxima): %s", exc)
+    return out

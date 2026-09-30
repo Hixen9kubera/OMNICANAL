@@ -420,6 +420,39 @@ def iniciar() -> None:
                            max_instances=1, coalesce=True)
         log.info("Vigilante de cobertura del sync cada 60 min (mínimo %.0f%% en %s h).",
                  100 * settings.vigilante_sync_min_cobertura, settings.vigilante_sync_horas)
+    # COLA DEL JUEZ de rivales (Competencia): juzga lo pendiente sin esperar a
+    # que alguien vuelva a medir. Su primera pasada es el backfill y después es
+    # el mantenimiento, dentro del MISMO tope de 24 h que el gancho de la captura
+    # (ver `competencia_juez.drenar_cola`). Nada corre si la tabla no existe.
+    #
+    # El plazo es la MITAD del intervalo y no el 80 % de Temu: es cuándo deja de
+    # EMPEZAR SKUs, y el que ya arrancó termina TODOS sus trozos (cada uno:
+    # turno + llamada, dos veces si el lote sale sospechoso). Si aun así se pasa,
+    # max_instances=1 + coalesce solo se saltan esa vuelta. +420 s: detrás de los
+    # golpes del boot.
+    if settings.competencia_juez_enabled:
+        from services import competencia_juez
+        _min_juez = max(5, int(settings.competencia_juez_cola_min))
+        _skus_juez = max(1, int(settings.competencia_juez_cola_skus))
+        _tope_juez = float(settings.competencia_juez_tope_diario_usd)
+
+        async def _cola_juez() -> None:
+            # Regla 11: lee la base y habla con el LLM; nada de eso en el loop.
+            await asyncio.to_thread(competencia_juez.drenar_cola, max_skus=_skus_juez,
+                                    tope_diario=_tope_juez, plazo_s=_min_juez * 60 * 0.5)
+
+        _scheduler.add_job(
+            _cola_juez,
+            "interval",
+            minutes=_min_juez,
+            id="competencia_juez_cola",
+            next_run_time=datetime.now(timezone.utc) + timedelta(seconds=420),
+            max_instances=1,
+            coalesce=True,
+        )
+        log.info("Cola del juez de rivales cada %s min: hasta %s SKUs por vuelta, tope %.2f USD "
+                 "en 24 h (bolsa compartida con el gancho, el botón y la mejora).",
+                 _min_juez, _skus_juez, _tope_juez)
     # Guía + etiqueta PDF de TikTok en Odoo. Cada 20 min: el PDF sólo existe
     # entre el agendado de la recolección y la recolección.
     if getattr(settings, "tiktok_guias_enabled", False):
