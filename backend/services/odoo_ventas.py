@@ -895,6 +895,70 @@ def cola_de_una_venta(canal: str, order_id: str) -> dict[str, Any] | None:
     return filas[0] if filas else None
 
 
+def leer_venta_odoo(canal: str, order_id: str) -> list[dict[str, Any]]:
+    """
+    Las órdenes VIVAS de una venta tal como están en Odoo AHORA, con lo que hace
+    falta para verificar que quedó bien: estado, almacén, las PIEZAS (SKU y
+    cantidad), si tiene el PDF en "Subir guía" y con qué NOMBRE (el refresco lo
+    sube como "<guía>.pdf") y la guía de cada entrega de SALIDA. ⚠️ BLOQUEA.
+    SÓLO LECTURA.
+    LANZA si Odoo no contesta (quien verifica no puede tomar el silencio por un
+    "no existe").
+
+    Es la RELECTURA de la compra automática de guías de Temu
+    (`temu_guias_auto`): después de comprar y de disparar el refresco, se le
+    pregunta a Odoo —no a la bitácora— si la orden nació confirmada, con la
+    guía de SU caja en cada entrega y con el PDF. Mismo filtro de referencia
+    que `cola_de_una_venta` (la venta a secas o `venta#n`).
+    """
+    canal = (canal or "").lower()
+    partner = _PARTNER.get(canal)
+    venta = str(order_id or "").strip()
+    if not partner or not venta:
+        return []
+    ordenes = _kw("sale.order", "search_read",
+                  [[["partner_id", "=", partner], ["state", "!=", "cancel"],
+                    "|", ["client_order_ref", "=", venta],
+                    ["client_order_ref", "=like", f"{venta}#%"]]],
+                  {"fields": ["name", "client_order_ref", "picking_ids", "state",
+                              "meli_etiqueta_file", "meli_etiqueta_filename",
+                              "warehouse_id"],
+                   "order": "id asc", "context": {"bin_size": True}}) or []
+    propias = []
+    for o in ordenes:
+        base, sep, suf = str(o.get("client_order_ref") or "").partition("#")
+        if base == venta and (not sep or suf.isdigit()):
+            propias.append(o)
+    # Las PIEZAS de cada orden (SKU del producto, no el texto de la línea): la
+    # verificación compara lo que salió de cada almacén con lo que la guía dice
+    # que sale de ahí.
+    lineas = _lineas_de_ordenes([int(o["id"]) for o in propias]) if propias else {}
+    ids = [i for o in propias for i in (o.get("picking_ids") or [])]
+    entregas: dict[int, dict[str, Any]] = {}
+    if ids:
+        for p in _kw("stock.picking", "search_read",
+                     [[["id", "in", ids], ["picking_type_code", "=", "outgoing"],
+                       ["state", "!=", "cancel"]]],
+                     {"fields": ["id", "carrier_tracking_ref", "state"]}) or []:
+            entregas[int(p["id"])] = p
+    salida = []
+    for o in propias:
+        wh = o.get("warehouse_id")
+        salida.append({
+            "odoo_id": int(o["id"]), "nombre": o.get("name") or "",
+            "ref": str(o.get("client_order_ref") or ""), "estado": o.get("state"),
+            "almacen_id": (int(wh[0]) if isinstance(wh, (list, tuple)) and wh
+                           and isinstance(wh[0], int) else None),
+            "pdf": bool(o.get("meli_etiqueta_file")),
+            "pdf_nombre": str(o.get("meli_etiqueta_filename") or "").strip() or None,
+            "lineas": [{"sku": ln["sku"], "cantidad": ln["cantidad"]}
+                       for ln in lineas.get(int(o["id"]), [])],
+            "entregas": [{"id": int(i), "estado": entregas[i].get("state"),
+                          "guia": str(entregas[i].get("carrier_tracking_ref") or "").strip()}
+                         for i in (o.get("picking_ids") or []) if i in entregas]})
+    return salida
+
+
 # ── Surtido dividido: una venta, varias órdenes, quizá varios paquetes ──────
 #
 # LO QUE ESTABA MAL (18-sep-2026, venta Temu PO-128-10289257052790014 → S38861
@@ -1576,9 +1640,14 @@ def crear_orden(canal: str, order_id: str, fecha: str | None,
                 confirmar: bool | None = None,
                 dry_run: bool = False,
                 esperar_guia: bool | None = None,
-                reparto_guia: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+                reparto_guia: list[dict[str, Any]] | None = None,
+                entrega: str | None = None) -> dict[str, Any]:
     """
     La orden de venta en Odoo. Idempotente por `client_order_ref`.
+
+    `entrega` (sólo con `reparto_guia`, la guía que compró el panel): el día de
+    entregar el paquete a la paquetería, "jueves 01-10-2026 (24 h)". Va en la
+    nota de la orden para que el almacén lo vea.
 
     `items` = [{sku, cantidad, precio_unitario, titulo}] — lo que ya trae
     normalizado `pedidos_tiktok`/`pedidos_temu`.
@@ -1691,7 +1760,9 @@ def crear_orden(canal: str, order_id: str, fecha: str | None,
                 "note": (f"Creada automáticamente desde {_ETIQUETA.get(canal, canal)} "
                          f"(orden {order_id}). Panel Omnicanal."
                          + (f" Surtido dividido: parte desde {parte['almacen']}."
-                            if len(partes) > 1 else "")),
+                            if len(partes) > 1 else "")
+                         + (f" Entregar a la paquetería: {entrega}."
+                            if entrega and reparto_guia else "")),
                 "order_line": [(0, 0, {
                     "product_id": l["product_id"],
                     "product_uom_qty": l["cantidad"],
@@ -2081,10 +2152,26 @@ def crear_con_guia(canal: str, cuenta: str, order_id: str, fecha: str | None,
 
 
     reparto = None
+    entrega = None
     if canal == "temu":
         from services import temu_guias_compra as tgc
         try:
             reparto = tgc.reparto_comprado(str(order_id))
+        except tgc.CompraAbierta as exc:
+            # La compra de SU guía está abierta (en curso, "no sé si compró",
+            # etiqueta fallida…): Temu ya puede mostrar el paquete, pero no se
+            # sabe de qué almacenes salió. Crearla ahora sería con un reparto
+            # RECALCULADO que puede no ser el de la guía (revisión del 30-sep):
+            # se espera a que alguien concilie. La fila sigue en espera.
+            motivo = (f"la compra de la guía está '{exc.estado}' en la bitácora de compras "
+                      "sin conciliar: la orden nace cuando se sepa qué compró "
+                      "(Automatización → Temu → Conciliar)")
+            try:
+                odoo_ventas_log.anotar_intento(canal, cuenta, order_id, motivo)
+            except Exception:  # noqa: BLE001
+                pass
+            return {"ok": False, "accion": "compra_guia_sin_conciliar", "resultado": {},
+                    "cola": None, "motivo": motivo}
         except Exception as exc:  # noqa: BLE001
             if tgc.es_tabla_ausente(exc) or not tgc.compra_habilitada():
                 log.debug("crear_con_guia: bitácora de compras de guías sin leer (%s)", exc)
@@ -2098,9 +2185,15 @@ def crear_con_guia(canal: str, cuenta: str, order_id: str, fecha: str | None,
                     pass
                 return {"ok": False, "accion": "bitacora_guias_ilegible",
                         "resultado": {}, "cola": None, "motivo": motivo}
+        if reparto:
+            # El DÍA de entregarla a la paquetería (el que se le mandó a Temu:
+            # con su límite de envío puede ser 24 h, no la costumbre de +2
+            # días). Va en la nota de la orden para el almacén. Nunca lanza.
+            entrega = tgc.texto_entrega(tgc.entrega_comprada(str(order_id)))
 
+    kw_entrega = {"entrega": entrega} if entrega else {}
     r = crear_orden(canal, str(order_id), fecha, items, esperar_guia=False,
-                    reparto_guia=reparto)
+                    reparto_guia=reparto, **kw_entrega)
     if not r.get("odoo_id"):
         # No nació. Se deja la fila como está —sigue en espera— y la vuelta
         # siguiente lo reintenta: la cola se vacía por el HECHO de que exista la

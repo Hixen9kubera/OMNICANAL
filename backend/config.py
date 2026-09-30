@@ -471,6 +471,12 @@ class Settings(BaseSettings):
     # que una compra real lo confirme (seis días de compra al año caen ahí y
     # no se compran solos). Para permitirlo: "24,48,72,96,120".
     temu_guias_horas_validas: str = "24,48,72,96"
+    # ¿El plazo ADELANTADO por el límite de envío de Temu puede caer en SÁBADO?
+    # Nace apagada (sábado inhábil, como la regla de +2 días). Con el límite de
+    # Temu a ~48 h de la venta, las ventas de viernes y sábado salen "compra
+    # manual urgente" porque 24 h cae en fin de semana. Decisión de Brandon: la
+    # vista previa trae la medición por día de la semana (`limites`).
+    temu_guias_sabado_alterno: bool = False
     # Almacén de Odoo → warehouseId de Temu (confirmado por Brandon):
     # TEXCO = "IFULL NAVE 2", TEXCO II = "Dirección texco 2".
     temu_guias_almacenes: str = "135:WH-04038973460631627,150:WH-10610291507351627"
@@ -486,6 +492,42 @@ class Settings(BaseSettings):
     # en su peso y caja.
     temu_guias_empaque_min_muestras: int = 2
     temu_guias_plan_limite: int = 20         # ventas por vista previa
+
+    # ── COMPRA AUTOMÁTICA DE GUÍAS DE TEMU (30-sep-2026) ──────────────────
+    # "Automatízala desde que se genera la orden hasta confirmarla con su guía
+    # y sus datos correctos" (Brandon). Ver services/temu_guias_auto.py.
+    # Compra SIN aprobación humana por pedido, pero sólo lo que el planeador da
+    # por comprable, sólo ventas desde `TEMU_COMPRA_GUIAS_DESDE` y dentro de
+    # los topes. Exige ADEMÁS `TEMU_COMPRA_GUIAS_ENABLED` y la tabla 0061: con
+    # cualquiera de las tres cosas ausente no compra (ni se registra el job).
+    # Nace APAGADA: encenderla es el dale de Brandon (regla 3).
+    temu_compra_guias_auto: bool = False
+    # FRENOS DE ARRANQUE (nacen encendidos; se apagan uno por uno):
+    #  · ENSAYO: la vuelta planea, cotiza y aplica topes, y deja en el panel qué
+    #    COMPRARÍA — sin comprar. La primera compra real es al apagarlo.
+    #  · SOLO_SIMPLE: sólo compra sola UNA caja en una llamada sendType 0. El
+    #    sendType 1 con dos almacenes y el combinado no están probados por API.
+    temu_compra_guias_auto_ensayo: bool = True
+    temu_compra_guias_auto_solo_simple: bool = True
+    # Corte: sólo ventas cuya fecha de VENTA (parentOrderTime de Temu) sea de
+    # este día en adelante, hora de México. Lo anterior lo compra una persona.
+    # Mal escrito → no compra nada (falla cerrado). Al encender: el DÍA DEL
+    # ENCENDIDO (lo anterior ya lo está comprando el equipo a mano).
+    temu_compra_guias_desde: str = "2026-09-30"
+    temu_compra_guias_auto_min: int = 15     # cada cuántos minutos corre
+    # TOPES. Por omisión UNA compra por vuelta y UNA por día: la primera compra
+    # es controlada; subirlos es una decisión aparte, después de verificarla.
+    temu_compra_guias_max_vuelta: int = 1
+    temu_compra_guias_max_dia: int = 1
+    temu_compra_guias_gasto_max_dia: float = 1000.0   # MX$ por día (compras automáticas)
+    temu_compra_guias_max_caja: float = 80.0          # MX$ por caja; si Temu cotiza más, no compra
+    temu_compra_guias_max_venta: float = 160.0        # MX$ por venta (todas sus cajas)
+    # Una venta que "requiere compra manual" se vuelve a evaluar cada N
+    # minutos (su motivo puede resolverse: llega stock, se captura la medida).
+    temu_compra_guias_revisar_min: int = 60
+    # Si la orden de Odoo de una compra automática no queda confirmada con su
+    # guía y su PDF en este plazo, el job SE DETIENE (algo no está naciendo).
+    temu_compra_guias_verificar_max_min: int = 90
 
     pedidos_temu_sondeo_min: int = 15
     # PAGINAS POR PASADA. `bg.order.list.v2.get` NO devuelve las ordenes por

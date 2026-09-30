@@ -11,9 +11,12 @@ se le mandaría a Temu.
 ⚠️ AQUÍ NO SE COMPRA NADA POR OMISIÓN. Comprar una guía COBRA y Temu no deja
 cancelarla por API. `comprar()` está escrita pero nace detrás de
 `TEMU_COMPRA_GUIAS_ENABLED=false` (regla 3: encenderla es el dale de Brandon),
-NINGÚN endpoint la invoca, compra UN GRUPO a la vez y sólo el que alguien
-aprobó mirando su huella en la vista previa. Lo que corre hoy es
-`plan_guias()`: SOLO LECTURAS.
+compra UN GRUPO a la vez y sólo con la huella de una vista previa. Ningún
+endpoint la invoca con una aprobación humana; la única que la llama es la
+COMPRA AUTOMÁTICA (`services/temu_guias_auto.py`, detrás además de
+`TEMU_COMPRA_GUIAS_AUTO=false`), que se aprueba a sí misma sólo lo que este
+planeador da por comprable, desde el corte de fecha y dentro de sus topes.
+Lo que corre hoy es `plan_guias()`: SOLO LECTURAS.
 
 LA FECHA DEL ENVÍO (día de entregar el paquete al repartidor)
 ─────────────────────────────────────────────────────────────
@@ -21,6 +24,11 @@ Regla de Brandon: día de compra + 2 días naturales; si cae en sábado, domingo
 o día festivo, se recorre al siguiente día hábil. Lunes a viernes "hasta nuevo
 aviso". Ejemplos suyos: compra mar 29-sep → jue 1-oct; compra sáb 3-oct → lun
 5-oct. Zona: America/Mexico_City (sin horario de verano desde 2022).
+
+NUNCA DESPUÉS DEL LÍMITE DE ENVÍO DE TEMU (Brandon, 30-sep): si +2 rebasa el
+`expectShipLatestTime` de la orden (de un grupo, el más cercano), se usa el
+MAYOR plazo permitido que sí lo cumpla y caiga en día hábil; si ni 24 h lo
+cumple, no se compra: "compra manual urgente". Ver `fecha_con_limite`.
 
 Los FESTIVOS son los que Temu tiene configurados como "sin funcionamiento" en
 su panel para 2026 (1-ene, 2-feb, 16-mar, 1-may, 16-sep, 16-nov, 25-dic), más
@@ -122,15 +130,18 @@ si coincide, quien compró la guía copió el catálogo y eso no es una medida.
 Los números se REDONDEAN HACIA ARRIBA a 2 decimales: declarar de menos es lo
 que la paquetería ajusta y cobra.
 
-PAQUETERÍA — `TEMU_GUIAS_PAQUETERIA` (por omisión "*:Pickup")
-─────────────────────────────────────────────────────────────
+PAQUETERÍA — `TEMU_GUIAS_PAQUETERIA` (por omisión "*")
+──────────────────────────────────────────────────────
 "paquetería:tipo" separadas por coma; "*" es cualquiera. Gana la más barata de
-las que entran; empate → la de menos días (`estimatedText`). La omisión es la
-regla de Brandon del 30-sep ("siempre la más barata, entre todas las
-paqueterías") SIN cambiar de recolección a drop-off, que es una decisión
-operativa suya: la vista previa muestra además la más barata de TODAS. Un
-canal que pide datos extra (`infoNeeded`) o sólo sirve contra entrega no se
-elige.
+las que entran; empate → la de menos días (`estimatedText`). La omisión "*" es
+la regla de Brandon del 30-sep ("siempre la más barata, entre todas las
+paqueterías") y ⚠️ NO FILTRA EL TIPO: si el DROP OFF sale más barato que la
+recolección (J&T hoy: MX$32.40 contra MX$34.90) se compra DROP OFF, y ese
+paquete alguien lo tiene que LLEVAR a un punto de entrega. Si el almacén
+trabaja con recolección, la variable va en "*:Pickup" (decisión operativa de
+Brandon, antes de encender la compra automática). La vista previa muestra
+además la más barata de TODAS. Un canal que pide datos extra (`infoNeeded`),
+sólo sirve contra entrega o cotiza en otra moneda que no sea MXN no se elige.
 
 NUNCA COMPRAR DOS VECES — la bitácora DURABLE `ops.temu_guias_compras` (0061)
 ─────────────────────────────────────────────────────────────────────────────
@@ -161,6 +172,7 @@ TODO LO QUE BLOQUEA VA EN HILOS (regla 11): Odoo es XML-RPC y kubera psycopg2.
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 import logging
@@ -262,12 +274,20 @@ ESTADOS_LIBRES = frozenset({"rechazada", "no_enviada"})
 # ── Qué respuesta de shipment.create significa "NO compró, seguro" ──────────
 # La pasarela valida ANTES de llegar al negocio (08-common-error-codes): firma,
 # credenciales, permisos, IP, cuota.
+#
+# ⚠️ FUERA A PROPÓSITO LOS 5xxxxxx (revisión del 30-sep, antes de encender la
+# compra AUTOMÁTICA): "5000000 system error" y compañía suenan a que el
+# servidor tropezó, no a que la pasarela rechazó antes de llegar al negocio —
+# nada documenta que ocurran ANTES de comprar. Con ellos como "rechazo seguro"
+# la fila quedaba libre, el job se liberaba de un clic sin mirar Temu y la
+# vuelta siguiente podía volver a comprar la misma guía si las lecturas de
+# Temu todavía no la mostraban. Ahora son "desconocido": bloquean hasta
+# conciliar contra Temu.
 _RECHAZO_PASARELA = frozenset({
     "3000000", "3000001", "3000002", "3000003", "3000004", "3000010", "3000011",
     "3000012", "3000013", "3000014", "3000019", "3000020", "3000021", "3000022",
     "3000025", "3000026", "3000027", "3000028", "3000030", "3000031", "3000032",
-    "3000033", "3000034", "3000040", "4000004", "5000000", "5000001", "5000002",
-    "5000003"})
+    "3000033", "3000034", "3000040", "4000004"})
 # Las validaciones de negocio DOCUMENTADAS en la ficha de shipment.create
 # (error_param_list). Fuera a propósito: 120012013 (ya había compra: se trata
 # aparte), 120011107 ("verification timed out"), 120018036 ("transaction is
@@ -424,6 +444,92 @@ def fecha_envio(compra: datetime, *, festivos: Iterable[date] | None = None,
     }
 
 
+# Colchón contra el límite de envío de Temu: la fecha elegida tiene que vencer
+# al menos esto ANTES del límite. Cubre los minutos entre la vista previa y la
+# compra (que igual se re-verifica justo antes) y el reloj de Temu, que cuenta
+# las horas desde que la compra TERMINA (es asíncrona).
+MARGEN_LIMITE_S = 30 * 60
+
+
+def sabado_alterno() -> bool:
+    """¿El plazo ALTERNO (el adelantado por el límite de Temu) puede caer en
+    SÁBADO? `TEMU_GUIAS_SABADO_ALTERNO`, nace apagada (sábado = inhábil, como la
+    regla de siempre). Decisión operativa de Brandon: con el límite de Temu a
+    48 h de la venta, las ventas de viernes (y de sábado) salen "compra manual
+    urgente" porque 24 h cae en sábado/domingo."""
+    return bool(getattr(settings, "temu_guias_sabado_alterno", False))
+
+
+def fecha_con_limite(compra: datetime, limite_ts: int | None, *,
+                     festivos: Iterable[date] | None = None, dias: int | None = None,
+                     validas: Iterable[int] | None = None,
+                     margen_s: int = MARGEN_LIMITE_S,
+                     sabado: bool | None = None) -> dict[str, Any]:
+    """
+    La fecha de envío con el LÍMITE DE ENVÍO de Temu encima
+    (`expectShipLatestTime` de la orden; de un grupo, el MÁS CERCANO). PURA
+    (salvo `sabado=None`, que lee `sabado_alterno()`).
+
+    Regla nueva de Brandon (30-sep): la fecha nunca después del límite.
+      · la regla de siempre (+2 naturales → hábil) vence antes del límite
+        (menos `margen_s`) → esa, sin cambios;
+      · si lo rebasa → el MAYOR plazo de `TEMU_GUIAS_HORAS_VALIDAS`, más corto
+        que el de la regla, que SÍ lo cumpla y caiga en día hábil (lunes a
+        viernes, no festivo: la regla de los días hábiles sigue mandando; el
+        sábado sólo con `TEMU_GUIAS_SABADO_ALTERNO`);
+      · si ni así → `valida=False`, `urgente=True`: "compra manual urgente".
+
+    `limite_ts=None` (Temu no lo dio) → la de la regla tal cual, con
+    `limite_ts=None`: quien llama decide si le basta (la compra automática no).
+    """
+    sab = sabado_alterno() if sabado is None else bool(sabado)
+    base = fecha_envio(compra, festivos=festivos, dias=dias, validas=validas)
+    lim = _entero(limite_ts)
+    out: dict[str, Any] = {**base, "limite_ts": lim or None, "limite": _hora_mx(lim),
+                           "ajustada": False, "urgente": False, "ajuste": None,
+                           "regla_fecha": base["fecha_envio"], "regla_horas": base["horas"]}
+    if not lim:
+        return out
+    tope = int(lim) - int(margen_s)
+    if base["vence_ts"] <= tope:
+        return out
+    local = compra.astimezone(ZONA) if compra.tzinfo else compra.replace(tzinfo=ZONA)
+    try:
+        fest = frozenset(festivos) if festivos is not None else leer_festivos()
+    except ValueError:
+        fest = frozenset()
+    ok_horas = tuple(validas) if validas is not None else horas_validas()
+    descartes: list[str] = []
+    for h in sorted(ok_horas, reverse=True):
+        if h >= int(base["horas"]) or h <= 0 or h % 24:
+            continue
+        dia = local.date() + timedelta(days=h // 24)
+        vence = local + timedelta(hours=h)
+        if int(vence.timestamp()) > tope:
+            descartes.append(f"{h} h rebasa el límite")
+            continue
+        if dia.weekday() == 6 or (dia.weekday() == 5 and not sab) or dia in fest:
+            descartes.append(f"{h} h cae en {'festivo' if dia in fest else _DIAS[dia.weekday()]} "
+                             f"{dia.isoformat()}")
+            continue
+        if not fest or not any(f >= dia for f in fest):
+            return {**out, "valida": False, "urgente": False,
+                    "motivos": [f"la lista de festivos termina antes del {dia.isoformat()}: agrega "
+                                "los del año siguiente a TEMU_GUIAS_FESTIVOS"]}
+        return {**out, "valida": True, "motivos": [], "ajustada": True,
+                "fecha_envio": dia.isoformat(), "dia_envio": _DIAS[dia.weekday()],
+                "dias_naturales": h // 24, "horas": h, "ship_later_limit_time": str(h),
+                "vence_local": vence.isoformat(timespec="minutes"),
+                "vence_ts": int(vence.timestamp()), "saltados": [],
+                "ajuste": (f"la regla daba el {base['fecha_envio']} ({base['horas']} h) y rebasa el "
+                           f"límite de envío de Temu ({out['limite']}): se usa el "
+                           f"{_DIAS[dia.weekday()]} {dia.isoformat()} ({h} h)")}
+    detalle = "; ".join(descartes) or "ningún plazo permitido es más corto"
+    return {**out, "valida": False, "urgente": True,
+            "motivos": [f"compra manual URGENTE: el límite de envío de Temu es {out['limite']} y "
+                        f"ningún plazo permitido lo cumple en día hábil ({detalle})"]}
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 #  2 · LA VENTA, LEÍDA DEL DETALLE DE TEMU (pura)
 # ═════════════════════════════════════════════════════════════════════════════
@@ -557,8 +663,14 @@ def leer_venta(parent_sn: str, det: dict[str, Any]) -> dict[str, Any]:
     if cancelados:
         avisos.append(f"{cancelados} renglón(es) cancelado(s) antes del envío: fuera del paquete")
     limite = _entero(pm.get("expectShipLatestTime"))
+    # CUÁNDO SE VENDIÓ, según Temu (la misma precedencia que `pedidos_temu.
+    # _normalizar`). Es lo que decide el corte de la compra automática
+    # (`TEMU_COMPRA_GUIAS_DESDE`): la fila de kubera dice cuándo la PROCESAMOS,
+    # y una venta recuperada días después pasaría el corte sin serlo.
+    vendida = _entero(pm.get("parentOrderTime")) or _entero(pm.get("parentConfirmTime"))
     return {"parent_order_sn": sn, "estado": estado,
             "estado_txt": ESTADOS_TEMU.get(estado or -1, "?"),
+            "venta_ts": vendida or None, "venta": _hora_mx(vendida),
             "limite_envio_ts": limite or None, "limite_envio": _hora_mx(limite),
             "renglones": renglones, "bloqueos": bloqueos, "avisos": avisos,
             "cubre_plataforma": cubre_plataforma,
@@ -1138,6 +1250,20 @@ def _monto(t: Any) -> float | None:
     return float(m.group(1)) if m else None
 
 
+def es_mxn(codigo: Any, texto: Any) -> bool:
+    """¿La cotización está en PESOS? PURA. Los topes de la compra automática
+    son en MX$: un "US$60.00" leído como 60 pasaría el tope de MX$80 y costaría
+    ~MX$1,100. Con código (`estimatedCurrencyCode`) manda el código; sin él,
+    sólo "MX$…" cuenta como pesos (el "$" a secas también es el del dólar). Y
+    un texto con OTRA moneda desmiente al código."""
+    cod = str(codigo or "").strip().upper()
+    txt = str(texto or "").strip().upper()
+    otra = bool(re.match(r"^[A-Z]{1,3}\$", txt)) and not txt.startswith("MX$")
+    if cod:
+        return cod == "MXN" and not otra and not re.search(r"USD|EUR|€|CNY|¥", txt)
+    return txt.startswith("MX$")
+
+
 def _dias_texto(t: Any) -> tuple[float, float]:
     """(días máximos, días mínimos) de `estimatedText` ("MX$34.90,10-15 days").
     Sin dato → infinito: en un empate gana la que sí dice cuánto tarda."""
@@ -1164,6 +1290,7 @@ def elegir_canal(respuesta: dict[str, Any],
     for c in (respuesta or {}).get("onlineChannelDtoList") or []:
         if not isinstance(c, dict):
             continue
+        mxn = es_mxn(c.get("estimatedCurrencyCode"), c.get("estimatedAmount"))
         opciones.append({
             "channelId": _entero(c.get("channelId")),
             "shipCompanyId": _entero(c.get("shipCompanyId")),
@@ -1171,10 +1298,15 @@ def elegir_canal(respuesta: dict[str, Any],
             "shipLogisticsType": str(c.get("shipLogisticsType") or ""),
             "estimatedAmount": str(c.get("estimatedAmount") or ""),
             "estimatedText": str(c.get("estimatedText") or ""),
-            "monto": _monto(c.get("estimatedAmount")),
+            "moneda": (str(c.get("estimatedCurrencyCode") or "").strip().upper()
+                       or ("MXN" if mxn else "?")),
+            # En pesos o nada: un monto en otra moneda no se compara con los
+            # topes ni con las demás opciones (ver `es_mxn`).
+            "monto": _monto(c.get("estimatedAmount")) if mxn else None,
             "dias": list(_dias_texto(c.get("estimatedText"))),
             "pide_datos": list(c.get("infoNeeded") or []),
             "solo_cod": _entero(c.get("payWayCode")) == 2,
+            "no_mxn": not mxn,
         })
     no_disp = [{"shippingCompanyName": str(c.get("shippingCompanyName") or ""),
                 "shipLogisticsType": str(c.get("shipLogisticsType") or ""),
@@ -1184,7 +1316,7 @@ def elegir_canal(respuesta: dict[str, Any],
 
     def _usable(o: dict[str, Any]) -> bool:
         return not (o["pide_datos"] or o["solo_cod"] or not o["channelId"]
-                    or not o["shipCompanyId"])
+                    or not o["shipCompanyId"] or o["no_mxn"])
 
     def _clave(o: dict[str, Any], rango: int) -> tuple[float, float, float, int]:
         return (o["monto"] if o["monto"] is not None else math.inf,
@@ -1206,10 +1338,13 @@ def elegir_canal(respuesta: dict[str, Any],
     if not candidatos:
         ofrecidas = ", ".join(f"{o['shippingCompanyName']} {o['shipLogisticsType']} "
                               f"{o['estimatedAmount']}" for o in opciones) or "ninguna"
+        otra_moneda = sorted({o["moneda"] for o in opciones if o["no_mxn"]})
         return {"elegido": None, "opciones": opciones, "no_disponibles": no_disp,
                 "mas_barata": mas_barata,
                 "motivo": (f"la paquetería preferida ({', '.join(':'.join(p) for p in prefs)}) "
-                           f"no se ofreció para esta caja; Temu ofreció: {ofrecidas}")}
+                           f"no se ofreció para esta caja; Temu ofreció: {ofrecidas}"
+                           + (f" (cotizado en {', '.join(otra_moneda)}, no en MXN: no se "
+                              "compara con los topes en pesos)" if otra_moneda else ""))}
     elegido = min(candidatos.values(), key=lambda t: _clave(t[1], t[0]))[1]
     return {"elegido": elegido, "opciones": opciones, "no_disponibles": no_disp,
             "mas_barata": mas_barata, "motivo": None}
@@ -1343,6 +1478,33 @@ def validar_payload_compra(payload: dict[str, Any],
         err.append(f"las piezas no cuadran con lo pedido (120013002): en cajas {suma}, "
                    f"pedidas {dict(esperado)}")
     return err
+
+
+def costo_de(caja: dict[str, Any]) -> float | None:
+    """El costo cotizado (MX$) de la paquetería ELEGIDA para una caja, o None
+    si no se sabe — incluido el que no está en PESOS (`es_mxn`): un None aquí
+    es "compra manual", nunca un monto en otra moneda contra un tope en MX$.
+    PURA."""
+    el = ((caja.get("cotizacion") or {}).get("elegido") or {})
+    if el.get("no_mxn") or (el.get("moneda") not in (None, "", "MXN")):
+        return None
+    m = el.get("monto")
+    if m is None:
+        if not es_mxn(None, el.get("estimatedAmount")):
+            return None
+        m = _monto(el.get("estimatedAmount"))
+    try:
+        return round(float(m), 2) if m is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def paqueteria_de(caja: dict[str, Any]) -> str | None:
+    """"J&T express · Pickup" de la paquetería elegida para una caja. PURA."""
+    el = ((caja.get("cotizacion") or {}).get("elegido") or {})
+    txt = " · ".join(x for x in (str(el.get("shippingCompanyName") or "").strip(),
+                                 str(el.get("shipLogisticsType") or "").strip()) if x)
+    return txt or None
 
 
 def huella(obj: Any) -> str:
@@ -1654,6 +1816,17 @@ def _reclamos_de(pos: list[str]) -> dict[str, dict[str, Any]]:
     return {str(f["parent_order_sn"]): dict(f) for f in filas}
 
 
+class CompraAbierta(RuntimeError):
+    """La compra de la guía de esta venta está ABIERTA en la bitácora (en curso,
+    sin saber si compró, etiqueta fallida, ya solicitada): no se sabe qué
+    compró el panel, así que su orden de Odoo NO se crea todavía."""
+
+    def __init__(self, order_id: str, estado: str):
+        super().__init__(f"{order_id}: compra de guía '{estado}' sin conciliar")
+        self.order_id = order_id
+        self.estado = estado
+
+
 def reparto_comprado(order_id: str) -> list[dict[str, Any]] | None:
     """
     [{almacen_id, sku, cantidad}] de la guía que compró EL PANEL para esa venta,
@@ -1661,10 +1834,18 @@ def reparto_comprado(order_id: str) -> list[dict[str, Any]] | None:
     ⚠️ BLOQUEA. LANZA si la bitácora no se puede leer: quien llama decide
     (`es_tabla_ausente` → no hay compras del panel).
 
+    ⚠️ LANZA `CompraAbierta` si la fila está ABIERTA (revisión del 30-sep): con
+    un 'desconocido' tras un timeout en el que Temu SÍ compró, la vuelta de
+    guías veía el paquete en Temu y creaba la orden con un reparto
+    RECALCULADO (otro almacén) mientras la guía salía de los de la compra.
+    Hasta conciliarla no se sabe qué compró: no se crea.
+
     Primero lo que dijo Temu (`reparto_real`); si le falta algo, lo planeado
     (`reparto`), que es exactamente el payload que se mandó.
     """
     fila = _reclamos_de([str(order_id)]).get(str(order_id))
+    if fila and fila.get("estado") in ESTADOS_ABIERTOS:
+        raise CompraAbierta(str(order_id), str(fila.get("estado")))
     if not fila or fila.get("estado") not in ESTADOS_HECHOS:
         return None
 
@@ -1683,6 +1864,44 @@ def reparto_comprado(order_id: str) -> list[dict[str, Any]] | None:
         return [{"almacen_id": w, "sku": s, "cantidad": n} for (w, s), n in sorted(acc.items())]
 
     return _agg(fila.get("reparto_real")) or _agg(fila.get("reparto"))
+
+
+def entrega_comprada(order_id: str) -> dict[str, Any] | None:
+    """{fecha_envio (date|str), horas} de la guía que compró EL PANEL para esa
+    venta —el día en que hay que entregar el paquete a la paquetería, que con
+    el límite de Temu puede ser 24 h y no la costumbre de +2 días—, o None.
+    ⚠️ BLOQUEA. NUNCA LANZA: es un dato para el almacén (nota de la orden,
+    Excel de guías del día), no una decisión."""
+    try:
+        fila = _reclamos_de([str(order_id)]).get(str(order_id))
+    except Exception as exc:  # noqa: BLE001
+        log.debug("entrega_comprada(%s): %s", order_id, str(exc)[:120])
+        return None
+    if not fila or fila.get("estado") not in ESTADOS_HECHOS or not fila.get("fecha_envio"):
+        return None
+    return {"fecha_envio": fila.get("fecha_envio"), "horas": _entero(fila.get("horas"))}
+
+
+def texto_entrega(entrega: dict[str, Any] | None) -> str | None:
+    """"jueves 01-10-2026 (24 h)" para el almacén. PURA."""
+    if not entrega or not entrega.get("fecha_envio"):
+        return None
+    f = entrega["fecha_envio"]
+    try:
+        d = f if isinstance(f, date) else date.fromisoformat(str(f)[:10])
+    except ValueError:
+        return None
+    h = entrega.get("horas")
+    return f"{_DIAS[d.weekday()]} {d:%d-%m-%Y}" + (f" ({h} h)" if h else "")
+
+
+def entregas_compradas(pos: list[str]) -> dict[str, dict[str, Any]]:
+    """{PO: {fecha_envio, horas}} de las guías que compró el panel. ⚠️ BLOQUEA.
+    Sólo SELECT. LANZA (quien llama decide; la tabla puede no existir)."""
+    filas = _reclamos_de(sorted({str(p) for p in pos if p}))
+    return {po: {"fecha_envio": f.get("fecha_envio"), "horas": _entero(f.get("horas"))}
+            for po, f in filas.items()
+            if f.get("estado") in ESTADOS_HECHOS and f.get("fecha_envio")}
 
 
 def almacenes_de_paquetes(psns: list[str]) -> dict[str, int]:
@@ -1714,10 +1933,110 @@ def almacenes_de_paquetes(psns: list[str]) -> dict[str, int]:
     return {k: v for k, v in salida.items() if k not in dudosos}
 
 
+def compras_recientes(dias: int = 3, limite: int = 500) -> list[dict[str, Any]]:
+    """Las filas de la bitácora que se movieron en los últimos `dias` (compras
+    del panel, aprobadas a mano o automáticas). Para los topes del día y el
+    panel de la compra automática. ⚠️ BLOQUEA. Sólo SELECT. LANZA (tabla
+    ausente incluida: `es_tabla_ausente`)."""
+    from services import supabase_db as sdb
+    filas = sdb.fetch_all(
+        """/* tgc:recientes */ select parent_order_sn, estado, reclamo, grupo, aprobado_por,
+                  send_type, reparto, reparto_real, package_sn, fecha_envio, horas,
+                  codigo, motivo, creado_at, actualizado_at
+             from ops.temu_guias_compras
+            where actualizado_at > now() - make_interval(days => %(d)s)
+            order by actualizado_at desc
+            limit %(l)s""", {"d": max(1, int(dias)), "l": max(1, int(limite))})
+    return [dict(f) for f in filas]
+
+
+def pendientes_auto() -> list[dict[str, Any]]:
+    """Las compras AUTOMÁTICAS cuya etiqueta sigue 'pendiente' (en aplicación en
+    Temu), de cualquier antigüedad. No están en `ESTADOS_ABIERTOS` (cuentan
+    como hechas para el planeador), pero mientras Temu no las resuelva la
+    compra automática no se libera: una etiqueta que termina FALLIDA no se
+    puede esconder con un clic. ⚠️ BLOQUEA. Sólo SELECT. LANZA."""
+    from services import supabase_db as sdb
+    filas = sdb.fetch_all(
+        """/* tgc:pendientes_auto */ select parent_order_sn, estado, reclamo, aprobado_por,
+                  codigo, motivo, actualizado_at, reparto
+             from ops.temu_guias_compras
+            where estado = 'pendiente' and aprobado_por like %(p)s
+            order by actualizado_at asc
+            limit 200""", {"p": "auto%"})
+    return [dict(f) for f in filas]
+
+
+async def guias_por_paquete(pos: list[str], s: "_Sesion | None" = None) -> dict[str, str]:
+    """{packageSn: guía} de `bg.order.unshipped.package.get` —la fuente que usa
+    el refresco de guías— para ESTAS ventas. Es el respaldo de la verificación
+    de la compra automática cuando `shipment.result.get` no trae
+    `trackingNumber` (campo "por verificar" en vivo). LANZA si Temu no
+    contesta."""
+    s = s or _Sesion(8, 60)
+    salida: dict[str, str] = {}
+    lista = sorted({str(p) for p in pos if p})
+    for i in range(0, len(lista), 20):
+        lote = lista[i:i + 20]
+        for pagina in range(1, 6):
+            res = await s.llamar("bg.order.unshipped.package.get",
+                                 {"parentOrderSnList": lote, "pageNumber": pagina,
+                                  "pageSize": 20})
+            filas = _lista(res, "unshippedPackage")
+            for q in filas:
+                psn = str(q.get("packageSn") or "").strip()
+                g = str(q.get("trackingNumber") or "").strip()
+                if psn and g:
+                    salida[psn] = g
+            if len(filas) < 20:
+                break
+    return salida
+
+
+def abiertas() -> list[dict[str, Any]]:
+    """Las compras que BLOQUEAN (en curso, sin saber si compró, etiqueta fallida,
+    ya solicitada), de cualquier antigüedad. ⚠️ BLOQUEA. Sólo SELECT. LANZA."""
+    from services import supabase_db as sdb
+    filas = sdb.fetch_all(
+        """/* tgc:abiertas */ select parent_order_sn, estado, reclamo, aprobado_por, codigo,
+                  motivo, actualizado_at
+             from ops.temu_guias_compras
+            where estado = any(%(e)s)
+            order by actualizado_at asc
+            limit 200""", {"e": sorted(ESTADOS_ABIERTOS)})
+    return [dict(f) for f in filas]
+
+
 # Lo que ya se midió de guías históricas: no cambia (una guía comprada no se
 # re-declara), así que se guarda por PO un buen rato para no gastar cuota.
 _HIST_CACHE: dict[str, tuple[float, dict[str, Any] | None]] = {}
 _HIST_TTL = 6 * 3600.0
+
+# EL DETALLE YA LEÍDO de cada venta (lo de `leer_venta`: SIN datos del
+# comprador), {PO: (monotonic, venta)}. Revisión del 30-sep: con ~93 ventas en
+# espera, cada compra automática leía el detalle de TODAS dos veces (el plan del
+# job y el re-plan de `comprar()`), ~220 llamadas con la cuota de producción,
+# y un solo error pasajero en cualquiera de las viejas dejaba "incierto" el lote
+# entero. Sólo se REUSA para las ventas que NO se van a comprar en esa llamada
+# (las que sólo se leen para descontar su stock) y sólo cuando el plan es de la
+# compra (`solo` o `cotizar`): lo que se compra se lee SIEMPRE fresco, y
+# `comprar()` lo relee otra vez justo antes de `shipment.create`. La vista
+# previa del panel lee todo fresco, como siempre (y alimenta este caché).
+#   · se reusa sin leer si tiene menos de `_DET_TTL`;
+#   · si la lectura FALLA, se reusa hasta `_DET_RESPALDO` (con aviso) en vez de
+#     dejar la venta ilegible. Un detalle viejo de otra venta sólo sirve para
+#     descontar stock: si mientras tanto se canceló, se descuenta de más (lo
+#     conservador); si le compraron la guía a mano, `unshipped`/`label.list`
+#     —que se leen siempre— lo dicen.
+_DET_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_DET_TTL = 600.0
+_DET_RESPALDO = 3600.0
+
+
+def _podar_detalles() -> None:
+    ahora = time.monotonic()
+    for k in [k for k, (ts, _v) in _DET_CACHE.items() if ahora - ts > _DET_RESPALDO]:
+        _DET_CACHE.pop(k, None)
 
 
 async def _historial_empaque(s: _Sesion, skus: list[str]) -> dict[str, Any]:
@@ -1950,7 +2269,8 @@ async def plan_guias(limite: int | None = None, *, solo: str | None = None,
                      ahora: datetime | None = None, usar_cache: bool = True,
                      tope_llamadas: int = 150, segundos_max: float = 150.0,
                      emitida: int | None = None,
-                     medidas: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+                     medidas: dict[str, dict[str, Any]] | None = None,
+                     cotizar: Iterable[str] | None = None) -> dict[str, Any]:
     """
     El plan de guías de las ventas de Temu que esperan su guía. SOLO LECTURAS:
     no compra, no escribe en Temu, ni en Odoo, ni en kubera. Nunca lanza.
@@ -1963,6 +2283,10 @@ async def plan_guias(limite: int | None = None, *, solo: str | None = None,
     del stock) y sólo se cotiza ése. `medidas` = las cajas pesadas y medidas
     en el panel ({clave de caja: {peso_kg, largo_cm, ancho_cm, alto_cm}}).
     `emitida` la pasa `comprar()` para rehacer la huella que se aprobó.
+    `cotizar` = sólo se cotizan (en Temu) los grupos que contienen alguno de
+    esos PO; los demás se leen para descontar su stock y salen "no se cotizó".
+    Lo usa la compra automática: no gasta cuota cotizando ventas anteriores al
+    corte, que nunca va a comprar.
     """
     lim = _limite_omision() if limite is None else max(1, min(_LIMITE_MAX, int(limite)))
     if lim > 60:
@@ -1976,7 +2300,9 @@ async def plan_guias(limite: int | None = None, *, solo: str | None = None,
         med = leer_medidas(medidas)
     except (ValueError, TypeError) as exc:
         return {"ok": False, "error": f"medidas inválidas: {exc}", "grupos": []}
-    clave = (lim, solo, json.dumps(med, sort_keys=True) if med else None)
+    solo_cot = frozenset(str(x) for x in cotizar) if cotizar is not None else None
+    clave = (lim, solo, json.dumps(med, sort_keys=True) if med else None,
+             tuple(sorted(solo_cot)) if solo_cot is not None else None)
     fresco = (emitida is None and usar_cache and _PLAN_CACHE["res"] is not None
               and _PLAN_CACHE["clave"] == clave and time.monotonic() - _PLAN_CACHE["ts"] < _PLAN_TTL)
     if fresco:
@@ -1987,7 +2313,8 @@ async def plan_guias(limite: int | None = None, *, solo: str | None = None,
                 and time.monotonic() - _PLAN_CACHE["ts"] < _PLAN_TTL):
             return {**_PLAN_CACHE["res"], "de_cache": True}
         try:
-            res = await _plan(lim, solo, ahora, tope_llamadas, segundos_max, emitida, med)
+            res = await _plan(lim, solo, ahora, tope_llamadas, segundos_max, emitida, med,
+                              solo_cot)
         except Exception as exc:  # noqa: BLE001 — la vista previa nunca tumba nada
             log.exception("plan_guias falló")
             res = {"ok": False, "error": str(exc)[:300], "grupos": []}
@@ -1998,7 +2325,8 @@ async def plan_guias(limite: int | None = None, *, solo: str | None = None,
 
 async def _plan(lim: int, solo: str | None, ahora: datetime | None,
                 tope_llamadas: int, segundos_max: float, emitida: int | None,
-                medidas: dict[str, dict[str, float]]) -> dict[str, Any]:
+                medidas: dict[str, dict[str, float]],
+                solo_cot: frozenset[str] | None = None) -> dict[str, Any]:
     from services import temu
 
     momento = ahora or datetime.now(timezone.utc)
@@ -2015,7 +2343,11 @@ async def _plan(lim: int, solo: str | None, ahora: datetime | None,
         "medidas_capturadas": len(medidas),
         "reglas": {
             "fecha": ("compra + 2 días naturales; sábado, domingo o festivo → siguiente día "
-                      "hábil. shipLaterLimitTime = 24 × días naturales (24-96 h)."),
+                      "hábil. shipLaterLimitTime = 24 × días naturales (24-96 h). Nunca "
+                      "después del límite de envío de Temu: si lo rebasa, el mayor plazo que "
+                      "lo cumpla en día hábil (sábado sólo con TEMU_GUIAS_SABADO_ALTERNO: "
+                      + ("encendida" if sabado_alterno() else "apagada")
+                      + "); si ninguno, compra manual urgente. Ver 'limites'."),
             "reparto": ("odoo_ventas.planear_almacenes (la de Automatización): un almacén que "
                         "cubra todo; si no, por SKU. La cola se lee ENTERA y se descuenta de la "
                         "más vieja a la más nueva; lo ya comprado sale de su almacén real y lo "
@@ -2119,16 +2451,40 @@ async def _plan(lim: int, solo: str | None, ahora: datetime | None,
         "abiertas": sorted(po for po, f in bitacora.items() if f.get("estado") in ESTADOS_ABIERTOS),
         "hechas": sorted(po for po, f in bitacora.items() if f.get("estado") in ESTADOS_HECHOS)}
 
-    # 4 · El detalle de cada venta leída.
+    # 4 · El detalle de cada venta leída. Lo que se va a COMPRAR (el grupo de
+    #     `solo`, los grupos con algún PO de `cotizar`) siempre fresco; lo que
+    #     sólo se lee para descontar su stock puede venir del caché cuando el
+    #     plan es de la compra (ver `_DET_CACHE`).
+    reusar = solo is not None or solo_cot is not None
+    frescos = set(objetivo or []) | {po for g in leer if solo_cot is not None
+                                     and any(x in solo_cot for x in g) for po in g}
+    _podar_detalles()
     ventas: dict[str, dict[str, Any]] = {}
+    r["detalles_reusados"] = 0
     for po in pos:
+        guardado = _DET_CACHE.get(po)
+        edad = (time.monotonic() - guardado[0]) if guardado else None
+        puede = reusar and po not in frescos and guardado is not None
+        if puede and edad is not None and edad < _DET_TTL:
+            ventas[po] = copy.deepcopy(guardado[1])
+            r["detalles_reusados"] += 1
+            continue
         try:
             det = await s.llamar("bg.order.detail.v2.get", {"parentOrderSn": po})
             ventas[po] = leer_venta(po, det or {})
+            _DET_CACHE[po] = (time.monotonic(), copy.deepcopy(ventas[po]))
         except Exception as exc:  # noqa: BLE001
+            if puede and edad is not None and edad < _DET_RESPALDO:
+                ventas[po] = copy.deepcopy(guardado[1])
+                ventas[po]["avisos"] = list(ventas[po].get("avisos") or []) + [
+                    f"detalle de hace {edad / 60:.0f} min: Temu no contestó ahora "
+                    f"({_texto_error(exc)[:80]})"]
+                r["detalles_reusados"] += 1
+                continue
             ventas[po] = {"parent_order_sn": po, "estado": None, "estado_txt": "?",
                           "renglones": [], "avisos": [], "limite_envio_ts": None,
-                          "limite_envio": None, "cubre_plataforma": False,
+                          "limite_envio": None, "venta_ts": None, "venta": None,
+                          "cubre_plataforma": False,
                           "ilegible": True, "paquetes": [], "paquete_sin_numero": False,
                           "bloqueos": [f"no se pudo leer el detalle en Temu: {_texto_error(exc)}"]}
 
@@ -2176,6 +2532,7 @@ async def _plan(lim: int, solo: str | None, ahora: datetime | None,
         ajena = await asyncio.to_thread(_demanda_ajena, dias)
     except Exception as exc:  # noqa: BLE001
         ajena_error = str(exc)[:160]
+    r["ajena_error"] = ajena_error
 
     # 8 · Las guías YA compradas: de qué almacén sale cada caja.
     psns = sorted({p for v in ventas.values() for p in v.get("paquetes") or []})
@@ -2188,7 +2545,8 @@ async def _plan(lim: int, solo: str | None, ahora: datetime | None,
             paquetes_error = _texto_error(exc)[:160]
 
     # 9 · Historial de empaque, mediciones y catálogo (sólo de lo que se cotiza).
-    cotizados = [g for g in leer if objetivo is None or g == objetivo]
+    cotizados = [g for g in leer if (objetivo is None or g == objetivo)
+                 and (solo_cot is None or any(po in solo_cot for po in g))]
     skus_cot = sorted({ren["sku"] for g in cotizados for po in g for ren in ventas[po]["renglones"]})
     medidas_alm: dict[str, dict[str, Any]] = {}
     try:
@@ -2324,19 +2682,36 @@ async def _plan(lim: int, solo: str | None, ahora: datetime | None,
         gs["stock"] = {s_: foto_inicial.get(s_, {}) for s_ in
                        sorted({ren["sku"] for v in g_todas for ren in v["renglones"]})}
         gs["motivos"] = extra + plan["motivos"]
-        cotizar = objetivo is None or miembros == objetivo
+        # LA FECHA DEL GRUPO, con el límite de envío de Temu encima (30-sep): el
+        # MÁS CERCANO de los PO que se compran, porque todas sus cajas comparten
+        # fecha (una por llamada). Ver `fecha_con_limite`.
+        limites_g = {po: _entero(ventas[po].get("limite_envio_ts")) for po in a_comprar}
+        con_limite = [x for x in limites_g.values() if x]
+        fecha_g = fecha_con_limite(momento, min(con_limite) if con_limite else None)
+        gs["ventas_ts"] = {po: ventas[po].get("venta_ts") for po in miembros}
+        gs["limites_ts"] = {po: _entero(ventas[po].get("limite_envio_ts")) for po in miembros}
+        # Las que NO se pudieron leer: su "sin fecha de venta" es una lectura
+        # fallida (se reintenta), no un dato que Temu no tenga.
+        gs["ilegibles"] = sorted(po for po in miembros if ventas[po].get("ilegible"))
+        gs["sin_limite"] = sorted(po for po, x in limites_g.items() if not x)
+        gs["fecha"] = {k: fecha_g.get(k) for k in (
+            "fecha_envio", "dia_envio", "horas", "valida", "ajustada", "urgente", "ajuste",
+            "limite", "limite_ts", "regla_fecha", "regla_horas", "motivos")}
+        cotizar = ((objetivo is None or miembros == objetivo)
+                   and (solo_cot is None or any(po in solo_cot for po in miembros)))
         for ll in plan["llamadas"]:
             gs["llamadas"].append(await _armar_llamada(
-                s, ll, fecha, plan_ventas, hist["muestras"], medidas_alm, cotizar,
+                s, ll, fecha_g, plan_ventas, hist["muestras"], medidas_alm, cotizar,
                 medidas, catalogo, catalogo_leido))
         gs["comprable"] = bool(plan["planeado"] and not gs["motivos"] and gs["llamadas"]
                                and all(x["comprable"] for x in gs["llamadas"]))
         if gs["comprable"]:
-            cont = contenido_aprobacion(plan["ventas"], gs["llamadas"], fecha, emitida)
+            cont = contenido_aprobacion(plan["ventas"], gs["llamadas"], fecha_g, emitida)
             gs["aprobacion"] = {
                 "huella": huella_aprobacion(cont), "emitida": emitida,
-                "vence": r["aprobacion_vence"], "fecha_envio": fecha["fecha_envio"],
-                "dia_envio": fecha["dia_envio"], "horas": fecha["horas"],
+                "vence": r["aprobacion_vence"], "fecha_envio": fecha_g["fecha_envio"],
+                "dia_envio": fecha_g["dia_envio"], "horas": fecha_g["horas"],
+                "limite_ts": fecha_g.get("limite_ts"), "ajustada": fecha_g.get("ajustada"),
                 "llamadas": len(gs["llamadas"]),
                 "cajas": sum(len(ll["paquetes"]) for ll in gs["llamadas"]),
                 "costo_mxn": round(sum(((p.get("cotizacion") or {}).get("elegido") or {})
@@ -2348,6 +2723,7 @@ async def _plan(lim: int, solo: str | None, ahora: datetime | None,
     r["llamadas_temu"] = s.n
     r["llamadas_por_tipo"] = s.por_tipo
     r["errores_temu"] = s.errores
+    r["limites"] = resumen_limites(r["grupos"])
     r["resumen"] = {
         "grupos": len(leer), "ventas": len(pos), "comprables": comprables,
         "bloqueados": len(leer) - comprables,
@@ -2361,6 +2737,47 @@ async def _plan(lim: int, solo: str | None, ahora: datetime | None,
     log.info("plan de guías Temu: %s grupos, %s comprables, %s llamadas a Temu",
              len(leer), comprables, s.n)
     return r
+
+
+def resumen_limites(grupos: list[dict[str, Any]]) -> dict[str, Any]:
+    """
+    Cuánto deja Temu entre la VENTA y su LÍMITE DE ENVÍO, por día de la semana
+    de la venta (hora de México), y cuántos grupos salieron con la fecha
+    adelantada o "urgente" por ese límite. PURA.
+
+    Es la medición que pide la decisión de Brandon antes de encender la compra
+    automática (revisión del 30-sep): con el límite a ~48 h de la venta la regla
+    de +2 días casi nunca cabe (se adelanta a 24 h) y las ventas de viernes y
+    sábado salen urgentes porque 24 h cae en fin de semana
+    (`TEMU_GUIAS_SABADO_ALTERNO`). Sin datos del comprador.
+    """
+    por_dia: dict[str, dict[str, Any]] = {}
+    for g in grupos or []:
+        f = g.get("fecha") or {}
+        for po in g.get("a_comprar") or []:
+            v = _entero((g.get("ventas_ts") or {}).get(po))
+            lim = _entero((g.get("limites_ts") or {}).get(po))
+            if not v or not lim:
+                continue
+            dia = _DIAS[datetime.fromtimestamp(v, tz=timezone.utc).astimezone(ZONA).weekday()]
+            d = por_dia.setdefault(dia, {"ventas": 0, "horas": [], "ajustadas": 0, "urgentes": 0})
+            d["ventas"] += 1
+            d["horas"].append(round((lim - v) / 3600.0, 1))
+            d["ajustadas"] += 1 if f.get("ajustada") else 0
+            d["urgentes"] += 1 if f.get("urgente") else 0
+    salida: dict[str, Any] = {}
+    for dia in _DIAS:
+        d = por_dia.get(dia)
+        if not d:
+            continue
+        hs = sorted(d["horas"])
+        salida[dia] = {"ventas": d["ventas"], "ajustadas": d["ajustadas"],
+                       "urgentes": d["urgentes"], "horas_min": hs[0],
+                       "horas_mediana": hs[len(hs) // 2], "horas_max": hs[-1]}
+    return {"por_dia_de_venta": salida,
+            "explica": ("horas = límite de envío de Temu − hora de la venta. 'ajustadas': la "
+                        "regla de +2 días rebasaba el límite y se adelantó; 'urgentes': ni 24 h "
+                        "cabe en día hábil (compra manual)")}
 
 
 async def _armar_llamada(s: _Sesion, ll: dict[str, Any], fecha: dict[str, Any],
@@ -2431,7 +2848,7 @@ async def _armar_llamada(s: _Sesion, ll: dict[str, Any], fecha: dict[str, Any],
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-#  9 · LA COMPRA — escrita, APAGADA, y no se invoca desde ningún lado
+#  9 · LA COMPRA — APAGADA; sólo la invoca la compra automática (temu_guias_auto)
 # ═════════════════════════════════════════════════════════════════════════════
 
 # UNA compra a la vez en este proceso; entre procesos manda la bitácora.
@@ -2475,19 +2892,15 @@ async def _verificar_antes(ll: dict[str, Any], aprob: dict[str, Any],
     """
     motivos: list[str] = []
     payload = ll["payload"]
-    f = fecha_envio(momento or datetime.now(timezone.utc))
-    if not f["valida"]:
-        motivos.extend(f["motivos"])
-    if f["fecha_envio"] != aprob["fecha_envio"] or str(f["horas"]) != str(payload["shipLaterLimitTime"]):
-        motivos.append(f"la fecha de envío ya no es la aprobada: comprando ahora sería el "
-                       f"{f['fecha_envio']} a {f['horas']} h y se aprobó el "
-                       f"{aprob['fecha_envio']} a {payload['shipLaterLimitTime']} h — vuelve a "
-                       "revisar la vista previa")
     esperado: dict[str, dict[str, int]] = {}
     for caja in payload["sendRequestList"]:
         for rr in caja["orderSendInfoList"]:
             d = esperado.setdefault(rr["parentOrderSn"], {})
             d[rr["orderSn"]] = d.get(rr["orderSn"], 0) + int(rr["quantity"])
+    # El límite de envío con el que se aprobó (el del grupo) y los que Temu
+    # dice AHORA de estos PO: manda el más cercano. Si Temu lo adelantó, la
+    # fecha recalculada ya no es la aprobada y no se compra.
+    limites: list[int] = [int(aprob["limite_ts"])] if _entero(aprob.get("limite_ts")) else []
     s = _Sesion(4 + 2 * len(ll["ventas"]), 90)
     for po in ll["ventas"]:
         try:
@@ -2496,10 +2909,21 @@ async def _verificar_antes(ll: dict[str, Any], aprob: dict[str, Any],
             motivos.append(f"{po}: no se pudo releer el detalle ({_texto_error(exc)[:120]})")
             continue
         v = leer_venta(po, det or {})
+        if _entero(v.get("limite_envio_ts")):
+            limites.append(int(v["limite_envio_ts"]))
         motivos.extend(f"{po}: {b}" for b in v["bloqueos"])
         pedido = {x["orderSn"]: int(x["cantidad"]) for x in v["renglones"]}
         if pedido != esperado.get(po, {}):
             motivos.append(f"{po}: lo pedido en Temu cambió desde la aprobación")
+    f = fecha_con_limite(momento or datetime.now(timezone.utc),
+                         min(limites) if limites else None)
+    if not f["valida"]:
+        motivos.extend(f["motivos"])
+    if f["fecha_envio"] != aprob["fecha_envio"] or str(f["horas"]) != str(payload["shipLaterLimitTime"]):
+        motivos.append(f"la fecha de envío ya no es la aprobada: comprando ahora sería el "
+                       f"{f['fecha_envio']} a {f['horas']} h y se aprobó el "
+                       f"{aprob['fecha_envio']} a {payload['shipLaterLimitTime']} h — vuelve a "
+                       "revisar la vista previa")
     try:
         hallados = await _paquetes_sin_enviar(s, list(ll["ventas"]))
         for po, cosas in hallados.items():
@@ -2570,7 +2994,8 @@ async def comprar(parent_order_sn: str, huella_aprobada: str, emitida: int | str
 
     ⚠️ APAGADA: con `TEMU_COMPRA_GUIAS_ENABLED=false` sale antes de tocar nada
     (ni Temu, ni Odoo, ni kubera). Encenderla es decisión de Brandon (regla 3).
-    `aprobado_por` lo debe poner el endpoint desde la SESIÓN (no hay endpoint
+    `aprobado_por` lo pone la compra automática (`temu_guias_auto.QUIEN`, que
+    empieza con "auto") o, si algún día existe, un endpoint desde la SESIÓN (no hay endpoint
     todavía), nunca texto libre del cliente.
 
     El camino: aprobación vigente → re-plan en vivo con todas las guardas →
@@ -2609,8 +3034,12 @@ async def comprar(parent_order_sn: str, huella_aprobada: str, emitida: int | str
             return {**base, "accion": "en_curso",
                     "motivo": "ya hay una compra de guías en curso: una a la vez"}
         async with _COMPRA_LOCK:
+            # Presupuesto amplio: el re-plan lee el detalle de TODAS las ventas
+            # más viejas que el grupo (hasta ~120 con la cola de hoy) y, sin
+            # cuota o sin tiempo, las que no alcanzara a leer volverían el lote
+            # "incierto" y la compra no saldría nunca.
             plan = await plan_guias(solo=sn, usar_cache=False, emitida=emitida_i,
-                                    medidas=medidas)
+                                    medidas=medidas, tope_llamadas=400, segundos_max=270.0)
             if not plan.get("ok"):
                 return {**base, "accion": "sin_plan", "motivo": plan.get("error") or "sin plan"}
             grupo = next((g for g in plan.get("grupos") or [] if sn in g["ventas"]), None)
@@ -2632,12 +3061,19 @@ async def comprar(parent_order_sn: str, huella_aprobada: str, emitida: int | str
                                    "medidas o día): vuelve a revisar la vista previa"),
                         "huella_nueva": aprob["huella"]}
             reclamo = uuid.uuid4().hex
+            reclamado_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
             filas = []
             for ll in grupo["llamadas"]:
                 for po in ll["ventas"]:
+                    # Además de qué sale de dónde: la caja, la paquetería y el
+                    # costo cotizado, y cuándo se reclamó. Con eso la bitácora
+                    # dice "comprada (paquetería, costo, fecha)" y los topes
+                    # del día de la compra automática sobreviven a un reinicio.
                     reparto = [{"orderSn": e["orderSn"], "sku": e["sku"],
                                 "quantity": int(e["quantity"]), "warehouse_id": p["warehouse_id"],
-                                "almacen_id": p["almacen_id"]}
+                                "almacen_id": p["almacen_id"], "caja": p.get("clave"),
+                                "paqueteria": paqueteria_de(p), "costo_mxn": costo_de(p),
+                                "reclamado_at": reclamado_at}
                                for p in ll["paquetes"] for e in p["renglones"]
                                if e["parentOrderSn"] == po]
                     filas.append({"po": po, "reclamo": reclamo, "grupo": list(grupo["a_comprar"]),
@@ -2722,10 +3158,13 @@ async def _comprar_grupo(grupo: dict[str, Any], reclamo: str, base: dict[str, An
         avisos = (res or {}).get("warningMessage")
         avisos = [str(a) for a in avisos] if isinstance(avisos, list) else (
             [str(avisos)] if avisos else [])
-        if len(psns) != len(payload["sendRequestList"]):
+        # DISTINTOS: el mismo packageSn para dos cajas cuadra en número y deja
+        # una caja real fuera de la bitácora (y de su orden de Odoo).
+        if (len(psns) != len(payload["sendRequestList"])
+                or len(set(psns)) != len(psns)):
             _DESCONOCIDAS.update(pos_ll)
-            motivo = (f"Temu devolvió {len(psns)} packageSn para {len(payload['sendRequestList'])} "
-                      "caja(s): no se sabe qué compró")
+            motivo = (f"Temu devolvió {len(psns)} packageSn ({len(set(psns))} distintos) para "
+                      f"{len(payload['sendRequestList'])} caja(s): no se sabe qué compró")
             await _anotar(reclamo, {**{po: {"estado": "desconocido", "package_sn": psns,
                                            "motivo": motivo} for po in pos_ll}, **no_salio})
             detalle.append({"ventas": pos_ll, "estado": "desconocido", "package_sn": psns,
@@ -2750,7 +3189,7 @@ async def _comprar_grupo(grupo: dict[str, Any], reclamo: str, base: dict[str, An
                       ", ".join(pos_ll), payload["shipLaterLimitTime"], eco)
         detalle.append({"ventas": pos_ll, "estado": estado, "package_sn": psns,
                         "ship_later_limit_time": eco or None, "eco_distinto": eco_mal,
-                        "avisos_temu": avisos,
+                        "avisos_temu": avisos, "reparto_real": real,
                         "resultado": [{"packageSn": k,
                                        "shippingLabelStatus": v.get("shippingLabelStatus"),
                                        "warehouseId": v.get("warehouseId"),
@@ -2792,33 +3231,57 @@ async def _comprar_grupo(grupo: dict[str, Any], reclamo: str, base: dict[str, An
 
 
 async def conciliar(parent_order_sn: str, *, liberar: bool = False,
-                    quien: str = "") -> dict[str, Any]:
+                    quien: str = "", revisar_rechazada: bool = False) -> dict[str, Any]:
     """
     Concilia la compra ABIERTA de un PO mirando Temu (detalle, unshipped,
-    result.get). SÓLO escribe en la bitácora; nunca compra. Ningún endpoint la
-    invoca todavía.
+    result.get). SÓLO escribe en la bitácora; nunca compra. La invoca el botón
+    "Conciliar" de la compra automática (`temu_guias_auto.conciliar_y_liberar`).
 
     Si Temu muestra la guía → 'comprada' / 'pendiente' / 'fallida' con su
     reparto real. Si no hay rastro y pasaron ≥ 30 min, `liberar=True` con
     `quien` (verificado a mano en el seller center) la deja 'rechazada', y el PO
     vuelve a poder comprarse con una aprobación nueva. No lanza (salvo
     cancelación).
+
+    `revisar_rechazada=True`: una fila 'rechazada' (que no bloquea) TAMBIÉN se
+    mira en Temu —detalle, unshipped y `label.list`— antes de dar el rechazo
+    por bueno. Es lo que pide la compra automática antes de liberarse: el
+    rechazo lo clasificó una lista de códigos, y si Temu sí compró, la fila
+    tiene que decirlo (y bloquear) en vez de quedar libre.
     """
     sn = str(parent_order_sn or "").strip()
     try:
         fila = (await asyncio.to_thread(_reclamos_de, [sn])).get(sn)
         if not fila:
             return {"ok": False, "accion": "sin_registro", "parent_order_sn": sn}
-        if fila.get("estado") in ESTADOS_LIBRES or fila.get("estado") == "comprada":
+        mirar_rechazada = revisar_rechazada and fila.get("estado") == "rechazada"
+        if not mirar_rechazada and (fila.get("estado") in ESTADOS_LIBRES
+                                    or fila.get("estado") == "comprada"):
             return {"ok": True, "accion": "nada_que_conciliar", "estado": fila.get("estado"),
                     "parent_order_sn": sn}
-        s = _Sesion(10, 90)
+        s = _Sesion(12, 90)
         det = await s.llamar("bg.order.detail.v2.get", {"parentOrderSn": sn})
         v = leer_venta(sn, det or {})
         psns = sorted(set(v.get("paquetes") or []) | set(fila.get("package_sn") or []))
         if not psns:
             sin = await _paquetes_sin_enviar(s, [sn])
             psns = sorted({p for p in sin.get(sn, []) if p and p != "?"})
+        if mirar_rechazada and not psns:
+            # La tercera fuente: una etiqueta en CUALQUIER estado. Si Temu la
+            # tiene y no hay packageSn con qué conciliarla, no se sabe qué pasó:
+            # la fila deja de estar libre y bloquea (como un "no sé si compró").
+            etq = (await _etiquetas_de(s, [sn])).get(sn) or []
+            if etq:
+                anotada = await _anotar(fila["reclamo"], {sn: {
+                    "estado": "desconocido", "motivo": (
+                        f"se había dado por rechazada ({fila.get('codigo') or '?'}) y Temu "
+                        f"muestra {len(etq)} etiqueta(s) sin packageSn: concilia en el seller "
+                        "center")}})
+                _DESCONOCIDAS.add(sn)
+                return {"ok": True, "accion": "conciliada", "estado": "desconocido",
+                        "package_sn": [], "parent_order_sn": sn, "anotada": anotada}
+            return {"ok": True, "accion": "nada_que_conciliar", "estado": "rechazada",
+                    "mirado_en_temu": True, "parent_order_sn": sn}
         if psns:
             filas = await _resultados_de(s, psns)
             st = [_entero((filas.get(p) or {}).get("shippingLabelStatus")) for p in psns]
@@ -2829,11 +3292,15 @@ async def conciliar(parent_order_sn: str, *, liberar: bool = False,
                 {"orderSn": x.get("orderSn"), "sku": x.get("sku"), "parentOrderSn": sn}
                 for x in (fila.get("reparto") or []) if isinstance(x, dict)]}]}
             real = _reparto_real(ll, filas, mapa_inv).get(sn)
-            await _anotar(fila["reclamo"], {sn: {"estado": estado, "package_sn": psns,
-                                                 "reparto_real": real,
-                                                 "motivo": "conciliada contra Temu"}})
+            anotada = await _anotar(fila["reclamo"], {sn: {"estado": estado, "package_sn": psns,
+                                                           "reparto_real": real,
+                                                           "motivo": "conciliada contra Temu"}})
+            if anotada:
+                # La bitácora durable ya sabe qué pasó: la red en memoria sobra
+                # (y dejarla trabaría al resto de su grupo).
+                _DESCONOCIDAS.discard(sn)
             return {"ok": True, "accion": "conciliada", "estado": estado, "package_sn": psns,
-                    "parent_order_sn": sn}
+                    "parent_order_sn": sn, "anotada": anotada}
         actualizado = fila.get("actualizado_at")
         edad_min = ((datetime.now(timezone.utc) - actualizado).total_seconds() / 60
                     if isinstance(actualizado, datetime) and actualizado.tzinfo else 0.0)

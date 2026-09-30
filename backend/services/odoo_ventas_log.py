@@ -430,6 +430,40 @@ def pendientes_sin_orden(canal: str, dias: int = 14,
             for f in filas]
 
 
+def esperas_de(canal: str, ids: list[str], dias: int = 14) -> list[dict[str, Any]]:
+    """
+    Las filas de ESPERA (sólo su espacio, sin orden en Odoo) de ESTAS ventas,
+    con la misma forma que `pendientes_sin_orden`. ⚠️ BLOQUEA. Sólo SELECT.
+
+    Para el refresco INMEDIATO de la compra automática de guías de Temu
+    (`pedidos_temu.refrescar_guias(solo_ids=…)`): la venta que se acaba de
+    comprar tiene que encontrarse aunque la cola repartida "mitad nuevas, mitad
+    viejas" la dejara fuera. A diferencia de `pendientes_sin_orden`, LANZA si
+    kubera no contesta: quien la llama tiene que distinguir "no espera" de "no
+    se sabe".
+    """
+    from services import supabase_db as sdb
+
+    canal = (canal or "").lower()
+    lista = sorted({str(x).strip() for x in ids or [] if str(x or "").strip()})
+    if not canal or not lista:
+        return []
+    filas = sdb.fetch_all(
+        """/* ovl:esperas_de */ select cuenta, external_order_id, creado_at, motivo,
+                  almacen, cobertura,
+                  extract(epoch from (now() - creado_at)) / 3600.0 as horas
+             from ops.odoo_sale_orders
+            where canal = %(c)s and odoo_order_id is null and accion = %(a)s
+              and external_order_id = any(%(ids)s)
+              and creado_at > now() - make_interval(days => %(d)s)""",
+        {"c": canal, "a": ACCION_ESPERA, "ids": lista, "d": int(dias)})
+    return [{"order_id": str(f["external_order_id"]), "cuenta": f["cuenta"],
+             "espera_guia": True, "pickings": [], "sin_pdf": [], "ordenes": [],
+             "creado_at": f["creado_at"], "antiguedad_h": float(f["horas"] or 0),
+             "almacen_al_vender": f["almacen"], "cobertura_al_vender": f["cobertura"]}
+            for f in filas]
+
+
 def caducar_esperas(canal: str, dias: int, limite: int = 500) -> dict[str, Any]:
     """
     Las esperas que se pasaron de la ventana dejan de esperar EN VOZ ALTA.

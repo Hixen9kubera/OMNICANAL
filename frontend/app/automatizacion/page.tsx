@@ -61,6 +61,8 @@ import { ACCIONES_CANCELADA, claveOrden, combinadosDe, type Combinado } from "@/
 import { ddmm, revisarPdf, type AvisoPdf, type GuiaGrupo, type GuiasDia } from "@/lib/guiasDelDia";
 import AppNavbar from "@/components/AppNavbar";
 import PlanGuiasTemu from "@/components/PlanGuiasTemu";
+import CompraAutoTemu, { ChipCompraAuto, type CompraAutoEstado, type VentaCompraAuto }
+  from "@/components/CompraAutoTemu";
 import { quienSoy } from "@/lib/sesion";
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -312,6 +314,9 @@ interface Estado {
                       canceladas_detectadas?: number; sin_consultar?: number;
                       temu_caido?: boolean };
   };
+  /** La COMPRA AUTOMÁTICA de guías de Temu (30-sep): estado del job y, por
+   *  venta, "comprada automáticamente" o "requiere compra manual". */
+  temu_compra_auto?: CompraAutoEstado;
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -968,10 +973,12 @@ function PartesDivididas({ o, partes: ps, odooUrl, ventaUrl }: {
 }
 
 function FilaOrden({
-  o, abierta, onAbrir, odooUrl, ventaUrl = "", combinado, onVerJuntas,
+  o, abierta, onAbrir, odooUrl, ventaUrl = "", combinado, onVerJuntas, compraAuto,
 }: {
   o: OrdenOdoo; abierta: boolean; onAbrir: () => void; odooUrl: string; ventaUrl?: string;
   combinado?: Combinado; onVerJuntas?: (guia: string) => void;
+  /** La compra automática de la guía de esta venta (sólo Temu). */
+  compraAuto?: VentaCompraAuto;
 }) {
   const d = desenlace(o);
   const s = V[d.v];
@@ -1077,6 +1084,9 @@ function FilaOrden({
               {o.motivo}
             </div>
           )}
+          {compraAuto && (
+            <div className="mt-[3px] min-w-0 pl-[14px]"><ChipCompraAuto v={compraAuto} compacto /></div>
+          )}
         </div>
         <div className="min-w-0">
           {/* Un guión no distingue "no se pudo crear" de "todavía no toca".
@@ -1171,6 +1181,9 @@ function FilaOrden({
           )}
           {o.motivo && (
             <div className="mt-1 pl-[15px] text-[11.5px]" style={{ color: s.motivoColor }}>{o.motivo}</div>
+          )}
+          {compraAuto && (
+            <div className="mt-1 min-w-0 pl-[15px]"><ChipCompraAuto v={compraAuto} /></div>
           )}
           <div className="mt-2 flex flex-wrap items-center gap-2 pl-[15px] text-[11.5px] text-slate-500">
             {o.guia && <span className="font-mono font-bold text-slate-700">{o.guia}</span>}
@@ -1591,8 +1604,10 @@ function LineaVigilante({ v }: { v: NonNullable<Estado["temu_cancelaciones"]> })
 function TarjetaCanal({
   canal, ordenes, encendido, escalonId, moviendo, abierta, onAbrir, onSwitch, odooUrl, filtrando,
   buscando = "", enOtroCanal = 0, otroCanal = "", ventaUrl = "", arriba = 0,
-  combinados = {}, onVerJuntas, esperaGuia, vigilante,
+  combinados = {}, onVerJuntas, esperaGuia, vigilante, compraAuto,
 }: {
+  /** La compra automática de guías, por venta (hoy sólo Temu). */
+  compraAuto?: Record<string, VentaCompraAuto>;
   /** El vigilante de cancelaciones del canal (hoy sólo Temu). */
   vigilante?: Estado["temu_cancelaciones"];
   canal: (typeof CANALES)[number];
@@ -1734,6 +1749,7 @@ function TarjetaCanal({
           ventaUrl={ventaUrl}
           combinado={combinados[claveOrden(o)]}
           onVerJuntas={onVerJuntas}
+          compraAuto={compraAuto?.[o.external_order_id]}
           abierta={abierta === o.external_order_id}
           onAbrir={() => onAbrir(abierta === o.external_order_id ? null : o.external_order_id)}
         />
@@ -3469,6 +3485,13 @@ export default function AutomatizacionPage() {
         {/* ── PLAN DE GUÍAS DE TEMU (vista previa · no compra) ──
             Sólo en Temu y sólo para quien puede mover (admin): hace lecturas a
             Temu con la cuota de producción y se calcula a pedido, no al abrir. */}
+        {/* ── COMPRA AUTOMÁTICA DE GUÍAS (30-sep) ──
+            La ve todo el equipo (quien compra a mano necesita saber qué compró
+            el job y qué no); conciliar y correr una vuelta son de admin. */}
+        {canal === "temu" && estado?.temu_compra_auto?.banderas && (
+          <CompraAutoTemu datos={estado.temu_compra_auto} puedeMover={puedeMover !== false}
+                          onCambio={() => void cargar()} />
+        )}
         {canal === "temu" && puedeMover !== false && <PlanGuiasTemu />}
 
         {/* ── LA LISTA ── */}
@@ -3513,6 +3536,7 @@ export default function AutomatizacionPage() {
               }}
               onSwitch={() => setConfirmar({ que: canal, encender: !canalEncendido(canal) })}
               vigilante={canal === "temu" ? estado?.temu_cancelaciones : undefined}
+              compraAuto={canal === "temu" ? estado?.temu_compra_auto?.ventas : undefined}
             />
           )}
         </div>

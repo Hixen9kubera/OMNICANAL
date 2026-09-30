@@ -14,6 +14,11 @@ automatizacion.py — Lo que el panel automatiza sin que nadie lo empuje.
                                               sin comprar nada
   POST /api/automatizacion/temu/plan-guias → la misma, con cajas medidas en el
                                               panel (no guarda nada)
+  GET  /api/automatizacion/temu/compra-auto → la COMPRA AUTOMÁTICA de guías:
+                                              estado, topes, abiertas, por venta
+  POST …/temu/compra-auto/conciliar?po=     → concilia una compra y libera el
+                                              job detenido (admin; nunca compra)
+  POST …/temu/compra-auto/vuelta            → una vuelta ya (con sus banderas)
 
 Hoy solo cubre las órdenes de venta en Odoo (TikTok/Temu). El nombre es de la
 pestaña, no del módulo: aquí van cayendo los demás automatismos conforme se
@@ -94,8 +99,26 @@ async def estado(canal: str | None = Query(None, description="acota los contador
             "publicaciones": _publicaciones(),
             "tiktok_respaldos": _tiktok_respaldos(),
             "temu_cancelaciones": _temu_cancelaciones(),
+            "temu_compra_auto": _temu_compra_auto(),
         }
     return await asyncio.to_thread(_leer)
+
+
+def _temu_compra_auto() -> dict:
+    """
+    La compra automática de guías de Temu (30-sep-2026): banderas, si está
+    detenida y por qué, compras y gasto de hoy, compras abiertas y, POR VENTA,
+    "guía comprada automáticamente (paquetería, costo, fecha)" o "requiere
+    compra manual (motivo)". Sin datos del comprador; va en `/estado` para que
+    la vea quien compra las guías a mano. Ya corre en un hilo. Nunca rompe la
+    pantalla. Ver services/temu_guias_auto.py.
+    """
+    try:
+        from services import temu_guias_auto as tga
+        return tga.estado_panel()
+    except Exception as exc:  # noqa: BLE001
+        log.debug("automatizacion: compra automática de Temu ilegible (%s)", exc)
+        return {}
 
 
 def _temu_cancelaciones() -> dict:
@@ -953,6 +976,70 @@ async def temu_plan_guias_con_medidas(request: Request):
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)[:300])
     return await tgc.plan_guias(limite=limite, medidas=medidas)
+
+
+def _quien(request: Request | None) -> str:
+    """El actor de la sesión (correo o etiqueta de la llave), nunca texto del
+    cliente. Ver core/identidad.py::Identidad."""
+    try:
+        ident = getattr(request.state, "identidad", None) if request is not None else None
+        return str(getattr(ident, "actor", "") or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+@router.get("/temu/compra-auto", dependencies=[Depends(requiere_api_key)])
+async def temu_compra_auto_estado():
+    """
+    La COMPRA AUTOMÁTICA de guías de Temu: banderas y topes, si está detenida
+    y por qué, compras y gasto de hoy, compras abiertas, la última vuelta y el
+    estado de cada venta. Sólo lectura; sin datos del comprador. De admin
+    (regla de prefijo). Ver services/temu_guias_auto.py.
+    """
+    from services import temu_guias_auto as tga
+
+    return await asyncio.to_thread(tga.estado_panel)
+
+
+@router.post("/temu/compra-auto/conciliar", dependencies=[Depends(requiere_api_key)])
+async def temu_compra_auto_conciliar(
+    po: str | None = Query(None, description="parentOrderSn de la compra a conciliar. Sin él "
+                                             "sólo intenta liberar el job"),
+    liberar: bool = Query(False, description="true (verificado a mano en el seller center): una "
+                                             "compra abierta sin rastro en Temu pasados 30 min se "
+                                             "da por no hecha; una etiqueta automática que sigue "
+                                             "en aplicación se ACEPTA (se sigue vigilando sola)"),
+    request: Request = None,  # noqa: B008
+):
+    """
+    El botón "Conciliar" (admin): mira la compra de `po` en Temu y la anota en
+    la bitácora (`temu_guias_compra.conciliar`; un rechazo automático también se
+    mira); si la conciliación salió bien y ya no queda NINGUNA compra abierta ni
+    etiqueta automática en aplicación sin aceptar, LIBERA la compra automática
+    detenida. Queda registrado quién. Nunca compra.
+    """
+    from services import temu_guias_auto as tga
+
+    sn = (po or "").strip() or None
+    if sn and not re.fullmatch(r"PO-[0-9A-Za-z-]{4,60}", sn):
+        raise HTTPException(status_code=422, detail="po tiene que ser un parentOrderSn 'PO-…'")
+    return await tga.conciliar_y_liberar(sn, liberar=bool(liberar), quien=_quien(request))
+
+
+@router.post("/temu/compra-auto/vuelta", dependencies=[Depends(requiere_api_key)])
+async def temu_compra_auto_vuelta():
+    """
+    Una vuelta de la compra automática AHORA (admin), la misma del job y con
+    SUS banderas y topes: con `TEMU_COMPRA_GUIAS_ENABLED`/`_AUTO` apagadas no
+    llama a nadie; con `TEMU_COMPRA_GUIAS_AUTO_ENSAYO` (nace encendida) sólo
+    dice qué compraría. Sirve para el ensayo y la primera compra controlada sin
+    esperar 15 min.
+    Corre en SEGUNDO PLANO (una compra tarda minutos y el proxy cortaría la
+    petición a media compra): su resultado sale en `GET /temu/compra-auto`.
+    """
+    from services import temu_guias_auto as tga
+
+    return tga.lanzar_vuelta()
 
 
 # Lo que dice cada código de Temu. Leerlos es la diferencia entre "no se puede"

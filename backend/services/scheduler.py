@@ -253,6 +253,32 @@ def iniciar() -> None:
                  "tope %s días, %s por vuelta.", horas, zona,
                  settings.temu_guias_dias, settings.temu_guias_limite)
 
+    # COMPRA AUTOMÁTICA DE GUÍAS DE TEMU (30-sep-2026). COMPRA —cobra y no se
+    # cancela por API—, así que sólo se registra con LAS DOS banderas
+    # encendidas (nacen apagadas, regla 3) y además no compra sin la tabla
+    # 0061 ni con la cadena de Automatización incompleta. Ver
+    # services/temu_guias_auto.py.
+    if (getattr(settings, "temu_compra_guias_enabled", False)
+            and getattr(settings, "temu_compra_guias_auto", False)):
+        from services import temu_guias_auto
+        _min_auto = max(5, int(getattr(settings, "temu_compra_guias_auto_min", 15) or 15))
+        _scheduler.add_job(
+            temu_guias_auto.vuelta,
+            "interval",
+            minutes=_min_auto,
+            id="temu_compra_guias_auto",
+            # 300 s: después del sondeo (120 s) y del vigilante de cancelaciones
+            # (150 s), que son los que ponen al día la cola que se va a comprar.
+            next_run_time=datetime.now() + timedelta(seconds=300),
+            max_instances=1,
+            coalesce=True,
+        )
+        log.warning("COMPRA AUTOMÁTICA de guías de Temu ENCENDIDA%s: cada %s min, ventas desde "
+                    "%s, topes %s, modo simple %s.",
+                    " EN ENSAYO (no compra)" if temu_guias_auto.ensayo() else "", _min_auto,
+                    getattr(settings, "temu_compra_guias_desde", "?"),
+                    temu_guias_auto.topes(), temu_guias_auto.solo_simple())
+
     # Pedidos de Temu/TikTok vía M2E (sondeo; ver pedidos_m2e.py).
     if settings.pedidos_m2e_enabled and settings.mysql_enabled and settings.m2e_api_token:
         from services import pedidos_m2e

@@ -1001,6 +1001,51 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.605.0 — Temu: compra AUTOMÁTICA de guías, de la venta a la orden confirmada (nace APAGADA, con modo ensayo)
+
+Brandon, 30-sep: *"te aviso cuando esté la migración y mandas las órdenes de venta
+a partir de hoy, automatizada desde que se genera la orden hasta confirmarla con su
+guía y sus datos correctos"*. Medido ese día: 93 ventas esperando guía, 42 ya
+vencidas frente al límite de Temu, porque la guía se compraba 3-4 días tarde.
+
+**Nuevo `services/temu_guias_auto.py`** — un job que compra SIN aprobación por
+pedido lo que el planeador da por comprable, SÓLO para ventas desde un corte
+(`TEMU_COMPRA_GUIAS_DESDE`, fecha de venta de Temu en hora de México), y justo
+después dispara el refresco de guías DE ESA VENTA para que la orden nazca en Odoo
+confirmada, con el número en cada entrega, el PDF `<guía>.pdf` y la nota
+"Entregar a la paquetería: <día> (<h> h)"; relee Odoo y compara piezas por SKU y
+almacén contra la guía.
+- **Fecha:** compra + 2 días (fin de semana/festivo → siguiente hábil) pero NUNCA
+  después del límite de envío de Temu: baja al mayor plazo 24/48/72/96 h que lo
+  cumpla; si ninguno cabe en día hábil, "compra manual urgente"
+  (`TEMU_GUIAS_SABADO_ALTERNO` permite sábado). En un grupo manda el límite más cercano.
+- **Topes** (durables en la bitácora 0061, no se reinician con el contenedor): por
+  vuelta, por día, por caja (MX$80), por venta (MX$160) y gasto diario (MX$1,000);
+  sólo cuenta costo cotizado en pesos.
+- **Se detiene sola** ante cualquier duda (grupo a medias, "no sé si compró",
+  etiqueta fallida, mismo paquete para dos cajas, horas distintas, orden de Odoo
+  contradictoria o sin verificar en 90 min): bandera durable + campana; sólo la
+  libera "Conciliar" (admin), que revisa Temu y nunca reescribe un estado viejo.
+  Un rechazo de Temu nunca se reintenta solo.
+- **Modo ensayo** (`TEMU_COMPRA_GUIAS_AUTO_ENSAYO`, nace ENCENDIDO): planea,
+  cotiza y aplica topes, pero no compra; el panel muestra qué HABRÍA comprado.
+  **Modo simple** (`TEMU_COMPRA_GUIAS_AUTO_SOLO_SIMPLE`, nace encendido): sólo una
+  caja por llamada; partidos y combinados, a mano.
+- Lo que no se puede comprar solo queda "Requiere compra manual · motivo" (no es
+  error) y la campana avisa en resumen.
+- La vuelta de guías de 2 h atiende cada venta con su propio candado, acepta
+  `solo_ids`, y no crea la orden de una venta con compra sin conciliar. Guías del
+  día suma la columna "Entregar a paquetería".
+
+**Panel** (Automatización → Temu): tarjeta del job (APAGADA / ENSAYO / ACTIVA /
+DETENIDA, compras y gasto de hoy, "Ensayar/Correr una vuelta ahora", "Conciliar")
+y por venta "Guía comprada automáticamente" / "Requiere compra manual".
+
+**Todo nace apagado** (`TEMU_COMPRA_GUIAS_ENABLED=false`, `TEMU_COMPRA_GUIAS_AUTO=false`)
+y sin la migración 0061 no compra nada. Probado sin red: **196 comprobaciones,
+57/57 mutaciones**; suites previas en verde (plan 18/18, espera 190,
+cancelaciones 274, stock 70, notas, guías del día, vincular, confirmadas).
+
 ### v0.604.0 — Plan de guías de Temu: la vista previa puede calcular TODAS las que esperan (hasta 120)
 
 Brandon, 30-sep, con 92 ventas esperando guía: *"¿se puede comprar la guía de

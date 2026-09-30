@@ -1043,6 +1043,37 @@ def plan_etiquetas(ordenes: list[dict[str, Any]],
     return plan
 
 
+def _entregas_temu(datos: dict[str, Any]) -> None:
+    """
+    "Entregar a paquetería" de cada orden de Temu cuya guía compró EL PANEL
+    (compra automática, 30-sep): el día que se le mandó a Temu en
+    `shipLaterLimitTime`. Con el límite de envío de Temu puede ser 24 h después
+    de la compra y no la costumbre de +2 días; si el almacén entrega tarde,
+    Temu marca la orden como enviada sin escaneo. Las guías compradas a mano no
+    lo traen (Temu no lo devuelve en ninguna lectura): la celda queda vacía.
+
+    Sólo se lee con la compra de guías ENCENDIDA (sin ella no hay compras del
+    panel y la tabla 0061 puede no existir). ⚠️ BLOQUEA. NUNCA LANZA: un dato
+    que falta no tumba el Excel del día.
+    """
+    try:
+        from services import temu_guias_compra as tgc
+        if not tgc.compra_habilitada():
+            return
+        pos = sorted({str(o.get("venta") or "") for o in datos.get("ordenes") or []
+                      if o.get("canal") == "temu" and o.get("venta")})
+        if not pos:
+            return
+        entregas = tgc.entregas_compradas(pos)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("guias_del_dia: no se pudo leer el día de entrega de las guías compradas "
+                    "por el panel (%s)", str(exc)[:150])
+        return
+    for o in datos.get("ordenes") or []:
+        if o.get("canal") == "temu" and o.get("venta") in entregas:
+            o["entrega"] = tgc.texto_entrega(entregas[o["venta"]])
+
+
 def dia(fecha: date, canal: str = "todos") -> dict[str, Any]:
     """
     Las órdenes GENERADAS EN ODOO el `fecha` (hora de México) + las de otros
@@ -1114,6 +1145,7 @@ def dia(fecha: date, canal: str = "todos") -> dict[str, Any]:
     # orden, así que la fila en espera puede traer su guía. Se saca como AVISO,
     # no como renglón de la tabla: de ella todavía no hay nada que empacar.
     datos = armar(filas, otras, odoo, fecha, canal, partes_venta=partes)
+    _entregas_temu(datos)
     sin_orden = _leer_hermanas_sin_orden(claves, canales)
     _avisar_hermanas_sin_orden(datos, sin_orden)
     datos["desde_utc"] = desde.isoformat()
@@ -1146,10 +1178,14 @@ def dia(fecha: date, canal: str = "todos") -> dict[str, Any]:
 # procesada el 2-sep) la palabra "venta" a secas mandaba a buscar esa compra al
 # seller center en el día equivocado. Si algún día se quiere el rótulo exacto,
 # el arreglo es traer `venta_at` en `_SQL_BASE`, no renombrar de vuelta.
+#
+# "ENTREGAR A PAQUETERÍA" (30-sep) va AL FINAL para no mover las columnas que
+# el almacén ya conoce: el día en que se le prometió el paquete a Temu en las
+# guías que compra el panel (`_entregas_temu`); vacía en las compradas a mano.
 _COLUMNAS = ("Orden de venta", "Piezas", "SKU", "Guía", "Paquetería",
              "Venta del canal", "Canal", "Generada en Odoo", "Venta registrada",
-             "Envío combinado", "Nota")
-_ANCHOS = (18, 8, 24, 22, 14, 30, 9, 18, 18, 34, 34)
+             "Envío combinado", "Nota", "Entregar a paquetería")
+_ANCHOS = (18, 8, 24, 22, 14, 30, 9, 18, 18, 34, 34, 26)
 # Las columnas de fecha (1-based), que llevan formato de fecha y no de texto.
 _COL_FECHAS = (8, 9)
 _TEXTO = "@"
@@ -1225,7 +1261,7 @@ def excel(datos: dict[str, Any]) -> bytes:
                        ETIQUETA_CANAL.get(o.get("canal"), o.get("canal")),
                        creado.replace(tzinfo=None) if creado else None,
                        vendida.replace(tzinfo=None) if vendida else None,
-                       _txt(combinado), _txt(o.get("nota")))
+                       _txt(combinado), _txt(o.get("nota")), _txt(o.get("entrega")))
             for c, v in enumerate(valores, 1):
                 cel = ws.cell(r, c, v)
                 cel.font = fuente

@@ -1090,9 +1090,164 @@ def _normalizar(parent_sn: str, det: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# ── Una venta a la vez (30-sep, compra automática de guías) ─────────────────
+# El disparo inmediato (`refrescar_guias(solo_ids=…)`) y la vuelta de las dos
+# horas pueden llegar a la misma venta a la vez. Sin candado, dos
+# `crear_con_guia` sobre una venta sin orden crean DOS órdenes: la idempotencia
+# por referencia sólo ve lo que ya existe. Los candados no se podan a propósito
+# (podar uno con alguien esperándolo dejaría pasar a dos): son unos cientos de
+# objetos diminutos por proceso.
+_CANDADOS_VENTA: dict[str, asyncio.Lock] = {}
+# Ventas cuya orden acaba de nacer en ESTE proceso: {venta: monotonic}. Una
+# pasada que armó su cola ANTES de ese momento no la vuelve a "crear" (sólo la
+# vincularía y le cambiaría la acción en la bitácora); una que la armó después
+# la trata como siempre (si sigue en espera es que la bitácora no se enteró, y
+# `crear_con_guia` la vincula). Se olvidan a las 6 h.
+_CREADAS: dict[str, float] = {}
+_CREADAS_TTL = 6 * 3600.0
+
+
+def _candado_de(sn: str) -> asyncio.Lock:
+    c = _CANDADOS_VENTA.get(sn)
+    if c is None:
+        c = _CANDADOS_VENTA[sn] = asyncio.Lock()
+    return c
+
+
+def _podar_creadas() -> None:
+    ahora = time.monotonic()
+    for k in [k for k, ts in _CREADAS.items() if ahora - ts > _CREADAS_TTL]:
+        _CREADAS.pop(k, None)
+
+
+def _cola_de_ventas(ids: list[str]) -> list[dict[str, Any]]:
+    """
+    Los renglones de cola de ESTAS ventas, para el disparo inmediato. ⚠️
+    BLOQUEA (kubera y Odoo). LANZA si alguno no contesta: el que dispara
+    distingue "no hay nada que hacer" de "no se sabe".
+
+    La que sigue esperando su guía sale de su fila de espera (con la misma
+    forma que la cola de siempre); la que ya tiene orden, de Odoo
+    (`cola_de_una_venta`: sólo si todavía le falta el número o el PDF).
+    """
+    from services import odoo_ventas, odoo_ventas_log
+    esperas = {e["order_id"]: e for e in odoo_ventas_log.esperas_de(
+        CANAL, ids, dias=odoo_ventas._dias_espera())}  # noqa: SLF001
+    cola: list[dict[str, Any]] = []
+    for sn in ids:
+        if sn in esperas:
+            cola.append(esperas[sn])
+            continue
+        fila = odoo_ventas.cola_de_una_venta(CANAL, sn)
+        if fila:
+            cola.append(fila)
+    return cola
+
+
+async def _refrescar_una(item: dict[str, Any], r: dict[str, Any],
+                         pdf_por_paquete: dict[str, dict[str, Any]]) -> None:
+    """UNA venta de la cola de guías: lo que antes era el cuerpo del ciclo de
+    `refrescar_guias`, sin cambios. Nunca lanza (salvo cancelación)."""
+    from services import odoo_ventas, odoo_ventas_log, temu
+
+    sn = item["order_id"]
+    try:
+        det = await _traer(sn)
+        if not det:
+            r["fallos_temu"] += 1
+            return
+        if item.get("espera_guia"):
+            # Sólo tiene su ESPACIO. Si ya hay guía, la orden NACE aquí y
+            # sigue de largo por el mismo camino que cualquier otra: número
+            # en la entrega y PDF en la orden, en esta misma vuelta.
+            nuevo, info = await _crear_al_tener_guia(item, det, r)
+            if nuevo is None:
+                return
+            await _guia_dividida(nuevo, det, r, pdf_por_paquete, info=info)
+            return
+        if item.get("dividida"):
+            # Varias órdenes en Odoo: cada una con SU paquete. Lo de abajo
+            # (el primer paquete para toda la venta) queda intacto para las
+            # ventas que no se partieron.
+            await _guia_dividida(item, det, r, pdf_por_paquete)
+            return
+        renglones = det.get("orderList") or []
+        order_sn = (renglones[0] or {}).get("orderSn") if renglones else None
+        d = await _traer_guia_detalle(sn, order_sn)
+        for k, v in (d.get("errores") or {}).items():
+            r["errores_fuentes"].setdefault(k, v)
+        if d.get("fuente"):
+            r["fuentes"][d["fuente"]] = r["fuentes"].get(d["fuente"], 0) + 1
+    except Exception as exc:  # noqa: BLE001 — una mala no detiene las demás
+        r["fallos_temu"] += 1
+        log.warning("refrescar_guias: %s falló contra Temu: %s", sn, str(exc)[:150])
+        return
+
+    guia, paqueteria, paquete = d["guia"], d["paqueteria"], d.get("package_sn")
+    if not guia:
+        # Lo NORMAL mientras nadie compre el envío. No es un fallo: contarlo
+        # como tal haría que un contador de errores gritara todos los días
+        # sin que nada esté mal.
+        r["sin_guia_aun"] += 1
+        return
+    r["con_guia"] += 1
+
+    # 1 · EL NÚMERO EN LA ENTREGA — sólo si le falta.
+    if item.get("pickings"):
+        res = await asyncio.to_thread(odoo_ventas.fijar_guia, "temu", sn, guia,
+                                      item["pickings"])
+        if res.get("accion") == "ya_tenia":
+            pass      # alguien la puso entre que se armó la cola y ahora
+        elif res.get("ok"):
+            r["guias_escritas"] += 1
+            r["guias_verificadas"] += 1 if res.get("verificada") else 0
+        else:
+            r["guias_no_escritas"] += 1
+            log.warning("refrescar_guias: guía %s de %s NO llegó a Odoo (%s)",
+                        guia, sn, res.get("accion"))
+
+    # 2 · EL PDF EN LA ORDEN ("Subir guía") — sólo si le falta.
+    if item.get("sin_pdf"):
+        if not paquete:
+            r["pdf_sin_paquete"] += 1
+        else:
+            if paquete not in pdf_por_paquete:
+                pdf_por_paquete[paquete] = await temu.descargar_etiqueta(paquete)
+            et = pdf_por_paquete[paquete]
+            for k, v in (et.get("errores") or {}).items():
+                r["errores_pdf"].setdefault(k, v)
+            if not et.get("ok"):
+                r["pdf_fallos"] += 1
+                log.warning("refrescar_guias: la etiqueta de %s (paquete %s) no se "
+                            "pudo bajar: %s", sn, paquete, et.get("errores"))
+            else:
+                r["document_type"] = et["document_type"]
+                res = await asyncio.to_thread(odoo_ventas.fijar_etiqueta, "temu", sn,
+                                              item["sin_pdf"], et["pdf"], f"{guia}.pdf")
+                if res.get("accion") in ("ya_tenia", "sin_confirmar"):
+                    # Ya lo tenía, o se desconfirmó entre la cola y ahora:
+                    # no es un fallo, la vuelta siguiente lo vuelve a mirar.
+                    pass
+                elif res.get("ok"):
+                    r["pdf_subidos"] += 1
+                    r["pdf_verificados"] += 1 if res.get("verificada") else 0
+                else:
+                    r["pdf_fallos"] += 1
+                    log.warning("refrescar_guias: el PDF de %s NO quedó en Odoo (%s)",
+                                sn, res.get("accion"))
+
+    # 3 · EL PANEL — la bitácora que pinta la pestaña Automatización.
+    try:
+        await asyncio.to_thread(odoo_ventas_log.actualizar_guia,
+                                "temu", "TEMU", sn, guia, paqueteria)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("refrescar_guias: bitácora de %s: %s", sn, str(exc)[:150])
+
+
 async def refrescar_guias(dias: int = 14, limite: int = 60,
                           segundos_max: int = 900,
-                          forzar_espera: bool = False) -> dict[str, Any]:
+                          forzar_espera: bool = False,
+                          solo_ids: list[str] | None = None) -> dict[str, Any]:
     """
     Completa la guía de las ventas de Temu que ya tienen orden en Odoo.
 
@@ -1139,6 +1294,20 @@ async def refrescar_guias(dias: int = 14, limite: int = 60,
     llamada colgada ocuparía un hilo del pool compartido y —con
     `max_instances=1`— mataría el trabajo en silencio para siempre. El corte por
     reloj lo convierte en "esta vuelta rindió menos", que se ve en el resumen.
+
+    `solo_ids` es el DISPARO INMEDIATO de la compra automática de guías
+    (`temu_guias_auto`, 30-sep): justo después de comprar la guía de esas
+    ventas, su orden nace AHORA —con número y PDF— en vez de esperar la vuelta
+    de las dos horas. Mira sólo esas ventas (su fila de espera, o su orden de
+    Odoo si ya existe), no corre el mantenimiento de la espera y hace EXACTAMENTE
+    el mismo camino que la vuelta normal, venta por venta.
+
+    UNA VENTA A LA VEZ, sea cual sea el camino. El disparo inmediato y la vuelta
+    de las dos horas pueden cruzarse sobre la misma venta, y dos
+    `crear_con_guia` simultáneos sobre una venta sin orden crearían DOS órdenes
+    (la idempotencia por referencia sólo ve lo que ya existe). Cada venta se
+    atiende bajo su propio candado, y la vuelta normal no vuelve a crear una que
+    el disparo inmediato acaba de crear (su renglón de cola ya es viejo).
 
     Nunca lanza.
     """
@@ -1187,25 +1356,40 @@ async def refrescar_guias(dias: int = 14, limite: int = 60,
     if not temu.disponible():
         return {**r, "error": "Temu no está configurado (falta app_key/secret/token)"}
 
-    # Antes de la cola: reponer los espacios que kubera no dejó escribir,
-    # caducar lo que ya no resuelve y vincular lo capturado a mano. No escribe
-    # en Odoo y no corre si el canal no está en régimen diferido.
-    try:
-        r["mantenimiento"] = await asyncio.to_thread(
-            odoo_ventas.mantener_espera, "temu", forzar_espera)
-    except Exception as exc:  # noqa: BLE001 — el mantenimiento nunca tumba la vuelta
-        log.warning("refrescar_guias: el mantenimiento de la espera falló: %s",
-                    str(exc)[:150])
+    # El instante de la foto de la cola: lo que otra pasada cree DESPUÉS de esto
+    # vuelve viejo al renglón de espera de esa venta (ver `_CREADAS`).
+    foto = time.monotonic()
+    if solo_ids is not None:
+        # EL DISPARO INMEDIATO: sólo esas ventas, sin mantenimiento (lo hace la
+        # vuelta de siempre) y con la cola armada para ellas, no recortada.
+        ids = list(dict.fromkeys(str(x).strip() for x in solo_ids if str(x or "").strip()))
+        r["solo"] = ids
+        try:
+            cola = await asyncio.to_thread(_cola_de_ventas, ids)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("refrescar_guias(%s): no se pudo armar la cola: %s",
+                        ", ".join(ids), str(exc)[:150])
+            return {**r, "error": f"cola: {str(exc)[:200]}"}
+    else:
+        # Antes de la cola: reponer los espacios que kubera no dejó escribir,
+        # caducar lo que ya no resuelve y vincular lo capturado a mano. No
+        # escribe en Odoo y no corre si el canal no está en régimen diferido.
+        try:
+            r["mantenimiento"] = await asyncio.to_thread(
+                odoo_ventas.mantener_espera, "temu", forzar_espera)
+        except Exception as exc:  # noqa: BLE001 — el mantenimiento nunca tumba la vuelta
+            log.warning("refrescar_guias: el mantenimiento de la espera falló: %s",
+                        str(exc)[:150])
 
-    try:
-        # La cola COMPLETA: las que ya tienen orden en Odoo y les falta la guía,
-        # más las que esperan la guía para que su orden NAZCA. Ver
-        # `odoo_ventas.cola_de_guias`.
-        cola = await asyncio.to_thread(odoo_ventas.cola_de_guias,
-                                       "temu", dias, limite)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("refrescar_guias: no se pudo armar la cola: %s", exc)
-        return {**r, "error": str(exc)[:200]}
+        try:
+            # La cola COMPLETA: las que ya tienen orden en Odoo y les falta la
+            # guía, más las que esperan la guía para que su orden NAZCA. Ver
+            # `odoo_ventas.cola_de_guias`.
+            cola = await asyncio.to_thread(odoo_ventas.cola_de_guias,
+                                           "temu", dias, limite)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("refrescar_guias: no se pudo armar la cola: %s", exc)
+            return {**r, "error": str(exc)[:200]}
     r["pendientes"] = len(cola)
     esperando = [c for c in cola if c.get("espera_guia")]
     r["esperando"] = len(esperando)
@@ -1214,103 +1398,25 @@ async def refrescar_guias(dias: int = 14, limite: int = 60,
 
     pdf_por_paquete: dict[str, dict[str, Any]] = {}
     limite_reloj = time.monotonic() + segundos_max
+    _podar_creadas()
     for item in cola:
         if time.monotonic() > limite_reloj:
             r["cortado_por_tiempo"] = True
             break
         sn = item["order_id"]
         r["miradas"] += 1
-        try:
-            det = await _traer(sn)
-            if not det:
-                r["fallos_temu"] += 1
+        # UNA VENTA A LA VEZ: el disparo inmediato de la compra automática y
+        # esta vuelta pueden cruzarse sobre la misma venta (ver el docstring).
+        async with _candado_de(sn):
+            if item.get("espera_guia") and _CREADAS.get(sn, float("-inf")) > foto:
+                # Otra pasada ya creó su orden mientras ésta corría: este
+                # renglón de cola es viejo y crear otra vez sólo la "vincularía".
+                r["creadas_por_otra_pasada"] = r.get("creadas_por_otra_pasada", 0) + 1
                 continue
-            if item.get("espera_guia"):
-                # Sólo tiene su ESPACIO. Si ya hay guía, la orden NACE aquí y
-                # sigue de largo por el mismo camino que cualquier otra: número
-                # en la entrega y PDF en la orden, en esta misma vuelta.
-                nuevo, info = await _crear_al_tener_guia(item, det, r)
-                if nuevo is None:
-                    continue
-                await _guia_dividida(nuevo, det, r, pdf_por_paquete, info=info)
-                continue
-            if item.get("dividida"):
-                # Varias órdenes en Odoo: cada una con SU paquete. Lo de abajo
-                # (el primer paquete para toda la venta) queda intacto para las
-                # ventas que no se partieron.
-                await _guia_dividida(item, det, r, pdf_por_paquete)
-                continue
-            renglones = det.get("orderList") or []
-            order_sn = (renglones[0] or {}).get("orderSn") if renglones else None
-            d = await _traer_guia_detalle(sn, order_sn)
-            for k, v in (d.get("errores") or {}).items():
-                r["errores_fuentes"].setdefault(k, v)
-            if d.get("fuente"):
-                r["fuentes"][d["fuente"]] = r["fuentes"].get(d["fuente"], 0) + 1
-        except Exception as exc:  # noqa: BLE001 — una mala no detiene las demás
-            r["fallos_temu"] += 1
-            log.warning("refrescar_guias: %s falló contra Temu: %s", sn, str(exc)[:150])
-            continue
-
-        guia, paqueteria, paquete = d["guia"], d["paqueteria"], d.get("package_sn")
-        if not guia:
-            # Lo NORMAL mientras nadie compre el envío. No es un fallo: contarlo
-            # como tal haría que un contador de errores gritara todos los días
-            # sin que nada esté mal.
-            r["sin_guia_aun"] += 1
-            continue
-        r["con_guia"] += 1
-
-        # 1 · EL NÚMERO EN LA ENTREGA — sólo si le falta.
-        if item.get("pickings"):
-            res = await asyncio.to_thread(odoo_ventas.fijar_guia, "temu", sn, guia,
-                                          item["pickings"])
-            if res.get("accion") == "ya_tenia":
-                pass      # alguien la puso entre que se armó la cola y ahora
-            elif res.get("ok"):
-                r["guias_escritas"] += 1
-                r["guias_verificadas"] += 1 if res.get("verificada") else 0
-            else:
-                r["guias_no_escritas"] += 1
-                log.warning("refrescar_guias: guía %s de %s NO llegó a Odoo (%s)",
-                            guia, sn, res.get("accion"))
-
-        # 2 · EL PDF EN LA ORDEN ("Subir guía") — sólo si le falta.
-        if item.get("sin_pdf"):
-            if not paquete:
-                r["pdf_sin_paquete"] += 1
-            else:
-                if paquete not in pdf_por_paquete:
-                    pdf_por_paquete[paquete] = await temu.descargar_etiqueta(paquete)
-                et = pdf_por_paquete[paquete]
-                for k, v in (et.get("errores") or {}).items():
-                    r["errores_pdf"].setdefault(k, v)
-                if not et.get("ok"):
-                    r["pdf_fallos"] += 1
-                    log.warning("refrescar_guias: la etiqueta de %s (paquete %s) no se "
-                                "pudo bajar: %s", sn, paquete, et.get("errores"))
-                else:
-                    r["document_type"] = et["document_type"]
-                    res = await asyncio.to_thread(odoo_ventas.fijar_etiqueta, "temu", sn,
-                                                  item["sin_pdf"], et["pdf"], f"{guia}.pdf")
-                    if res.get("accion") in ("ya_tenia", "sin_confirmar"):
-                        # Ya lo tenía, o se desconfirmó entre la cola y ahora:
-                        # no es un fallo, la vuelta siguiente lo vuelve a mirar.
-                        pass
-                    elif res.get("ok"):
-                        r["pdf_subidos"] += 1
-                        r["pdf_verificados"] += 1 if res.get("verificada") else 0
-                    else:
-                        r["pdf_fallos"] += 1
-                        log.warning("refrescar_guias: el PDF de %s NO quedó en Odoo (%s)",
-                                    sn, res.get("accion"))
-
-        # 3 · EL PANEL — la bitácora que pinta la pestaña Automatización.
-        try:
-            await asyncio.to_thread(odoo_ventas_log.actualizar_guia,
-                                    "temu", "TEMU", sn, guia, paqueteria)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("refrescar_guias: bitácora de %s: %s", sn, str(exc)[:150])
+            antes = r["creadas"]
+            await _refrescar_una(item, r, pdf_por_paquete)
+            if r["creadas"] > antes:
+                _CREADAS[sn] = time.monotonic()
 
     if r["pendientes"]:
         log.info("Refresco de guías de Temu: %s", r)
