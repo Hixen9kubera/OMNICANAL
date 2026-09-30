@@ -1001,6 +1001,78 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.606.0 — Competencia: juez de rivales por IA y mejora de términos de búsqueda (nace APAGADO; migración 0063 solo en el sandbox)
+
+Eduardo, 29-sep, con un SKU de zancos cuyo «mínimo del mercado» eran refacciones:
+*"Hay que asegurarnos de que la competencia sea la correcta"*. La auditoría de ese
+día (1,462 SKUs, 12,738 rivales) midió que **~40 % de los SKUs tiene un mínimo que
+no es competidor**: sobre todo OTRO producto que comparte palabras con el término,
+no refacciones. Las reglas de texto topan en 67 % de precisión. 30-sep: *"ármalo
+contra sandbox el filtro por texto primero y mejora de keywords"*.
+
+**Juez de rivales** (`services/competencia_juez.py` + `services/ia_json.py`): por
+cada pareja (SKU nuestro, rival) un LLM (deepseek-flash por omisión, JSON, sin
+razonar) decide `mismo` / `otro_paquete` / `otra_gama` / `refaccion` /
+`otro_producto` / `dudoso`. Solo `mismo` cuenta como comparable; `otro_paquete` se
+deriva en código de las unidades (nunca entra a medianas). El veredicto se guarda
+en `enrich.market_rival_juicio` con los DOS títulos juzgados: si cualquiera cambia,
+el veredicto deja de estar vigente y la pareja vuelve a la cola («pendiente» = no
+sé, nunca «no comparable»). Defensas: lotes de 12 con índice que se valida (un
+modelo que renumera o empieza en 0 se descarta y se reintenta una vez), divisor
+de unidades del SKU fijo entre corridas, plazo de reloj por llamada, semáforo de
+concurrencia con espera acotada, tope de gasto en USD a precio de lista (modelo sin
+precio = no se llama) y bitácora en `ops.process_log` (`competencia`/`juez`).
+
+**Mejora de términos** (`services/competencia_mejora.py`): a los SKUs con menos de
+3 rivales reales, la IA propone hasta 2 términos por grupo; se miden en Apify por
+tandas, el juez los evalúa contra cada SKU y queda **SUGERENCIA** solo si llega a 3
+comparables, gana por 2 o más y no dispersa precios (q3/q1 ≤ 3). Nunca cambia el
+término sola: un admin acepta o descarta. Cada candidato se reclama antes de pagar
+(`enrich.market_termino_intento`, llave única por SKU+término), lo concluyente
+enfría 60 días, lo que falla de nuestro lado se reintenta a lo más una ronda más, y
+un término que ML bloqueó o dejó vacío hace <7 días no se vuelve a pagar.
+
+**Panel** (Competencia → detalle del SKU): insignia por rival, chip «N de M son
+competencia real» (gris con «por confirmar» mientras haya pendientes o veredictos
+de otra versión del prompt) y, para admin, «Juzgar rivales», «Buscar mejor
+término» y la tarjeta de término sugerido con Aceptar/Descartar. Tras «Medir» el
+panel espera al juez antes de recargar.
+
+**Scripts por lotes** (`scripts/competencia_juez.py`,
+`scripts/competencia_mejorar_terminos.py`): candado en código (solo el DSN del
+sandbox), llaves solo por stdin, en seco por omisión.
+
+**Tres banderas, las tres APAGADAS** (regla 3): `COMPETENCIA_JUEZ_ENABLED` (juzga
+tras cada medición, tope 1 USD/24 h que descuenta TODO el gasto del juez),
+`COMPETENCIA_JUEZ_VISIBLE` (lo ven los KAM) y `COMPETENCIA_JUEZ_ESCRITURA` (botones
+de admin que gastan o escriben). Y aunque se enciendan, nada corre si la tabla no
+existe: **la 0063 está aplicada SOLO en el sandbox**; producción la necesita con
+su acta.
+
+**De paso:** `httpx`/`httpcore` pasan a WARNING en `main.py`. En INFO escribían
+cada URL completa y la llave de Apify viaja en la URL (`?token=`): cada medición la
+dejaba en los logs de Railway.
+
+**Medido en el sandbox:**
+- Examen contra 90 SKUs / 774 rivales etiquetados (por dos agentes de IA con
+  adjudicación, no por humanos), partido por SKU: desarrollo 96.6 % de precisión /
+  83 % de cobertura; **prueba ciega 87 % [75–96] / 77 %**. Los errores se juntan en
+  fronteras de subtipo del mismo producto.
+- Corrida completa: 12,704 veredictos, **$0.91**, 19 min, 0 fallos. De los SKUs
+  con ≥3 rivales, el 45 % tenía un mínimo falso; el mínimo limpio sube ×1.9
+  (mediana).
+- Piloto de términos: 15 grupos → **11 sugerencias** (p. ej. 1 → 10 rivales
+  reales), 4 sin mejora; Apify ~$0.49, IA $0.006.
+- Revisión adversarial (13 agentes): 31 hallazgos confirmados + 8 de regresión,
+  todos arreglados o documentados, con verificador por área. **1,463 pruebas en
+  verde**, `tsc` limpio.
+
+**Pendiente antes de producción:** acta de la 0063 + encender banderas (sí de
+Eduardo); confirmar si un vendedor con títulos idénticos a los nuestros es otra
+cuenta nuestra (hoy no se marca `es_nuestro` y cuenta como rival); conectar el
+Radar de precios a «solo comparables». La guía «Cómo leer Competencia» aún no
+explica el juez.
+
 ### v0.605.0 — Temu: compra AUTOMÁTICA de guías, de la venta a la orden confirmada (nace APAGADA, con modo ensayo)
 
 Brandon, 30-sep: *"te aviso cuando esté la migración y mandas las órdenes de venta

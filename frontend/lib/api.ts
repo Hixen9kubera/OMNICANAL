@@ -15,6 +15,8 @@ import type {
   CompetenciaSkusSub,
   CompetenciaSugerenciaSub,
   CompetenciaSugerenciaSku,
+  CompetenciaJuzgarResp,
+  CompetenciaTrabajoMejora,
   RankingCategoriaResp,
   CompetenciaResp,
   CategoriaMLResult,
@@ -1344,6 +1346,24 @@ export interface TrabajoBusqueda {
   /** ML nos mandó a verificarnos. Cero filas, pero por culpa nuestra, no suya. */
   bloqueado?: boolean | null;
   error?: string | null;
+  /**
+   * El juez de rivales, que corre DESPUÉS de `listo` (hasta 3 min) y solo si hubo
+   * filas nuevas y `competencia_juez_enabled` está encendida. `null` = todavía no
+   * arranca o no va a correr. `listo` = no quedó nada sin juzgar. `parcial` = se
+   * detuvo antes de terminar (el motivo va en `juez_detenido`) o llegó al final
+   * dejando `juez_pendientes` sin juzgar (por qué, en `juez_motivo`); `tope` = no
+   * corrió porque el juez ya gastó su tope del día (lote, botón y mejora
+   * incluidos).
+   */
+  juez?: "corriendo" | "listo" | "parcial" | "tope" | "fallo" | null;
+  juez_veredictos?: number | null;
+  /** Los que el juez intentó y no quedaron. Si se detuvo se queda corto: los que
+   *  no alcanzó ni se intentaron. */
+  juez_pendientes?: number | null;
+  juez_detenido?: string | null;
+  /** Por qué quedaron `juez_pendientes` sin detenerse («DeepSeek no respondió»,
+   *  «respuesta inválida del modelo»…), sin el detalle del proveedor. */
+  juez_motivo?: string | null;
 }
 
 /** ARRANCA la medición y devuelve el `jid`. NO espera: el raspado tarda minutos. */
@@ -1354,6 +1374,77 @@ export function capturarBusquedaCompetencia(termino: string, forzar = false) {
 /** Cómo va ese raspado. 404 = caducó, pero el dato pudo alcanzar a guardarse. */
 export function estadoBusquedaCompetencia(jid: string) {
   return getJSON<TrabajoBusqueda>(`/api/competencia/busqueda/${jid}`);
+}
+
+// ── Juez de rivales y mejora de términos ─────────────────────────────
+//
+// Las cinco rutas de `/api/competencia/juez` GASTAN o ESCRIBEN, y por eso el
+// backend las cierra dos veces: `solo_admin` en el router y la bandera
+// `competencia_juez_escritura`. Con la bandera apagada o sin la tabla en esa
+// base contestan **409** con el motivo en `detail`: es un «aquí no se puede»,
+// no una falla, y la pantalla lo pinta como aviso (igual que el candado de días
+// de los dos botones de arriba).
+//
+// Todas pasan por `postJSON`/`getJSON`: mandan la sesión y conservan el
+// `detail`. Un `fetch` pelón aquí daría 401 con el enforcement encendido.
+
+/**
+ * Juzga AHORA los rivales pendientes de un SKU. Solo IA (centavos): no vuelve a
+ * buscar en Mercado Libre, así que no paga Apify.
+ *
+ * Es una petición EN LÍNEA, no un trabajo: si se corta a medio camino los
+ * veredictos que alcanzaron a guardarse siguen guardados. Quien llama debe
+ * recargar el detalle también cuando falla la red.
+ *
+ * Sin ningún veredicto nuevo, el código dice de quién fue: **502** la IA no
+ * contestó, **503** contestó (y se pagó) pero la BASE no guardó, **409** el SKU
+ * no tiene título con qué comparar o el juicio se detuvo.
+ */
+export function juzgarRivalesCompetencia(sku: string) {
+  return postJSON<CompetenciaJuzgarResp>("/api/competencia/juez/juzgar", { sku });
+}
+
+/**
+ * ARRANCA «buscar mejor término» y devuelve el trabajo. **Cuesta**: IA más
+ * hasta 2 búsquedas de Apify. NO cambia el término: deja una sugerencia que una
+ * persona acepta o descarta.
+ *
+ * Pedirlo dos veces para el mismo SKU no paga dos veces: mientras el primero
+ * siga vivo, el backend devuelve ESE mismo trabajo.
+ */
+export function mejorarTerminoCompetencia(sku: string) {
+  return postJSON<CompetenciaTrabajoMejora>("/api/competencia/juez/mejorar", { sku });
+}
+
+/** Cómo va ese trabajo. 404 = caducó o el backend reinició; si alcanzó a
+ *  terminar, la sugerencia ya está guardada y sale al recargar el SKU. */
+export function estadoTrabajoJuezCompetencia(jid: string) {
+  return getJSON<CompetenciaTrabajoMejora>(
+    `/api/competencia/juez/trabajo/${encodeURIComponent(jid)}`,
+  );
+}
+
+/**
+ * Acepta la sugerencia: el término del SKU cambia y queda como corrección
+ * MANUAL. **Mueve el precio de mercado que ven los KAM en Publicaciones**, que
+ * promedia los rivales del término asignado.
+ *
+ * 409 si la sugerencia ya no está abierta o si el término del SKU cambió
+ * después de sugerirla (en ese caso el backend además la descarta).
+ */
+export function aceptarSugerenciaTermino(id: number) {
+  return postJSON<{ ok: boolean; sku: string; termino: string }>(
+    `/api/competencia/juez/sugerencias/${id}/aceptar`,
+    {},
+  );
+}
+
+/** Descarta la sugerencia sin tocar el término. 409 si ya no estaba abierta. */
+export function descartarSugerenciaTermino(id: number) {
+  return postJSON<{ ok: boolean }>(
+    `/api/competencia/juez/sugerencias/${id}/descartar`,
+    {},
+  );
 }
 
 export function capturarRankingsCompetencia(

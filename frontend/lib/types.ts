@@ -934,6 +934,24 @@ export interface CompetenciaSku {
   activo: number;
 }
 
+/**
+ * Lo que el juez de rivales (`competencia_juez.py`) decidió de UN rival contra
+ * NUESTRO producto. La búsqueda de ML devuelve lo que comparte palabras con el
+ * término, no lo que compite: en el examen de 774 rivales solo el 48 % era el
+ * mismo producto.
+ *
+ * COMPARABLE = solo `mismo`. `otro_paquete` se enseña con sus unidades pero no
+ * cuenta: el precio por pieza no es lineal y «normalizarlo» movería la
+ * referencia hacia donde no está el mercado.
+ */
+export type VeredictoRival =
+  | "mismo"           // compite de frente: mismo subtipo, función y gama
+  | "otro_paquete"    // el mismo producto con otra cantidad de unidades
+  | "otra_gama"       // mismo sustantivo, otro subtipo (tamaño, potencia, modelo)
+  | "refaccion"       // refacción, accesorio o consumible PARA el producto
+  | "otro_producto"   // solo comparte palabras o categoría
+  | "dudoso";         // el título no alcanza para decidir
+
 /** Una fila de resultados de búsqueda (enrich.market_search_results). Es el
  *  contrato REAL del backend tras el paso 5: los campos capturados-y-retirados
  *  (periodo, vendidos, visitas_30d, descuento, precio_lista…) ya no viajan. */
@@ -952,6 +970,21 @@ export interface CompetenciaResultado {
   visitas_30d: number | null;
   es_nuestro: number;
   sku_nuestro: string | null;
+  /**
+   * El veredicto del juez para ESTE SKU contra este rival. Las tres llaves son
+   * OPCIONALES porque solo viajan con la bandera `competencia_juez_visible`
+   * encendida y la tabla creada en esa base; sin eso la respuesta es la de
+   * siempre y la pantalla no debe cambiar.
+   *
+   * `null` = sin juzgar, o juzgado con un título que ya cambió. Se lee como
+   * «no sé», NUNCA como «comparable».
+   */
+  veredicto?: VeredictoRival | null;
+  /** La razón que dio el modelo, en pocas palabras. */
+  veredicto_motivo?: string | null;
+  /** Cuántos productos completos trae la publicación del rival. Solo viene en
+   *  `mismo` y `otro_paquete`: en las demás clases la cuenta no aplica. */
+  veredicto_unidades?: number | null;
 }
 
 // CompetenciaPosicion PODADA (paso 6): posiciones() leía el SQLite efímero
@@ -1248,6 +1281,109 @@ export interface CompetenciaTermino {
   cubierto_por: string[];
 }
 
+/**
+ * La cuenta del juez sobre los rivales de UN SKU (`competencia_juez.resumen`).
+ *
+ * Se hace sobre las MISMAS filas que se pintan, y solo entran los rivales
+ * ajenos con precio: lo nuestro y lo que no trae precio no se cuenta.
+ *
+ * `completo` es la llave de lectura. Solo con `completo` se puede afirmar
+ * «este SKU tiene N comparables»; con `pendientes > 0` el N es lo que se lleva
+ * contado hasta ahora y la respuesta honesta es «no sé aún».
+ */
+export interface CompetenciaJuez {
+  total: number;
+  /** Rivales con un veredicto que sigue valiendo (los títulos no cambiaron). */
+  juzgados: number;
+  /** Los que son el MISMO producto: lo único que sirve para comparar precio. */
+  comparables: number;
+  /**
+   * Sin veredicto vigente: nunca se juzgó, cambió un título o cambió el prompt.
+   * Ojo: los de OTRA versión del prompt cuentan aquí Y en `juzgados` (siguen
+   * valiendo hasta que se rejuzguen): `pendientes - (total - juzgados)` es cuántos
+   * son de ésos.
+   */
+  pendientes: number;
+  /** No queda nada por juzgar. `false` también cuando no hay rivales que contar. */
+  completo: boolean;
+  por_clase: Record<string, number>;
+  juzgado_en: string | null;
+  /**
+   * El SKU no tiene título contra el cual comparar (ni publicación ni nombre en
+   * el catálogo). Sus pendientes NO bajan juzgando: el backend los salta y
+   * `POST /juez/juzgar` contesta 409. No es «el número todavía puede cambiar».
+   */
+  sin_titulo: boolean;
+  /**
+   * La bandera `competencia_juez_escritura` de ESE ambiente: si los botones que
+   * gastan o escriben se pueden ofrecer. No dice nada de QUIÉN los ve — eso lo
+   * decide el rol, y el backend lo exige aparte con `solo_admin`.
+   */
+  puede_escribir: boolean;
+}
+
+/**
+ * Un término candidato que ya se MIDIÓ y trajo más competencia real que el
+ * actual (`enrich.market_termino_intento`, estado 'medido'). Es una SUGERENCIA:
+ * no cambia nada hasta que una persona la acepta.
+ */
+export interface CompetenciaTerminoSugerido {
+  id: number;
+  termino_anterior: string;
+  termino_candidato: string;
+  motivo: string | null;
+  comparables_antes: number | null;
+  total_antes: number | null;
+  comparables_despues: number | null;
+  total_despues: number | null;
+  creado_en: string;
+}
+
+/** `POST /api/competencia/juez/juzgar`. Aquí `juez` viene SIN `puede_escribir`
+ *  y contado sobre todas las filas del término, no solo las pintadas: para la
+ *  pantalla se recarga el detalle, que sí trae la cuenta que se enseña. */
+export interface CompetenciaJuzgarResp {
+  veredictos: number;
+  /** Los que el modelo no contestó o contestó mal. Quedan pendientes. */
+  sin_juzgar: number;
+  juez: Omit<CompetenciaJuez, "puede_escribir">;
+}
+
+/**
+ * Cómo terminó «buscar mejor término» (`competencia_mejora.mejorar_sku`).
+ *
+ * Tiene DOS formas. Si el SKU no era elegible: `ok: false` con `motivo` y lo
+ * demás en `null` — no se gastó nada. Si sí se corrió: `ok: true`, `motivo` en
+ * `null` y los conteos, que son de SKUs o de candidatos, no banderas
+ * (`termino_ok: 1` = la IA dijo que el término ya es el correcto).
+ */
+export interface CompetenciaMejoraResultado {
+  ok: boolean | null;
+  motivo: string | null;
+  sugerencias: number | null;
+  termino_ok: number | null;
+  sin_mejora: number | null;
+  bloqueados: number | null;
+  errores: number | null;
+  /** SKUs cuya IA solo repitió candidatos que fallaron de nuestro lado y esperan
+   *  su reintento: no se descartó nada. */
+  en_espera?: number | null;
+  paginas: number | null;
+  /** Por qué se detuvo antes de terminar (tope de gasto, sin Apify…). */
+  detenido: string | null;
+}
+
+/** El trabajo en segundo plano de «buscar mejor término». Mismo molde que
+ *  `TrabajoBusqueda`: el POST arranca y el GET pregunta. */
+export interface CompetenciaTrabajoMejora {
+  id: string;
+  paso: "encolado" | "mejorando" | "listo" | "error";
+  paso_label: string;
+  sku?: string;
+  resultado?: CompetenciaMejoraResultado | null;
+  error?: string | null;
+}
+
 export interface CompetenciaDetalleSku {
   sku: string;
   nombre: string | null;
@@ -1271,6 +1407,14 @@ export interface CompetenciaDetalleSku {
    *  competencia» aunque lo que pasó fue que ML nos mandó al muro de login.
    *  `null` = se midió antes de la 0048 y no quedó registro del motivo. */
   busqueda_estado: "ok" | "vacio" | "bloqueado" | null;
+  /**
+   * La cuenta del juez y la sugerencia abierta. Las dos llaves NO VIAJAN si el
+   * backend tiene `competencia_juez_visible` apagada o esa base todavía no
+   * tiene la tabla: `juez === undefined` es la señal de «pinta como siempre», y
+   * todo lo del juez en la pantalla cuelga de ella.
+   */
+  juez?: CompetenciaJuez;
+  termino_sugerido?: CompetenciaTerminoSugerido | null;
   sin_datos_ml: boolean;
   aviso: string | null;
 }

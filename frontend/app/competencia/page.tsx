@@ -38,12 +38,21 @@ import {
   capturarRankingsCompetencia,
   capturarBusquedaCompetencia,
   estadoBusquedaCompetencia,
+  juzgarRivalesCompetencia,
+  mejorarTerminoCompetencia,
+  estadoTrabajoJuezCompetencia,
+  aceptarSugerenciaTermino,
+  descartarSugerenciaTermino,
   mensajeDeError,
   ApiError,
 } from "@/lib/api";
+import type { TrabajoBusqueda } from "@/lib/api";
+import { quienSoy } from "@/lib/sesion";
 import type {
   CompetenciaDetalleSku,
   CompetenciaEstado,
+  CompetenciaJuez,
+  CompetenciaMejoraResultado,
   CompetenciaNicho,
   CompetenciaRaiz,
   CompetenciaResultado,
@@ -52,8 +61,10 @@ import type {
   CompetenciaSubcategoria,
   CompetenciaSugerenciaSku,
   CompetenciaSugerenciaSub,
+  CompetenciaTerminoSugerido,
   CompetenciaTerminosSub,
   RankingCategoria,
+  VeredictoRival,
 } from "@/lib/types";
 
 const mxn = (v: number | null | undefined) =>
@@ -621,40 +632,705 @@ function FilasSku({
     </>
   );
 }
+// ── El juez de rivales en la pantalla ────────────────────────────────────────
+//
+// La búsqueda de Mercado Libre devuelve lo que comparte PALABRAS con el término,
+// no lo que compite con el producto: en el examen de 774 rivales solo el 48 %
+// era el mismo producto. El backend (`competencia_juez.py`) le pregunta a un LLM,
+// pareja por pareja, y aquí solo se ENSEÑA lo que decidió.
+//
+// TODO lo de este bloque cuelga de que el detalle traiga `d.juez`. El backend lo
+// manda solo con la bandera `competencia_juez_visible` encendida y la tabla
+// creada en esa base; sin eso la pantalla queda exactamente como estaba.
+
+/**
+ * Cómo se dice cada veredicto en la fila de un rival.
+ *
+ * El texto es corto a propósito —la fila ya lleva título, visitas y precio— y
+ * el porqué va en el `title`. Dice «competencia» y no «mismo»: a quien lee la
+ * lista le importa si ese rival CUENTA, no el nombre interno de la clase.
+ *
+ * Los tonos separan tres cosas: el que cuenta (verde), lo que ensuciaba el
+ * mínimo del mercado sin ser nuestro producto (ámbar las refacciones, rosa lo
+ * ajeno) y lo que se parece pero no se puede comparar (índigo y gris).
+ */
+const VEREDICTOS: Record<VeredictoRival, { texto: string; tono: string; ayuda: string }> = {
+  mismo: {
+    texto: "competencia",
+    tono: "bg-emerald-100 text-emerald-800",
+    ayuda: "Es el mismo producto: sirve para comparar precio.",
+  },
+  otro_paquete: {
+    texto: "otro paquete",
+    tono: "bg-indigo-50 text-indigo-700",
+    ayuda: "El mismo producto con otra cantidad de unidades.",
+  },
+  otra_gama: {
+    texto: "otra gama",
+    tono: "bg-slate-100 text-slate-600",
+    ayuda: "Se llama igual pero es otro subtipo: tamaño, capacidad, potencia o modelo.",
+  },
+  refaccion: {
+    texto: "refacción",
+    tono: "bg-amber-100 text-amber-800",
+    ayuda: "Refacción, accesorio o consumible PARA el producto, no el producto.",
+  },
+  otro_producto: {
+    texto: "otro producto",
+    tono: "bg-rose-100 text-rose-800",
+    ayuda: "Solo comparte palabras o categoría con el nuestro.",
+  },
+  dudoso: {
+    texto: "dudoso",
+    tono: "bg-slate-100 text-slate-500",
+    ayuda: "El título no alcanza para saber qué es.",
+  },
+};
+
+/** El orden en que se cuenta el desglose: primero lo que sirve. */
+const ORDEN_VEREDICTOS: VeredictoRival[] = [
+  "mismo", "otro_paquete", "otra_gama", "refaccion", "otro_producto", "dudoso",
+];
+
+/** Comparables mínimos para fiarse del término. Es `UMBRAL` de
+ *  `competencia_mejora.py`: si se mueve allá, se mueve aquí. */
+const UMBRAL_COMPARABLES = 3;
+
+/**
+ * La insignia de un rival. NO es clicable ni lleva botón: la fila entera es un
+ * `<a>` que abre la publicación, y un control adentro se tragaría ese clic.
+ *
+ * Una clase que este archivo no conoce (el backend agregó una y el panel quedó
+ * atrás) no pinta nada: es preferible una fila sin insignia a una mal rotulada.
+ */
+function InsigniaVeredicto({ r }: { r: CompetenciaResultado }) {
+  const v = r.veredicto ? VEREDICTOS[r.veredicto] : undefined;
+  if (!v) return null;
+  const n = r.veredicto_unidades;
+  // En «otro paquete» las unidades SON la explicación: sin ellas el rótulo no
+  // dice por qué un producto igual al nuestro no entra a la comparación.
+  const unidades =
+    r.veredicto === "otro_paquete" && n ? `Trae ${n} ${n === 1 ? "unidad" : "unidades"}.` : null;
+  const titulo = [unidades, r.veredicto_motivo || v.ayuda].filter(Boolean).join(" ");
+  return (
+    <span
+      className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold ${v.tono}`}
+      title={titulo}
+    >
+      {v.texto}
+    </span>
+  );
+}
+
+/**
+ * «N de M son competencia real»: la cuenta del juez en la cabecera.
+ *
+ * ── POR QUÉ DICE «AL MENOS» ─────────────────────────────────────────────────
+ * Con rivales sin juzgar el N no es un hecho, es lo que se lleva contado. Un
+ * «2 de 10» en rojo con seis pendientes se leería como «este término no sirve»
+ * y dispararía una búsqueda pagada para arreglar algo que quizá está bien. Por
+ * eso el color solo CONDENA (rosa, ámbar) cuando el juicio está completo; con
+ * pendientes va en gris y el texto dice cuántos faltan.
+ *
+ * El verde sí se adelanta: con 3 comparables ya hay con qué comparar precio,
+ * falten o no rivales por juzgar. El 3 es el mismo umbral que usa el backend
+ * para decidir a qué SKU buscarle otro término.
+ *
+ * ── DOS PENDIENTES QUE NO SON «TODAVÍA PUEDE SUBIR» ─────────────────────────
+ * · Veredictos de OTRA versión del prompt: siguen contando —valen hasta que se
+ *   rejuzguen— y a la vez están pendientes. Con ellos adentro el N no es una
+ *   cota inferior (al rejuzgar puede bajar), así que ni «al menos» ni verde.
+ * · Sin título nuestro: esos pendientes no bajan nunca, porque no hay contra
+ *   qué juzgarlos. Decir «el número todavía puede cambiar» sería falso.
+ */
+function ChipJuez({ juez }: { juez: CompetenciaJuez }) {
+  // Sin rivales ajenos con precio no hay nada que contar: «0 de 0» no informa.
+  if (!juez.total) return null;
+  const n = juez.comparables;
+  const firme = juez.completo && juez.pendientes === 0;
+  // Pendientes que SÍ tienen veredicto (de otra versión del prompt): contados
+  // en `juzgados` y en `pendientes` a la vez.
+  const caducos = Math.max(0, juez.pendientes - (juez.total - juez.juzgados));
+  const nuevos = juez.pendientes - caducos;
+  const sinTitulo = juez.sin_titulo && juez.pendientes > 0;
+  const tono =
+    n >= UMBRAL_COMPARABLES && caducos === 0
+      ? "bg-emerald-100 text-emerald-800"
+      : !firme
+        ? "bg-slate-100 text-slate-600"
+        : n === 0
+          ? "bg-rose-100 text-rose-800"
+          : "bg-amber-100 text-amber-800";
+  const desglose = ORDEN_VEREDICTOS.filter((c) => juez.por_clase[c])
+    .map((c) => `${juez.por_clase[c]} ${VEREDICTOS[c].texto}`)
+    .join(" · ");
+  const titulo = [
+    "Solo cuenta el MISMO producto. Otra gama, otro paquete, refacciones y otros " +
+      "productos no sirven para comparar precio. Se cuentan los rivales ajenos con " +
+      "precio de esta lista; nuestras publicaciones no entran.",
+    firme
+      ? null
+      : sinTitulo
+        ? `Faltan ${juez.pendientes} por juzgar y no se pueden juzgar: este SKU no ` +
+          "tiene título de publicación ni nombre en el catálogo con qué compararlos."
+        : caducos > 0
+          ? `${caducos} se juzgaron con una versión anterior de las instrucciones del ` +
+            "juez: siguen contando, pero al rejuzgarlos el número puede subir o bajar." +
+            (nuevos > 0 ? ` Faltan ${nuevos} por juzgar.` : "")
+          : `Faltan ${juez.pendientes} por juzgar: el número todavía puede cambiar.`,
+    desglose ? `Juzgados: ${desglose}.` : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return (
+    <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${tono}`} title={titulo}>
+      {firme || caducos > 0 ? "" : "al menos "}
+      {n} de {juez.total} {n === 1 ? "es" : "son"} competencia real
+      {caducos > 0 ? ", por confirmar" : ""}
+      {sinTitulo
+        ? " · no se puede juzgar: falta el título de nuestra publicación"
+        : `${caducos > 0 ? ` · ${caducos} por rejuzgar` : ""}${
+            nuevos > 0 ? ` · ${nuevos} sin juzgar` : ""
+          }`}
+    </span>
+  );
+}
+
 /** Los resultados de una búsqueda: posición ORGÁNICA, ficha y enlace. */
-function ResultadosBusqueda({ filas }: { filas: CompetenciaResultado[] }) {
+function ResultadosBusqueda({
+  filas,
+  conJuicio = false,
+}: {
+  filas: CompetenciaResultado[];
+  /** El detalle trae la cuenta del juez: solo entonces se pintan veredictos. */
+  conJuicio?: boolean;
+}) {
   return (
     <div className="space-y-1">
-      {filas.map((r) => (
-        <a
-          key={r.externo_id}
-          href={urlRanking({ url: r.url, externo_id: r.externo_id }) ?? "#"}
-          target="_blank"
-          rel="noreferrer"
-          className={`flex items-center gap-2 rounded p-1 hover:bg-slate-50 ${
-            r.es_nuestro ? "bg-amber-50" : ""
-          }`}
-        >
-          <Medalla pos={r.posicion} />
-          <Foto src={r.imagen} alt={r.titulo ?? ""} size={30} />
-          <span className="min-w-0 flex-1 truncate text-[11px] text-slate-600">
-            {r.titulo ?? r.externo_id}
-          </span>
-          {r.es_nuestro ? <Crown size={11} className="shrink-0 text-amber-600" /> : null}
-          {/* Las VISITAS de cada resultado: sin ellas la lista dice a qué precio
-              compite cada uno pero no cuánto tráfico se lleva, que es la mitad
-              de la decisión. Se piden por API al capturar (gratis). */}
-          <span
-            className="w-16 shrink-0 text-right text-[11px] tabular-nums text-slate-500"
-            title="Visitas de 30 días de esa publicación"
+      {filas.map((r) => {
+        // Lo nuestro nunca lleva veredicto: no es un rival. Un veredicto que
+        // llegara sin la cuenta del juez tampoco se pinta —sin `d.juez` la lista
+        // queda como siempre—, ni una clase que este archivo no conozca.
+        const veredicto =
+          conJuicio && !r.es_nuestro && r.veredicto && r.veredicto in VEREDICTOS
+            ? r.veredicto
+            : null;
+        // Se atenúa lo que el juez DESCARTÓ. Lo que está sin juzgar se queda
+        // igual que antes: «no sé» no es «no cuenta», y apagarlo lo diría.
+        const descartado = veredicto !== null && veredicto !== "mismo";
+        return (
+          <a
+            key={r.externo_id}
+            href={urlRanking({ url: r.url, externo_id: r.externo_id }) ?? "#"}
+            target="_blank"
+            rel="noreferrer"
+            className={`flex items-center gap-2 rounded p-1 hover:bg-slate-50 ${
+              r.es_nuestro ? "bg-amber-50" : descartado ? "opacity-60" : ""
+            }`}
           >
-            {r.visitas_30d != null ? `${num(r.visitas_30d)} vis` : "—"}
-          </span>
-          <span className="w-16 text-right text-xs font-medium tabular-nums text-slate-900">
-            {mxn(r.precio)}
-          </span>
-        </a>
-      ))}
+            <Medalla pos={r.posicion} />
+            <Foto src={r.imagen} alt={r.titulo ?? ""} size={30} />
+            <span className="min-w-0 flex-1 truncate text-[11px] text-slate-600">
+              {r.titulo ?? r.externo_id}
+            </span>
+            {veredicto ? <InsigniaVeredicto r={r} /> : null}
+            {r.es_nuestro ? <Crown size={11} className="shrink-0 text-amber-600" /> : null}
+            {/* Las VISITAS de cada resultado: sin ellas la lista dice a qué precio
+                compite cada uno pero no cuánto tráfico se lleva, que es la mitad
+                de la decisión. Se piden por API al capturar (gratis). */}
+            <span
+              className="w-16 shrink-0 text-right text-[11px] tabular-nums text-slate-500"
+              title="Visitas de 30 días de esa publicación"
+            >
+              {r.visitas_30d != null ? `${num(r.visitas_30d)} vis` : "—"}
+            </span>
+            <span className="w-16 text-right text-xs font-medium tabular-nums text-slate-900">
+              {mxn(r.precio)}
+            </span>
+          </a>
+        );
+      })}
+    </div>
+  );
+}
+
+// El sandbox local corre sin login (`NEXT_PUBLIC_AUTH_OFF=true`). Next sustituye
+// las NEXT_PUBLIC_* al compilar: en el build de producción la variable no existe
+// y esto queda como `false` literal. Mismo atajo que `components/radar/Acceso`.
+const SIN_LOGIN = process.env.NEXT_PUBLIC_AUTH_OFF === "true";
+
+/**
+ * ¿Quien mira es admin CONFIRMADO por el backend?
+ *
+ * Esta página no tiene guard de rol —Competencia es de «operador»— y los botones
+ * del juez gastan dinero o cambian lo que ven los KAM. La autoridad es el
+ * backend (`solo_admin` en todo `/api/competencia/juez`); esto es la segunda
+ * capa, para no ofrecerle a nadie un botón que le va a contestar 403.
+ *
+ * FALLA CERRADO: arranca en «no sé» y en «no sé» no hay botones. `quienSoy()`
+ * devuelve lo mismo cuando no hay sesión que cuando se cayó la red, así que una
+ * API caída también los esconde — que es lo correcto para algo que escribe.
+ *
+ * `preguntar` evita la llamada cuando no hay nada que ofrecer: con la bandera de
+ * escritura apagada el detalle no le pregunta nada nuevo al backend.
+ */
+function useAdminConfirmado(preguntar: boolean): boolean {
+  const [admin, setAdmin] = useState(SIN_LOGIN);
+  useEffect(() => {
+    if (SIN_LOGIN || !preguntar) return;
+    let vivo = true;
+    void quienSoy().then((u) => {
+      if (vivo) setAdmin(u.autenticado && u.rol === "admin");
+    });
+    return () => {
+      vivo = false;
+    };
+  }, [preguntar]);
+  return admin;
+}
+
+/** Lo que dice la línea de aviso del juez. Mismos tres tonos que los botones de
+ *  medir: `aviso` es un «todavía no» o un «aquí no», no una falla. */
+type AvisoJuez = { tono: "ok" | "aviso" | "error"; texto: string };
+
+const SONDEO_MS = 3000;
+// 300 vueltas de 3 s = 15 min. «Buscar mejor término» propone con IA, mide hasta
+// dos búsquedas (una sola ya tardó 178 s) y juzga lo que trae cada una: rendirse
+// a los 6 min del botón de medir reproduciría el bug que ese botón arregló.
+const SONDEO_VUELTAS = 300;
+// Tropiezos SEGUIDOS del sondeo que se aguantan antes de rendirse. Un 404 no es
+// tropiezo —es que el trabajo ya no existe— y se atiende aparte.
+const SONDEO_TROPIEZOS = 5;
+
+/**
+ * Cómo se cuenta el final de «buscar mejor término» cuando NO hubo sugerencia.
+ *
+ * El backend distingue varios finales y juntarlos en un «no se encontró nada»
+ * escondería la diferencia que importa: si se gastó o no, y si vale la pena
+ * volver a intentarlo. Un candidato que ML no dejó ver se puede reintentar; uno
+ * que se midió y no mejoró, no.
+ */
+function avisoDeMejora(r: CompetenciaMejoraResultado | null | undefined): AvisoJuez {
+  if (!r)
+    return {
+      tono: "aviso",
+      texto: "Terminó, pero el servidor no dijo cómo. Si encontró algo, la sugerencia sale aquí.",
+    };
+  if ((r.sugerencias ?? 0) > 0)
+    return {
+      tono: "ok",
+      texto: "Listo: hay un término sugerido. Revísalo aquí abajo antes de aceptarlo.",
+    };
+  // `ok: false` = el SKU no era elegible y NO se gastó nada. El motivo lo
+  // redacta el backend («en enfriamiento», «rivales sin juzgar: primero el juez»).
+  if (r.ok === false)
+    return {
+      tono: "aviso",
+      texto: `No se buscó otro término: ${r.motivo || "este SKU no es elegible"}.`,
+    };
+  if (r.detenido)
+    return { tono: "aviso", texto: `Se detuvo antes de terminar: ${r.detenido}.` };
+  if (r.termino_ok)
+    return {
+      tono: "aviso",
+      texto:
+        "La IA revisó el término y considera que ya nombra bien el producto: lo que " +
+        "sobra en la búsqueda son refacciones o accesorios. No se cambia.",
+    };
+  if (r.bloqueados)
+    return {
+      tono: "aviso",
+      texto:
+        "Mercado Libre no dejó ver el término candidato: mandó su pantalla de iniciar " +
+        "sesión. No quedó descartado; se puede volver a intentar.",
+    };
+  if (r.errores)
+    return {
+      tono: "error",
+      texto:
+        "No se pudo probar un candidato: la IA o la medición no respondieron. No quedó " +
+        "descartado; se puede volver a intentar.",
+    };
+  if (r.sin_mejora)
+    return {
+      tono: "aviso",
+      texto: "Se probó otro término y no trajo más competencia real que el actual.",
+    };
+  if (r.en_espera)
+    return {
+      tono: "aviso",
+      texto:
+        "La IA solo repitió candidatos cuya medición falló de nuestro lado; esperan su " +
+        "reintento (a lo más 7 días). No se descartó nada.",
+    };
+  return { tono: "aviso", texto: "La IA no propuso ningún término nuevo que probar." };
+}
+
+/**
+ * Los dos botones del juez que GASTAN: juzgar lo pendiente y buscar otro término.
+ *
+ * Solo se monta para un admin confirmado y con la escritura encendida en ese
+ * ambiente (lo decide `DetalleSku`). Cada botón aparece únicamente cuando tiene
+ * algo que hacer, y el orden importa: primero se juzga, y solo con el juicio
+ * COMPLETO y menos de 3 comparables se ofrece buscar otro término. Con rivales
+ * sin juzgar la respuesta honesta es «no sé», y no se paga por mejorar lo que
+ * quizá está bien — el backend se niega igual, pero mejor no ofrecerlo.
+ *
+ * El aviso no vive aquí sino en `DetalleSku`: tras recargar, el botón que lo
+ * produjo puede dejar de existir y se llevaría el mensaje con él.
+ */
+function AccionesJuez({
+  sku,
+  juez,
+  haySugerencia,
+  juezDeCaptura,
+  onListo,
+  onAviso,
+}: {
+  sku: string;
+  juez: CompetenciaJuez;
+  /** Ya hay una sugerencia esperando: primero se resuelve ésa. */
+  haySugerencia: boolean;
+  /**
+   * El juez que va colgado de «Medir» está juzgando estos mismos rivales. Juzgar
+   * a la vez pagaría dos veces las mismas parejas: se espera a que termine.
+   */
+  juezDeCaptura: boolean;
+  onListo: () => void | Promise<void>;
+  onAviso: (a: AvisoJuez | null) => void;
+}) {
+  const [ocupado, setOcupado] = useState<"juzgar" | "mejorar" | null>(null);
+
+  // El sondeo dura hasta 15 min y en ese rato se puede cerrar el detalle o
+  // abrir otro SKU. Desmontado, no se sigue preguntando ni se avisa nada: el
+  // trabajo continúa en el backend y la sugerencia, si la hay, queda guardada.
+  const vivo = useRef(true);
+  useEffect(() => {
+    vivo.current = true;
+    return () => {
+      vivo.current = false;
+    };
+  }, []);
+
+  async function juzgar() {
+    setOcupado("juzgar");
+    onAviso(null);
+    try {
+      const r = await juzgarRivalesCompetencia(sku);
+      if (!vivo.current) return;
+      if (r.veredictos > 0 && r.sin_juzgar === 0) {
+        onAviso({
+          tono: "ok",
+          texto: `Listo: ${r.veredictos} ${r.veredictos === 1 ? "rival juzgado" : "rivales juzgados"}.`,
+        });
+      } else if (r.veredictos > 0) {
+        onAviso({
+          tono: "aviso",
+          texto:
+            `Se juzgaron ${r.veredictos}; ${r.sin_juzgar} quedaron sin respuesta de la ` +
+            "IA. Vuelve a pedirlo para completarlos.",
+        });
+      } else if (r.sin_juzgar > 0) {
+        onAviso({
+          tono: "error",
+          texto: "La IA no devolvió ningún veredicto. No se guardó nada; inténtalo en un momento.",
+        });
+      } else {
+        // Ni juzgados ni fallidos: el backend no encontró nada que mandar cuando
+        // corrió. Alguien más los juzgó mientras tanto, o una captura trajo
+        // rivales justo entonces. (Sin título nuestro ya no se llega aquí: el
+        // botón no se ofrece y el backend contesta 409 con el motivo.)
+        onAviso({
+          tono: "aviso",
+          texto:
+            "No había nada que juzgar cuando se pidió: otra corrida los juzgó o llegaron " +
+            "rivales nuevos mientras tanto. Si siguen saliendo pendientes, vuelve a pedirlo.",
+        });
+      }
+    } catch (e) {
+      if (!vivo.current) return;
+      // 409 = juez apagado en este ambiente, o se detuvo por tope. Aviso, no falla.
+      onAviso({
+        tono: e instanceof ApiError && e.status === 409 ? "aviso" : "error",
+        texto: mensajeDeError(
+          e,
+          "No se pudieron juzgar los rivales. Si la petición se cortó, lo que alcanzó a " +
+            "juzgarse ya quedó guardado.",
+        ),
+      });
+    } finally {
+      // Se recarga TAMBIÉN cuando falla: la petición es en línea y puede cortarse
+      // con veredictos ya guardados. Sin recargar, el contador mentiría.
+      if (vivo.current) {
+        await onListo();
+        if (vivo.current) setOcupado(null);
+      }
+    }
+  }
+
+  async function mejorar() {
+    setOcupado("mejorar");
+    onAviso(null);
+    try {
+      // Se ARRANCA y se pregunta, igual que el botón de medir. Si ya había un
+      // trabajo vivo para este SKU, el backend devuelve ESE: volver a apretar
+      // tras cerrar y reabrir el detalle retoma el sondeo, no paga dos veces.
+      const t0 = await mejorarTerminoCompetencia(sku);
+      if (!vivo.current) return;
+      onAviso({
+        tono: "aviso",
+        texto:
+          "Buscando un mejor término… tarda varios minutos: propone con IA, mide en " +
+          "Mercado Libre y juzga lo que trae. Puedes seguir trabajando: si encuentra " +
+          "algo, la sugerencia queda guardada.",
+      });
+
+      let r = t0;
+      let tropiezos = 0;
+      for (let i = 0; i < SONDEO_VUELTAS && r.paso !== "listo" && r.paso !== "error"; i++) {
+        await new Promise((s) => setTimeout(s, SONDEO_MS));
+        if (!vivo.current) return;
+        try {
+          r = await estadoTrabajoJuezCompetencia(t0.id);
+          tropiezos = 0;
+        } catch (e) {
+          if (!vivo.current) return;
+          const perdido = e instanceof ApiError && e.status === 404;
+          // Un parpadeo de red no debe tirar un sondeo de 15 min; un 404 sí lo
+          // termina: el trabajo caducó o el backend reinició.
+          if (!perdido && ++tropiezos < SONDEO_TROPIEZOS) continue;
+          // En los dos casos se recarga: lo que el trabajo alcanzó a guardar
+          // —veredictos, o la sugerencia entera— ya está en la base.
+          onAviso({
+            tono: "aviso",
+            texto: perdido
+              ? "Se perdió el aviso del servidor. Recargando por si la sugerencia ya se guardó…"
+              : "No se pudo seguir preguntando al servidor. El trabajo sigue por su " +
+                "cuenta: recarga en unos minutos.",
+          });
+          await onListo();
+          return;
+        }
+      }
+      if (!vivo.current) return;
+
+      if (r.paso === "error") {
+        onAviso({ tono: "error", texto: r.error || "No se pudo buscar un mejor término." });
+      } else if (r.paso !== "listo") {
+        onAviso({
+          tono: "aviso",
+          texto: "Sigue corriendo. Recarga en unos minutos: si encuentra algo, sale aquí.",
+        });
+      } else {
+        onAviso(avisoDeMejora(r.resultado));
+      }
+      // Se recarga en los tres finales: aunque no haya sugerencia, los rivales
+      // de cada candidato ya se juzgaron y el contador pudo moverse.
+      await onListo();
+    } catch (e) {
+      if (!vivo.current) return;
+      onAviso({
+        tono: e instanceof ApiError && e.status === 409 ? "aviso" : "error",
+        texto: mensajeDeError(e, "No se pudo arrancar la búsqueda de un mejor término."),
+      });
+    } finally {
+      if (vivo.current) setOcupado(null);
+    }
+  }
+
+  // Sin título nuestro los pendientes no bajan con este botón: cada clic sería
+  // un 409. El chip ya dice por qué.
+  const verJuzgar = ocupado === "juzgar" || (juez.pendientes > 0 && !juez.sin_titulo);
+  const verMejorar =
+    ocupado === "mejorar" ||
+    (juez.completo && juez.comparables < UMBRAL_COMPARABLES && !haySugerencia);
+  if (!verJuzgar && !verMejorar) return null;
+
+  const boton =
+    "inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2 " +
+    "py-0.5 text-[10px] font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50";
+
+  return (
+    <div className="mb-2 flex flex-wrap items-center gap-2">
+      {verJuzgar ? (
+        <button
+          type="button"
+          onClick={juzgar}
+          disabled={ocupado !== null || juezDeCaptura}
+          title={
+            juezDeCaptura
+              ? "El juez de la medición está juzgando estos rivales. Espera a que termine."
+              : "Le pregunta a la IA, rival por rival, si es el mismo producto que el nuestro. Cuesta centavos de IA y no vuelve a buscar en Mercado Libre."
+          }
+          className={boton}
+        >
+          {ocupado === "juzgar" || juezDeCaptura ? (
+            <Loader2 size={10} className="animate-spin" />
+          ) : (
+            <Sparkles size={10} />
+          )}
+          {ocupado === "juzgar" || juezDeCaptura ? "Juzgando…" : "Juzgar rivales"}
+        </button>
+      ) : null}
+      {verMejorar ? (
+        <button
+          type="button"
+          onClick={mejorar}
+          disabled={ocupado !== null}
+          title="CUESTA: IA más hasta 2 búsquedas en Mercado Libre (Apify). Propone otro término, lo mide y juzga lo que trae. Solo deja una sugerencia: no cambia el término."
+          className={boton}
+        >
+          {ocupado === "mejorar" ? (
+            <Loader2 size={10} className="animate-spin" />
+          ) : (
+            <Search size={10} />
+          )}
+          {ocupado === "mejorar" ? "Buscando…" : "Buscar mejor término"}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * La sugerencia de término que espera a una persona.
+ *
+ * ── POR QUÉ NO SE APLICA SOLA ───────────────────────────────────────────────
+ * Cambiar el término de un SKU mueve el «precio de mercado» que ven los KAM en
+ * Publicaciones —esa pantalla promedia los rivales del término asignado— y la
+ * búsqueda con la que se mide la posición orgánica. Por eso el backend solo
+ * SUGIERE y aquí Aceptar pide confirmación diciendo justo eso.
+ *
+ * La tarjeta la ve cualquiera que abra el detalle: es información. Los botones
+ * solo un admin confirmado, y solo con la escritura encendida en ese ambiente.
+ */
+function TarjetaTerminoSugerido({
+  s,
+  puedeResolver,
+  onListo,
+  onAviso,
+}: {
+  s: CompetenciaTerminoSugerido;
+  puedeResolver: boolean;
+  onListo: () => void | Promise<void>;
+  onAviso: (a: AvisoJuez | null) => void;
+}) {
+  const [ocupado, setOcupado] = useState<"aceptar" | "descartar" | null>(null);
+  const vivo = useRef(true);
+  useEffect(() => {
+    vivo.current = true;
+    return () => {
+      vivo.current = false;
+    };
+  }, []);
+
+  async function resolver(accion: "aceptar" | "descartar") {
+    if (
+      accion === "aceptar" &&
+      !window.confirm(
+        `¿Aceptar «${s.termino_candidato}» en lugar de «${s.termino_anterior}»?\n\n` +
+          "Cambia el término de búsqueda de este SKU y el precio de mercado que ven " +
+          "los KAM en Publicaciones.",
+      )
+    )
+      return;
+    setOcupado(accion);
+    onAviso(null);
+    try {
+      if (accion === "aceptar") {
+        await aceptarSugerenciaTermino(s.id);
+        if (vivo.current)
+          onAviso({ tono: "ok", texto: `Listo: el término ahora es «${s.termino_candidato}».` });
+      } else {
+        await descartarSugerenciaTermino(s.id);
+        if (vivo.current)
+          onAviso({ tono: "aviso", texto: "Sugerencia descartada. El término no cambió." });
+      }
+    } catch (e) {
+      if (!vivo.current) return;
+      // 409 = ya no estaba abierta, o el término del SKU cambió después de
+      // sugerirla (y el backend la descartó). No es una falla: alguien llegó
+      // antes. El motivo exacto viene en `detail`.
+      onAviso({
+        tono: e instanceof ApiError && e.status === 409 ? "aviso" : "error",
+        texto: mensajeDeError(
+          e,
+          accion === "aceptar"
+            ? "No se pudo aceptar la sugerencia."
+            : "No se pudo descartar la sugerencia.",
+        ),
+      });
+    } finally {
+      // Se recarga pase lo que pase: tras un 409 la tarjeta ya no aplica, y si
+      // la red se cortó a medio camino el cambio pudo haberse hecho igual.
+      if (vivo.current) {
+        await onListo();
+        if (vivo.current) setOcupado(null);
+      }
+    }
+  }
+
+  const cuenta = (n: number | null, m: number | null) => `${n ?? "—"} de ${m ?? "—"}`;
+  const boton =
+    "inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] font-medium " +
+    "disabled:opacity-50";
+
+  return (
+    <div className="mb-2 rounded-lg border border-indigo-200 bg-indigo-50/60 px-3 py-2">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-indigo-700">
+          <Sparkles size={11} /> Término sugerido
+        </span>
+        <span className="rounded bg-white px-1.5 py-0.5 text-[11px] text-slate-500 line-through ring-1 ring-slate-200">
+          {s.termino_anterior}
+        </span>
+        <span className="text-[11px] text-slate-400">→</span>
+        <span className="rounded bg-white px-1.5 py-0.5 text-[11px] font-semibold text-indigo-800 ring-1 ring-indigo-200">
+          {s.termino_candidato}
+        </span>
+      </div>
+      {s.motivo ? <div className="mt-1 text-[11px] text-slate-600">{s.motivo}</div> : null}
+      <div
+        className="mt-1 text-[11px] tabular-nums text-slate-500"
+        title="Comparables = rivales que son el mismo producto, de los rivales ajenos con precio que trajo cada búsqueda. Las dos cuentas ya están medidas y juzgadas."
+      >
+        antes {cuenta(s.comparables_antes, s.total_antes)} comparables · con este{" "}
+        <b className="font-semibold text-slate-700">
+          {cuenta(s.comparables_despues, s.total_despues)}
+        </b>
+      </div>
+      {puedeResolver ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => resolver("aceptar")}
+            disabled={ocupado !== null}
+            title="Cambia el término de búsqueda de este SKU y el precio de mercado que ven los KAM en Publicaciones. Queda como corrección manual."
+            className={`${boton} border-indigo-300 bg-indigo-600 text-white hover:bg-indigo-700`}
+          >
+            {ocupado === "aceptar" ? (
+              <Loader2 size={10} className="animate-spin" />
+            ) : (
+              <Check size={10} />
+            )}
+            Aceptar
+          </button>
+          <button
+            type="button"
+            onClick={() => resolver("descartar")}
+            disabled={ocupado !== null}
+            title="Deja el término como está. Este candidato no se vuelve a proponer."
+            className={`${boton} border-slate-300 bg-white text-slate-600 hover:bg-slate-50`}
+          >
+            {ocupado === "descartar" ? (
+              <Loader2 size={10} className="animate-spin" />
+            ) : (
+              <X size={10} />
+            )}
+            Descartar
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -687,15 +1363,26 @@ function DetalleSku({
   const [recargado, setRecargado] = useState<CompetenciaDetalleSku | null>(null);
   const d = recargado ?? dProp;
 
+  // El SKU que este bloque muestra AHORA. Las recargas llegan tarde —«buscar
+  // mejor término» sondea hasta 15 min— y una que vuelva cuando ya se abrió otro
+  // SKU no debe pintarle encima el detalle del anterior.
+  const skuVigente = useRef<string | null>(null);
+
   // Al cambiar de SKU, lo recargado deja de aplicar.
   useEffect(() => {
+    skuVigente.current = dProp?.sku ?? null;
     setRecargado(null);
+    return () => {
+      skuVigente.current = null;
+    };
   }, [dProp?.sku]);
 
   const recargarDetalle = useCallback(async () => {
-    if (!dProp?.sku) return;
+    const sku = dProp?.sku;
+    if (!sku) return;
     try {
-      setRecargado(await detalleSkuCompetencia(dProp.sku));
+      const nuevo = await detalleSkuCompetencia(sku);
+      if (skuVigente.current === sku) setRecargado(nuevo);
     } catch {
       // Si la recarga falla, se queda lo que ya estaba en pantalla: el término
       // SÍ se midió, y perder la vista sería peor que mostrarla un poco vieja.
@@ -704,11 +1391,22 @@ function DetalleSku({
   const [sug, setSug] = useState<CompetenciaSugerenciaSub | null>(null);
   const [pidiendo, setPidiendo] = useState(false);
   const [fallo, setFallo] = useState<string | null>(null);
+  // Lo último que dijeron los botones del juez. Vive aquí y no en cada botón
+  // porque tras recargar el botón puede desaparecer (ya no hay pendientes, la
+  // sugerencia se resolvió) y el mensaje se iría con él.
+  const [avisoJuez, setAvisoJuez] = useState<AvisoJuez | null>(null);
+  // «Medir» sigue esperando al juez que corre tras la captura: mientras tanto
+  // «Juzgar rivales» pagaría dos veces las mismas parejas.
+  const [juezDeCaptura, setJuezDeCaptura] = useState(false);
+
+  // Solo se pregunta quién mira si en este ambiente hay algo que ofrecerle.
+  const adminConfirmado = useAdminConfirmado(Boolean(d?.juez?.puede_escribir));
 
   // Al cambiar de SKU la sugerencia anterior deja de aplicar.
   useEffect(() => {
     setSug(null);
     setFallo(null);
+    setAvisoJuez(null);
   }, [d?.sku]);
 
   if (cargando)
@@ -725,6 +1423,12 @@ function DetalleSku({
   const TOPE = 10;
   // Las palabras clave sugeridas siguen en 5: ahí más es ruido.
   const TOPE_PALABRAS = 5;
+
+  // Los botones del juez GASTAN o ESCRIBEN: hacen falta las dos llaves. El
+  // ambiente los permite (`puede_escribir`) Y quien mira es admin confirmado.
+  // Sin `d.juez` —bandera apagada o base sin la tabla— esto es `false` y el
+  // bloque de abajo no pinta nada nuevo.
+  const puedeEscribirJuez = Boolean(d.juez?.puede_escribir) && adminConfirmado;
 
   return (
     <div className="space-y-3 border-y border-indigo-100 bg-indigo-50/30 px-4 py-4">
@@ -762,12 +1466,59 @@ function DetalleSku({
             <span className="text-[10px] text-slate-400">
               {d.termino_origen === "manual" ? "corregido a mano" : "propuesto por IA"}
             </span>
+            {d.juez ? <ChipJuez juez={d.juez} /> : null}
             <BotonMedirBusqueda
+              key={d.sku}
               termino={d.termino_general}
               medidoEn={d.busqueda_medida_en}
+              esperarJuez={Boolean(d.juez)}
+              onEsperandoJuez={setJuezDeCaptura}
               onListo={recargarDetalle}
             />
           </div>
+          {/* ── El juez: botones, aviso y sugerencia ──
+               Va ARRIBA de la lista y fuera del `length === 0` de abajo: una
+               sugerencia sigue valiendo aunque el término actual no haya
+               devuelto nada, y es justo ahí donde más hace falta verla.
+               Los `key` reinician el estado de cada pieza al cambiar de SKU o
+               de sugerencia, y cortan el sondeo que venía corriendo. */}
+          {d.juez ? (
+            <>
+              {puedeEscribirJuez ? (
+                <AccionesJuez
+                  key={d.sku}
+                  sku={d.sku}
+                  juez={d.juez}
+                  haySugerencia={Boolean(d.termino_sugerido)}
+                  juezDeCaptura={juezDeCaptura}
+                  onListo={recargarDetalle}
+                  onAviso={setAvisoJuez}
+                />
+              ) : null}
+              {avisoJuez ? (
+                <div
+                  className={`mb-2 text-[11px] ${
+                    avisoJuez.tono === "error"
+                      ? "text-amber-600"
+                      : avisoJuez.tono === "aviso"
+                        ? "text-slate-500"
+                        : "text-emerald-600"
+                  }`}
+                >
+                  {avisoJuez.texto}
+                </div>
+              ) : null}
+              {d.termino_sugerido ? (
+                <TarjetaTerminoSugerido
+                  key={d.termino_sugerido.id}
+                  s={d.termino_sugerido}
+                  puedeResolver={puedeEscribirJuez}
+                  onListo={recargarDetalle}
+                  onAviso={setAvisoJuez}
+                />
+              ) : null}
+            </>
+          ) : null}
           {d.busqueda_general.length === 0 ? (
             /* CUATRO vacíos distintos, y confundirlos ya costó caro. El mensaje
                viejo daba uno solo —«todavía no se ha medido»— y lo mostraba
@@ -809,7 +1560,7 @@ function DetalleSku({
               )}
             </div>
           ) : (
-            <ResultadosBusqueda filas={d.busqueda_general} />
+            <ResultadosBusqueda filas={d.busqueda_general} conJuicio={Boolean(d.juez)} />
           )}
         </div>
 
@@ -1436,18 +2187,91 @@ function Cabeza() {
  * TÉRMINO**: la tabla es por término, no por SKU, y 80 términos cubren 522
  * SKUs. Un botón por resultado pagaría la misma consulta cinco veces.
  */
+// El plazo de 60 s del juez de la captura es para EMPEZAR SKUs, no para
+// terminar: el que arranca en el segundo 59 hace su trozo entero, que espera
+// turno hasta 30 s y llama hasta 30 s, dos veces si el lote sale sospechoso.
+// Peor caso: 60 + 2 × (30 + 30) = 180 s. Con 25 vueltas (75 s) un proveedor
+// lento hacía soltar «Juzgar rivales» con el juez todavía mandando esas parejas.
+// 70 vueltas de 3 s = 210 s; la prueba `JuezTrasLaCaptura` del backend amarra las
+// dos cifras. Si en 3 vueltas no pasó de `null` a `corriendo`, en este ambiente
+// no va a correr (bandera apagada o base sin la tabla) y no se sigue preguntando.
+const JUEZ_VUELTAS = 70;
+const JUEZ_VUELTAS_SIN_ARRANCAR = 3;
+
+/** Cómo terminó el juez que corrió tras «Medir». Las filas ya se contaron arriba. */
+function avisoDelJuez(r: TrabajoBusqueda): AvisoJuez {
+  const listo = `Listo: ${r.filas} resultados.`;
+  switch (r.juez) {
+    case "listo":
+      return { tono: "ok", texto: `Listo: ${r.filas} resultados, ya juzgados.` };
+    case "parcial":
+      // Dos parciales. El que se DETUVO no alcanzó a intentar algunos SKUs: su
+      // cuenta de pendientes se queda corta y no se da. El que llegó al final
+      // dejando rivales sin juzgar (la IA no contestó, contestó mal o la base no
+      // guardó) sí trae la cuenta exacta, y decir «se detuvo» sería falso.
+      if (r.juez_detenido)
+        return {
+          tono: "aviso",
+          texto:
+            `${listo} El juez se detuvo antes de terminar (${r.juez_detenido}): ` +
+            "lo que falta sigue sin juzgar.",
+        };
+      return {
+        tono: "aviso",
+        texto:
+          `${listo} El juez dejó ${r.juez_pendientes ?? "algunos"} sin juzgar` +
+          (r.juez_motivo ? ` (${r.juez_motivo})` : "") +
+          ": quedan pendientes.",
+      };
+    case "tope":
+      return { tono: "aviso", texto: `${listo} El juez no corrió: ya gastó su tope del día.` };
+    case "fallo":
+      return {
+        tono: "aviso",
+        texto: `${listo} El juez no pudo correr; la medición sí quedó guardada.`,
+      };
+    default:
+      return {
+        tono: "aviso",
+        texto: `${listo} El juez sigue corriendo: recarga en un momento para ver el resto.`,
+      };
+  }
+}
+
 function BotonMedirBusqueda({
   termino,
   medidoEn,
+  esperarJuez = false,
+  onEsperandoJuez,
   onListo,
 }: {
   termino: string | null;
   medidoEn: string | null;
+  /**
+   * El detalle enseña veredictos (`d.juez`): tras `listo` hay que esperar al juez
+   * que corre colgado de la captura y recargar otra vez cuando termine.
+   */
+  esperarJuez?: boolean;
+  /** Avisa mientras se espera a ese juez, para no ofrecer «Juzgar rivales» a la vez. */
+  onEsperandoJuez?: (esperando: boolean) => void;
   onListo: () => void;
 }) {
   const [corriendo, setCorriendo] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [tono, setTono] = useState<"ok" | "aviso" | "error">("ok");
+  // Ya se midió y se espera al juez: el botón no se reactiva hasta que termine,
+  // para que un segundo clic no cruce su mensaje con el de esta espera.
+  const [esperando, setEsperando] = useState(false);
+
+  // La espera del juez dura hasta 210 s y en ese rato se puede cerrar el detalle.
+  // Desmontado, se deja de preguntar: lo que el juez guarde sale al reabrir.
+  const vivo = useRef(true);
+  useEffect(() => {
+    vivo.current = true;
+    return () => {
+      vivo.current = false;
+    };
+  }, []);
 
   if (!termino) return null;
 
@@ -1509,12 +2333,75 @@ function BotonMedirBusqueda({
                        : `Listo: ${r.filas} resultados.`);
       }
       onListo();
+
+      // ── El juez va DESPUÉS de `listo` ─────────────────────────────────
+      //
+      // El backend marca `listo` y solo entonces juzga los rivales nuevos (hasta
+      // 3 min). Recargar una sola vez, aquí, dejaba la cuenta diciendo «N sin
+      // juzgar» hasta cerrar y reabrir el SKU, y a un admin le ofrecía «Juzgar
+      // rivales» sobre parejas que ya se estaban juzgando. Así que se sigue
+      // preguntando un rato y se recarga otra vez cuando el juez termina. Solo
+      // corre con filas nuevas: sin ellas el backend no juzga nada.
+      //
+      // Y si el primer sondeo con `listo` ya trae el FINAL del juez, se dice aquí.
+      // Es lo habitual con `tope` (se decide en dos lecturas a la base, décimas
+      // de segundo tras `listo`) y con un juicio que se detiene o truena de
+      // entrada: sin esto la pantalla se quedaba en «Listo: N resultados.» y el
+      // corte por tope volvía a ser mudo. La recarga de arriba ya lo incluye.
+      if (esperarJuez && (r.filas ?? 0) > 0) {
+        if (r.juez == null || r.juez === "corriendo") {
+          setCorriendo(false);
+          setMsg(`Listo: ${r.filas} resultados. Juzgando los rivales nuevos…`);
+          await esperarAlJuez(t0.id, r);
+        } else {
+          const aviso = avisoDelJuez(r);
+          setTono(aviso.tono);
+          setMsg(aviso.texto);
+        }
+      }
     } catch (e) {
       // 409 = el candado de días. Aviso, no falla. Igual que en el de rankings.
       setTono(e instanceof ApiError && e.status === 409 ? "aviso" : "error");
       setMsg(mensajeDeError(e, "No se pudo medir."));
     } finally {
       setCorriendo(false);
+    }
+  }
+
+  async function esperarAlJuez(jid: string, r0: TrabajoBusqueda) {
+    setEsperando(true);
+    onEsperandoJuez?.(true);
+    let r = r0;
+    try {
+      for (let i = 0; i < JUEZ_VUELTAS; i++) {
+        if (r.juez == null && i >= JUEZ_VUELTAS_SIN_ARRANCAR) {
+          // No arrancó: el mensaje de las filas vuelve a ser el de siempre.
+          if (vivo.current) setMsg(`Listo: ${r.filas} resultados.`);
+          return;
+        }
+        await new Promise((s) => setTimeout(s, SONDEO_MS));
+        if (!vivo.current) return;
+        try {
+          r = await estadoBusquedaCompetencia(jid);
+        } catch {
+          // 404: el trabajo caducó. Lo que el juez alcanzó a guardar ya está en
+          // la base: se recarga con lo que haya.
+          setMsg(`Listo: ${r.filas} resultados.`);
+          onListo();
+          return;
+        }
+        if (r.juez != null && r.juez !== "corriendo") break;
+      }
+      if (!vivo.current) return;
+      // Se recarga también si se acabaron las vueltas con el juez corriendo: lo
+      // que alcanzó a juzgar ya quedó guardado.
+      const aviso = avisoDelJuez(r);
+      setTono(aviso.tono);
+      setMsg(aviso.texto);
+      onListo();
+    } finally {
+      if (vivo.current) setEsperando(false);
+      onEsperandoJuez?.(false);
     }
   }
 
@@ -1529,7 +2416,7 @@ function BotonMedirBusqueda({
         <button
           type="button"
           onClick={pedir}
-          disabled={corriendo}
+          disabled={corriendo || esperando}
           title="Vuelve a buscar ese término en Mercado Libre. Cuesta ~$0.007, y sólo se puede una vez al día por término."
           className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-0.5 text-[10px] font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50"
         >
@@ -1837,8 +2724,10 @@ function BloqueSubcategoria({
                     {abiertoSku === s.sku ? (
                       <tr>
                         <td colSpan={COLS} className="p-0">
+                          {/* Segunda defensa contra la carrera de `abrirSku`: bajo
+                              esta fila solo cabe el detalle de ESTE SKU. */}
                           <DetalleSku
-                            d={detalle}
+                            d={detalle?.sku === s.sku ? detalle : null}
                             cargando={cargandoDetalle}
                           />
                         </td>
@@ -2420,20 +3309,31 @@ export default function CompetenciaPage() {
     return () => ac.abort();
   }, []);
 
+  // El SKU que se pidió AL ÚLTIMO. Abrir A y luego B con A todavía en vuelo: si
+  // A contestaba después, su detalle quedaba bajo la fila de B —con botones del
+  // juez que escriben sobre A y nada en pantalla que nombre el SKU—. Solo se
+  // acepta la respuesta del último pedido.
+  const skuPedido = useRef<string | null>(null);
+
   const abrirSku = async (sku: string) => {
     if (abiertoSku === sku) {
+      skuPedido.current = null;
       setAbiertoSku(null);
+      setCargandoDetalle(false);
       return;
     }
+    skuPedido.current = sku;
     setAbiertoSku(sku);
     setDetalle(null);
     setCargandoDetalle(true);
     try {
-      setDetalle(await detalleSkuCompetencia(sku));
+      const d = await detalleSkuCompetencia(sku);
+      if (skuPedido.current === sku) setDetalle(d);
     } catch (e) {
-      setError(mensajeDeError(e, "No se pudo cargar el detalle."));
+      if (skuPedido.current === sku)
+        setError(mensajeDeError(e, "No se pudo cargar el detalle."));
     } finally {
-      setCargandoDetalle(false);
+      if (skuPedido.current === sku) setCargandoDetalle(false);
     }
   };
 

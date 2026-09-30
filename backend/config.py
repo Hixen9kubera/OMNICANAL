@@ -731,6 +731,40 @@ class Settings(BaseSettings):
     # Tope de publicaciones por vuelta. 0 = sin tope.
     calidad_ml_por_corrida: int = 0
     competencia_con_detalle: bool = True
+    # ── Juez de rivales y mejora de términos (v0.606.0) ──────────────────────
+    # La búsqueda de ML devuelve lo que comparte PALABRAS con el término, no lo
+    # que compite con el producto: en un examen de 774 rivales solo el 48 % era
+    # el mismo producto. `competencia_juez` le pregunta a un LLM, por cada pareja
+    # (SKU nuestro, rival), si sirve para comparar precio, y guarda el veredicto
+    # en `enrich.market_rival_juicio`.
+    #
+    # LAS TRES NACEN APAGADAS (regla 3) y además nada corre si la tabla no
+    # existe en esa base: producción no la tiene hasta que la migración pase su
+    # acta, así que con el código en main y todo apagado no cambia NADA.
+    #
+    #   · _enabled  → tras cada medición de búsqueda, juzga los rivales de ese
+    #                 término (gasta IA: centavos por término, con tope diario).
+    #   · _visible  → el detalle de Competencia enseña los veredictos y el
+    #                 «N de M son competencia real». Es lo que ven los KAM; por
+    #                 eso va aparte de la que enciende el juez.
+    #   · _escritura → abre los botones de admin que GASTAN o ESCRIBEN: juzgar un
+    #                 SKU, buscar mejor término (Apify + IA) y aceptar una
+    #                 sugerencia. Aceptar cambia el término del SKU y con eso el
+    #                 precio de mercado que ven los KAM en Publicaciones.
+    competencia_juez_enabled: bool = False
+    competencia_juez_visible: bool = False
+    competencia_juez_escritura: bool = False
+    # Tiene que ser una llave de `ia_json.MODELOS`: un modelo sin precio no se
+    # llama (dejaría ciego al tope de gasto).
+    competencia_juez_modelo: str = "deepseek-flash"
+    # Tope de IA en 24 h que frena al camino AUTOMÁTICO (el enganche a la
+    # captura). OJO: descuenta TODO lo que el juez gastó en las últimas 24 h —el
+    # script por lotes, el botón «Juzgar rivales» y la mejora de términos
+    # incluidos—, no solo lo del enganche: es una sola bolsa. Tras un lote que
+    # gaste el tope, las capturas del día quedan con `juez: 'tope'` y lo
+    # pendiente lo recoge el siguiente lote o el botón. Los scripts por lotes
+    # traen además su propio tope por corrida, que este no limita.
+    competencia_juez_tope_diario_usd: float = 1.0
 
     # ── Base de datos MySQL (cache híbrido) ───────────────────
     db_host: str = ""

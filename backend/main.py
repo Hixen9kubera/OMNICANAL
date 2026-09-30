@@ -35,6 +35,11 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
+# httpx escribe en INFO cada petición con su URL COMPLETA, y la llave de Apify
+# viaja en la URL (`?token=`): cada medición la dejaba en los logs de Railway.
+# En WARNING se calla esa línea; un fallo de red igual llega como excepción.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 log = logging.getLogger("omnicanal")
 
 # Candado anti-mezcla de ambientes: si la config es contradictoria (p. ej.
@@ -183,7 +188,7 @@ app = FastAPI(
         "Temu, Shein)."
     ),
 
-    version="0.605.0",
+    version="0.606.0",
     lifespan=lifespan,
     # /docs, /redoc y /openapi.json publican el mapa COMPLETO de los 84
     # endpoints: rutas, parámetros y esquemas. Con la API abierta eso es un
@@ -288,7 +293,7 @@ def raiz():
     return {
         "app": "OMNICANAL Â· Kubera",
 
-        "version": "0.605.0",
+        "version": "0.606.0",
         "docs": "/docs",
         "canales": [c["id"] for c in lista_canales()],
     }

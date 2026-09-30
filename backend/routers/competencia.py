@@ -24,15 +24,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, StringConstraints
 
 from config import settings
+from routers.investigacion import solo_admin
 from services import (
-    competencia_captura, competencia_scraper, competencia_store,
-    competencia_trabajos,
+    competencia_captura, competencia_juez, competencia_mejora, competencia_scraper,
+    competencia_store, competencia_trabajos,
 )
 
 log = logging.getLogger("omnicanal.routers.competencia")
@@ -278,6 +279,7 @@ def detalle_sku(sku: str, limite_terminos: int = 20):
     est_term = competencia_store.estado_termino(fila.get("termino_general") or "")
 
     return {
+        **_juicio_de(sku, general),
         "busqueda_general": general,
         "busqueda_medida_en": (est_term or {}).get("medido_en"),
         # 'ok' | 'vacio' | 'bloqueado' | None (medido antes de la 0048). Sin
@@ -305,6 +307,135 @@ def detalle_sku(sku: str, limite_terminos: int = 20):
                   "esta categoría. No es un fallo de la captura.")
         if (not top and not total) else None,
     }
+
+
+def _juicio_de(sku: str, general: list[dict[str, Any]]) -> dict[str, Any]:
+    """Anexa a cada rival su veredicto y devuelve `{juez, termino_sugerido}`.
+
+    Devuelve `{}` —la respuesta queda EXACTAMENTE como antes— si la bandera
+    `competencia_juez_visible` está apagada o la tabla no existe en esta base
+    (producción no la tiene hasta el acta). Y nunca revienta: el detalle de un
+    SKU no puede dar 500 por una capa que es informativa.
+
+    Los conteos se hacen sobre las MISMAS filas que se pintan (las de `general`),
+    para que el «N de M» de la pantalla no contradiga a la lista.
+    """
+    if not settings.competencia_juez_visible:
+        return {}
+    try:
+        if not competencia_juez.tablas_listas():
+            return {}
+        por_id = {f["externo_id"]: f for f in competencia_juez.filas([sku])}
+        pintadas = [por_id[r["externo_id"]] for r in general if r.get("externo_id") in por_id]
+        extra = {"juez": {**competencia_juez.resumen(pintadas),
+                          "puede_escribir": settings.competencia_juez_escritura},
+                 "termino_sugerido": competencia_mejora.sugerencia(sku)}
+    except Exception as exc:                                        # noqa: BLE001
+        log.warning("detalle de %s: no se pudo leer el juicio: %s", sku, exc)
+        return {}
+    # Las filas se tocan HASTA AQUÍ, cuando ya nada puede fallar: si algo de
+    # arriba revienta, la respuesta queda exactamente como antes del juez.
+    for r in general:
+        f = por_id.get(r.get("externo_id"))
+        vale = bool(f and f["vigente"])
+        r["veredicto"] = f["clase"] if vale else None
+        r["veredicto_motivo"] = f["motivo"] if vale else None
+        r["veredicto_unidades"] = f["unidades_rival"] if vale else None
+    return extra
+
+
+# ── Juez y mejora de términos: lo que GASTA o ESCRIBE ───────────────────────
+#
+# Un router aparte con `solo_admin` puesto a nivel de ROUTER, no ruta por ruta:
+# estas rutas caen bajo /api/competencia, que para el RBAC es de «operador», así
+# que la única barrera real es este `Depends` — y puesto aquí no se puede olvidar
+# en una. Además, cada una se niega si la bandera de escritura está apagada o si
+# la tabla no existe: con el código en producción y todo apagado, no hacen nada.
+juez_router = APIRouter(prefix="/juez", dependencies=[Depends(solo_admin)])
+
+
+def _exigir_juez() -> None:
+    if not settings.competencia_juez_escritura:
+        raise HTTPException(409, "El juez de rivales está apagado en este ambiente.")
+    if not competencia_juez.tablas_listas():
+        raise HTTPException(409, "Esta base todavía no tiene las tablas del juez.")
+
+
+class SkuReq(BaseModel):
+    # Vacío (o puros espacios) da 422 aquí. Más abajo un SKU vacío no es «ningún
+    # SKU» sino «todos»: `elegibles([''])` se queda sin filtro y la mejora correría
+    # —y pagaría— sobre el catálogo entero.
+    sku: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
+@juez_router.post("/juzgar")
+def juzgar_sku(req: SkuReq):
+    """Juzga AHORA lo pendiente de un SKU. No paga Apify: solo IA (centavos)."""
+    _exigir_juez()
+    # Una llamada corta y un solo intento: esto corre EN LÍNEA y una respuesta de
+    # minutos no sobrevive el viaje al navegador (la lección de /busqueda).
+    r = competencia_juez.juzgar_skus([req.sku], presupuesto=competencia_juez.Presupuesto(0.05),
+                                     timeout=30.0, intentos=1)
+    if r["detenido"]:
+        raise HTTPException(409, f"No se pudo juzgar: {r['detenido']}.")
+    juez = competencia_juez.resumen_sku(req.sku)
+    if not r["veredictos"] and juez["pendientes"]:
+        # Sin esto la ruta diría «listo, 0 veredictos» y nadie sabría por qué.
+        if juez["sin_titulo"]:
+            raise HTTPException(409, "Este SKU no tiene título con qué compararlo: "
+                                     "falta su publicación o su nombre en el catálogo.")
+        # Si lo que falló fue la BASE, la IA sí contestó y ya se le pagó: culparla
+        # mandaría a revisar la llave o el saldo en vano. «La IA no contestó» es
+        # solo para los fallos del proveedor.
+        if r.get("sin_guardar"):
+            raise HTTPException(503, "Los veredictos se pagaron pero no se pudieron "
+                                     "guardar en la base. Intenta de nuevo.")
+        if r.get("fallidos"):
+            raise HTTPException(502, "La IA no contestó: "
+                                     f"{r.get('ultimo_motivo') or 'sin detalle'}. Intenta de nuevo.")
+        # Ni fallos ni nada sin guardar: no había qué mandar cuando corrió (otra
+        # captura trajo rivales justo entonces). Sale como 200 y el panel lo dice.
+    return {"veredictos": r["veredictos"], "sin_juzgar": r["sin_juzgar"], "juez": juez}
+
+
+@juez_router.post("/mejorar")
+def mejorar_termino(req: SkuReq):
+    """ARRANCA «buscar mejor término» (IA + hasta 2 búsquedas de Apify) y
+    devuelve el `jid`. Solo deja una SUGERENCIA: no cambia el término."""
+    _exigir_juez()
+    return competencia_trabajos.arrancar_mejora(req.sku)
+
+
+@juez_router.get("/trabajo/{jid}")
+def estado_trabajo_juez(jid: str):
+    e = competencia_trabajos.estado(jid)
+    if not e:
+        raise HTTPException(404, "Ese trabajo ya no existe. Recarga el SKU: si alcanzó a "
+                                 "terminar, la sugerencia ya está guardada.")
+    return e
+
+
+@juez_router.post("/sugerencias/{intento_id}/aceptar")
+def aceptar_sugerencia(intento_id: int, quien=Depends(solo_admin)):
+    """Cambia el término del SKU por el sugerido. OJO: mueve el precio de mercado
+    que ven los KAM en Publicaciones, que promedia los rivales del término."""
+    _exigir_juez()
+    r = competencia_mejora.aceptar(intento_id, getattr(quien, "actor", None))
+    if not r["ok"]:
+        raise HTTPException(r["codigo"], r["motivo"])
+    return r
+
+
+@juez_router.post("/sugerencias/{intento_id}/descartar")
+def descartar_sugerencia(intento_id: int, quien=Depends(solo_admin)):
+    _exigir_juez()
+    r = competencia_mejora.descartar(intento_id, getattr(quien, "actor", None))
+    if not r["ok"]:
+        raise HTTPException(r["codigo"], r["motivo"])
+    return r
+
+
+router.include_router(juez_router)
 
 
 @router.get("/subcategoria/{categoria_id}/skus")
