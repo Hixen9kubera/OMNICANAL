@@ -1001,6 +1001,47 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.601.0 — Las variantes procesadas en Crear no se encontraban en el Publicador
+
+Reportado el 30-sep con 14 familias (`ROP-0246`, `ROP-0351`, `VAR-0004`,
+`ROP-0261-AZL-NEG-GRI`…): se procesaron en Crear el 29-sep y el Publicador
+decía «0 productos» al buscarlas.
+
+Medido en WordPress: los 14 padres siguen en `draft` —correcto: desde el 9-sep
+Crear NO le cambia el estado al padre de una variante, para no llevarse a las
+hermanas sin trabajar— y **87 de sus 110 variantes** llevan `_crear_procesada_at`.
+Las otras 23 (todo ROP-0179, ORG-0949, ACC-0450, ROP-0207-GRI-M, ROP-0371-BLN)
+no están procesadas y siguen, bien, en Crear.
+
+Eran DOS fallas encimadas, medidas contra `/api/productos` en producción:
+
+| Modo | total | filas |
+|---|---|---|
+| por padre (lo que pedía el Publicador) | 0 | 0 |
+| por variante (`aplanar=true`) | 87 | **0** |
+
+1. **El Publicador no mandaba `aplanar`**, así que decidía `LISTADO_APLANADO`,
+   apagado en Railway: lista anidada, y un padre en `draft` no existe en esa
+   vista aunque sus variantes estén listas. Crear ya había resuelto lo mismo con
+   su control «Por padre / Por variante»; el Publicador no lo tenía.
+2. **Bug de hidratación en el aplanado.** El índice (`indice_plano`) cuenta la
+   variante con su estado EFECTIVO (`pending` si está procesada y el padre en
+   borrador), pero `variantes_como_productos` la vestía con el `draft` del
+   padre, y el filtro de la vista (`woocommerce.listar_productos`, «red de
+   seguridad») la tiraba. Total 87, página vacía.
+
+Fix:
+- `services/wp_db.py`: `variantes_como_productos` lee `_crear_procesada_at` y
+  usa `_estado_variante()`, espejo en Python de `_estado_efectivo` (misma
+  condición `IS NOT NULL`). Verificado contra producción (solo lectura): vista
+  productos 87 → 87 hidratadas → 87 pasan el filtro; vista crear 23 → 23.
+- `frontend/app/productos/page.tsx`: control «Por padre / Por variante», igual al
+  de Crear, recordado en `localStorage` (`omnicanal:publicador:modo`) y SIEMPRE
+  explícito en la petición. Por padre sigue siendo el default.
+- `tests/test_estado_variante.py`: la regla, incluida la paridad con el SQL.
+
+Solo lectura/UI: no cambia ningún estado en Woo ni enciende flujos.
+
 ### v0.600.0 — El Publicador mostraba las características de una variante vacías
 
 Reportado con `VEH-0315-CHR`: el nombre del atributo salía bien ("Modelo") pero

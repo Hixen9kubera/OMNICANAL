@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Search, RotateCw, ImageIcon, Wand2, ChevronRight, Pencil, Layers, Loader2, Warehouse } from "lucide-react";
+import { Search, RotateCw, ImageIcon, Wand2, ChevronRight, Pencil, Layers, Loader2, Warehouse, Split } from "lucide-react";
 
 import AppNavbar from "@/components/AppNavbar";
 import Pagination from "@/components/Pagination";
@@ -20,6 +20,26 @@ import type { CanalInfo, EstudioConfig, ModoPublicacion, Paginacion, Producto } 
 
 const PER_PAGE = 40;
 const INDIGO = "#4F46E5";
+
+/**
+ * Cómo se lista el catálogo, igual que en Crear Productos. «Por padre» = la
+ * familia en una fila. «Por variante» = cada hija es su propia fila, y es la
+ * ÚNICA forma de ver una variante ya procesada cuyo padre sigue en borrador:
+ * Crear no le cambia el estado al padre (para no llevarse a las hermanas sin
+ * trabajar), así que por padre esa familia no existe en esta pantalla. Antes la
+ * pantalla no mandaba `aplanar` y decidía LISTADO_APLANADO, apagado en Railway:
+ * ROP-0246 y 13 familias más, con 87 variantes listas, no se encontraban (30-sep).
+ */
+type ModoLista = "padre" | "variante";
+const LS_MODO = "omnicanal:publicador:modo";
+
+function leerModoGuardado(): ModoLista {
+  try {
+    return localStorage.getItem(LS_MODO) === "variante" ? "variante" : "padre";
+  } catch {
+    return "padre"; // ventana privada / almacenamiento bloqueado
+  }
+}
 
 function precioMXN(v: number | null): string {
   if (v === null || v === undefined) return "—";
@@ -51,6 +71,10 @@ export default function ProductosPage() {
   // resuelve en la misma consulta, así que el total y las páginas son del filtro.
   const [categoria, setCategoria] = useState<number | null>(null);
   const [categorias, setCategorias] = useState<CategoriaWC[]>([]);
+  // `null` hasta leer localStorage en el cliente (mismo patrón que Crear): así
+  // no se pide la lista dos veces ni se pinta un instante el modo equivocado.
+  const [modo, setModo] = useState<ModoLista | null>(null);
+  useEffect(() => setModo(leerModoGuardado()), []);
   const [cargando, setCargando] = useState(true);
   // Arranque en frío del backend: el índice de WooCommerce puede tardar varios
   // segundos en construirse. Mientras tanto, "0 resultados" no significa que
@@ -129,6 +153,7 @@ export default function ProductosPage() {
 
   const cargar = useCallback(() => {
     const ctrl = new AbortController();
+    if (modo === null) return () => ctrl.abort(); // aún no se sabe el modo
     setCargando(true);
     listarProductos(
       {
@@ -139,6 +164,9 @@ export default function ProductosPage() {
         // Solo lo ya resuelto: publish / pending / ready. Lo que falta trabajar
         // (draft / inprogress) vive en Crear Productos.
         vista: "productos",
+        // SIEMPRE explícito: sin valor el backend decide por LISTADO_APLANADO y
+        // la pantalla dejaría de mostrar lo que dice el control.
+        aplanar: modo === "variante",
       },
       ctrl.signal,
     )
@@ -173,9 +201,17 @@ export default function ProductosPage() {
       })
       .finally(() => setCargando(false));
     return () => ctrl.abort();
-  }, [page, busqueda, skusFiltro, dropOff, categoria]);
+  }, [page, busqueda, skusFiltro, dropOff, categoria, modo]);
 
   useEffect(() => cargar(), [cargar]);
+
+  function cambiarModo(nuevo: ModoLista) {
+    if (nuevo === modo) return;
+    try { localStorage.setItem(LS_MODO, nuevo); } catch { /* sin recordar */ }
+    setExpandidos(new Set());
+    setPage(1);
+    setModo(nuevo);
+  }
 
   function irPagina(p: number) {
     setPage(p);
@@ -218,6 +254,38 @@ export default function ProductosPage() {
 
         {/* Buscador */}
         <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
+          {/* Mismo control que Crear Productos. */}
+          <div
+            role="group"
+            aria-label="Cómo listar los productos"
+            className="flex items-center rounded-lg border border-slate-200 bg-white p-0.5"
+          >
+            {([
+              { valor: "padre", texto: "Por padre", Icono: Layers,
+                ayuda: "Una fila por familia. Una familia cuyo padre sigue en borrador no aparece aquí aunque ya tenga variantes procesadas" },
+              { valor: "variante", texto: "Por variante", Icono: Split,
+                ayuda: "Una fila por variante: aparecen las variantes ya procesadas en Crear aunque su padre siga en borrador" },
+            ] as const).map(({ valor, texto, Icono, ayuda }) => {
+              const activo = modo === valor;
+              return (
+                <button
+                  key={valor}
+                  type="button"
+                  onClick={() => cambiarModo(valor)}
+                  aria-pressed={activo}
+                  title={ayuda}
+                  className={[
+                    "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-semibold transition-colors",
+                    activo ? "text-white shadow-sm" : "text-slate-500 hover:bg-slate-50 hover:text-slate-700",
+                  ].join(" ")}
+                  style={activo ? { backgroundColor: INDIGO } : undefined}
+                >
+                  <Icono size={15} />
+                  {texto}
+                </button>
+              );
+            })}
+          </div>
           <div className="relative">
             <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input

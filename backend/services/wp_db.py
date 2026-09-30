@@ -1919,7 +1919,8 @@ def variantes_como_productos(wc_ids: list[int]) -> dict[int, dict[str, Any]]:
     hijas = [int(r["ID"]) for r in filas]
     padres = sorted({int(r["post_parent"]) for r in filas})
     CLAVES = ("_sku", "_price", "_regular_price", "_sale_price", "_stock",
-              "_thumbnail_id", "_product_image_gallery", "_variation_description")
+              "_thumbnail_id", "_product_image_gallery", "_variation_description",
+              META_PROCESADA)
     metas: dict[int, dict[str, str]] = {}
     todos = hijas + padres
     for i in range(0, len(todos), 400):
@@ -2027,7 +2028,13 @@ def variantes_como_productos(wc_ids: list[int]) -> dict[int, dict[str, Any]]:
             "type": "variation",
             # EL ESTADO ES EL DEL PADRE (decisión de Brandon, 9-sep). El propio
             # de la hija dice si la combinación está habilitada, no si está viva.
-            "status": r.get("padre_estado"),
+            # Salvo la variante YA PROCESADA de un padre en borrador: vale
+            # `pending`, la MISMA regla que `_estado_efectivo` aplica en el
+            # índice. Sin esto el índice la contaba en Productos y el filtro de
+            # la vista la tiraba al hidratar con el `draft` del padre: el
+            # Publicador decía «87» y pintaba cero (ROP-0246 y 13 más, 30-sep).
+            "status": _estado_variante(r.get("padre_estado"),
+                                       mv.get(META_PROCESADA)),
             "price": _val("_price"),
             "regular_price": _val("_regular_price"),
             "sale_price": _val("_sale_price"),
@@ -2047,6 +2054,15 @@ def variantes_como_productos(wc_ids: list[int]) -> dict[int, dict[str, Any]]:
             "permalink": f"{base}/?p={pid}" if base else None,
         }
     return salida
+
+
+def _estado_variante(padre_estado: str | None, procesada: str | None) -> str | None:
+    """Estado efectivo de una variante en Python. Espejo de `_estado_efectivo`."""
+    # `is not None` y no «tiene texto»: el SQL pregunta `IS NOT NULL`, y los
+    # dos lados tienen que contestar lo mismo o el total y la página divergen.
+    if padre_estado in ("draft", "inprogress") and procesada is not None:
+        return "pending"
+    return padre_estado
 
 
 def _a_entero(v: Any) -> int | None:
