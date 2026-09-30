@@ -562,6 +562,22 @@ def planear_almacenes(lineas: list[dict[str, Any]],
     La 2 es la que evita el error tentador: repartir en cuanto el primero no
     alcanza, y acabar con dos entregas donde bastaba una.
 
+    LA 3 VA POR SKU (Brandon, 30-sep: reglas a/b/c de la compra de guías). La
+    primera versión repartía almacén por almacén tomando de CADA línea lo que
+    hubiera: con S1×1 (sólo en TEXCO) y S2×3 (TEXCO 1, TEXCO II 5) salía
+    TEXCO = S1×1 + S2×1 y TEXCO II = S2×2 — un SKU partido sin necesidad, que es
+    justo lo que la regla 2 prohíbe para la orden entera. Ahora la regla 2 se
+    aplica también a cada línea:
+      3a. la línea que UN SOLO almacén cubre completa va entera ahí (regla a);
+      3b. la que NINGUNO cubre se parte, por preferencia —TEXCO primero— (regla c);
+      3c. la que cubren los DOS va entera al que ya lleva otras líneas de la
+          orden —para no abrir una caja/entrega más—, y si ninguno, a TEXCO
+          (regla b: "que decida el programa").
+    Con S1×1 y S2×3 de arriba: TEXCO = S1×1, TEXCO II = S2×3.
+
+    DOS LÍNEAS DEL MISMO PRODUCTO se miden contra el stock UNA vez. Antes cada
+    una se comparaba sola con todo el libre: 2 + 2 contra 3 salía "completa".
+
     Devuelve `partes` (una por almacén con piezas asignadas), la `cobertura`
     —`completa`, `dividida` o `parcial`— y la FOTO del stock, que es del momento
     y no se puede reconstruir después.
@@ -571,33 +587,74 @@ def planear_almacenes(lineas: list[dict[str, Any]],
         por_alm = libres.get(ln["product_id"], {})
         foto[ln["sku"]] = {str(wid): por_alm.get(wid, 0.0) for wid, _n in _ALMACENES}
 
-    def _libre(ln, wid) -> int:
-        return int(libres.get(ln["product_id"], {}).get(wid, 0) or 0)
+    # Lo que queda libre, por (producto, almacén), y se descuenta conforme se
+    # asigna: así dos líneas del mismo producto no cuentan dos veces la pieza.
+    disp: dict[tuple[Any, int], int] = {}
+    for ln in lineas:
+        for wid, _n in _ALMACENES:
+            disp[(ln["product_id"], wid)] = int(libres.get(ln["product_id"], {}).get(wid, 0) or 0)
 
     # ── Reglas 1 y 2: ¿algún almacén, SOLO, cubre todo? ────────────────────
+    pide: dict[Any, int] = {}
+    for ln in lineas:
+        pide[ln["product_id"]] = pide.get(ln["product_id"], 0) + int(ln["cantidad"])
     for wid, nombre in _ALMACENES:
-        if all(_libre(ln, wid) >= int(ln["cantidad"]) for ln in lineas):
+        if all(disp[(pid, wid)] >= n for pid, n in pide.items()):
             return {"partes": [{"almacen_id": wid, "almacen": nombre,
                                 "lineas": [dict(l) for l in lineas]}],
                     "cobertura": "completa", "stock_foto": foto, "faltante": {}}
 
-    # ── Regla 3: ninguno alcanza solo → se reparte, por preferencia ────────
-    restante = {id(ln): int(ln["cantidad"]) for ln in lineas}
+    # ── Regla 3: ninguno alcanza solo → POR LÍNEA (ver arriba) ─────────────
+    orden = [wid for wid, _n in _ALMACENES]
+    restante = {i: int(ln["cantidad"]) for i, ln in enumerate(lineas)}
+    asignado: dict[int, list[tuple[int, dict[str, Any]]]] = {wid: [] for wid in orden}
+
+    def _cubren(i: int) -> list[int]:
+        ln = lineas[i]
+        return [w for w in orden if disp[(ln["product_id"], w)] >= restante[i]]
+
+    def _poner(i: int, wid: int, n: int) -> None:
+        if n <= 0:
+            return
+        ln = lineas[i]
+        asignado[wid].append((i, {**ln, "cantidad": n}))
+        disp[(ln["product_id"], wid)] -= n
+        restante[i] -= n
+
+    def _partir(i: int) -> None:
+        for w in orden:
+            _poner(i, w, min(max(disp[(lineas[i]["product_id"], w)], 0), restante[i]))
+
+    # 3a · la que sólo UN almacén cubre completa, entera ahí.
+    for i in range(len(lineas)):
+        c = _cubren(i)
+        if len(c) == 1:
+            _poner(i, c[0], restante[i])
+    # 3b · la que NINGUNO cubre completa, partida por preferencia.
+    for i in range(len(lineas)):
+        if restante[i] > 0 and not _cubren(i):
+            _partir(i)
+    # 3c · la que cubren los dos, entera al que ya se abrió (si no, a TEXCO).
+    for i in range(len(lineas)):
+        if restante[i] <= 0:
+            continue
+        c = _cubren(i)
+        if not c:
+            _partir(i)       # otra línea del mismo producto se llevó lo que la cubría
+            continue
+        abiertos = [w for w in c if asignado[w]]
+        _poner(i, (abiertos or c)[0], restante[i])
+
     partes: list[dict[str, Any]] = []
     for wid, nombre in _ALMACENES:
-        asignadas = []
-        for ln in lineas:
-            falta = restante[id(ln)]
-            if falta <= 0:
-                continue
-            toma = min(_libre(ln, wid), falta)
-            if toma > 0:
-                asignadas.append({**ln, "cantidad": toma})
-                restante[id(ln)] -= toma
-        if asignadas:
-            partes.append({"almacen_id": wid, "almacen": nombre, "lineas": asignadas})
-
-    faltante = {ln["sku"]: restante[id(ln)] for ln in lineas if restante[id(ln)] > 0}
+        if asignado[wid]:
+            partes.append({"almacen_id": wid, "almacen": nombre,
+                           "lineas": [l for _i, l in sorted(asignado[wid], key=lambda t: t[0])]})
+    faltante: dict[str, int] = {}
+    for i, ln in enumerate(lineas):
+        if restante[i] > 0:
+            faltante[ln["sku"]] = faltante.get(ln["sku"], 0) + restante[i]
+    restante = {id(ln): restante[i] for i, ln in enumerate(lineas)}
     if faltante:
         # No hay en NINGÚN almacén. Las piezas huérfanas se cuelgan de la
         # primera parte —o de TEXCO si no hubo ninguna— y la orden queda marcada
@@ -724,7 +781,7 @@ def pendientes_de_guia(canal: str, dias: int = 14,
                     ["state", "!=", "cancel"],
                     ["create_date", ">=", desde]]],
                   {"fields": ["name", "client_order_ref", "picking_ids", "state",
-                              "meli_etiqueta_file"],
+                              "meli_etiqueta_file", "warehouse_id"],
                    "order": "create_date asc", "limit": 400,
                    "context": {"bin_size": True}})
     if not ordenes:
@@ -822,7 +879,7 @@ def cola_de_una_venta(canal: str, order_id: str) -> dict[str, Any] | None:
                     "|", ["client_order_ref", "=", venta],
                     ["client_order_ref", "=like", f"{venta}#%"]]],
                   {"fields": ["name", "client_order_ref", "picking_ids", "state",
-                              "meli_etiqueta_file"],
+                              "meli_etiqueta_file", "warehouse_id"],
                    "order": "id asc", "context": {"bin_size": True}}) or []
     # `=like` trata `_` como comodín: se re-filtra por la forma exacta, igual
     # que en `partes_de_ventas`.
@@ -961,10 +1018,16 @@ def _agregar_partes(items: list[dict[str, Any]],
         partes = []
         for o in sorted(todas.get(d["order_id"], []),
                         key=lambda x: (_num_parte(x["client_order_ref"]), x["id"])):
+            wh = o.get("warehouse_id")
             partes.append({
                 "sale_id": int(o["id"]),
                 "nombre": o.get("name") or "",
                 "ref": str(o["client_order_ref"]),
+                # El almacén de la parte: con él, una guía comprada por el panel
+                # (que sabe de qué almacén sale cada caja) se empareja aunque el
+                # MISMO SKU vaya repartido entre las dos (`emparejar_partes`).
+                "almacen_id": (int(wh[0]) if isinstance(wh, (list, tuple)) and wh
+                               and isinstance(wh[0], int) else None),
                 "pickings": [i for i in (o.get("picking_ids") or []) if i in ids_faltan],
                 "sin_pdf": bool(not o.get("meli_etiqueta_file")
                                 and o.get("state") in _CONFIRMADAS),
@@ -1022,6 +1085,14 @@ def emparejar_partes(partes: list[dict[str, Any]],
 
     Con UNA sola parte no hay nada que repartir: el paquete es suyo, como en
     una venta sin partir.
+
+    POR ALMACÉN (30-sep, compra de guías): si TODAS las partes traen su
+    `almacen_id` y TODOS los paquetes el suyo —sólo pasa con las guías que
+    compró el panel, cuyo almacén por caja guarda la bitácora de compras—, cada
+    parte recibe el ÚNICO paquete de SU almacén que lleva todos sus SKUs (y, si
+    se saben, al menos sus piezas). Eso resuelve el SKU repartido de la regla c
+    —el mismo SKU en dos cajas, una por almacén—, que por contenido siempre es
+    `ambigua`. Lo que así no quede cierto sigue por las reglas de arriba.
     """
     def _conj(v: Any) -> set[str] | None:
         if v is None:
@@ -1061,9 +1132,23 @@ def emparejar_partes(partes: list[dict[str, Any]],
                       if total.get(x) is None or cq.get(x) is None or cq[x] < total[x])
 
     salida: dict[int, dict[str, Any]] = {}
+    por_almacen = (varias and paqs
+                   and all(isinstance(p.get("almacen_id"), int) for p in partes)
+                   and all(isinstance(q.get("almacen_id"), int) for q, _c, _cq in paqs))
     for p in partes:
         sid = int(p["sale_id"])
         s = _conj(p.get("skus"))
+        if por_almacen and s is not None:
+            cp = _cant(p.get("cantidades")) if p.get("cantidades") is not None else {}
+            cands = [q for q, c, cq in paqs
+                     if q.get("almacen_id") == p.get("almacen_id") and c is not None and s <= c
+                     and all(cq.get(x) is None or cp.get(x) is None or cq[x] >= cp[x]
+                             for x in s)]
+            if len(cands) == 1:
+                salida[sid] = {"estado": "asignada", "paquete": cands[0],
+                               "motivo": "el único paquete de su almacén con sus SKUs "
+                                         "(guía comprada por el panel)"}
+                continue
         if varias and s is not None and canal is not None and not s <= canal:
             salida[sid] = {"estado": "ambigua", "paquete": None,
                            "motivo": "SKU distinto al del canal: "
@@ -1420,11 +1505,78 @@ def buscar_por_ref(canal: str, order_id: str) -> dict[str, Any] | None:
 
 # ── Crear / cancelar ────────────────────────────────────────────────────────
 
+def plan_desde_reparto(lineas: list[dict[str, Any]], reparto: list[dict[str, Any]],
+                       libres: dict[int, dict[int, float]]) -> dict[str, Any] | None:
+    """
+    El plan de almacenes CUANDO YA HAY GUÍA COMPRADA POR EL PANEL: sale de lo
+    que se compró, no de `planear_almacenes`. PURA.
+
+    `reparto` = [{almacen_id, sku, cantidad}] (de `temu_guias_compra.
+    reparto_comprado`). La paquetería va a recoger a los almacenes de la guía:
+    si la orden de Odoo se planeara otra vez con el stock de hoy podría nacer en
+    el OTRO almacén, y la hoja de surtido diría TEXCO mientras el repartidor
+    llega a TEXCO II. Devuelve la misma forma que `planear_almacenes`, o None
+    si el reparto no cuadra pieza por pieza con la venta (entonces NO se crea
+    con él: lo decide una persona).
+    """
+    nombres = dict(_ALMACENES)
+    por: dict[tuple[int, str], int] = {}
+    for x in reparto or []:
+        try:
+            wid, sku, n = int(x["almacen_id"]), str(x["sku"]).strip(), int(x["cantidad"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        if wid not in nombres or not sku or n <= 0:
+            return None
+        por[(wid, sku)] = por.get((wid, sku), 0) + n
+    pide: dict[str, int] = {}
+    for ln in lineas:
+        pide[ln["sku"]] = pide.get(ln["sku"], 0) + int(ln["cantidad"])
+    tiene: dict[str, int] = {}
+    for (_w, sku), n in por.items():
+        tiene[sku] = tiene.get(sku, 0) + n
+    if not por or tiene != pide:
+        return None
+    foto: dict[str, dict[str, float]] = {}
+    for ln in lineas:
+        por_alm = libres.get(ln["product_id"], {})
+        foto[ln["sku"]] = {str(wid): por_alm.get(wid, 0.0) for wid, _n in _ALMACENES}
+    partes: list[dict[str, Any]] = []
+    faltante: dict[str, int] = {}
+    usado: dict[tuple[Any, int], int] = {}
+    pend = {i: int(ln["cantidad"]) for i, ln in enumerate(lineas)}
+    for wid, nombre in _ALMACENES:
+        asignadas = []
+        for i, ln in enumerate(lineas):
+            n = min(por.get((wid, ln["sku"]), 0), pend[i])
+            if n <= 0:
+                continue
+            por[(wid, ln["sku"])] -= n
+            pend[i] -= n
+            asignadas.append({**ln, "cantidad": n})
+            # Que el almacén de la guía no tenga el stock NO cambia el plan (la
+            # paquetería va a ir ahí), pero se dice: `parcial`, en ámbar.
+            k = (ln["product_id"], wid)
+            usado[k] = usado.get(k, 0) + n
+            libre = int(libres.get(ln["product_id"], {}).get(wid, 0) or 0)
+            if usado[k] > libre:
+                faltante[ln["sku"]] = faltante.get(ln["sku"], 0) + min(n, usado[k] - libre)
+        if asignadas:
+            partes.append({"almacen_id": wid, "almacen": nombre, "lineas": asignadas})
+    if any(pend.values()):
+        return None
+    return {"partes": partes, "stock_foto": foto, "faltante": faltante,
+            "cobertura": ("parcial" if faltante
+                          else "dividida" if len(partes) > 1 else "completa"),
+            "de_la_guia": True}
+
+
 def crear_orden(canal: str, order_id: str, fecha: str | None,
                 items: list[dict[str, Any]],
                 confirmar: bool | None = None,
                 dry_run: bool = False,
-                esperar_guia: bool | None = None) -> dict[str, Any]:
+                esperar_guia: bool | None = None,
+                reparto_guia: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """
     La orden de venta en Odoo. Idempotente por `client_order_ref`.
 
@@ -1515,8 +1667,19 @@ def crear_orden(canal: str, order_id: str, fecha: str | None,
 
         # 3 · El plan de almacenes. Puede salir MÁS DE UNA parte: ver
         #     `planear_almacenes` para las tres reglas.
+        #     Con `reparto_guia` (la guía la compró el panel) el plan ES el de
+        #     la guía: la paquetería va a recoger ahí. Si no cuadra pieza por
+        #     pieza con la venta, NO se crea — lo resuelve una persona.
         libres = libre_por_almacen([l["product_id"] for l in lineas])
-        plan = planear_almacenes(lineas, libres)
+        if reparto_guia:
+            plan = plan_desde_reparto(lineas, reparto_guia, libres)
+            if plan is None:
+                return {"ok": False, "accion": "reparto_guia_no_cuadra",
+                        "motivo": ("la guía que compró el panel no lleva exactamente "
+                                   "lo que pide la venta: no se crea la orden con un "
+                                   "reparto distinto al de la guía — revísala a mano")}
+        else:
+            plan = planear_almacenes(lineas, libres)
         partes = plan["partes"]
 
         def _payload(parte: dict, ref: str) -> dict:
@@ -1884,6 +2047,13 @@ def crear_con_guia(canal: str, cuenta: str, order_id: str, fecha: str | None,
 
     Devuelve `{ok, accion, resultado, cola, motivo}`. `cola` es el renglón de
     `cola_de_una_venta` (o None si a la orden ya no le falta nada).
+
+    ⚠️ SALVO QUE LA GUÍA LA HAYA COMPRADO EL PANEL (Temu, `temu_guias_compra`).
+    Entonces el reparto NO se recalcula: la orden nace con los almacenes y las
+    piezas de la guía comprada, porque ahí es adonde va a ir la paquetería. Si
+    la bitácora de compras no se puede leer y la compra está ENCENDIDA, no se
+    crea esta vuelta (podría haber una guía nuestra con otro reparto); con la
+    compra apagada —hoy— la bitácora está vacía y esto no cambia nada.
     """
     from services import odoo_ventas_log
 
@@ -1909,7 +2079,28 @@ def crear_con_guia(canal: str, cuenta: str, order_id: str, fecha: str | None,
                 "cola": None,
                 "motivo": f"la venta se canceló en el canal ({acc_antes}) antes de crear"}
 
-    r = crear_orden(canal, str(order_id), fecha, items, esperar_guia=False)
+
+    reparto = None
+    if canal == "temu":
+        from services import temu_guias_compra as tgc
+        try:
+            reparto = tgc.reparto_comprado(str(order_id))
+        except Exception as exc:  # noqa: BLE001
+            if tgc.es_tabla_ausente(exc) or not tgc.compra_habilitada():
+                log.debug("crear_con_guia: bitácora de compras de guías sin leer (%s)", exc)
+            else:
+                motivo = ("no se pudo leer la bitácora de compras de guías: si el panel "
+                          "compró esta guía, la orden tiene que nacer con SU reparto — se "
+                          f"reintenta la vuelta siguiente ({str(exc)[:120]})")
+                try:
+                    odoo_ventas_log.anotar_intento(canal, cuenta, order_id, motivo)
+                except Exception:  # noqa: BLE001
+                    pass
+                return {"ok": False, "accion": "bitacora_guias_ilegible",
+                        "resultado": {}, "cola": None, "motivo": motivo}
+
+    r = crear_orden(canal, str(order_id), fecha, items, esperar_guia=False,
+                    reparto_guia=reparto)
     if not r.get("odoo_id"):
         # No nació. Se deja la fila como está —sigue en espera— y la vuelta
         # siguiente lo reintenta: la cola se vacía por el HECHO de que exista la

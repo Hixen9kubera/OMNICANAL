@@ -1001,6 +1001,57 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.603.0 — Temu: plan de compra de guías por bodega (vista previa con el payload exacto; la compra nace APAGADA)
+
+Brandon, 30-sep: automatizar la compra de guías de Temu con **paquetes divididos
+por almacén**, fecha de envío = compra + 2 días (sábado/domingo → lunes), la
+paquetería **más barata posible**, y *"antes de que confirmes algo me mandas el
+payload"*. Almacenes confirmados por él: TEXCO = `WH-04038973460631627` (IFULL
+NAVE 2), TEXCO II = `WH-10610291507351627` (Dirección texco 2).
+
+**Nuevo `services/temu_guias_compra.py`.** Para cada venta que espera guía arma
+los paquetes con sus reglas: (a) SKUs de bodegas distintas → un paquete por
+bodega; (b) SKU con stock en las dos → decide `planear_almacenes`; (c) SKU que
+no alcanza → se parte la cantidad (3 TEXCO + 2 TEXCO II). Un combinado del mismo
+comprador se compra entero o nada. Y el payload EXACTO de
+`bg.logistics.shipment.create` según la ficha oficial: `sendType` 0/1/2,
+`sendRequestList` por paquete con su `warehouseId`, `orderSendInfoList`
+(parentOrderSn, orderSn, goodsId, skuId, quantity), peso y medidas como texto con
+dos decimales en kg/cm, `channelId`/`shipCompanyId` de la cotización.
+- **Fecha:** la API no tiene fecha calendario; lo equivalente a la "Fecha del
+  envío" del panel es `shipLater: true` + `shipLaterLimitTime` en HORAS (24–96),
+  uno por llamada: todas las cajas de un pedido partido comparten fecha. Martes →
+  48 h (jueves); jueves → 96 h (lunes); festivos de Temu inhábiles; 120 h fuera
+  hasta que una compra real lo confirme.
+- **Paquetería:** la MÁS BARATA de todas las que Temu ofrece disponibles para esa
+  caja (empate → la más rápida). Con la cotización del 24-sep: J&T drop-off
+  MX$32.40. `TEMU_GUIAS_PAQUETERIA="*:Pickup"` la limita a recolección.
+- **Peso y medidas NUNCA del catálogo** (reconstruido del CBM): medida de almacén
+  o guías anteriores del mismo SKU y piezas (≥2 muestras parecidas, la caja más
+  grande, densidad creíble, redondeo hacia arriba); si no hay, no se compra.
+- **Nunca dos veces:** bloquea si la orden ya tiene paquete o guía en cualquier
+  fuente, si su estado no es 2, o por avisos de Temu (cancelación o cambio de
+  dirección pendientes, riesgo, COD…).
+- **`comprar()`** existe pero **APAGADA** (`TEMU_COMPRA_GUIAS_ENABLED=false`) y
+  además exige la tabla `ops.temu_guias_compras` (migración **0061**, sin
+  aplicar): aparta el grupo en una transacción, una compra a la vez, aprobación
+  que firma payload + fecha + precio y vence a los 30 min, relectura de la orden
+  justo antes, espera el resultado real, y ante cualquier duda la orden queda
+  BLOQUEADA hasta conciliar (una guía comprada no se puede cancelar por API).
+- `planear_almacenes` corregido (lo usa también la creación de órdenes de
+  Automatización): ya no reparte cada SKU "TEXCO primero" cuando TEXCO II lo tiene
+  completo —eso partía SKUs sin necesidad, contra la regla (c)—, y dos renglones
+  del mismo producto ya no cuentan el mismo stock dos veces. Una orden cuya guía
+  la compró el panel nace en Odoo con los almacenes de esa guía.
+
+**Vista previa (sólo lectura, sólo admin):** `GET /api/automatizacion/temu/plan-guias`
+y la sección "Plan de guías (vista previa · no compra)" en Automatización →
+Temu, con el payload copiable. Sin botón de comprar.
+
+Probado sin red: **179 comprobaciones**, 18/18 mutaciones detectadas; SQL de la
+compra corrido en un PostgreSQL local desechable (incluida una carrera entre dos
+conexiones); suites previas en verde (cancelaciones 274, espera 190, resta 70…).
+
 ### v0.602.0 — Temu: las cancelaciones se capturan en minutos (estado 3) y dejan de esconder stock
 
 Brandon, 30-sep: *"veo que algunas tienen cancelaciones, tenemos que capturarlas

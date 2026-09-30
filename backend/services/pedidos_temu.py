@@ -835,6 +835,28 @@ async def _crear_al_tener_guia(item: dict[str, Any], det: dict[str, Any],
     return nuevo, info
 
 
+async def _almacen_de_paquetes(paquetes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Les cuelga `almacen_id` (Odoo) a los paquetes cuya guía compró el PANEL: la
+    bitácora de compras (`temu_guias_compra`) guarda de qué almacén sale cada
+    caja. Los demás no cambian. Nunca lanza: sin bitácora, todo queda como
+    antes. La consulta bloquea (psycopg2): va en un hilo (regla 11).
+    """
+    psns = [str(p.get("package_sn")) for p in paquetes if p.get("package_sn")]
+    if not psns:
+        return paquetes
+    try:
+        from services import temu_guias_compra as tgc
+        mapa = await asyncio.to_thread(tgc.almacenes_de_paquetes, psns)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("_almacen_de_paquetes: %s", str(exc)[:120])
+        return paquetes
+    if not mapa:
+        return paquetes
+    return [({**p, "almacen_id": mapa[str(p.get("package_sn"))]}
+             if str(p.get("package_sn") or "") in mapa else p) for p in paquetes]
+
+
 def _contar_espera(r: dict[str, Any], clave: str, subclave: str) -> None:
     r.setdefault(clave, {})
     r[clave][subclave] = r[clave].get(subclave, 0) + 1
@@ -891,6 +913,10 @@ async def _guia_dividida(item: dict[str, Any], det: dict[str, Any], r: dict[str,
         paquetes = info["paquetes"]
 
     partes = item.get("partes") or []
+    # Las cajas que compró el panel saben de qué almacén salen (bitácora de
+    # compras de guías): con eso el emparejador resuelve el SKU repartido entre
+    # almacenes. Las compradas a mano quedan igual que siempre.
+    paquetes = await _almacen_de_paquetes(paquetes)
     asignacion = odoo_ventas.emparejar_partes(partes, paquetes, info.get("skus_venta"))
     puestas: list[dict[str, Any]] = []       # para la bitácora, en orden de parte
     for parte in partes:

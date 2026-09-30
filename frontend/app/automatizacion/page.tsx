@@ -60,6 +60,7 @@ import { API_BASE, descargar, fetchSesion, mensajeDeError } from "@/lib/api";
 import { ACCIONES_CANCELADA, claveOrden, combinadosDe, type Combinado } from "@/lib/combinados";
 import { ddmm, revisarPdf, type AvisoPdf, type GuiaGrupo, type GuiasDia } from "@/lib/guiasDelDia";
 import AppNavbar from "@/components/AppNavbar";
+import PlanGuiasTemu from "@/components/PlanGuiasTemu";
 import { quienSoy } from "@/lib/sesion";
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -3464,6 +3465,11 @@ export default function AutomatizacionPage() {
             soloAccion={soloAccion}
           />
         )}
+
+        {/* ── PLAN DE GUÍAS DE TEMU (vista previa · no compra) ──
+            Sólo en Temu y sólo para quien puede mover (admin): hace lecturas a
+            Temu con la cuota de producción y se calcula a pedido, no al abrir. */}
+        {canal === "temu" && puedeMover !== false && <PlanGuiasTemu />}
 
         {/* ── LA LISTA ── */}
         <div className="mt-[14px]">

@@ -443,6 +443,50 @@ class Settings(BaseSettings):
     temu_guias_dias: int = 14          # más allá, la guía ya no va a aparecer
     temu_guias_limite: int = 60        # ventas por vuelta
 
+    # ── COMPRA DE GUÍAS DE TEMU (30-sep-2026) ─────────────────────────────
+    # Ver services/temu_guias_compra.py. La COMPRA cobra y no se cancela por
+    # API: nace APAGADA y encenderla es el dale de Brandon (regla 3). Aun
+    # encendida compra un GRUPO a la vez (todas sus llamadas), sólo con la
+    # huella aprobada en la vista previa (`/api/automatizacion/temu/plan-guias`,
+    # sólo lectura) y sólo si pudo reclamar el grupo en la bitácora durable
+    # `ops.temu_guias_compras` (migración 0061, la aplica Eduardo).
+    temu_compra_guias_enabled: bool = False
+    # Minutos que vale una aprobación de la vista previa. La huella firma el
+    # payload, la fecha de envío, el costo cotizado de cada caja y el momento
+    # de la vista previa: pasado este plazo hay que volver a revisarla.
+    temu_guias_aprobacion_min: int = 30
+    # Tope de ventas en espera que se leen de kubera (la cola ENTERA, sin
+    # muestreo). Si hay más, nada es comprable hasta que baje.
+    temu_guias_cola_max: int = 400
+    # Días inhábiles para la "Fecha del envío" (además de sábado y domingo): los
+    # que Temu tiene "sin funcionamiento" en su panel para 2026, más el 1-ene-2027
+    # para que una compra del 30-dic no caiga en Año Nuevo. Falla CERRADO: si la
+    # fecha de envío cae después del último festivo, no se compra hasta que se
+    # agreguen los del año siguiente.
+    temu_guias_festivos: str = ("2026-01-01,2026-02-02,2026-03-16,2026-05-01,"
+                                "2026-09-16,2026-11-16,2026-12-25,2027-01-01")
+    temu_guias_dias_envio: int = 2           # compra + N días naturales
+    # shipLaterLimitTime aceptados. La ficha de shipment.create dice 24-120 en
+    # la petición pero sólo 24/48/72/96 en la respuesta: 120 queda FUERA hasta
+    # que una compra real lo confirme (seis días de compra al año caen ahí y
+    # no se compran solos). Para permitirlo: "24,48,72,96,120".
+    temu_guias_horas_validas: str = "24,48,72,96"
+    # Almacén de Odoo → warehouseId de Temu (confirmado por Brandon):
+    # TEXCO = "IFULL NAVE 2", TEXCO II = "Dirección texco 2".
+    temu_guias_almacenes: str = "135:WH-04038973460631627,150:WH-10610291507351627"
+    # "paquetería:tipo", separadas por coma; "*" = CUALQUIER paquetería. Gana la
+    # más barata de las que entran; empate → la de menos días. Por omisión:
+    # la más barata de TODAS, recolección o drop-off (regla de Brandon del
+    # 30-sep: "para la compra de las guías siempre tomar el más barato
+    # posible"). Con la cotización del 24-sep eso es J&T drop-off (MX$32.40):
+    # alguien lleva la caja al punto. Sólo recolección: "*:Pickup". Sólo J&T
+    # recolección: "J&T express:Pickup".
+    temu_guias_paqueteria: str = "*"
+    # Guías ya compradas del MISMO (SKU, piezas) que hacen falta para confiar
+    # en su peso y caja.
+    temu_guias_empaque_min_muestras: int = 2
+    temu_guias_plan_limite: int = 20         # ventas por vista previa
+
     pedidos_temu_sondeo_min: int = 15
     # PAGINAS POR PASADA. `bg.order.list.v2.get` NO devuelve las ordenes por
     # fecha: en la primera pasada real (12-sep, 00:43 UTC) la pagina 1 traia 50

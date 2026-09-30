@@ -9,6 +9,11 @@ automatizacion.py — Lo que el panel automatiza sin que nadie lo empuje.
        …/guias-del-dia/excel · …/pdf          guías: vista previa, Excel y PDF
   GET  /api/automatizacion/simular?venta=   → QUÉ orden armaría esa venta, sin
                                               escribir nada en Odoo
+  GET  /api/automatizacion/temu/plan-guias → VISTA PREVIA de la compra de guías
+                                              de Temu por almacén: payload exacto,
+                                              sin comprar nada
+  POST /api/automatizacion/temu/plan-guias → la misma, con cajas medidas en el
+                                              panel (no guarda nada)
 
 Hoy solo cubre las órdenes de venta en Odoo (TikTok/Temu). El nombre es de la
 pestaña, no del módulo: aquí van cayendo los demás automatismos conforme se
@@ -892,6 +897,62 @@ async def temu_guia(sn: str = Query(..., description="parentOrderSn")):
             "hora_envio": pm.get("parentShippingTime"),
             "guia": guia or None, "paqueteria": paqueteria or None,
             "veredicto": veredicto}
+
+
+@router.get("/temu/plan-guias", dependencies=[Depends(requiere_api_key)])
+async def temu_plan_guias(limite: int = Query(20, ge=1, le=60,
+                                              description="ventas en espera a planear")):
+    """
+    VISTA PREVIA de la compra de guías de Temu. **No compra nada.**
+
+    Para las ventas que esperan su guía (`accion='espera_guia'`): qué caja sale
+    de qué almacén (TEXCO / TEXCO II) con cuántas piezas, la fecha de envío
+    (compra + 2 días, sábado/domingo/festivo → siguiente hábil), peso y caja
+    con su fuente, la paquetería elegida con su costo, el payload EXACTO que se
+    mandaría a `bg.logistics.shipment.create` con su huella, y por qué no se
+    puede comprar lo que no.
+
+    SOLO LECTURAS en Temu (detalle, combinado, paquetes y etiquetas existentes,
+    cotización), Odoo (stock libre) y kubera (cola, historial). Tope de
+    llamadas y de tiempo por consulta; el resultado se guarda 45 s para que
+    dos clics no gasten dos veces la cuota. Sin datos del comprador.
+
+    De admin (regla de prefijo de `/api/automatizacion` en core/rbac.py).
+    Ver services/temu_guias_compra.py.
+    """
+    from services import temu_guias_compra as tgc
+
+    return await tgc.plan_guias(limite=limite)
+
+
+@router.post("/temu/plan-guias", dependencies=[Depends(requiere_api_key)])
+async def temu_plan_guias_con_medidas(request: Request):
+    """
+    La MISMA vista previa, con las cajas que alguien pesó y midió en el panel:
+    `{"limite": 20, "medidas": {"<clave de caja>": {"peso_kg", "largo_cm",
+    "ancho_cm", "alto_cm"}}}`. **No compra nada ni guarda nada**: las medidas
+    viajan en la petición y entran a la huella de la aprobación, así que la
+    compra (cuando exista) tendrá que mandar exactamente las mismas.
+
+    Es la única forma de que una caja con varios SKUs (el combinado del mismo
+    almacén, o un PO con dos SKUs en un almacén) tenga peso y medidas.
+    POST sólo porque las medidas no caben bien en la URL; es de admin por la
+    regla de prefijo de core/rbac.py.
+    """
+    from services import temu_guias_compra as tgc
+
+    try:
+        cuerpo = await request.json()
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=422, detail="el cuerpo tiene que ser JSON")
+    if not isinstance(cuerpo, dict):
+        raise HTTPException(status_code=422, detail="el cuerpo tiene que ser un objeto")
+    try:
+        limite = max(1, min(60, int(cuerpo.get("limite") or 20)))
+        medidas = tgc.leer_medidas(cuerpo.get("medidas"))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)[:300])
+    return await tgc.plan_guias(limite=limite, medidas=medidas)
 
 
 # Lo que dice cada código de Temu. Leerlos es la diferencia entre "no se puede"
