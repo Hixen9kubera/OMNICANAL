@@ -1001,6 +1001,67 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.607.0 — Fan-out: los cambios que se pierden en un reinicio se vuelven a repartir solos (nace APAGADO)
+
+Eduardo, 1-oct: *"Arregla lo de la cola para que no se pierdan cambios"*.
+
+**El hueco.** La cola del fan-out (`fanout_stock._pendientes`) vive en memoria. Un
+reinicio del backend a media cola —un despliegue, o cambiar una variable en Railway
+(regla 12)— la tira, y como el fan-out solo actúa cuando Woo cambia, esos SKUs se
+quedan en los canales con el número viejo hasta que su stock se vuelva a mover.
+Medido el 1-oct en la bitácora: el 29-sep la pasada de stock_watch de las 12:04
+(CDMX) escribió 72 cambios en Woo, el fan-out alcanzó a repartir 3 y el despliegue
+de v0.596.0 reemplazó el contenedor; **los otros 69 no llegaron a ningún canal**.
+Dos días después seguían mal 56 publicaciones (26 de TikTok, 15 de Temu y 15
+pausadas de ML Kubera) y MUE-0293-AZL estaba **a la venta en Temu con 37 piezas y
+Woo en 0**. Desde el 1-sep fue la única vez a esa escala. Las 39 de TikTok y Temu
+se reenviaron a mano ese mismo día (`POST /api/fanout/encolar`, previa
+`GET /api/fanout/simular`); las de ML esperan a que se arregle su 403.
+
+**El arreglo** (`services/fanout_recuperar.py`). Sin guardar la cola en otro lado:
+`ops.fanout_log` ya es el registro durable de lo que stock_watch escribió
+(`odoo_delta` / `woo_cambio`) y de lo que el fan-out repartió. Al arrancar (a los
+2 min, antes de la primera pasada de stock_watch) y luego cada
+`FANOUT_RECUPERAR_MIN` (10, piso 5), se buscan los SKUs cuyo ÚLTIMO cambio no tiene
+después ningún evento del fan-out y se vuelven a encolar con motivo «recuperado:
+cambio sin repartir». Es idempotente: el fan-out relee Woo en vivo y, si el canal
+ya coincide, el plan sale `sin_cambio`. Límites, a propósito:
+
+- Solo cambios con más de `FANOUT_RECUPERAR_GRACIA_MIN` (15) de antigüedad: lo
+  reciente puede seguir en la cola. En la vuelta de arranque la gracia baja a 3 min,
+  porque la cola está recién vacía.
+- Solo de las últimas `FANOUT_RECUPERAR_HORAS` (6): lo más viejo pide una alineación
+  consciente (`POST /api/fanout/alinear`), no un reenvío automático.
+- Hasta `FANOUT_RECUPERAR_TOPE` (300) SKUs por vuelta, y se salta lo que ya está en
+  la cola.
+- Cada cambio (sku, ts) se reencola UNA vez por proceso: si su evento no llega a la
+  bitácora (kubera caída), no entra en bucle.
+- No corre con el fan-out apagado ni si la bitácora no se escribe en kubera
+  (`SUPABASE_WRITE_FANOUT_LOG`): sin ella, todo parecería sin repartir.
+- El cambio que falló al escribirse en Woo («ESCRITURA FALLÓ») no cuenta:
+  stock_watch no lo encola y lo reintenta en su siguiente pasada.
+
+Una venta que se pierde en la cola la vuelve a ver stock_watch en su siguiente
+pasada (como `woo_cambio`); si ese cambio también se pierde, lo recupera esto.
+
+**Para verlo.** `GET /api/fanout/recuperar` da la configuración, la última vuelta y
+qué SKUs reencolaría ahora mismo (solo lee: sirve para medir el hueco antes de
+encender). `POST /api/fanout/recuperar` corre una vuelta ya (respeta las banderas).
+`GET /api/fanout/estado` trae el bloque `recuperador`.
+
+**Nace APAGADO** (`FANOUT_RECUPERAR_ENABLED=false`, y el job solo existe con el
+fan-out encendido): encenderlo hace que el backend vuelva a escribir stock en los
+canales sin que nadie lo pida → regla 3, dale de Brandon. Encender la variable en
+Railway reinicia el contenedor: hacerlo fuera de una pasada de stock_watch.
+
+**Verificado.** 14 pruebas nuevas (`tests/test_fanout_recuperar.py`: banderas,
+una sola vez por cambio, lo que ya está en la cola, gracia de arranque, job en
+hilo) y las 244 del scheduler, fan-out, stock_watch y juez en verde. Contra el
+sandbox con la base real: un cambio sin reparto (SKU inventado, id negativo) sale
+como candidato, se encola una vez, no se repite y deja de ser candidato al aparecer
+su evento; y el backend completo, con el fan-out en DRY-RUN, corrió solo la vuelta
+de arranque a los 2 min y el fan-out tomó el SKU 7 s después.
+
 ### v0.606.0 — Competencia: juez de rivales por IA y mejora de términos de búsqueda (nace APAGADO; migración 0063 solo en el sandbox)
 
 Eduardo, 29-sep, con un SKU de zancos cuyo «mínimo del mercado» eran refacciones:

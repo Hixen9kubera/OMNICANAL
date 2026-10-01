@@ -2,6 +2,9 @@
 fanout.py — Monitoreo y simulación del fan-out de stock DROP.
 
   GET  /api/fanout/estado           → flags, cola, contadores y últimos eventos.
+  GET  /api/fanout/recuperar        → el recuperador: configuración, última vuelta y
+                                      qué reencolaría ahora mismo (solo lee).
+  POST /api/fanout/recuperar        → corre una vuelta ya (respeta sus banderas).
   GET  /api/fanout/simular?sku=     → QUÉ haría con ese SKU ahora mismo, sin
                                       encolar ni escribir (seguro siempre).
   POST /api/fanout/encolar?sku=     → lo mete a la cola real (respeta dry-run).
@@ -21,6 +24,31 @@ router = APIRouter(prefix="/api/fanout", tags=["fanout"])
 def estado():
     """Estado del fan-out: flags, pendientes, contadores y bitácora reciente."""
     return fanout_stock.estado()
+
+
+@router.get("/recuperar")
+def recuperar_estado():
+    """
+    El recuperador de cambios sin repartir (services/fanout_recuperar.py): su
+    configuración, su última vuelta y qué SKUs reencolaría AHORA MISMO con esa
+    configuración. Solo lee: sirve para ver el hueco antes de encender la bandera.
+    """
+    from services import fanout_recuperar
+    est = fanout_recuperar.estado()
+    try:
+        filas = fanout_recuperar.candidatos(est["horas"], est["gracia_min"], est["tope"])
+        est["ahora"] = {"candidatos": len(filas), "muestra": [f["sku"] for f in filas[:20]]}
+    except Exception as exc:  # noqa: BLE001 — la consulta es informativa
+        est["ahora"] = {"error": str(exc)[:200]}
+    return est
+
+
+@router.post("/recuperar")
+def recuperar():
+    """Corre una vuelta del recuperador YA. Respeta FANOUT_RECUPERAR_ENABLED y
+    FANOUT_ENABLED: con cualquiera apagada, contesta por qué no hizo nada."""
+    from services import fanout_recuperar
+    return fanout_recuperar.revisar()
 
 
 @router.get("/simular")

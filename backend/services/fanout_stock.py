@@ -980,9 +980,11 @@ def resumen() -> dict[str, Any]:
 
 
 def estado() -> dict[str, Any]:
+    from services import fanout_recuperar
     with _lock:
         pendientes = sorted(_pendientes.keys())
     return {
+        "recuperador": fanout_recuperar.estado(),
         "habilitado": habilitado(),
         "dry_run": dry_run(),
         "canales_habilitados": sorted(_canales_activos()) if _canales_activos() else "todos",

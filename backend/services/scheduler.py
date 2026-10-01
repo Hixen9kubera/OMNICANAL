@@ -557,6 +557,37 @@ def iniciar() -> None:
         log.info("Vigilante de inventario cada %s min (solo_registro=%s, tope=%s).",
                  settings.stock_watch_min, settings.stock_watch_solo_registro,
                  settings.stock_watch_tope)
+    # Recuperador del fan-out (services/fanout_recuperar.py): vuelve a encolar los
+    # cambios de stock_watch que nunca se repartieron. La cola vive en memoria y un
+    # reinicio a media cola la tira (29-sep: 69 de 72 cambios). Una vuelta a los
+    # 2 min de arrancar —con la cola recién vacía recupera hasta lo de hace 3 min,
+    # antes de la primera pasada de stock_watch (3 min)— y luego cada N min.
+    if getattr(settings, "fanout_recuperar_enabled", False) and getattr(settings, "fanout_enabled", False):
+        from services import fanout_recuperar
+        _min_rec = max(5, int(settings.fanout_recuperar_min))
+
+        async def _recuperar_fanout(arranque: bool = False) -> None:
+            await asyncio.to_thread(fanout_recuperar.revisar, arranque)   # regla 11: lee la base
+
+        _scheduler.add_job(
+            _recuperar_fanout,
+            "date",
+            run_date=datetime.now(timezone.utc) + timedelta(seconds=120),
+            kwargs={"arranque": True},
+            id="fanout_recuperar_arranque",
+        )
+        _scheduler.add_job(
+            _recuperar_fanout,
+            "interval",
+            minutes=_min_rec,
+            id="fanout_recuperar",
+            next_run_time=datetime.now(timezone.utc) + timedelta(seconds=120 + 60 * _min_rec),
+            max_instances=1,
+            coalesce=True,
+        )
+        log.info("Recuperador del fan-out: al arrancar y cada %s min (últimas %s h, gracia %s min, tope %s).",
+                 _min_rec, settings.fanout_recuperar_horas, settings.fanout_recuperar_gracia_min,
+                 settings.fanout_recuperar_tope)
     # Devoluciones de ML: la RED DE SEGURIDAD del webhook `post_purchase`.
     #
     # El webhook avisa en segundos, pero un webhook PERDIDO es invisible —nada

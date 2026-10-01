@@ -1182,6 +1182,17 @@ class Settings(BaseSettings):
     fanout_canales: str = ""
     # Piezas de colchón que NO se publican (cubre la ventana venta→escritura).
     fanout_reserva: int = 0
+    # Recuperador de cambios sin repartir (services/fanout_recuperar.py). La cola
+    # del fan-out vive en memoria y un reinicio a media cola la tira: el 29-sep el
+    # despliegue de v0.596.0 se llevó 69 de 72 cambios. Este barrido busca en
+    # `ops.fanout_log` los cambios de stock_watch que nunca tuvieron reparto y los
+    # vuelve a encolar. Nace APAGADO: encenderlo vuelve a escribir stock en los
+    # canales sin que nadie lo pida (regla 3 de CLAUDE.md — dale de Brandon).
+    fanout_recuperar_enabled: bool = False
+    fanout_recuperar_min: int = 10          # cada cuántos minutos barre (piso 5)
+    fanout_recuperar_horas: int = 6         # hasta qué antigüedad recupera
+    fanout_recuperar_gracia_min: int = 15   # lo más nuevo puede seguir en la cola
+    fanout_recuperar_tope: int = 300        # SKUs por vuelta
 
     # ── Movimientos de bodega FULL / FBA → Woo ────────────────────
     # Cuando se manda mercancía a FULL, esas piezas SALEN del almacén propio y
