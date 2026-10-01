@@ -8,6 +8,7 @@ fanout.py — Monitoreo y simulación del fan-out de stock DROP.
   GET  /api/fanout/vivo?desde_id=   → la página en vivo: veredicto, cadena y cambios.
   GET  /api/fanout/matriz           → SKUs × canales contra Woo.
   GET  /api/fanout/rastro?sku=&fin= → un cambio salto por salto.
+  GET  /api/fanout/historia?sku=&dias= → la línea de trazabilidad de un SKU.
   GET  /api/fanout/simular?sku=     → QUÉ haría con ese SKU ahora mismo, sin
                                       encolar ni escribir (seguro siempre).
   POST /api/fanout/encolar?sku=     → lo mete a la cola real (respeta dry-run).
@@ -81,6 +82,15 @@ def rastro(sku: str = Query(..., description="SKU del cambio"),
     en escribirse y qué contestó cada canal. Solo lee."""
     from services import fanout_vivo
     return fanout_vivo.rastro(sku, fin)
+
+
+@router.get("/historia")
+def historia(sku: str = Query(..., min_length=2, description="SKU"),
+             dias: int = Query(14, ge=1, le=60, description="Días hacia atrás")):
+    """La línea de trazabilidad de un SKU: cada cambio de stock en Woo, cada reparto
+    con lo que contestó cada canal y lo que cada canal reportó después. Solo lee."""
+    from services import fanout_vivo
+    return fanout_vivo.historia(sku, dias)
 
 
 @router.get("/simular")

@@ -26,6 +26,7 @@ import HorarioTrenes from "@/components/fanout/HorarioTrenes";
 import RastroCambio from "@/components/fanout/RastroCambio";
 import PulsoCanales from "@/components/fanout/PulsoCanales";
 import SerieDias from "@/components/fanout/SerieDias";
+import TrazabilidadSku from "@/components/fanout/TrazabilidadSku";
 import type { Atender, Evento, Vivo } from "@/components/fanout/tipos";
 
 const SONDEO_MS = 4000;
@@ -112,6 +113,7 @@ export default function SincronizacionInventario() {
   const [falla, setFalla] = useState(false);
   const [reloj, setReloj] = useState(() => Date.now());
   const [sel, setSel] = useState<{ sku: string; fin: string } | null>(null);
+  const [traza, setTraza] = useState<string | null>(null);
   const [copiado, setCopiado] = useState(false);
   const [fullAbierto, setFullAbierto] = useState(false);
   const ultimoId = useRef(0);
@@ -166,6 +168,13 @@ export default function SincronizacionInventario() {
     const t = setInterval(() => setReloj(Date.now()), 1000);
     return () => clearInterval(t);
   }, []);
+  // Una fila es «nueva» unos segundos, no hasta que llegue la siguiente: sin esto
+  // el último cambio se quedaba resaltado indefinidamente.
+  useEffect(() => {
+    if (!nuevasClaves.size) return;
+    const t = setTimeout(() => setNuevasClaves(new Set()), 6000);
+    return () => clearTimeout(t);
+  }, [nuevasClaves]);
 
   const visibles = useMemo(() => eventos.filter((e) => e.toca).slice(0, 12), [eventos]);
   const nuevosIds = useMemo(() => new Set(eventos.filter((e) => nuevasClaves.has(clave(e))).map((e) => e.id)), [eventos, nuevasClaves]);
@@ -355,7 +364,10 @@ export default function SincronizacionInventario() {
         )}
       </main>
 
-      <RastroCambio sel={sel} onCerrar={() => setSel(null)} onIr={(sku, fin) => setSel({ sku, fin })} />
+      <RastroCambio sel={sel} onCerrar={() => setSel(null)} onIr={(sku, fin) => setSel({ sku, fin })}
+        onTrazabilidad={(sku) => { setSel(null); setTraza(sku); }} />
+      <TrazabilidadSku sku={traza} onCerrar={() => setTraza(null)}
+        onRastro={(sku, fin) => { setTraza(null); setSel({ sku, fin }); }} />
       {falla && datos && (
         <div className="fixed bottom-4 left-1/2 z-40 flex -translate-x-1/2 items-center gap-2 rounded-full bg-amber-50 px-4 py-2 text-[13px] text-amber-900 shadow-lg ring-1 ring-amber-200">
           <XCircle size={16} aria-hidden /> Se perdió la conexión; se muestra el último dato y se reintenta solo.

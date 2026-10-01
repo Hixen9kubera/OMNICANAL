@@ -79,6 +79,14 @@ def _fecha(local: str | None, hoy: str | None = None) -> str:
     return f"{int(d)}-{_MESES[int(m) - 1]} {hora[:5]}"
 
 
+def _el(cuando: str) -> str:
+    """'hoy 11:59' → 'hoy a las 11:59'; '17-sep 21:42' → 'el 17-sep a las 21:42'."""
+    if cuando.startswith("hoy "):
+        return f"hoy a las {cuando[4:]}"
+    dia, _, hora = cuando.partition(" ")
+    return f"el {dia} a las {hora}" if hora else f"el {dia}"
+
+
 def _dia(local: str | None) -> str:
     if not local:
         return "—"
@@ -322,13 +330,9 @@ def _estado_canales(rep: list[str], hoy: str) -> list[dict]:
     return salida
 
 
-def _coincidencia(rep: list[str]) -> tuple[list[dict], list[dict]]:
-    """Publicaciones A LA VENTA de cada canal contra Woo. El valor de cada una es
-    el más reciente entre el censo del canal y la última escritura buena del
-    fan-out (el censo de Temu pasa cada 4 h; sin esto, un cambio ya escrito
-    parecería una diferencia). Devuelve el conteo por canal y TODAS las que no
-    coinciden (de más y de menos)."""
-    base = """
+# Publicaciones A LA VENTA en el reparto (sin FULL), con su valor más reciente:
+# lo usan las barras de coincidencia y la lista completa de la matriz.
+_SQL_VIVAS = """
         with w as (
           select distinct on (sku, canal) sku::text as sku, canal, ts, objetivo
             from ops.fanout_log
@@ -350,6 +354,20 @@ def _coincidencia(rep: list[str]) -> tuple[list[dict], list[dict]]:
              and ((l.canal = 'tiktok' and l.status = 'ACTIVATE')
                or (l.canal = 'temu' and l.status = '4/7')
                or (l.canal = 'mercado_libre' and l.situacion = 'active')))"""
+
+
+def _skus_vivos(rep: list[str]) -> list[str]:
+    """Todos los SKUs con al menos una publicación a la venta en el reparto."""
+    return [f["sku"] for f in sdb.fetch_all(_SQL_VIVAS + " select distinct sku from v order by sku", {"c": rep})]
+
+
+def _coincidencia(rep: list[str]) -> tuple[list[dict], list[dict]]:
+    """Publicaciones A LA VENTA de cada canal contra Woo. El valor de cada una es
+    el más reciente entre el censo del canal y la última escritura buena del
+    fan-out (el censo de Temu pasa cada 4 h; sin esto, un cambio ya escrito
+    parecería una diferencia). Devuelve el conteo por canal y TODAS las que no
+    coinciden (de más y de menos)."""
+    base = _SQL_VIVAS
     conteo = sdb.fetch_all(base + """
         select canal, count(*) as vivas,
                count(*) filter (where valor = stock_woo) as iguales,
@@ -756,7 +774,7 @@ def _causas(celdas: list[dict], hoy: str) -> dict[tuple[str, str, str], dict]:
                 detalle = f"Woo cambió{mov} a las {cam['hora'][11:16]}; el fan-out todavía no lo procesa."
             else:
                 codigo, texto = "perdido", _CAUSA_TXT["perdido"]
-                detalle = f"Woo cambió{mov} el {_fecha(cam['hora'], hoy)} y el fan-out nunca procesó ese cambio. "
+                detalle = f"Woo cambió{mov} {_el(_fecha(cam['hora'], hoy))} y el fan-out nunca procesó ese cambio. "
                 if cam["hora"] < "2026-08-19":
                     # v0.206: hasta ahí los cambios de Odoo se escribían en Woo
                     # pero NO se encolaban al fan-out.
@@ -779,11 +797,11 @@ def _causas(celdas: list[dict], hoy: str) -> dict[tuple[str, str, str], dict]:
                 if "403" in r:
                     codigo, texto = "403", _CAUSA_TXT["403"]
                     permiso = "PolicyAgent" in r or "PA_UNAUTHORIZED" in r
-                    detalle = (f"{nombre} rechazó el cambio a {_n(err[0].get('objetivo'))} el {cuando}"
+                    detalle = (f"{nombre} rechazó el cambio a {_n(err[0].get('objetivo'))} {_el(cuando)}"
                                + (": la app que escribe no está autorizada en la cuenta." if permiso else "."))
                 else:
                     codigo, texto = "error", _CAUSA_TXT["error"]
-                    detalle = f"{nombre} contestó un error el {cuando}: {r[7:140]}"
+                    detalle = f"{nombre} contestó un error {_el(cuando)}: {r[7:140]}"
             elif om:
                 r = str(om[0].get("resultado") or "")
                 motivo = _motivo_omision(r)[1]
@@ -791,7 +809,7 @@ def _causas(celdas: list[dict], hoy: str) -> dict[tuple[str, str, str], dict]:
                 detalle = f"El fan-out no le escribe a propósito ({cuando}): {r[:140]}"
             elif bien:
                 codigo, texto = "canal", _CAUSA_TXT["canal"]
-                detalle = (f"El {cuando} quedó en {_n(bien[0].get('objetivo'))}, igual que Woo; después el canal "
+                detalle = (f"{_el(cuando)[:1].upper()}{_el(cuando)[1:]} quedó en {_n(bien[0].get('objetivo'))}, igual que Woo; después el canal "
                            "cambió por su cuenta y nada lo vuelve a revisar.")
             else:
                 razon = _no_destino(c.get("listing"))
@@ -845,27 +863,31 @@ def matriz() -> dict[str, Any]:
                 x["n"] += 1
         b["causas"] = sorted(por.values(), key=lambda x: -x["n"])
 
-    # Qué SKUs entran: los que a la venta no coinciden, los rechazados en 24 h,
-    # los que tienen un cambio perdido, los distintos entre Odoo y Woo y los que
-    # se movieron hace poco.
+    # Qué SKUs entran: TODOS los que tienen algo a la venta en el reparto, más los
+    # que piden revisión aunque no estén a la venta: rechazados en 24 h, con un
+    # cambio perdido, distintos entre Odoo y Woo y movidos hace poco. Los topes son
+    # holgados a propósito: con 20 se escondían SKUs sin avisar (1-oct: 42
+    # rechazados y 86 movidos en 6 h).
     dif = sdb.fetch_all(
         """select sku::text as sku from ops.stock_watch_photo
             where stock_odoo is not null and stock_woo is not null and stock_odoo <> stock_woo
-            order by abs(stock_woo - stock_odoo) desc limit 40""")
+            order by abs(stock_woo - stock_odoo) desc limit 300""")
     rech = sdb.fetch_all(
         """select sku::text as sku from ops.fanout_log
             where accion = 'escribir' and resultado like 'ERROR%%' and ts > now() - interval '24 hours'
-            group by sku order by max(id) desc limit 20""")
+            group by sku order by max(id) desc limit 300""")
     rec = sdb.fetch_all(
         """select sku::text as sku from ops.fanout_log
             where accion = any(%(a)s) and coalesce(canal, '') <> 'woocommerce'
               and ts > now() - interval '6 hours'
-            group by sku order by max(id) desc limit 20""", {"a": _ACC_FANOUT})
-    perdidos = _skus_perdidos()
-    otros = {f["sku"] for f in distintas} | {f["sku"] for f in rech} | {f["sku"] for f in dif} | {f["sku"] for f in rec}
+            group by sku order by max(id) desc limit 300""", {"a": _ACC_FANOUT})
+    perdidos = _skus_perdidos(limite=300)
+    vivos = _skus_vivos(rep)
+    otros = ({f["sku"] for f in distintas} | {f["sku"] for f in rech} | {f["sku"] for f in dif}
+             | {f["sku"] for f in rec} | set(vivos))
     solo_perdido = set(perdidos) - otros
     skus = list(dict.fromkeys([f["sku"] for f in distintas] + [f["sku"] for f in rech] + perdidos
-                              + [f["sku"] for f in dif] + [f["sku"] for f in rec]))[:140]
+                              + [f["sku"] for f in dif] + [f["sku"] for f in rec] + vivos))[:2000]
     if not skus:
         return {"ahora": _fecha(ahora, hoy), "columnas": cols, "barras": barras, "filas": []}
 
@@ -1018,3 +1040,185 @@ def rastro(sku: str, fin: str) -> dict[str, Any]:
         fila.append({"sku": v["sku"], "hora": v["hora"], "dt": round(float(v["dt"]), 1),
                      "fin": v["ts"].isoformat(), "tono": _tono(celdas), "este": v["sku"] == sku and abs(float(v["dt"])) < 0.5})
     return {"ok": True, **e, "motivo": ev[0].get("motivo"), "destinos": destinos, "fila": fila}
+
+
+# ── Trazabilidad de un SKU ────────────────────────────────────────────────────
+
+_CAMPOS_TRAZA = ["stock_own", "status", "situacion"]
+_VIA_TXT = {"temu_censo": "censo de Temu", "tiktok_censo": "censo de TikTok", "sync": "lectura de ML",
+            "corte_channel": "lectura de ML"}
+
+
+def _entero(v: Any) -> int | None:
+    try:
+        return int(float(v)) if v not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _nombre_destino(canal: str, cuenta: str) -> str:
+    return next((c["nombre"] for c in COLUMNAS if c["canal"] == canal
+                 and (canal != "mercado_libre" or c["cuenta"] == cuenta)), _NOMBRE.get(canal, canal or "sin destino"))
+
+
+def _clave_destino(canal: str, cuenta: str) -> tuple[str, str]:
+    """ML va por cuenta (cada una falla o funciona por su lado); el resto, por canal."""
+    return canal, (cuenta if canal == "mercado_libre" else "")
+
+
+def _estado_traza(canal: str, valor: str | None) -> str:
+    if valor in (None, ""):
+        return "sin estado"
+    if canal == "temu":
+        return str(valor)      # crudo: la decodificación de los estados de Temu no está confirmada
+    return _ESTADO_TXT.get(canal, {}).get(str(valor), str(valor).lower())
+
+
+def historia(sku: str, dias: int = 14, limite: int = 400) -> dict[str, Any]:
+    """La línea de trazabilidad de UN SKU: lo que le pasó en los últimos `dias`.
+
+    Junta tres fuentes de kubera (solo lee):
+      · `ops.fanout_log` con canal 'woocommerce': cada cambio de stock en Woo que
+        anotó stock_watch (vino de Odoo, o lo detectó en Woo: una venta, una edición);
+      · el resto de `ops.fanout_log`: cada reparto del fan-out y lo que contestó
+        cada destino;
+      · `channel.listing_history`: lo que cada canal del reparto REPORTÓ después
+        (censo de TikTok y Temu, lectura de ML): stock, estado y situación.
+    Cada lectura de stock se compara con lo último que el fan-out le dejó a ese
+    canal (escrito, o ya igual): si coincide fue nuestro; si no, cambió en el
+    canal —una venta ahí, una cancelación, alguien en el Seller Center o un dato
+    que el canal tarda en reflejar—."""
+    sku = (sku or "").strip()
+    dias = max(1, min(int(dias or 14), 60))
+    rep = reparto()
+    ahora = _ahora_local().get("ahora") or ""
+    hoy = ahora[:10]
+    foto = sdb.fetch_one(
+        "select stock_odoo, stock_woo from ops.stock_watch_photo where sku = %(s)s", {"s": sku}) or {}
+    log = sdb.fetch_all(
+        """select id, ts, to_char(ts at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as hora,
+                  coalesce(motivo, '') as motivo, coalesce(canal, '') as canal,
+                  upper(coalesce(cuenta, '')) as cuenta, accion, left(coalesce(resultado, ''), 300) as resultado,
+                  stock_canal, objetivo, (ts > now() - interval '3 days') as reciente
+             from ops.fanout_log
+            where sku = %(s)s and ts > now() - make_interval(days => %(d)s)
+            order by ts desc, id desc limit 3000""", {"z": _ZONA, "s": sku, "d": dias})
+    hist = sdb.fetch_all(
+        """select h.changed_at as ts, to_char(h.changed_at at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as hora,
+                  h.canal, upper(coalesce(a.legacy_code, '')) as cuenta, h.campo,
+                  h.valor_anterior, h.valor_nuevo, coalesce(h.detectado_via, '') as via
+             from channel.listing_history h left join core.accounts a on a.id = h.account_id
+            where h.sku = %(s)s and h.canal = any(%(c)s) and h.campo = any(%(f)s)
+              and h.changed_at > now() - make_interval(days => %(d)s)
+            order by h.changed_at desc limit 2000""",
+        {"z": _ZONA, "s": sku, "c": rep, "f": _CAMPOS_TRAZA, "d": dias})
+    lst = sdb.fetch_all(
+        """select l.sku::text as sku, l.canal, a.legacy_code as cuenta, l.status, l.situacion,
+                  l.stock_own, l.is_fulfillment, l.logistic_type, l.updated_at,
+                  to_char(l.updated_at at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as act
+             from channel.listings l left join core.accounts a on a.id = l.account_id
+            where l.sku = %(s)s and l.canal = any(%(c)s)""", {"z": _ZONA, "s": sku, "c": rep})
+
+    # Hoy en cada canal: la misma celda (y la misma causa) que la matriz.
+    cols = [c for c in COLUMNAS if c["canal"] in rep]
+    woo = foto.get("stock_woo")
+    L = {(f["canal"], (f.get("cuenta") or "").upper()): f for f in lst}
+    W: dict[tuple[str, str], dict] = {}
+    for f in log:
+        if f["accion"] == "escribir" and f["canal"] not in ("", "woocommerce") and f["reciente"]:
+            W.setdefault((f["canal"], f["cuenta"]), f)
+    celdas, pendientes = {}, []
+    for col in cols:
+        clave = (col["canal"], col["cuenta"])
+        c = _celda_matriz(L.get(clave), W.get(clave), woo, hoy)
+        celdas[col["id"]] = c
+        if c["k"] in ("mas", "menos", "rech"):
+            pendientes.append({"sku": sku, "canal": col["canal"], "cuenta": col["cuenta"],
+                               "listing": L.get(clave), "col": col["id"]})
+    causas = _causas(pendientes, hoy)
+    for p in pendientes:
+        celdas[p["col"]]["causa"] = causas.get((sku, p["canal"], p["cuenta"].upper()))
+
+    items: list[dict] = []
+    # 1) Cada cambio de stock en Woo.
+    for f in log:
+        if f["canal"] != "woocommerce" or f["accion"] not in ("odoo_delta", "woo_cambio"):
+            continue
+        m = _FLECHA.search(f["resultado"])
+        items.append({"tipo": "woo", "_t": f["ts"], "ts": f["ts"].isoformat(), "hora": f["hora"],
+                      "origen": "odoo" if f["accion"] == "odoo_delta" else "woo",
+                      "de": int(m.group(1)) if m else None, "a": int(m.group(2)) if m else None,
+                      "fallo": "FALLÓ" in f["resultado"], "motivo": f["motivo"][:140]})
+
+    # 2) Cada reparto: sus filas comparten `ts` (el fin del cambio).
+    grupos: dict[Any, list[dict]] = {}
+    for f in log:
+        if f["canal"] != "woocommerce" and f["accion"] in _ACC_FANOUT:
+            grupos.setdefault(f["ts"], []).append(f)
+    orden = {(c["canal"], c["cuenta"] if c["canal"] == "mercado_libre" else ""): i for i, c in enumerate(COLUMNAS)}
+    for ts, filas in grupos.items():
+        destinos, vistos = [], set()
+        for f in filas:
+            if not f["canal"]:
+                continue
+            clave = _clave_destino(f["canal"], f["cuenta"])
+            if clave in vistos:
+                continue
+            vistos.add(clave)
+            celda = _celda_evento([x for x in filas if _clave_destino(x["canal"], x["cuenta"]) == clave])
+            destinos.append({"canal": f["canal"], "nombre": _nombre_destino(f["canal"], f["cuenta"]),
+                             "fuera": f["canal"] not in rep, **celda, "_o": orden.get(clave, 9)})
+        destinos.sort(key=lambda d: (d["fuera"], d["_o"]))
+        for d in destinos:
+            del d["_o"]
+        ks = [d["k"] for d in destinos if not d["fuera"]]
+        tono = "mal" if "mal" in ks else ("ok" if "ok" in ks else ("full" if ks and set(ks) <= {"full"} else "omit"))
+        motivo = filas[0]["motivo"]
+        bajo = motivo.lower()
+        origen = ("venta" if bajo.startswith("venta") else "recuperado" if bajo.startswith("recuperado")
+                  else "reenvio" if "reenv" in bajo else "cambio")
+        items.append({"tipo": "reparto", "_t": ts, "ts": ts.isoformat(), "fin": ts.isoformat(),
+                      "hora": filas[0]["hora"], "motivo": motivo[:140], "origen": origen, "tono": tono,
+                      "destinos": destinos, "sin_destinos": any(f["accion"] == "sin_destinos" for f in filas)})
+
+    # 3) Lo que reportó cada canal, contra lo último que el fan-out le dejó.
+    dejado: dict[tuple[str, str], list[tuple]] = {}   # más reciente primero (como `log`)
+    for f in log:
+        if f["canal"] in ("", "woocommerce"):
+            continue
+        ok = f["accion"] == "escribir" and f["resultado"].lower().startswith("ok")
+        if ok or f["accion"] == "sin_cambio":
+            dejado.setdefault(_clave_destino(f["canal"], f["cuenta"]), []).append((f["ts"], f["objetivo"], f["hora"]))
+    for h in hist:
+        clave = _clave_destino(h["canal"], h["cuenta"])
+        it = {"tipo": "canal", "_t": h["ts"], "ts": h["ts"].isoformat(), "hora": h["hora"], "canal": h["canal"],
+              "nombre": _nombre_destino(h["canal"], h["cuenta"]), "campo": h["campo"],
+              "via": _VIA_TXT.get(h["via"], h["via"] or "lectura")}
+        if h["campo"] == "stock_own":
+            de, a = _entero(h["valor_anterior"]), _entero(h["valor_nuevo"])
+            previo = next((p for p in dejado.get(clave, []) if p[0] <= h["ts"]), None)
+            if previo is None:
+                rel, ref = "sin_escritura", None
+            else:
+                ref = {"valor": _entero(previo[1]), "hora": previo[2]}
+                rel = "coincide" if ref["valor"] is not None and ref["valor"] == a else "su_cuenta"
+            it.update({"de": de, "a": a, "relacion": rel, "ref": ref})
+        else:
+            it.update({"relacion": "estado", "de_txt": _estado_traza(h["canal"], h["valor_anterior"]),
+                       "a_txt": _estado_traza(h["canal"], h["valor_nuevo"])})
+        items.append(it)
+
+    items.sort(key=lambda x: x["_t"], reverse=True)
+    resumen = {
+        "cambios_woo": sum(1 for x in items if x["tipo"] == "woo"),
+        "repartos": sum(1 for x in items if x["tipo"] == "reparto"),
+        "con_rechazo": sum(1 for x in items if x["tipo"] == "reparto" and x["tono"] == "mal"),
+        "su_cuenta": sum(1 for x in items if x.get("relacion") == "su_cuenta"),
+    }
+    total = len(items)
+    for x in items:
+        x.pop("_t", None)
+    return {"ok": True, "sku": sku, "dias": dias, "hoy": hoy, "ahora": _fecha(ahora, hoy),
+            "existe": bool(foto or lst or log or hist), "odoo": _n(foto.get("stock_odoo")), "woo": _n(woo),
+            "columnas": cols, "celdas": celdas, "resumen": resumen,
+            "items": items[:limite], "total": total, "truncado": total > limite}

@@ -1001,6 +1001,68 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.609.0 — Fan-out: la línea de trazabilidad de cada SKU, la matriz con TODOS los SKUs y el resaltado que ya no se queda pegado (solo lectura)
+
+Eduardo, 1-oct: *"Hay que hacer una línea de trazabilidad acerca de los cambios que ha tenido al dar clic
+en algún SKU; también, ¿por qué todos solo son 66?"* y *"cuando sale una nueva fila, hasta que no sale
+otra se queda con ese formato"*.
+
+**La línea de trazabilidad** (`components/fanout/TrazabilidadSku.tsx` + `GET /api/fanout/historia?sku=&dias=`).
+Un panel lateral con todo lo que le pasó a un SKU, en orden y agrupado por día:
+
+- cada cambio de stock en Woo que anotó stock_watch, diciendo si vino de Odoo o si lo detectó en Woo (una
+  venta, una cancelación, una edición);
+- cada reparto del fan-out con lo que contestó cada destino (escrito, ya igual, rechazado, omitido a
+  propósito), con enlace a su rastro;
+- lo que cada canal reportó después (`channel.listing_history`: stock, estado y situación, del censo de
+  TikTok/Temu y de la lectura de ML). Cada lectura de stock se compara con lo último que el fan-out le dejó
+  a ese canal: si coincide, «es lo que le dejó el fan-out»; si no, «cambió en el canal» (una venta ahí, una
+  cancelación, alguien en el Seller Center o un dato que el canal tarda en reflejar).
+
+Arriba va lo que tiene hoy cada canal, con la misma celda y la misma causa que la matriz, y la causa escrita
+completa (en el teléfono no hay cursor para verla). Periodo de 7, 14, 30 o 60 días; muestra los 400
+movimientos más recientes y avisa si hay más. Se abre tocando un SKU en la matriz, con Enter en el buscador
+(cualquier SKU, esté o no en la tabla) o desde el rastro de un cambio («Ver toda la trazabilidad del SKU»);
+desde la línea, «Ver rastro» abre el de cualquier reparto. Caso que la motivó: en JUGU-0089-PLA el reparto
+de las 11:59 escribió 9 en Temu, Temu reportó 9 a las 12:54 («coincide») y 10 a las 13:19 («cambió en el
+canal»).
+
+**«Todo» en la matriz ahora es todo.** La tabla listaba solo lo que pedía revisión (lo distinto a la venta,
+rechazos de 24 h, cambios perdidos, Odoo≠Woo y lo movido en 6 h), con topes de 20 que escondían SKUs sin
+avisar: el 1-oct había 42 rechazados y 86 movidos en 6 h, y se veían 20 y 20. Ahora entran TODOS los SKUs
+con algo a la venta en el reparto más los que piden revisión, con topes holgados (300 por fuente). Por eso
+«algo distinto» sube (1-oct: de 52 a 118): 18 distintos a la venta (lo mismo que suman las barras), 54 con
+rechazo, 45 distintos solo en publicaciones que no están a la venta y 1 solo Odoo≠Woo. La definición de «a
+la venta» vive en un solo lugar (`_SQL_VIVAS`), compartida con las barras.
+
+**El resaltado de las filas nuevas.** En el horario, la fila de un cambio nuevo quedaba con un fondo fijo
+hasta que llegaba otro cambio. Ahora entra resaltada, se desvanece sola en ~4.5 s y a los 6 s deja de
+contar como nueva aunque no llegue otra. Con «reducir movimiento» del sistema, el resaltado es fijo esos 6 s.
+
+**Textos de las causas.** «El hoy 11:59 quedó en 9» pasa a «Hoy a las 11:59 quedó en 9» (`_el()`), y lo
+mismo en «rechazó el cambio…», «contestó un error…» y «Woo cambió…».
+
+**Solo lee.** `historia` junta `ops.fanout_log`, `channel.listing_history`, `channel.listings` y
+`ops.stock_watch_photo`; las consultas por SKU usan los índices `fanout_log(sku)` y
+`listing_history(sku, canal, changed_at)`. El endpoint es `def`: FastAPI lo corre en su pool de hilos y no
+detiene el loop (regla 11). No enciende ni apaga ningún flujo (regla 3: directo a `main`).
+
+**Para leerla bien.**
+
+- El censo de TikTok no deja historial de algunas publicaciones: la línea no puede fechar cuándo apareció
+  una publicación que nunca estuvo en un reparto.
+- Para TikTok y Temu, el plan del fan-out toma el stock del canal del último censo (TikTok cada 2 h, Temu
+  cada 4 h), no en vivo: justo después de una escritura buena, el censo puede seguir diciendo el número viejo.
+- Los estados de Temu se muestran crudos (`2/8`, `3/3`…): su decodificación no está confirmada.
+- La matriz tarda un poco más (en el sandbox, ~8 s contra ~6 s) y se rehace cada minuto.
+
+**Verificado.** En el sandbox, con datos de producción traídos una vez (incluidos 35 días de
+`channel.listing_history`, 335 mil filas): `/historia` contesta en ~3 s para un SKU con 410 movimientos en
+14 días; la línea, el periodo, el ir y volver con el rastro y el buscador, probados en escritorio y a 375 px
+sin desborde. Las filas nuevas pierden la marca a los 6 s, y el desvanecido se comprobó adelantando la
+animación (pleno al segundo, un tercio a los 3 s, sin fondo a los 4.6 s). `npm run build` sale limpio y las
+pruebas del recuperador siguen en verde.
+
 ### v0.608.0 — Fan-out en vivo: la cadena, el horario de cambios y la coincidencia por SKU, con el porqué de cada diferencia (solo lectura)
 
 Eduardo, 1-oct: de las cuatro propuestas de rediseño de *Operaciones › Fan-out de

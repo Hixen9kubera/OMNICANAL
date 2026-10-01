@@ -10,6 +10,11 @@
  * Cada celda que no coincide trae su CAUSA (rechazo 403, cambio perdido, sin
  * alinear, cambió el canal, omitida a propósito…), sacada de la bitácora del
  * fan-out por `fanout_vivo._causas`; el detalle sale al pasar el cursor.
+ *
+ * «Todo» son TODOS los SKUs con algo a la venta en el reparto, más los que piden
+ * revisión aunque no estén a la venta. Tocar un SKU abre su línea de
+ * trazabilidad (`TrazabilidadSku`); la búsqueda abre cualquier SKU, esté o no en
+ * la tabla.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -18,8 +23,10 @@ import { API_BASE, fetchSesion } from "@/lib/api";
 import AppNavbar from "@/components/AppNavbar";
 import BannerFanout, { ACCION_BANNER } from "@/components/fanout/BannerFanout";
 import FanoutPestanas from "@/components/fanout/FanoutPestanas";
-import type { Causa, CeldaMatriz, Matriz } from "@/components/fanout/tipos";
-import { CAUSA_CLS, CAUSA_NOMBRE } from "@/components/fanout/tipos";
+import RastroCambio from "@/components/fanout/RastroCambio";
+import TrazabilidadSku from "@/components/fanout/TrazabilidadSku";
+import type { Causa, Matriz } from "@/components/fanout/tipos";
+import { CAUSA_CLS, CAUSA_NOMBRE, CELDA_MATRIZ_PUNTEADO as PUNTEADO, CELDA_MATRIZ_SOLIDO as SOLIDO } from "@/components/fanout/tipos";
 
 const FILTROS = [
   { id: "todo", texto: "Todo" },
@@ -27,20 +34,6 @@ const FILTROS = [
   { id: "demas", texto: "Ofrece de más" },
 ];
 const ORDEN_CAUSAS: Causa["c"][] = ["403", "perdido", "tarde", "canal", "omitida", "fuera", "error", "camino"];
-
-const SOLIDO: Record<CeldaMatriz["k"], string> = {
-  igual: "border border-emerald-300 bg-emerald-50 text-emerald-800",
-  mas: "border border-rose-400 bg-rose-50 text-rose-800",
-  menos: "border border-amber-400 bg-amber-50 text-amber-800",
-  rech: "border border-rose-600 bg-rose-600 text-white",
-  full: "border border-sky-300 bg-sky-50 text-sky-800",
-  nopub: "border border-transparent text-slate-500",
-};
-const PUNTEADO: Partial<Record<CeldaMatriz["k"], string>> = {
-  igual: "border border-dashed border-emerald-600 bg-white text-emerald-800",
-  mas: "border border-dashed border-rose-600 bg-white text-rose-800",
-  menos: "border border-dashed border-amber-600 bg-white text-amber-800",
-};
 
 function Leyenda({ cls, texto }: { cls: string; texto: string }) {
   return <span className="flex items-center gap-1.5"><span className={`h-3 w-3 rounded-[3px] ${cls}`} />{texto}</span>;
@@ -51,6 +44,8 @@ export default function MatrizCoincidencia() {
   const [error, setError] = useState<string | null>(null);
   const [filtro, setFiltro] = useState("todo");
   const [busca, setBusca] = useState("");
+  const [traza, setTraza] = useState<string | null>(null);
+  const [rastro, setRastro] = useState<{ sku: string; fin: string } | null>(null);
 
   useEffect(() => {
     const f = new URLSearchParams(window.location.search).get("filtro");
@@ -162,8 +157,15 @@ export default function MatrizCoincidencia() {
                     <Search size={14} className="text-slate-500" aria-hidden />
                     <span className="sr-only">Buscar SKU</span>
                     <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar SKU"
+                      onKeyDown={(e) => { if (e.key === "Enter" && busca.trim().length >= 3) setTraza(busca.trim().toUpperCase()); }}
                       className="w-32 bg-transparent font-mono text-xs outline-none placeholder:font-sans placeholder:text-slate-500" />
                   </label>
+                  {busca.trim().length >= 3 && !m.filas.some((f) => f.sku.toUpperCase() === busca.trim().toUpperCase()) && (
+                    <button type="button" onClick={() => setTraza(busca.trim().toUpperCase())}
+                      className="h-[34px] rounded-full border border-indigo-200 bg-indigo-50 px-3 text-[13px] font-semibold text-indigo-800 hover:bg-indigo-100">
+                      Ver trazabilidad de {busca.trim().toUpperCase()}
+                    </button>
+                  )}
                 </div>
                 <div className="flex flex-wrap gap-x-3.5 gap-y-1.5 text-xs text-slate-600">
                   <Leyenda cls="border border-emerald-300 bg-emerald-50" texto="igual a Woo" />
@@ -210,10 +212,11 @@ export default function MatrizCoincidencia() {
                   {filas.length === 0 && <p className="px-6 py-6 text-sm text-slate-500">Nada con ese filtro.</p>}
                   {filas.map((f) => (
                     <div key={f.sku} className="grid items-center gap-2 border-b border-slate-100 px-6 py-1.5" style={{ gridTemplateColumns: plantilla }}>
-                      <span className="flex min-w-0 flex-col">
-                        <span className="break-all font-mono text-xs font-semibold leading-[17px] text-slate-900">{f.sku}</span>
+                      <button type="button" onClick={() => setTraza(f.sku)} title="Ver su trazabilidad"
+                        className="group flex min-w-0 flex-col rounded-md text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-500">
+                        <span className="break-all font-mono text-xs font-semibold leading-[17px] text-indigo-800 underline-offset-2 group-hover:underline">{f.sku}</span>
                         <span className="text-xs leading-[17px] text-slate-600">{f.que}</span>
-                      </span>
+                      </button>
                       <span className={`justify-self-start rounded-lg px-2 py-1 text-[13px] font-semibold ${f.dif ? "border border-amber-400 bg-amber-50 text-amber-800" : "text-slate-700"}`}>{f.odoo}</span>
                       <span className="justify-self-start px-2 py-1 text-[13px] font-bold text-slate-900">{f.woo}</span>
                       {m.columnas.map((col) => {
@@ -241,12 +244,16 @@ export default function MatrizCoincidencia() {
                 </div>
               </div>
               <p className="px-6 pb-2 pt-1 text-xs leading-[18px] text-slate-600">
-                «censo» es lo que leyó el canal; «escrito» es lo que mandó el fan-out; «igual desde» es la última vez que ese dato cambió en el canal. Cada celda se queda con el más reciente.
+                «censo» es lo que leyó el canal; «escrito» es lo que mandó el fan-out; «igual desde» es la última vez que ese dato cambió en el canal. Cada celda se queda con el más reciente. Toca un SKU para ver su línea de trazabilidad.
               </p>
             </section>
           </>
         )}
       </main>
+      <TrazabilidadSku sku={traza} onCerrar={() => setTraza(null)}
+        onRastro={(sku, fin) => { setTraza(null); setRastro({ sku, fin }); }} />
+      <RastroCambio sel={rastro} onCerrar={() => setRastro(null)} onIr={(sku, fin) => setRastro({ sku, fin })}
+        onTrazabilidad={(sku) => { setRastro(null); setTraza(sku); }} />
     </div>
   );
 }

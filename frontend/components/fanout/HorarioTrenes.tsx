@@ -41,9 +41,13 @@ export default function HorarioTrenes({ eventos, columnas, nuevos, ocultos, onAb
       <style>{`
         @keyframes fo-entrar { from { opacity: 0; transform: translateY(-6px) } to { opacity: 1; transform: none } }
         @keyframes fo-celda { from { opacity: 0 } to { opacity: 1 } }
-        .fo-fila-nueva { animation: fo-entrar .45s ease-out both; background: #f5f7ff; }
+        @keyframes fo-resaltar { 0%, 35% { background-color: #eef2ff } 100% { background-color: transparent } }
+        .fo-fila-nueva { animation: fo-entrar .45s ease-out both, fo-resaltar 4.5s ease-out; }
         .fo-revelar { animation: fo-celda .35s ease-out both; }
-        @media (prefers-reduced-motion: reduce) { .fo-fila-nueva, .fo-revelar { animation: none } }
+        @media (prefers-reduced-motion: reduce) {
+          .fo-fila-nueva { animation: none; background-color: #eef2ff; }
+          .fo-revelar { animation: none; }
+        }
       `}</style>
       <div className="flex min-w-[900px] flex-col">
         <div className="grid gap-2 border-b border-slate-200 px-6 py-1.5 text-[11px] font-semibold uppercase leading-4 tracking-wide text-slate-500"

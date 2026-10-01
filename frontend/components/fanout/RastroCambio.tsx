@@ -61,10 +61,11 @@ function diagnostico(r: Rastro): { tono: "mal" | "ok" | "full"; titulo: string; 
   return { tono, titulo, texto: partes.join(" ") };
 }
 
-export default function RastroCambio({ sel, onCerrar, onIr }: {
+export default function RastroCambio({ sel, onCerrar, onIr, onTrazabilidad }: {
   sel: { sku: string; fin: string } | null;
   onCerrar: () => void;
   onIr: (sku: string, fin: string) => void;
+  onTrazabilidad?: (sku: string) => void;
 }) {
   const [r, setR] = useState<Rastro | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -137,6 +138,12 @@ export default function RastroCambio({ sel, onCerrar, onIr }: {
                 {r.woo_hora ? `Woo ${r.woo_hora} → terminó ${r.hora}` : `Terminó ${r.hora}`}
                 {r.total_s != null ? ` · ${Math.round(r.total_s)} s en total` : ""}
               </div>
+            )}
+            {onTrazabilidad && (
+              <button type="button" onClick={() => onTrazabilidad(sel.sku)}
+                className="mt-1.5 text-[13px] font-semibold text-indigo-700 underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-500">
+                Ver toda la trazabilidad del SKU
+              </button>
             )}
           </div>
           <button ref={cerrarRef} type="button" onClick={onCerrar}

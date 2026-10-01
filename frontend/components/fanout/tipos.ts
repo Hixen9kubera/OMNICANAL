@@ -208,3 +208,46 @@ export const CAUSA_NOMBRE: Record<Causa["c"], string> = {
   omitida: "Omitida a propósito",
   fuera: "No recibe stock",
 };
+
+/** Celda de la matriz contra Woo: sólida si está a la venta, punteada si no. */
+export const CELDA_MATRIZ_SOLIDO: Record<CeldaMatriz["k"], string> = {
+  igual: "border border-emerald-300 bg-emerald-50 text-emerald-800",
+  mas: "border border-rose-400 bg-rose-50 text-rose-800",
+  menos: "border border-amber-400 bg-amber-50 text-amber-800",
+  rech: "border border-rose-600 bg-rose-600 text-white",
+  full: "border border-sky-300 bg-sky-50 text-sky-800",
+  nopub: "border border-transparent text-slate-500",
+};
+export const CELDA_MATRIZ_PUNTEADO: Partial<Record<CeldaMatriz["k"], string>> = {
+  igual: "border border-dashed border-emerald-600 bg-white text-emerald-800",
+  mas: "border border-dashed border-rose-600 bg-white text-rose-800",
+  menos: "border border-dashed border-amber-600 bg-white text-amber-800",
+};
+
+/** Un renglón de la línea de trazabilidad (lo arma `fanout_vivo.historia`). */
+export type ItemTraza =
+  | { tipo: "woo"; ts: string; hora: string; origen: "odoo" | "woo"; de: number | null; a: number | null;
+      fallo: boolean; motivo: string }
+  | { tipo: "reparto"; ts: string; fin: string; hora: string; motivo: string;
+      origen: "venta" | "recuperado" | "reenvio" | "cambio"; tono: Tono; destinos: Destino[]; sin_destinos: boolean }
+  | { tipo: "canal"; ts: string; hora: string; canal: string; nombre: string; campo: string; via: string;
+      relacion: "coincide" | "su_cuenta" | "sin_escritura" | "estado";
+      de?: number | null; a?: number | null; ref?: { valor: number | null; hora: string } | null;
+      de_txt?: string; a_txt?: string };
+
+export interface Historia {
+  ok: boolean;
+  sku: string;
+  dias: number;
+  hoy: string;
+  ahora: string;
+  existe: boolean;
+  odoo: string;
+  woo: string;
+  columnas: Columna[];
+  celdas: Record<string, CeldaMatriz>;
+  resumen: { cambios_woo: number; repartos: number; con_rechazo: number; su_cuenta: number };
+  items: ItemTraza[];
+  total: number;
+  truncado: boolean;
+}
