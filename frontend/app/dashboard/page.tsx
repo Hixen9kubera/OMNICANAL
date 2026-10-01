@@ -1,134 +1,47 @@
 "use client";
 
 /**
- * /dashboard — Monitoreo de operaciones. Primera pestaña del panel.
+ * /dashboard — Sincronización de inventario EN VIVO (Operaciones › Fan-out).
  *
- * Hoy contiene el monitor del FAN-OUT de stock DROP: cuando una venta no-FULL
- * descuenta en WooCommerce, el fan-out replica ese número a las publicaciones
- * ACTIVAS y no-FULL de los demás canales (si no, siguen ofreciendo el stock
- * viejo → sobreventa).
+ * Responde dos preguntas, en este orden:
+ *   1. ¿Mi stock llega a los canales?  → el veredicto y las tarjetas de canal.
+ *   2. ¿Qué se está moviendo ahora?    → la cadena Odoo → stock_watch → Woo →
+ *      fan-out → canales y el horario de cambios, que se llena solo.
+ * El detalle vive a un clic: la matriz SKU × canal (/dashboard/matriz) y el
+ * rastro de cada cambio (panel lateral al tocar una fila).
  *
- * En DRY-RUN calcula y registra todo SIN escribir en los marketplaces: es el
- * modo para dejarlo corriendo y cazar errores antes de encenderlo de verdad.
+ * Sondea `GET /api/fanout/vivo?desde_id=` cada 4 s: los cambios nuevos llegan
+ * frescos y los agregados salen de una caché de 20 s en el backend. Solo lee.
  */
 
-import { useCallback, useEffect, useState } from "react";
-import {
-  Activity,
-  AlertTriangle,
-  ArrowRightLeft,
-  CheckCircle2,
-  Clock,
-  Eye,
-  Package,
-  PauseCircle,
-  Power,
-  RefreshCw,
-  Warehouse,
-} from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import { Activity, AlertTriangle, ArrowRight, CheckCircle2, ChevronDown, Copy, Info, XCircle } from "lucide-react";
 import { API_BASE, fetchSesion } from "@/lib/api";
 import AppNavbar from "@/components/AppNavbar";
+import BannerFanout, { ACCION_BANNER } from "@/components/fanout/BannerFanout";
+import CadenaViva from "@/components/fanout/CadenaViva";
+import FanoutPestanas from "@/components/fanout/FanoutPestanas";
+import HorarioTrenes from "@/components/fanout/HorarioTrenes";
+import RastroCambio from "@/components/fanout/RastroCambio";
+import PulsoCanales from "@/components/fanout/PulsoCanales";
+import SerieDias from "@/components/fanout/SerieDias";
+import type { Atender, Evento, Vivo } from "@/components/fanout/tipos";
 
-interface Accion {
-  canal: string | null;
-  cuenta: string | null;
-  item_id: string | null;
-  accion: string;
-  stock_actual_canal: number | null;
-  objetivo?: number | null;
-  omitido_por?: string | null;
-  resultado?: string | null;
-}
-interface FilaHistorial {
-  ts: string;
-  sku: string;
-  motivo: string | null;
-  dry_run: number;
-  stock_drop: number | null;
-  objetivo: number | null;
-  canal: string | null;
-  cuenta: string | null;
-  item_id: string | null;
-  accion: string;
-  stock_canal: number | null;
-  resultado: string | null;
-  ms: number | null;
-}
-interface Estado {
-  habilitado: boolean;
-  dry_run: boolean;
-  canales_habilitados: string[] | string;
-  escritores_implementados: string[];
-  reserva: number;
-  debounce_s: number;
-  pendientes: string[];
-  contadores: Record<string, number>;
-  eventos: {
-    ts: string; sku: string; motivo: string; dry_run: boolean;
-    stock_drop: number | null; objetivo: number | null; acciones: Accion[]; ms: number;
-  }[];
-  resumen: {
-    por_accion?: Record<string, number>;
-    eventos?: number; skus?: number; errores?: number;
-    desde?: string; hasta?: string;
-  };
-  historial: FilaHistorial[];
-}
+const SONDEO_MS = 4000;
+const clave = (e: { sku: string; fin: string }) => `${e.sku}|${e.fin}`;
 
-const COLOR_ACCION: Record<string, string> = {
-  escribir: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  sin_cambio: "bg-slate-50 text-slate-500 border-slate-200",
-  omitir: "bg-amber-50 text-amber-700 border-amber-200",
-  sin_destinos: "bg-slate-50 text-slate-400 border-slate-200",
-  // Movimientos de bodega FULL/FBA. Los "_sim" son del modo solo-registro:
-  // se calcularon pero NO tocaron Woo.
-  full_ingreso: "bg-rose-50 text-rose-700 border-rose-200",
-  full_ingreso_sim: "bg-violet-50 text-violet-700 border-violet-200",
-  full_retiro: "bg-sky-50 text-sky-700 border-sky-200",
-  full_retiro_sim: "bg-violet-50 text-violet-700 border-violet-200",
-  fba_ingreso: "bg-rose-50 text-rose-700 border-rose-200",
-  fba_ingreso_sim: "bg-violet-50 text-violet-700 border-violet-200",
-  full_aviso: "bg-amber-50 text-amber-700 border-amber-200",
-  full_ignorado: "bg-slate-50 text-slate-400 border-slate-200",
-  full_sospechoso: "bg-rose-100 text-rose-800 border-rose-300",
-  full_sin_sku: "bg-rose-50 text-rose-600 border-rose-200",
-  // Cadena Odoo -> Woo -> canales
-  odoo_delta: "bg-blue-50 text-blue-700 border-blue-200",
-  odoo_delta_registro: "bg-violet-50 text-violet-700 border-violet-200",
-  odoo_master: "bg-indigo-50 text-indigo-700 border-indigo-200",
-  woo_cambio: "bg-cyan-50 text-cyan-700 border-cyan-200",
-  woo_cambio_registro: "bg-violet-50 text-violet-700 border-violet-200",
-  stock_watch_freno: "bg-rose-100 text-rose-800 border-rose-300",
+const NIVEL: Record<Atender["nivel"], { texto: string; cls: string; fondo: string }> = {
+  urgente: { texto: "Urgente", cls: "bg-rose-600 text-white", fondo: "border-rose-200 bg-rose-50/50" },
+  hoy: { texto: "Hoy", cls: "bg-rose-50 text-rose-800", fondo: "border-slate-200" },
+  semana: { texto: "Esta semana", cls: "bg-amber-50 text-amber-800", fondo: "border-slate-200" },
+  despues: { texto: "Cuando se pueda", cls: "bg-slate-100 text-slate-700", fondo: "border-slate-200" },
 };
-
-interface MovOdoo {
-  ts: string; sku: string; accion: string; motivo: string | null;
-  resultado: string | null; canal: string | null;
-  stock_drop: number | null; objetivo: number | null;
-}
-interface Desalineado {
-  sku: string; stock_odoo: number; stock_woo: number; brecha: number;
-  actualizado: string;
-}
-interface OdooMonitor {
-  vigilante: { estado?: string; habilitado: boolean; solo_registro: boolean;
-               tope: number; ts?: string; deltas?: number; movidos?: number;
-               escritos?: number; encolados?: number };
-  horas: number;
-  movimientos: MovOdoo[];
-  resumen: Record<string, number>;
-  por_canal: { canal: string; accion: string; n: number }[];
-  errores: { canal: string; sku: string; resultado: string; ts: string }[];
-  foto: { skus?: number; discrepan?: number | string; odoo_negativo?: number | string;
-          woo_negativo?: number | string; ultima_foto?: string };
-  desalineados: Desalineado[];
-}
 
 interface TipoObservado {
   tipo: string;
   n: number;
   efecto_declarado: string | null;
-  acciones: Record<string, number>;
   ejemplo: { sku: string; cuenta: string; woo: string; detalle: string; ts: string } | null;
 }
 interface Observacion {
@@ -139,471 +52,315 @@ interface Observacion {
   TIPOS_DESCONOCIDOS: TipoObservado[];
 }
 
-export default function DashboardPage() {
-  const [d, setD] = useState<Estado | null>(null);
+function ObservacionFull({ abierto }: { abierto: boolean }) {
   const [obs, setObs] = useState<Observacion | null>(null);
-  const [odoo, setOdoo] = useState<OdooMonitor | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [soloErrores, setSoloErrores] = useState(false);
+  useEffect(() => {
+    if (!abierto) return;
+    let vivo = true;
+    const cargar = async () => {
+      try {
+        const r = await fetchSesion(`${API_BASE}/api/fanout/full/observacion?horas=24`, { cache: "no-store" });
+        if (r.ok && vivo) setObs(await r.json());
+      } catch { /* la sección es secundaria: si falla, se queda como estaba */ }
+    };
+    void cargar();
+    const t = setInterval(() => void cargar(), 60_000);
+    return () => { vivo = false; clearInterval(t); };
+  }, [abierto]);
+  if (!obs) return <p className="px-5 pb-5 text-sm text-slate-500">Leyendo los movimientos de bodega…</p>;
+  return (
+    <div className="flex flex-col gap-3 px-5 pb-5">
+      <p className="text-[13px] text-slate-600">
+        {obs.eventos.toLocaleString("es-MX")} movimientos en 24 h · vigilante {obs.vigilante_encendido ? "encendido" : "apagado"}
+        {obs.modo_solo_registro ? " · solo registra, no toca inventario" : ""}
+      </p>
+      {obs.TIPOS_DESCONOCIDOS.length > 0 && (
+        <p className="flex items-start gap-2 rounded-lg bg-amber-50 px-3 py-2 text-[13px] text-amber-900">
+          <AlertTriangle size={16} className="mt-0.5 shrink-0" aria-hidden />
+          <span>No encender la escritura todavía: Mercado Libre mandó tipos sin regla ({obs.TIPOS_DESCONOCIDOS.map((t) => t.tipo).join(", ")}).</span>
+        </p>
+      )}
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[640px] text-left text-xs">
+          <thead className="text-[11px] uppercase tracking-wide text-slate-500">
+            <tr><th className="py-1.5 pr-3 font-semibold">Tipo (Mercado Libre)</th><th className="py-1.5 pr-3 font-semibold">Veces</th>
+              <th className="py-1.5 pr-3 font-semibold">Qué haría con Woo</th><th className="py-1.5 font-semibold">Último ejemplo</th></tr>
+          </thead>
+          <tbody>
+            {obs.tipos_vistos.map((t) => (
+              <tr key={t.tipo} className="border-t border-slate-100">
+                <td className="py-1.5 pr-3 font-mono text-slate-800">{t.tipo}</td>
+                <td className="py-1.5 pr-3 text-slate-700">{t.n}</td>
+                <td className={`py-1.5 pr-3 ${t.efecto_declarado === "DESCONOCIDO" ? "font-semibold text-amber-800" : "text-slate-700"}`}>{t.efecto_declarado}</td>
+                <td className="py-1.5 font-mono text-slate-600">{t.ejemplo ? `${t.ejemplo.sku} · ${t.ejemplo.woo}` : "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
 
-  const cargar = useCallback(async () => {
+export default function SincronizacionInventario() {
+  const [datos, setDatos] = useState<Vivo | null>(null);
+  const [eventos, setEventos] = useState<Evento[]>([]);
+  const [nuevos, setNuevos] = useState<Evento[]>([]);
+  const [nuevasClaves, setNuevasClaves] = useState<Set<string>>(new Set());
+  const [tanda, setTanda] = useState(0);
+  const [ultimaOk, setUltimaOk] = useState<number | null>(null);
+  const [falla, setFalla] = useState(false);
+  const [reloj, setReloj] = useState(() => Date.now());
+  const [sel, setSel] = useState<{ sku: string; fin: string } | null>(null);
+  const [copiado, setCopiado] = useState(false);
+  const [fullAbierto, setFullAbierto] = useState(false);
+  const ultimoId = useRef(0);
+  const cargado = useRef(false);
+  const enCurso = useRef(false);
+  const vistas = useRef<Set<string>>(new Set());
+
+  const sondear = useCallback(async () => {
+    // Un sondeo a la vez. La primera respuesta puede tardar más que el
+    // intervalo; si salía otro con `desde_id=0`, la página tomaba los cambios de
+    // la carga inicial como nuevos y los volvía a animar.
+    if (enCurso.current) return;
+    enCurso.current = true;
     try {
-      const [r, ro, rod] = await Promise.all([
-        fetchSesion(`${API_BASE}/api/fanout/estado`, { cache: "no-store" }),
-        fetchSesion(`${API_BASE}/api/fanout/full/observacion?horas=24`, { cache: "no-store" }),
-        fetchSesion(`${API_BASE}/api/fanout/odoo/monitor?horas=24`, { cache: "no-store" }),
-      ]);
+      const r = await fetchSesion(`${API_BASE}/api/fanout/vivo?desde_id=${ultimoId.current}`, { cache: "no-store" });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      setD(await r.json());
-      if (ro.ok) setObs(await ro.json());
-      if (rod.ok) setOdoo(await rod.json());
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "error");
+      const d = (await r.json()) as Vivo;
+      // Solo se anima lo que la página nunca había visto.
+      const frescos = d.eventos.filter((e) => !vistas.current.has(clave(e)));
+      d.eventos.forEach((e) => vistas.current.add(clave(e)));
+      if (!cargado.current) {
+        setEventos(d.eventos);
+        cargado.current = true;
+      } else if (d.eventos.length) {
+        // Un cambio puede llegar en dos sondeos (sus filas se escriben una por
+        // canal): se reemplaza por su clave, nunca se duplica.
+        const llegan = new Set(d.eventos.map(clave));
+        setEventos((prev) => [...d.eventos, ...prev.filter((e) => !llegan.has(clave(e)))].slice(0, 60));
+        if (frescos.length) {
+          setNuevos(frescos);
+          setNuevasClaves(new Set(frescos.map(clave)));
+          setTanda((t) => t + 1);
+        }
+      }
+      ultimoId.current = Math.max(ultimoId.current, d.ultimo_id);
+      setDatos(d);
+      setUltimaOk(Date.now());
+      setFalla(false);
+    } catch {
+      setFalla(true);
+    } finally {
+      enCurso.current = false;
     }
   }, []);
 
   useEffect(() => {
-    void cargar();
-    const t = setInterval(() => void cargar(), 10_000);   // 10 s
+    void sondear();
+    const t = setInterval(() => void sondear(), SONDEO_MS);
     return () => clearInterval(t);
-  }, [cargar]);
+  }, [sondear]);
+  useEffect(() => {
+    const t = setInterval(() => setReloj(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
 
-  const res = d?.resumen ?? {};
-  const acc = res.por_accion ?? {};
-  const historial = (d?.historial ?? []).filter(
-    (h) => !soloErrores || (h.resultado || "").startsWith("ERROR"),
-  );
+  const visibles = useMemo(() => eventos.filter((e) => e.toca).slice(0, 12), [eventos]);
+  const nuevosIds = useMemo(() => new Set(eventos.filter((e) => nuevasClaves.has(clave(e))).map((e) => e.id)), [eventos, nuevasClaves]);
+  const llegaEn = useMemo(() => {
+    const t = eventos.filter((e) => e.tono === "ok" && e.total_s != null && (e.origen === "odoo" || e.origen === "woo"))
+      .map((e) => e.total_s as number);
+    return t.length ? Math.max(1, Math.ceil(Math.max(...t) / 60)) : null;
+  }, [eventos]);
+
+  const copiar = async () => {
+    if (!datos) return;
+    try {
+      await navigator.clipboard.writeText(`${datos.veredicto.frase} ${datos.veredicto.detalle}`);
+      setCopiado(true);
+      setTimeout(() => setCopiado(false), 1800);
+    } catch { /* sin portapapeles: no pasa nada */ }
+  };
+
+  const hace = ultimaOk ? Math.max(0, Math.round((reloj - ultimaOk) / 1000)) : null;
+  const alDia = datos?.canales.filter((c) => c.estado !== "rechaza").map((c) => c.nombre) ?? [];
 
   return (
     <div className="min-h-screen bg-slate-50">
       <AppNavbar />
-      <main className="mx-auto max-w-[1600px] px-4 py-6 sm:px-6">
-        {/* Encabezado */}
-        <div className="mb-6 rounded-2xl bg-gradient-to-r from-indigo-600 to-violet-600 p-6 text-white shadow-sm">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-indigo-200">
-                Monitoreo de operaciones
-              </div>
-              <h1 className="mt-1 text-3xl font-bold tracking-tight">Fan-out de stock</h1>
-              <p className="mt-1 max-w-2xl text-sm text-indigo-100">
-                Cuando una venta no-FULL descuenta en WooCommerce, el stock DROP se
-                replica a las publicaciones activas de los demás canales.
-              </p>
-            </div>
-            <div className="flex items-center gap-2">
-              {d && (
-                <>
-                  <Estadillo
-                    icono={d.habilitado ? <Power size={14} /> : <PauseCircle size={14} />}
-                    texto={d.habilitado ? "Encendido" : "Apagado"}
-                    tono={d.habilitado ? "ok" : "off"}
-                  />
-                  <Estadillo
-                    icono={<Eye size={14} />}
-                    texto={d.dry_run ? "DRY-RUN (no escribe)" : "ESCRIBIENDO"}
-                    tono={d.dry_run ? "warn" : "ok"}
-                  />
-                </>
-              )}
-              <button
-                onClick={() => void cargar()}
-                className="rounded-lg bg-white/15 p-2 transition-colors hover:bg-white/25"
-                title="Refrescar"
-              >
-                <RefreshCw size={16} />
+      <main className="mx-auto flex max-w-[1600px] flex-col gap-4 px-4 py-6 sm:px-6">
+        <FanoutPestanas />
+        <BannerFanout
+          icono={<Activity size={28} aria-hidden />}
+          titulo="Sincronización de inventario"
+          texto="Cada cambio de stock sale de Odoo, pasa por Woo y llega a los canales. Así va ahora mismo."
+          acciones={
+            <>
+              <span className={ACCION_BANNER} aria-live="polite">
+                <span className={`h-2 w-2 rounded-full ${falla ? "bg-amber-300" : "bg-emerald-300 motion-safe:animate-pulse"}`} />
+                {falla ? "Sin conexión · reintentando" : hace == null ? "Conectando…" : hace <= 1 ? "En vivo · al momento" : `En vivo · hace ${hace} s`}
+              </span>
+              <button type="button" onClick={() => void copiar()} disabled={!datos}
+                className={`${ACCION_BANNER} hover:bg-white/25 disabled:opacity-60`}>
+                <Copy size={14} aria-hidden />{copiado ? "Copiado" : "Copiar resumen"}
               </button>
-            </div>
-          </div>
-        </div>
+            </>
+          }
+          cifra={datos ? datos.canales.reduce((a, c) => a + c.ok_24h, 0).toLocaleString("es-MX") : "—"}
+          cifraTexto="cambios llegaron · 24 h"
+        />
 
-        {error && (
-          <div className="mb-4 flex items-center gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-            <AlertTriangle size={16} /> No se pudo leer el estado: {error}
-          </div>
+        {!datos && !falla && <p className="rounded-2xl bg-white p-6 text-sm text-slate-500 shadow-sm">Leyendo la bitácora del fan-out…</p>}
+        {!datos && falla && (
+          <p className="flex items-center gap-2 rounded-2xl bg-white p-6 text-sm text-rose-800 shadow-sm">
+            <AlertTriangle size={16} aria-hidden /> No se pudo leer el estado del fan-out. Se reintenta solo.
+          </p>
         )}
 
-        {/* ── VIGILANCIA DE ODOO (el master del inventario) ───────────────
-            El stock depende de Odoo al 100%: aquí se ve cada movimiento suyo,
-            si llegó a Woo y si Woo lo repartió a los canales. Refresca sola
-            cada 10 s junto con el resto del panel. */}
-        {odoo && (
-          <section className="mb-6">
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <h2 className="flex items-center gap-2 text-lg font-bold text-slate-800">
-                  <Warehouse size={18} className="text-blue-600" />
-                  Inventario en vivo · Odoo → Woo → canales
-                </h2>
-                <p className="text-xs text-slate-500">
-                  Odoo es el master. Cada movimiento suyo debe llegar a Woo y de ahí
-                  a TikTok, Temu y Mercado Libre.
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                <Estadillo
-                  icono={odoo.vigilante.habilitado ? <Power size={14} /> : <PauseCircle size={14} />}
-                  texto={odoo.vigilante.habilitado ? "Vigilante encendido" : "Vigilante apagado"}
-                  tono={odoo.vigilante.habilitado ? "ok" : "off"}
-                />
-                {odoo.vigilante.solo_registro && (
-                  <Estadillo icono={<Eye size={14} />} texto="Solo registro" tono="warn" />
-                )}
-              </div>
-            </div>
-
-            <div className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-              <Metrica titulo="SKUs vigilados" valor={odoo.foto.skus ?? 0} icono={<Package size={16} />} />
-              <Metrica titulo="Movimientos de Odoo (24 h)" valor={odoo.resumen["odoo_delta"] ?? 0} icono={<ArrowRightLeft size={16} />} />
-              <Metrica titulo="Cambios en Woo (24 h)" valor={odoo.resumen["woo_cambio"] ?? 0} icono={<Activity size={16} />} />
-              <Metrica titulo="Odoo ≠ Woo ahora" valor={Number(odoo.foto.discrepan ?? 0)} icono={<AlertTriangle size={16} />} tono={Number(odoo.foto.discrepan ?? 0) > 0 ? "warn" : "ok"} />
-              <Metrica titulo="Stock negativo" valor={Number(odoo.foto.odoo_negativo ?? 0) + Number(odoo.foto.woo_negativo ?? 0)} icono={<AlertTriangle size={16} />} tono={Number(odoo.foto.odoo_negativo ?? 0) + Number(odoo.foto.woo_negativo ?? 0) > 0 ? "err" : "ok"} />
-            </div>
-
-            <div className="grid gap-3 lg:grid-cols-2">
-              <Tarjeta titulo={`Discrepancias Odoo vs Woo (${odoo.desalineados.length})`}>
-                {odoo.desalineados.length === 0 ? (
-                  <div className="flex items-center gap-2 py-3 text-sm text-emerald-700">
-                    <CheckCircle2 size={16} /> Todo alineado con el master.
-                  </div>
-                ) : (
-                  <div className="max-h-64 overflow-auto">
-                    <table className="w-full text-xs">
-                      <thead className="sticky top-0 bg-white text-[10px] uppercase tracking-wide text-slate-400">
-                        <tr>
-                          <th className="p-1.5 text-left">SKU</th>
-                          <th className="p-1.5 text-right">Odoo</th>
-                          <th className="p-1.5 text-right">Woo</th>
-                          <th className="p-1.5 text-right">Brecha</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {odoo.desalineados.map((x) => (
-                          <tr key={x.sku} className="border-t border-slate-100">
-                            <td className="p-1.5 font-mono text-[11px]">{x.sku}</td>
-                            <td className="p-1.5 text-right font-semibold text-slate-700">{x.stock_odoo}</td>
-                            <td className="p-1.5 text-right text-slate-500">{x.stock_woo}</td>
-                            <td className={`p-1.5 text-right font-bold ${x.brecha > 0 ? "text-amber-600" : "text-rose-600"}`}>
-                              {x.brecha > 0 ? `+${x.brecha}` : x.brecha}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+        {datos && (
+          <>
+            <section aria-label="Veredicto"
+              className={`flex flex-wrap items-center justify-between gap-x-10 gap-y-6 rounded-2xl border bg-white px-5 py-6 shadow-sm sm:px-8 sm:py-7 ${
+                datos.veredicto.grave ? "border-rose-200" : "border-emerald-200"}`}>
+              <div className="flex min-w-0 flex-[1_1_440px] flex-col gap-2">
+                <div className="text-[28px] font-bold leading-9 text-slate-900 sm:text-[32px] sm:leading-10">{datos.veredicto.frase}</div>
+                <div className="text-lg leading-7 text-slate-700">{datos.veredicto.detalle}</div>
+                {llegaEn && alDia.length > 0 && (
+                  <div className="text-sm text-slate-600">
+                    Lo que cambia en Odoo llega a {alDia.join(" y ")} en menos de {llegaEn} {llegaEn === 1 ? "minuto" : "minutos"}.
                   </div>
                 )}
-              </Tarjeta>
+              </div>
+              <PulsoCanales pulso={datos.pulso} canales={datos.canales} />
+            </section>
 
-              <Tarjeta titulo="Movimientos recientes">
-                {odoo.movimientos.length === 0 ? (
-                  <div className="py-3 text-sm text-slate-400">Sin movimientos en la ventana.</div>
-                ) : (
-                  <div className="max-h-64 space-y-1 overflow-auto">
-                    {odoo.movimientos.map((m, i) => (
-                      <div key={`${m.ts}-${m.sku}-${i}`} className="flex items-center gap-2 border-b border-slate-50 py-1 text-xs">
-                        <span className="w-[92px] shrink-0 font-mono text-[10px] text-slate-400">
-                          {m.ts?.slice(5, 16).replace("T", " ")}
-                        </span>
-                        <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-semibold ${COLOR_ACCION[m.accion] ?? "bg-slate-50 text-slate-500 border-slate-200"}`}>
-                          {m.accion}
-                        </span>
-                        <span className="w-[150px] shrink-0 truncate font-mono text-[11px] text-slate-700">{m.sku}</span>
-                        <span className="truncate text-slate-500" title={m.resultado ?? ""}>{m.resultado}</span>
-                      </div>
-                    ))}
+            <section className="flex flex-col gap-3 rounded-2xl bg-white px-6 pb-6 pt-5 shadow-sm">
+              <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-2">
+                <h2 className="text-base font-bold text-slate-800">Recorrido del stock</h2>
+                <div className="flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-slate-600">
+                  <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-indigo-500 shadow-[0_0_0_2px_#fff,0_0_6px_2px_#6366f1]" />cambio real</span>
+                  <span className="flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-indigo-400" />pulso: ritmo de las últimas 24 h</span>
+                  <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-emerald-500" />llegó al canal</span>
+                  <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-rose-600" />rechazado</span>
+                  <span className="flex items-center gap-1.5"><span className="w-4 border-t-2 border-dashed border-slate-400" />fuera del reparto</span>
+                </div>
+              </div>
+              <CadenaViva datos={datos} nuevos={nuevos} tanda={tanda} ultimaHora={visibles[0]?.hora ?? null} conectado={!falla} />
+            </section>
+
+            <div className="flex flex-wrap items-start gap-4">
+              <section className="flex min-w-0 flex-[1_1_720px] flex-col gap-3 rounded-2xl bg-white pb-3 pt-5 shadow-sm">
+                <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2 px-6">
+                  <div>
+                    <h2 className="text-base font-bold text-slate-800">Cambios en camino</h2>
+                    <p className="mt-0.5 text-[13px] text-slate-600">Cada fila es un cambio de stock y lo que contestó cada canal. Toca una para ver su rastro.</p>
                   </div>
-                )}
-              </Tarjeta>
-            </div>
-
-            {odoo.por_canal.length > 0 && (
-              <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                {["mercado_libre", "tiktok", "temu", "amazon"].map((canal) => {
-                  const filas = odoo.por_canal.filter((c) => c.canal === canal);
-                  if (!filas.length) return null;
-                  const esc = filas.find((f) => f.accion === "escribir")?.n ?? 0;
-                  const sc = filas.find((f) => f.accion === "sin_cambio")?.n ?? 0;
-                  const om = filas.find((f) => f.accion === "omitir")?.n ?? 0;
-                  return (
-                    <div key={canal} className="rounded-xl border border-slate-200 bg-white p-3">
-                      <div className="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-600">
-                        {canal.replace("_", " ")}
-                      </div>
-                      <div className="flex items-baseline gap-3 text-xs">
-                        <span className="font-bold text-emerald-600">{esc}</span>
-                        <span className="text-slate-400">escritas</span>
-                      </div>
-                      <div className="mt-0.5 text-[11px] text-slate-400">
-                        {sc} sin cambio · {om} omitidas
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {odoo.errores.length > 0 && (
-              <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50 p-3">
-                <div className="mb-1.5 flex items-center gap-2 text-xs font-bold text-rose-800">
-                  <AlertTriangle size={14} /> {odoo.errores.length} error(es) al escribir a los canales
+                  <Link href="/dashboard/matriz" className="flex items-center gap-1 whitespace-nowrap text-[13px] font-semibold text-indigo-700 hover:text-indigo-800">
+                    Coincidencia por SKU <ArrowRight size={14} aria-hidden />
+                  </Link>
                 </div>
-                <div className="max-h-32 space-y-0.5 overflow-auto">
-                  {odoo.errores.map((e, i) => (
-                    <div key={i} className="flex gap-2 text-[11px] text-rose-700">
-                      <span className="w-[70px] shrink-0 font-mono text-rose-400">{e.canal}</span>
-                      <span className="w-[140px] shrink-0 font-mono">{e.sku}</span>
-                      <span className="truncate">{e.resultado}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </section>
-        )}
+                <HorarioTrenes eventos={visibles} columnas={datos.columnas} nuevos={nuevosIds} ocultos={datos.sin_reparto_1h}
+                  onAbrir={(e) => setSel({ sku: e.sku, fin: e.fin })} />
+              </section>
 
-        {/* Métricas */}
-        <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-          <Metrica titulo="Eventos registrados" valor={res.eventos ?? 0} icono={<Activity size={16} />} />
-          <Metrica titulo="SKUs tocados" valor={res.skus ?? 0} icono={<Package size={16} />} />
-          <Metrica titulo="Escrituras planeadas" valor={acc["escribir"] ?? 0} icono={<ArrowRightLeft size={16} />} tono="ok" />
-          <Metrica titulo="Omitidos (FULL/pausados)" valor={acc["omitir"] ?? 0} icono={<Warehouse size={16} />} tono="warn" />
-          <Metrica titulo="Errores" valor={res.errores ?? 0} icono={<AlertTriangle size={16} />} tono={(res.errores ?? 0) > 0 ? "err" : "ok"} />
-        </div>
-
-        {/* Configuración + cola */}
-        {d && (
-          <div className="mb-6 grid gap-3 lg:grid-cols-3">
-            <Tarjeta titulo="Configuración">
-              <Dato k="Canales habilitados" v={Array.isArray(d.canales_habilitados) ? d.canales_habilitados.join(", ") : d.canales_habilitados} />
-              <Dato k="Escritores listos" v={d.escritores_implementados.join(", ") || "—"} />
-              <Dato k="Colchón (reserva)" v={`${d.reserva} pzas`} />
-              <Dato k="Debounce" v={`${d.debounce_s} s`} />
-            </Tarjeta>
-            <Tarjeta titulo="Cola ahora">
-              {d.pendientes.length ? (
-                <div className="flex flex-wrap gap-1">
-                  {d.pendientes.map((s) => (
-                    <span key={s} className="rounded-md bg-indigo-50 px-2 py-0.5 font-mono text-[11px] text-indigo-700">{s}</span>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-sm text-slate-400">Sin SKUs pendientes.</p>
-              )}
-              <div className="mt-2 flex items-center gap-1.5 text-[11px] text-slate-400">
-                <Clock size={12} /> Las ráfagas del mismo SKU se funden en una escritura.
-              </div>
-            </Tarjeta>
-            <Tarjeta titulo="Ventana observada">
-              <Dato k="Desde" v={res.desde ? String(res.desde).slice(0, 19) : "—"} />
-              <Dato k="Hasta" v={res.hasta ? String(res.hasta).slice(0, 19) : "—"} />
-              <Dato k="Sin cambio" v={String(acc["sin_cambio"] ?? 0)} />
-            </Tarjeta>
-          </div>
-        )}
-
-        {/* OBSERVACIÓN DE MOVIMIENTOS FULL/FBA */}
-        {obs && (
-          <section className="mb-6 rounded-2xl border border-slate-200 bg-white p-4">
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <h2 className="text-sm font-bold text-slate-800">Movimientos de bodega FULL / FBA</h2>
-                <p className="text-[11px] text-slate-400">
-                  Qué avisa Mercado Libre y qué haría cada tipo con el stock de WooCommerce.
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                <Estadillo
-                  icono={obs.vigilante_encendido ? <Power size={14} /> : <PauseCircle size={14} />}
-                  texto={obs.vigilante_encendido ? "Vigilante encendido" : "Vigilante apagado"}
-                  tono={obs.vigilante_encendido ? "ok" : "off"}
-                />
-                {obs.modo_solo_registro && (
-                  <span className="flex items-center gap-1.5 rounded-lg bg-violet-100 px-2.5 py-1.5 text-xs font-semibold text-violet-700">
-                    <Eye size={14} /> SOLO REGISTRO (no toca inventario)
-                  </span>
-                )}
-              </div>
-            </div>
-
-            {/* La señal que decide si se puede encender la escritura */}
-            {obs.TIPOS_DESCONOCIDOS.length > 0 ? (
-              <div className="mb-3 flex items-start gap-2 rounded-xl border border-rose-300 bg-rose-50 px-4 py-3 text-sm text-rose-800">
-                <AlertTriangle size={16} className="mt-0.5 shrink-0" />
-                <div>
-                  <strong>NO encender la escritura todavía.</strong> Mercado Libre mandó tipos de
-                  operación que la tabla de decisión no contempla:{" "}
-                  <span className="font-mono">{obs.TIPOS_DESCONOCIDOS.map((t) => t.tipo).join(", ")}</span>.
-                  Hay que definir qué hace cada uno antes de mover inventario.
-                </div>
-              </div>
-            ) : obs.eventos > 0 ? (
-              <div className="mb-3 flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm text-emerald-800">
-                <CheckCircle2 size={16} /> Sin tipos desconocidos en {obs.eventos} evento(s):
-                todos los movimientos caen en la tabla de decisión.
-              </div>
-            ) : null}
-
-            {obs.tipos_vistos.length === 0 ? (
-              <p className="text-sm text-slate-400">
-                Sin movimientos todavía. Aparecerán en cuanto Mercado Libre avise de un envío,
-                retiro o venta en FULL.
-              </p>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm">
-                  <thead className="bg-slate-50 text-[11px] uppercase tracking-wider text-slate-400">
-                    <tr>
-                      <th className="px-3 py-2 font-semibold">Tipo (Mercado Libre)</th>
-                      <th className="px-3 py-2 font-semibold">Veces</th>
-                      <th className="px-3 py-2 font-semibold">Qué haría con Woo</th>
-                      <th className="px-3 py-2 font-semibold">Último ejemplo</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {obs.tipos_vistos.map((t) => (
-                      <tr key={t.tipo} className="border-t border-slate-50">
-                        <td className="px-3 py-2 font-mono text-xs font-semibold text-slate-700">{t.tipo}</td>
-                        <td className="px-3 py-2 text-slate-600">{t.n}</td>
-                        <td className="px-3 py-2">
-                          {t.efecto_declarado === "resta" ? (
-                            <span className="rounded-md border border-rose-200 bg-rose-50 px-1.5 py-0.5 text-[11px] font-semibold text-rose-700">
-                              RESTA (salió del almacén)
-                            </span>
-                          ) : t.efecto_declarado === "suma" ? (
-                            <span className="rounded-md border border-sky-200 bg-sky-50 px-1.5 py-0.5 text-[11px] font-semibold text-sky-700">
-                              SUMA
-                            </span>
-                          ) : t.efecto_declarado === "DESCONOCIDO" ? (
-                            <span className="rounded-md border border-rose-300 bg-rose-100 px-1.5 py-0.5 text-[11px] font-bold text-rose-800">
-                              ⚠ SIN DEFINIR
-                            </span>
-                          ) : (
-                            <span className="text-[11px] text-slate-400">no toca Woo</span>
+              <aside className="flex min-w-0 flex-[1_1_360px] flex-col gap-4 xl:max-w-[460px]">
+                <section className="flex flex-col gap-2.5 rounded-2xl bg-white p-5 shadow-sm">
+                  <h2 className="text-base font-bold text-slate-800">Qué atender</h2>
+                  {datos.atender.length === 0 && <p className="text-sm text-slate-600">Nada pendiente. Todo llega.</p>}
+                  {datos.atender.map((a, i) => (
+                    <div key={i} className={`flex items-start gap-3 rounded-xl border px-3.5 py-3 ${NIVEL[a.nivel].fondo}`}>
+                      <span className={`mt-0.5 w-[104px] shrink-0 rounded-full py-0.5 text-center text-xs font-semibold ${NIVEL[a.nivel].cls}`}>{NIVEL[a.nivel].texto}</span>
+                      <div className="flex min-w-0 flex-col gap-0.5">
+                        <div className="text-sm font-semibold leading-5 text-slate-900">{a.titulo}</div>
+                        {a.texto && <div className="text-[13px] leading-[19px] text-slate-600">{a.texto}</div>}
+                        <div className="flex flex-wrap gap-x-4">
+                          {a.rastro && (
+                            <button type="button" onClick={() => setSel(a.rastro ?? null)}
+                              className="text-left text-[13px] font-semibold text-indigo-700 hover:text-indigo-800">Ver el rastro →</button>
                           )}
-                        </td>
-                        <td className="px-3 py-2 text-[11px] text-slate-500">
-                          {t.ejemplo ? (
-                            <span>
-                              <span className="font-mono text-slate-600">{t.ejemplo.sku}</span>
-                              {" · "}{t.ejemplo.detalle?.slice(0, 70)}
-                            </span>
-                          ) : "—"}
-                        </td>
-                      </tr>
+                          {a.matriz && (
+                            <Link href={`/dashboard/matriz?filtro=${a.nivel === "hoy" ? "demas" : "distinto"}`}
+                              className="text-[13px] font-semibold text-indigo-700 hover:text-indigo-800">Ver en la matriz →</Link>
+                          )}
+                          {a.full && (
+                            <a href="#full" onClick={() => setFullAbierto(true)}
+                              className="text-[13px] font-semibold text-indigo-700 hover:text-indigo-800">Ver movimientos FULL →</a>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </section>
+                {datos.bien.length > 0 && (
+                  <section className="flex flex-col gap-2.5 rounded-2xl bg-white p-5 shadow-sm">
+                    <h2 className="text-base font-bold text-slate-800">Lo que va bien</h2>
+                    {datos.bien.map((b, i) => (
+                      <div key={i} className="flex items-start gap-2.5 text-sm leading-5 text-slate-700">
+                        <CheckCircle2 size={18} className="mt-px shrink-0 text-emerald-600" aria-hidden />{b}
+                      </div>
                     ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </section>
-        )}
-
-        {/* Bitácora */}
-        <section className="rounded-2xl border border-slate-200 bg-white">
-          <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
-            <h2 className="text-sm font-bold text-slate-800">
-              Bitácora {d?.dry_run && <span className="text-amber-600">· simulación</span>}
-            </h2>
-            <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-500">
-              <input type="checkbox" checked={soloErrores} onChange={(e) => setSoloErrores(e.target.checked)} className="h-3.5 w-3.5" />
-              Solo errores
-            </label>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
-              <thead className="bg-slate-50 text-[11px] uppercase tracking-wider text-slate-400">
-                <tr>
-                  <th className="px-4 py-2 font-semibold">Hora</th>
-                  <th className="px-4 py-2 font-semibold">SKU</th>
-                  <th className="px-4 py-2 font-semibold">Canal</th>
-                  <th className="px-4 py-2 font-semibold">Acción</th>
-                  <th className="px-4 py-2 font-semibold">Stock</th>
-                  <th className="px-4 py-2 font-semibold">Resultado</th>
-                </tr>
-              </thead>
-              <tbody>
-                {historial.length === 0 && (
-                  <tr><td colSpan={6} className="px-4 py-8 text-center text-sm text-slate-400">
-                    Sin movimientos todavía. Aparecerán aquí en cuanto haya una venta no-FULL.
-                  </td></tr>
+                  </section>
                 )}
-                {historial.map((h, i) => (
-                  <tr key={i} className="border-t border-slate-50 hover:bg-slate-50/60">
-                    <td className="whitespace-nowrap px-4 py-2 font-mono text-[11px] text-slate-500">{String(h.ts).slice(5, 19)}</td>
-                    <td className="whitespace-nowrap px-4 py-2 font-mono text-xs font-semibold text-slate-700">{h.sku}</td>
-                    <td className="whitespace-nowrap px-4 py-2 text-xs text-slate-600">
-                      {h.canal ?? "—"}{h.cuenta ? ` · ${h.cuenta}` : ""}
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-2">
-                      <span className={`rounded-md border px-1.5 py-0.5 text-[10px] font-semibold ${COLOR_ACCION[h.accion] ?? "border-slate-200 bg-slate-50 text-slate-500"}`}>
-                        {h.accion}
-                      </span>
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-2 text-xs text-slate-600">
-                      {h.stock_canal ?? "—"} → <strong className="text-slate-800">{h.objetivo ?? "—"}</strong>
-                    </td>
-                    <td className="px-4 py-2 text-xs text-slate-500">
-                      {(h.resultado || "").startsWith("ERROR") ? (
-                        <span className="text-rose-600">{h.resultado}</span>
-                      ) : (h.resultado || "").includes("DRY-RUN") ? (
-                        <span className="flex items-center gap-1 text-amber-600"><Eye size={11} /> {h.resultado}</span>
-                      ) : (
-                        <span className="flex items-center gap-1"><CheckCircle2 size={11} className="text-emerald-500" /> {h.resultado}</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
+              </aside>
+            </div>
+
+            <section className="flex flex-col gap-4 rounded-2xl bg-white px-6 py-5 shadow-sm">
+              <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-2">
+                <div>
+                  <h2 className="text-base font-bold text-slate-800">Cambios por día</h2>
+                  <p className="mt-0.5 text-[13px] text-slate-600">Últimos {datos.serie.dias.length} días, misma escala en todos. Hoy va a medias.</p>
+                </div>
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-600">
+                  <span className="flex items-center gap-1.5"><span className="h-3 w-3 rounded-sm bg-emerald-600" />llegó al canal</span>
+                  <span className="flex items-center gap-1.5"><span className="h-3 w-3 rounded-sm bg-rose-500" />rechazado</span>
+                </div>
+              </div>
+              <SerieDias serie={datos.serie} canales={datos.canales} />
+            </section>
+
+            <details id="full" open={fullAbierto} onToggle={(e) => setFullAbierto((e.target as HTMLDetailsElement).open)}
+              className="group rounded-2xl bg-white shadow-sm">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-5 py-4">
+                <span className="flex items-center gap-2 text-base font-bold text-slate-800">
+                  Movimientos de bodega FULL / FBA
+                  {datos.full_sin_regla.length > 0 && (
+                    <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-800">
+                      {datos.full_sin_regla.length} sin regla
+                    </span>
+                  )}
+                </span>
+                <ChevronDown size={18} className="text-slate-500 transition-transform group-open:rotate-180" aria-hidden />
+              </summary>
+              <ObservacionFull abierto={fullAbierto} />
+            </details>
+
+            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-xl border border-slate-200 bg-white px-5 py-3.5">
+              <p className="flex items-start gap-2 text-xs leading-[18px] text-slate-600">
+                <Info size={14} className="mt-0.5 shrink-0" aria-hidden />
+                <span>
+                  Este proceso: fan-out {datos.fanout.habilitado ? (datos.fanout.dry_run ? "en simulación" : "encendido y escribiendo") : "apagado"}
+                  {" · "}reparto: {datos.canales.map((c) => c.nombre).join(", ")}
+                  {" · "}reserva {datos.fanout.reserva} · espera {datos.fanout.debounce_s} s
+                  {datos.stock_watch.modo ? ` · stock_watch en modo ${datos.stock_watch.modo}` : ""}
+                  {" · "}actualizado {datos.ahora}
+                </span>
+              </p>
+              <Link href="/dashboard/matriz" className="flex items-center gap-1 text-[13px] font-semibold text-indigo-700 hover:text-indigo-800">
+                Coincidencia por SKU <ArrowRight size={14} aria-hidden />
+              </Link>
+            </div>
+          </>
+        )}
       </main>
-    </div>
-  );
-}
 
-/* ── piezas ─────────────────────────────────────────────────────────────── */
-
-function Estadillo({ icono, texto, tono }: { icono: React.ReactNode; texto: string; tono: "ok" | "warn" | "off" }) {
-  const c = tono === "ok" ? "bg-emerald-400/20 text-emerald-50"
-    : tono === "warn" ? "bg-amber-400/25 text-amber-50" : "bg-white/15 text-white/80";
-  return (
-    <span className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold ${c}`}>
-      {icono} {texto}
-    </span>
-  );
-}
-
-function Metrica({ titulo, valor, icono, tono = "neutro" }: {
-  titulo: string; valor: number | string; icono: React.ReactNode; tono?: "ok" | "warn" | "err" | "neutro";
-}) {
-  const c = tono === "ok" ? "text-emerald-600" : tono === "warn" ? "text-amber-600"
-    : tono === "err" ? "text-rose-600" : "text-slate-800";
-  return (
-    <div className="rounded-xl border border-slate-200 bg-white p-3">
-      <div className="mb-1 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-        {icono} {titulo}
-      </div>
-      <div className={`text-2xl font-bold ${c}`}>{valor}</div>
-    </div>
-  );
-}
-
-function Tarjeta({ titulo, children }: { titulo: string; children: React.ReactNode }) {
-  return (
-    <div className="rounded-xl border border-slate-200 bg-white p-4">
-      <div className="mb-2 text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">{titulo}</div>
-      <div className="space-y-1">{children}</div>
-    </div>
-  );
-}
-
-function Dato({ k, v }: { k: string; v: string }) {
-  return (
-    <div className="flex items-baseline justify-between gap-2 text-sm">
-      <span className="text-slate-500">{k}</span>
-      <span className="font-semibold text-slate-800">{v}</span>
+      <RastroCambio sel={sel} onCerrar={() => setSel(null)} onIr={(sku, fin) => setSel({ sku, fin })} />
+      {falla && datos && (
+        <div className="fixed bottom-4 left-1/2 z-40 flex -translate-x-1/2 items-center gap-2 rounded-full bg-amber-50 px-4 py-2 text-[13px] text-amber-900 shadow-lg ring-1 ring-amber-200">
+          <XCircle size={16} aria-hidden /> Se perdió la conexión; se muestra el último dato y se reintenta solo.
+        </div>
+      )}
     </div>
   );
 }

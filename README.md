@@ -1001,6 +1001,80 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.608.0 — Fan-out en vivo: la cadena, el horario de cambios y la coincidencia por SKU, con el porqué de cada diferencia (solo lectura)
+
+Eduardo, 1-oct: de las cuatro propuestas de rediseño de *Operaciones › Fan-out de
+stock* eligió **A + D** (cadena viva + torre de control) con **B** (matriz de
+coincidencia) y **C** (rastro de cada cambio) como detalle, sin botón de pausa.
+La pregunta que contesta la página: *¿lo que Odoo dice está llegando a cada canal,
+y si no, por qué?*
+
+**La página (`/dashboard`)**, de arriba abajo:
+
+- Pestañas *En vivo* y *Coincidencia por SKU*, con el mismo recuadro morado que las
+  demás, y un banner con lo repartido bien en 24 h.
+- El veredicto, con el **pulso por canal** en lugar del pastel: lo escrito bien y mal
+  hora por hora en las últimas 24 h y el estado de cada canal (al día, rechaza, con
+  errores, sin cambios) con su racha.
+- La **cadena viva** Odoo → stock_watch → Woo → fan-out → canales: late siempre, y
+  cada cambio real la recorre como un punto; la tarjeta del paso destella al pasar.
+- El **horario de cambios**: los últimos cambios, uno por renglón, con lo que contestó
+  cada destino (TikTok, Temu, ML Kubera, ML San Corpe). Al lado, *Qué atender* y *Lo
+  que va bien*. Un clic abre el **rastro** del cambio: cuándo cambió Woo, cuánto
+  esperó en la cola, cuánto tardó en escribirse y qué contestó cada canal.
+- La serie de 17 días por canal, el detalle de FULL y el pie con la última pasada de
+  stock_watch y la cola.
+
+La página pregunta cada 4 s con el último `id` que ya tiene. Una petición no sale si
+la anterior sigue en curso y cada cambio se pinta una sola vez: al cargar no se
+repiten eventos.
+
+**Coincidencia por SKU (`/dashboard/matriz`).** SKUs × canales contra Woo: los que
+ofrecen de más, los rechazados, los distintos entre Odoo y Woo y los recién movidos.
+Cada celda distinta dice **por qué** (`fanout_vivo._causas`), con chips para filtrar
+y el desglose «Por qué» en las barras de cada canal:
+
+| Causa | Qué significa |
+|---|---|
+| Rechazado (403) | el canal rechazó la última escritura; hoy es ML: la app que escribe no está autorizada en la cuenta |
+| Error al escribir | otro error en la última escritura |
+| Cambio perdido | Woo cambió hace más de 15 min y el fan-out nunca lo procesó (un reinicio a media cola; desde v0.607.0 lo recupera el recuperador) |
+| En camino | Woo cambió hace menos de 15 min: sigue en la cola |
+| Cambió el canal | la última escritura salió bien: el canal se movió solo después |
+| Sin alinear | diferencia vieja que ningún cambio reciente explica: pide `POST /api/fanout/alinear` |
+| Omitida a propósito | el fan-out no le escribe por política (FULL, inactiva…) |
+| No recibe stock | no es destino (borrador de Temu, borrada en TikTok…): no cuenta como perdido |
+
+**Backend.** `services/fanout_vivo.py` y tres GET nuevos en `routers/fanout.py`:
+
+- `GET /api/fanout/vivo?desde_id=` — todo lo de la página. Los cambios nuevos van
+  siempre frescos; los agregados (24 h, 17 días, la foto) salen de una caché de 20 s.
+- `GET /api/fanout/matriz` — la coincidencia por SKU.
+- `GET /api/fanout/rastro?sku=&fin=` — un cambio salto por salto.
+
+**Solo lee**, y todo de kubera: `ops.fanout_log`, `ops.stock_watch_photo` y
+`channel.listings`. Lo que no vive en la BD (la última pasada de stock_watch y la cola
+del fan-out) sale de la memoria del proceso. Los tres endpoints son `def`: FastAPI
+los corre en su pool de hilos y no detienen el loop (regla 11). No enciende ni apaga
+ningún flujo (regla 3: directo a `main`).
+
+**Para leerla bien.**
+
+- Solo pinta los canales del reparto (`FANOUT_CANALES`: ML, TikTok y Temu). Amazon y
+  Walmart no reciben stock del fan-out.
+- `channel.listings.updated_at` es el último CAMBIO de la fila, no la última lectura
+  (sobre todo en ML): por eso la matriz dice «igual desde» y no «leído».
+- `ms` en la bitácora mide el cambio entero, no cada canal: el rastro dice cuánto
+  tardó el cambio, no cada canal por separado.
+- Las columnas de ML salen rechazadas (403) mientras la app 8902 no esté autorizada
+  en las cuentas.
+
+**Verificado.** Construida y revisada en el sandbox con la bitácora del fan-out de
+producción copiada ahí, en escritorio y a ancho de teléfono. Tras ponerla sobre
+v0.607.0, los cuatro GET del fan-out (`vivo`, `matriz`, `rastro`, `recuperar`)
+contestan en el backend del sandbox, las pruebas del recuperador siguen en verde y
+`npm run build` sale limpio.
+
 ### v0.607.0 — Fan-out: los cambios que se pierden en un reinicio se vuelven a repartir solos (nace APAGADO)
 
 Eduardo, 1-oct: *"Arregla lo de la cola para que no se pierdan cambios"*.

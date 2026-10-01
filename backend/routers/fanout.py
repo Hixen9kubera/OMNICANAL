@@ -5,6 +5,9 @@ fanout.py — Monitoreo y simulación del fan-out de stock DROP.
   GET  /api/fanout/recuperar        → el recuperador: configuración, última vuelta y
                                       qué reencolaría ahora mismo (solo lee).
   POST /api/fanout/recuperar        → corre una vuelta ya (respeta sus banderas).
+  GET  /api/fanout/vivo?desde_id=   → la página en vivo: veredicto, cadena y cambios.
+  GET  /api/fanout/matriz           → SKUs × canales contra Woo.
+  GET  /api/fanout/rastro?sku=&fin= → un cambio salto por salto.
   GET  /api/fanout/simular?sku=     → QUÉ haría con ese SKU ahora mismo, sin
                                       encolar ni escribir (seguro siempre).
   POST /api/fanout/encolar?sku=     → lo mete a la cola real (respeta dry-run).
@@ -49,6 +52,35 @@ def recuperar():
     FANOUT_ENABLED: con cualquiera apagada, contesta por qué no hizo nada."""
     from services import fanout_recuperar
     return fanout_recuperar.revisar()
+
+
+@router.get("/vivo")
+def vivo(desde_id: int = Query(0, ge=0, description="Solo los cambios con id mayor")):
+    """
+    Lo que pinta la página del fan-out: veredicto, cadena, canales, qué atender,
+    la serie de 17 días y los cambios recientes. La página lo pide cada pocos
+    segundos con el último `id` que ya tiene: los cambios nuevos llegan frescos y
+    los agregados salen de una caché de 20 s. Solo lee.
+    """
+    from services import fanout_vivo
+    return fanout_vivo.vivo(desde_id)
+
+
+@router.get("/matriz")
+def matriz():
+    """SKUs × canales contra Woo: los que ofrecen de más, los rechazados, los
+    distintos entre Odoo y Woo y los que se movieron hace poco. Solo lee."""
+    from services import fanout_vivo
+    return fanout_vivo.matriz()
+
+
+@router.get("/rastro")
+def rastro(sku: str = Query(..., description="SKU del cambio"),
+           fin: str = Query(..., description="Marca de tiempo del cambio (ISO, la de /vivo)")):
+    """Un cambio salto por salto: cuándo cambió Woo, cuánto esperó, cuánto tardó
+    en escribirse y qué contestó cada canal. Solo lee."""
+    from services import fanout_vivo
+    return fanout_vivo.rastro(sku, fin)
 
 
 @router.get("/simular")
