@@ -93,6 +93,7 @@ export interface Vivo {
     skus_woo: number;
     ambos: number;
     distintos: number;
+    distintos_por_ventas?: number; // de los distintos, los que son exactamente ventas sin orden
     sin_odoo_con_piezas: number;
     piezas_sin_odoo: number;
     ultima: string | null;
@@ -143,12 +144,22 @@ export interface CeldaMatriz {
   causa?: Causa | null;
 }
 
+/** Piezas ya vendidas cuya orden todavía no nace en Odoo: stock_watch se las resta a Woo. */
+export interface SinOrden {
+  piezas: number;
+  ventas: number;
+  canales: string;
+  edad: string;
+  explica: boolean; // ¿son exactamente la diferencia Odoo − Woo?
+}
+
 export interface FilaMatriz {
   sku: string;
   que: string;
   odoo: string;
   woo: string;
-  dif: boolean;
+  dif: boolean; // Odoo≠Woo que las ventas sin orden NO explican
+  sin_orden?: SinOrden | null;
   celdas: Record<string, CeldaMatriz>;
   tags: string[];
   peso: number;
@@ -244,6 +255,7 @@ export interface Historia {
   existe: boolean;
   odoo: string;
   woo: string;
+  sin_orden?: SinOrden | null;
   columnas: Columna[];
   celdas: Record<string, CeldaMatriz>;
   resumen: { cambios_woo: number; repartos: number; con_rechazo: number; su_cuenta: number };

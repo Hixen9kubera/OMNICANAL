@@ -396,6 +396,54 @@ def _coincidencia(rep: list[str]) -> tuple[list[dict], list[dict]]:
              "de_menos": int((por.get(c) or {}).get("de_menos") or 0)} for c in rep], distintas
 
 
+# ── Ventas sin orden en Odoo ─────────────────────────────────────────────────
+# En ABSOLUTO, stock_watch copia a Woo `max(0, free_qty − vendidas_sin_orden)`: las
+# piezas ya vendidas cuya orden todavía no nace en Odoo (la orden nace al comprar la
+# guía) se esconden de los canales. Por eso Odoo≠Woo NO es por fuerza un desfase.
+
+def _edad(horas: float | None) -> str:
+    if horas is None:
+        return "—"
+    h = float(horas)
+    if h < 1:
+        return "menos de 1 h"
+    return f"{round(h)} h" if h < 48 else f"{int(h // 24)} d"
+
+
+def _sin_orden(skus: list[str]) -> dict[str, dict[str, Any]]:
+    """Por SKU: piezas vendidas sin orden en Odoo, cuántas ventas, de qué canal y la
+    más vieja. Mismo criterio que `odoo_ventas_log.piezas_sin_orden` (lo que resta
+    stock_watch) y la misma ventana. Solo lee."""
+    if not skus:
+        return {}
+    from services import odoo_ventas_log as oul
+    from services import stock_watch
+    filas = sdb.fetch_all(
+        """select i.sku::text as sku, sum(i.cantidad) as piezas, count(distinct o.external_order_id) as ventas,
+                  string_agg(distinct o.canal, ', ') as canales,
+                  extract(epoch from now() - min(o.creado_at)) / 3600.0 as horas
+             from ops.odoo_sale_orders o
+             join ops.odoo_sale_order_items i
+               on i.canal = o.canal and i.cuenta = o.cuenta and i.external_order_id = o.external_order_id
+            where ((o.odoo_order_id is null and o.accion = %(a)s) or o.accion = %(nc)s)
+              and o.creado_at > now() - make_interval(days => %(d)s)
+              and i.sku::text = any(%(s)s)
+            group by i.sku""",
+        {"a": oul.ACCION_ESPERA, "nc": oul.ACCION_SIN_RESERVA, "d": stock_watch._ventana_pendientes(),
+         "s": list(skus)})
+    return {f["sku"]: {"piezas": int(f["piezas"] or 0), "ventas": int(f["ventas"] or 0),
+                       "canales": f["canales"] or "", "edad": _edad(f["horas"])}
+            for f in filas if int(f["piezas"] or 0) > 0}
+
+
+def _explicado(odoo: Any, woo: Any, so: dict | None) -> bool:
+    """¿Odoo≠Woo es exactamente lo vendido sin orden? (Woo = max(0, Odoo − pendientes))."""
+    if odoo is None or woo is None or not so:
+        return False
+    from services import stock_watch
+    return stock_watch.resta_pendientes() and int(woo) == max(0, int(odoo) - int(so["piezas"]))
+
+
 def _foto() -> dict[str, Any]:
     f = sdb.fetch_one(
         """select count(*) filter (where stock_odoo is not null) as skus_odoo,
@@ -408,12 +456,17 @@ def _foto() -> dict[str, Any]:
                     as piezas_sin_odoo,
                   to_char(max(actualizado) at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as ultima
              from ops.stock_watch_photo""", {"z": _ZONA}) or {}
-    peor = sdb.fetch_one(
+    # Lo que explican las ventas sin orden se separa de lo que no; `peor` es el
+    # mayor SIN explicar (el que de verdad hay que mirar).
+    dif = sdb.fetch_all(
         """select sku::text as sku, stock_odoo, stock_woo from ops.stock_watch_photo
             where stock_odoo is not null and stock_woo is not null and stock_odoo <> stock_woo
-            order by abs(stock_woo - stock_odoo) desc limit 1""")
+            limit 3000""")
+    so = _sin_orden([d["sku"] for d in dif])
+    sin_explicar = [d for d in dif if not _explicado(d["stock_odoo"], d["stock_woo"], so.get(d["sku"]))]
+    peor = max(sin_explicar, key=lambda d: abs(int(d["stock_woo"]) - int(d["stock_odoo"])), default=None)
     return {**{k: (int(v) if isinstance(v, (int, float)) or (isinstance(v, str) and v.isdigit()) else v)
-               for k, v in f.items()}, "peor": peor}
+               for k, v in f.items()}, "peor": peor, "distintos_por_ventas": len(dif) - len(sin_explicar)}
 
 
 def _stock_watch(hoy: str) -> dict[str, Any]:
@@ -562,17 +615,23 @@ def _resumen() -> dict[str, Any]:
                         "titulo": f"{nombre} ofrece {f['valor']:,} de {f['sku']} con Woo en {f['stock_woo']:,}",
                         "texto": ("Está a la venta." + (f" Hay {extra} más que ofrecen de más." if extra > 0 else "")),
                         "matriz": True})
-    if foto.get("distintos"):
+    por_ventas = int(foto.get("distintos_por_ventas") or 0)
+    sin_explicar = int(foto.get("distintos") or 0) - por_ventas
+    if sin_explicar > 0:
         p = foto.get("peor") or {}
-        atender.append({"nivel": "semana", "titulo": f"{foto['distintos']:,} SKUs con Odoo distinto de Woo",
-                        "texto": (f"El mayor: {p.get('sku')}, {p.get('stock_odoo'):,} en Odoo y "
-                                  f"{p.get('stock_woo'):,} en Woo.") if p else "",
+        atender.append({"nivel": "semana", "titulo": f"{sin_explicar:,} SKUs con Odoo distinto de Woo",
+                        "texto": ("No lo explican ventas sin orden. "
+                                  + (f"El mayor: {p.get('sku')}, {p.get('stock_odoo'):,} en Odoo y "
+                                     f"{p.get('stock_woo'):,} en Woo." if p else "")),
                         "matriz": True})
     if sw.get("pendientes_ventas"):
         h = sw.get("mas_vieja_h") or 0
         atender.append({"nivel": "semana",
                         "titulo": f"{sw['pendientes_ventas']} ventas esperan su orden en Odoo",
-                        "texto": f"Se restan del stock mientras tanto. La más vieja lleva {h:.0f} h."})
+                        "texto": ("Se restan del stock mientras tanto"
+                                  + (f" (son toda la diferencia Odoo↔Woo de {por_ventas} SKUs)" if por_ventas else "")
+                                  + f". La más vieja lleva {h:.0f} h."),
+                        "matriz": bool(por_ventas)})
     if foto.get("sin_odoo_con_piezas"):
         atender.append({"nivel": "despues",
                         "titulo": f"{foto['sin_odoo_con_piezas']} SKUs con piezas en Woo y sin producto en Odoo",
@@ -591,7 +650,9 @@ def _resumen() -> dict[str, Any]:
         bien.append(f"{nombres} recibieron {n:,} cambios en 24 h sin un solo rechazo.")
     if foto.get("ambos"):
         bien.append(f"Odoo y Woo coinciden en {foto['ambos'] - foto.get('distintos', 0):,} "
-                    f"de {foto['ambos']:,} productos.")
+                    f"de {foto['ambos']:,} productos"
+                    + (f"; en otros {por_ventas} la diferencia son ventas que esperan su orden en Odoo"
+                       if por_ventas else "") + ".")
     if sw.get("ultima") and sw.get("ultima") != "—":
         bien.append(f"Última pasada de Odoo con cambios: {sw['ultima']}"
                     + (f", {sw['cambios']} cambios." if sw.get("cambios") else "."))
@@ -902,6 +963,7 @@ def matriz() -> dict[str, Any]:
     foto = {f["sku"]: f for f in sdb.fetch_all(
         "select sku::text as sku, stock_odoo, stock_woo from ops.stock_watch_photo where sku::text = any(%(s)s)",
         {"s": skus})}
+    sin_orden = _sin_orden(skus)
     lst = sdb.fetch_all(
         """select l.sku::text as sku, l.canal, a.legacy_code as cuenta, l.status, l.situacion,
                   l.stock_own, l.is_fulfillment, l.logistic_type, l.updated_at,
@@ -963,11 +1025,22 @@ def matriz() -> dict[str, Any]:
                 tags.add("rech")
             if c.get("causa"):
                 tags.add(f"causa:{c['causa']['c']}")
-        dif_ow = odoo is not None and woo is not None and odoo != woo
+        # Odoo≠Woo que son EXACTAMENTE las vendidas sin orden no es un desfase: es la
+        # resta de stock_watch haciendo su trabajo. Solo lo que no cuadra es «distinto».
+        sx = sin_orden.get(s)
+        explicado = odoo is not None and woo is not None and odoo != woo and _explicado(odoo, woo, sx)
+        dif_ow = odoo is not None and woo is not None and odoo != woo and not explicado
         if dif_ow:
             tags.add("distinto")
             peso = max(peso, 40 + min(abs(int(woo) - int(odoo)), 50) / 5)
-            resumen = resumen or f"Odoo tiene {_n(odoo)} y Woo {_n(woo)}"
+            resumen = resumen or (f"Odoo tiene {_n(odoo)} y Woo {_n(woo)}"
+                                  + (f"; {sx['piezas']} vendidas sin orden no alcanzan a explicarlo" if sx else ""))
+        if sx:
+            tags.add("sin_orden")
+            if explicado:
+                peso = max(peso, 10)
+                resumen = resumen or (f"{sx['piezas']} {'vendida' if sx['piezas'] == 1 else 'vendidas'} sin orden "
+                                      f"en Odoo; la más vieja hace {sx['edad']}")
         if s in solo_perdido and not tags:
             continue   # el cambio se perdió, pero hoy sus canales coinciden con Woo
         if resumen is None:
@@ -975,7 +1048,8 @@ def matriz() -> dict[str, Any]:
             resumen = (f"{otra} no coincide con Woo, pero no está a la venta" if otra
                        else "Igual a Woo donde está a la venta")
         filas.append({"sku": s, "que": resumen, "odoo": _n(odoo), "woo": _n(woo),
-                      "dif": dif_ow, "celdas": celdas, "tags": sorted(tags), "peso": peso})
+                      "dif": dif_ow, "sin_orden": ({**sx, "explica": explicado} if sx else None),
+                      "celdas": celdas, "tags": sorted(tags), "peso": peso})
     filas.sort(key=lambda f: -f["peso"])
     return {"ahora": _fecha(ahora, hoy), "columnas": cols, "barras": barras, "filas": filas}
 
@@ -1228,7 +1302,9 @@ def historia(sku: str, dias: int = 14, limite: int = 400) -> dict[str, Any]:
     total = len(items)
     for x in items:
         x.pop("_t", None)
+    sx = _sin_orden([sku]).get(sku) if sku else None
     return {"ok": True, "sku": sku, "dias": dias, "hoy": hoy, "ahora": _fecha(ahora, hoy),
             "existe": bool(foto or lst or log or hist), "odoo": _n(foto.get("stock_odoo")), "woo": _n(woo),
+            "sin_orden": ({**sx, "explica": _explicado(foto.get("stock_odoo"), woo, sx)} if sx else None),
             "columnas": cols, "celdas": celdas, "resumen": resumen,
             "items": items[:limite], "total": total, "truncado": total > limite}

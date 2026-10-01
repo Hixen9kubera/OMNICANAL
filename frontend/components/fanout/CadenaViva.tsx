@@ -273,7 +273,9 @@ export default function CadenaViva({ datos, nuevos, tanda, ultimaHora, conectado
           l2={`${sw.cambios} cambios a Woo`} />
         <Nodo x={NODOS[2].x} w={NODOS[2].w} top={filaTop} eyebrow="Fuente de los canales" nombre="WooCommerce"
           l1={`${f.skus_woo.toLocaleString("es-MX")} SKUs`}
-          l2={f.distintos ? `${f.distintos} distintos de Odoo` : "igual a Odoo"} l2Aviso={!!f.distintos} />
+          l2={f.distintos - (f.distintos_por_ventas ?? 0) > 0 ? `${f.distintos - (f.distintos_por_ventas ?? 0)} distintos de Odoo`
+            : f.distintos ? `${f.distintos} con ventas sin orden` : "igual a Odoo"}
+          l2Aviso={f.distintos - (f.distintos_por_ventas ?? 0) > 0} />
         <Nodo x={NODOS[3].x} w={NODOS[3].w} top={filaTop} eyebrow="Por cambio" nombre="Fan-out"
           l1={`Cola ${fo.cola} · espera ${fo.debounce_s} s`}
           l2={ultimaHora ? `último cambio ${ultimaHora}` : `a ${canales.length} canales`} />

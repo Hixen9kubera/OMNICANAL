@@ -1001,6 +1001,40 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.612.0 — Fan-out: Odoo≠Woo que son ventas sin orden en Odoo ya no se marcan como desfase (solo lectura)
+
+Eduardo, 1-oct: *"¿por qué difiere Odoo y Woo aquí?"* (JUGU-0089-PLA: Odoo 65, Woo 9).
+
+**No era un desfase.** En modo ABSOLUTO, stock_watch copia a Woo `max(0, free_qty − vendidas_sin_orden)`:
+las piezas ya vendidas en un canal cuya orden todavía no nace en Odoo (la orden nace al comprar la guía)
+se esconden, porque Odoo aún no las reservó y volverían a venderse. La columna «Odoo» de la matriz es
+`free_qty`, así que Odoo − Woo es exactamente lo vendido sin orden. Medido el 1-oct en los 9 SKUs con
+Odoo≠Woo: los 9 cuadran exactos (JUGU-0089-PLA: 56 piezas en 31 ventas de Temu, la más vieja de hace
+6 días). La página lo pintaba en ámbar como «Odoo distinto de Woo» y lo ponía en *Qué atender*; ahora:
+
+- **Matriz.** Bajo Odoo aparece «−N sin orden» (al pasar el cursor: cuántas ventas, de qué canal y la más
+  vieja), hay un filtro «Vendidas sin orden en Odoo» y la fila ya no cuenta como «algo distinto» cuando la
+  resta explica TODA la diferencia. Si no alcanza a explicarla, sigue en ámbar y lo dice.
+- **Trazabilidad.** El encabezado dice «56 vendidas sin orden en Odoo (31 ventas de temu; la más vieja hace
+  6 d): es toda la diferencia entre Odoo y Woo».
+- **Página en vivo.** La tarjeta de Woo dice «9 con ventas sin orden» sin aviso; *Qué atender* solo marca
+  los Odoo≠Woo que esas ventas NO explican (y el mayor de ellos), y el aviso de «N ventas esperan su orden
+  en Odoo» dice de cuántos SKUs son toda la diferencia.
+
+**Mismo criterio que stock_watch.** `fanout_vivo._sin_orden` usa el `where` de
+`odoo_ventas_log.piezas_sin_orden` (espera de guía sin `odoo_order_id`, u orden que no reservó) y la misma
+ventana (`_ventana_pendientes`); `_explicado` exige además que la resta esté encendida
+(`stock_watch.resta_pendientes()`). Solo lee.
+
+**Lo que sí hay que mirar** es el atraso: ventas de Temu que esperan guía —y por tanto su orden en Odoo—
+durante días (el 1-oct, 70 ventas y la más vieja de 142 h). Mientras esperan, su stock está descontado de
+todos los canales.
+
+**Verificado.** En el sandbox (con la foto, las publicaciones y las ventas pendientes de producción traídas
+una vez): los 9 Odoo≠Woo salen explicados y ninguno sin explicar, «algo distinto» baja de 28 a 12, el filtro
+cuenta 9, las celdas dicen «−56 sin orden», «−17 sin orden»…, y la trazabilidad y la tarjeta de Woo lo
+explican. `npm run build` limpio y las pruebas del recuperador en verde.
+
 ### v0.611.0 — Temu, compra automática de guías: el peso MENOR, la caja repartida como Costos, J&T primero y los rechazos ya no detienen
 
 Brandon, 30-sep y 1-oct: *"toma las medidas que se tienen hoy en omnicanal y si no

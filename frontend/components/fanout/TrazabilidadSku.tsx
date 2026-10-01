@@ -190,6 +190,12 @@ export default function TrazabilidadSku({ sku, onCerrar, onRastro }: {
               <span className="break-all font-mono text-base font-bold text-slate-900">{sku}</span>
               {h && <span className="text-sm text-slate-700">Odoo {h.odoo} · Woo <span className="font-bold">{h.woo}</span></span>}
             </div>
+            {h?.sin_orden && (
+              <div className="mt-0.5 text-[13px] leading-5 text-slate-600">
+                {pl(h.sin_orden.piezas, "vendida", "vendidas")} sin orden en Odoo ({pl(h.sin_orden.ventas, "venta", "ventas")} de {h.sin_orden.canales}; la más vieja hace {h.sin_orden.edad})
+                {h.sin_orden.explica ? ": es toda la diferencia entre Odoo y Woo." : "."}
+              </div>
+            )}
           </div>
           <button ref={cerrarRef} type="button" onClick={onCerrar}
             className="rounded-lg p-2 text-slate-600 hover:bg-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-500">

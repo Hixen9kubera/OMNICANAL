@@ -32,6 +32,7 @@ const FILTROS = [
   { id: "todo", texto: "Todo" },
   { id: "distinto", texto: "Algo distinto" },
   { id: "demas", texto: "Ofrece de más" },
+  { id: "sin_orden", texto: "Vendidas sin orden en Odoo" },
 ];
 const ORDEN_CAUSAS: Causa["c"][] = ["403", "perdido", "tarde", "canal", "omitida", "fuera", "error", "camino"];
 
@@ -217,7 +218,13 @@ export default function MatrizCoincidencia() {
                         <span className="break-all font-mono text-xs font-semibold leading-[17px] text-indigo-800 underline-offset-2 group-hover:underline">{f.sku}</span>
                         <span className="text-xs leading-[17px] text-slate-600">{f.que}</span>
                       </button>
-                      <span className={`justify-self-start rounded-lg px-2 py-1 text-[13px] font-semibold ${f.dif ? "border border-amber-400 bg-amber-50 text-amber-800" : "text-slate-700"}`}>{f.odoo}</span>
+                      <span className="flex flex-col items-start">
+                        <span className={`rounded-lg px-2 py-1 text-[13px] font-semibold ${f.dif ? "border border-amber-400 bg-amber-50 text-amber-800" : "text-slate-700"}`}>{f.odoo}</span>
+                        {f.sin_orden && (
+                          <span title={`${f.sin_orden.piezas} ${f.sin_orden.piezas === 1 ? "pieza" : "piezas"} en ${f.sin_orden.ventas} ${f.sin_orden.ventas === 1 ? "venta" : "ventas"} de ${f.sin_orden.canales} que esperan su orden en Odoo; la más vieja hace ${f.sin_orden.edad}. Woo las descuenta hasta que la orden nace.`}
+                            className="cursor-help px-2 text-[11px] leading-[14px] text-slate-600">−{f.sin_orden.piezas} sin orden</span>
+                        )}
+                      </span>
                       <span className="justify-self-start px-2 py-1 text-[13px] font-bold text-slate-900">{f.woo}</span>
                       {m.columnas.map((col) => {
                         const c = f.celdas[col.id];
@@ -244,7 +251,7 @@ export default function MatrizCoincidencia() {
                 </div>
               </div>
               <p className="px-6 pb-2 pt-1 text-xs leading-[18px] text-slate-600">
-                «censo» es lo que leyó el canal; «escrito» es lo que mandó el fan-out; «igual desde» es la última vez que ese dato cambió en el canal. Cada celda se queda con el más reciente. Toca un SKU para ver su línea de trazabilidad.
+                «censo» es lo que leyó el canal; «escrito» es lo que mandó el fan-out; «igual desde» es la última vez que ese dato cambió en el canal. Cada celda se queda con el más reciente. «−N sin orden» bajo Odoo son piezas ya vendidas cuya orden todavía no nace en Odoo (nace al comprar la guía): Woo las descuenta mientras tanto, así que si Odoo y Woo difieren justo eso, no hay nada desfasado. Toca un SKU para ver su línea de trazabilidad.
               </p>
             </section>
           </>
