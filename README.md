@@ -1001,6 +1001,66 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.611.0 — Temu, compra automática de guías: el peso MENOR, la caja repartida como Costos, J&T primero y los rechazos ya no detienen
+
+Brandon, 30-sep y 1-oct: *"toma las medidas que se tienen hoy en omnicanal y si no
+es así toma la que te da Temu"*, *"se deben de comprar todas las guías posibles, sin
+perderse ninguna"*, y cinco reglas: (1) el peso, siempre el menor entre el de Temu y
+el nuestro; (2) un rechazo de Temu no es bloqueante; (3) J&T siempre, y sólo si no
+se ofrece, la más barata; (4) la caja de varias piezas, con la proporcionalidad de
+la pestaña Costos y dentro del máximo de J&T; (5) procesar las ventas con menos de
+3 días.
+
+**Peso** (`temu_guias_compra.py`). Candidatos: lo nuestro (packing list y Woo, por
+pieza × piezas, sumado por SKU en cajas mixtas) y lo de Temu (guías a mano de ese
+SKU × piezas, la guía de 1 pieza × piezas —`TEMU_GUIAS_PESO_GUIA_X1_POR_PIEZAS`—,
+variantes hermanas y la publicación). Gana el MENOR creíble; empate, lo nuestro.
+La medición real de almacén o del panel manda. Odoo jamás. Las guías que compró
+este mismo sistema no cuentan como "dato de Temu" (eco), y se quitan ANTES del
+tope del historial para que no desplacen a las hechas a mano.
+
+**Caja.** Hallazgo: en `costing.costos_validados` y en Woo, largo/ancho/alto son a
+veces la CAJA MASTER y no la pieza (4 de los 8 SKUs de la cola: se declaraba
+52×42×35 por un juguete). Se distingue por fila con R = volumen de la medida ÷
+volumen pagado de flete (`costo_cbm / 7500`): R ≥ 3 → master, y la pieza se
+reconstruye con la MISMA función de Costos (`packing_costos.dims_pieza`: lado más
+largo ÷ n hasta 10 piezas, raíz cúbica si son más); 1.5 ≤ R < 3 con
+`piezas_por_caja` coincidente → cartón de 2-3 piezas, también se reparte. Varias
+piezas en un paquete: se prueban todos los acomodos (rejilla a×b×c) y gana el que
+cabe en J&T y factura menos (mayor entre peso y L×A×H/5000). Igual que el peso, se
+compara con la caja de Temu y va la menor; una caja de Temu sólo cuenta si las
+piezas caben y no es la master copiada. Catálogo ilegible → no se compra a ciegas.
+
+**Límites de J&T México** (términos oficiales, cláusulas 4.9 y 6.1; variables
+`TEMU_GUIAS_JT_*`): 30 kg, lado ≤ 100 cm, suma de los tres lados ≤ 160 cm,
+volumétrico ÷ 5000. Aviso (no bloqueo) arriba del sobre 60×60×40.
+
+**Paquetería.** El orden de `TEMU_GUIAS_PAQUETERIA` ahora es PRIORIDAD (antes sólo
+desempataba): por omisión `J&T,*` — J&T si se ofrece y es usable (la más barata de
+sus servicios), y sólo si no, la más barata de las demás. El plan dice por qué no
+fue J&T cuando no lo fue.
+
+**Rechazos.** Un rechazo documentado deja ESA venta en "compra manual · Temu la
+rechazó" con campana y el job sigue. Cortacircuitos con memoria: 3 rechazos
+seguidos del mismo código (o 5 de cualquiera) cortan la vuelta. Una rechazada se
+reintenta una vez si cambia su plan (peso, caja, paquetería, almacén), y se mira
+una vez en Temu por si sí compró. Sigue deteniendo sólo lo que es dinero en duda:
+"no sé si compró", grupo a medias y discrepancia de Odoo contra la guía.
+
+**Vencidas, sin interruptor.** Con el límite de Temu vencido o sin plazo hábil que
+lo cumpla, se compra igual con el plazo más corto y queda "comprada TARDE" en
+bitácora, panel, nota de Odoo y Excel. `shipLater=false` NO se usa: marca la orden
+como enviada y la guía deja de salir en `unshipped.package.get`.
+
+**Ninguna se pierde.** Los fallos transitorios se reintentan la vuelta siguiente y
+suenan a los 60 min (una vencida, a la segunda vuelta); la cola se lee entera; lo
+que queda manual lleva su motivo en el panel y en la campana. El corte acepta hora
+(`TEMU_COMPRA_GUIAS_DESDE=2026-09-28T12:00`).
+
+Sin migración. Probado sin red: 9 suites en verde (peso/caja/J&T 67 mutaciones,
+compra automática 96, medidas 24, plan 23, espera 190, cancelaciones 274, stock
+70, notas, guías del día); simulación de la cola real: 25 de 27 con medida.
+
 ### v0.610.0 — Fan-out: en Temu «a la venta» es 2/8, no 4/7 — lo dicen los pedidos (solo lectura)
 
 Eduardo, 1-oct: *"Sí, corrige las etiquetas de Temu"*.

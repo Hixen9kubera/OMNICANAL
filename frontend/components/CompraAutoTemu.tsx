@@ -14,10 +14,14 @@
  *   · si está en ENSAYO (no compra: dice qué compraría) o en MODO SIMPLE (sólo
  *     compra sola una caja sendType 0), y qué paquetería/tipo elige;
  *   · compras y gasto de HOY contra sus topes;
- *   · si está DETENIDA y por qué — un fallo o un "no sé si compró" la detiene
- *     hasta que alguien concilie —, con el botón "Conciliar" (admin) por cada
- *     compra abierta y por cada etiqueta que sigue EN APLICACIÓN en Temu (ésa
- *     sólo libera si alguien la ACEPTA tras mirarla en el seller center);
+ *   · si está DETENIDA y por qué — sólo el dinero en duda la detiene ("no sé
+ *     si compró", grupo a medias, la orden de Odoo no cuadra con la guía) hasta
+ *     que alguien concilie —, con el botón "Conciliar" (admin) por cada compra
+ *     abierta y por cada etiqueta que sigue EN APLICACIÓN en Temu (ésa sólo
+ *     libera si alguien la ACEPTA tras mirarla en el seller center);
+ *   · las que Temu RECHAZÓ (1-oct: un rechazo ya NO detiene el job): quedan
+ *     "compra manual · Temu la rechazó: <código y texto>" con el botón
+ *     «Reintentar» — solas se reintentan una vez, cuando cambia su plan;
  *   · cuántas ventas nuevas requieren compra manual, y las URGENTES.
  *
  * Por venta, en cada renglón de la lista, `ChipCompraAuto` dice "Guía comprada
@@ -40,6 +44,9 @@ export interface VentaCompraAuto {
   clase_txt?: string;
   urgente?: boolean;
   motivo?: string;
+  /** ¿La campana la está avisando? (una transitoria que no se resuelve, una
+   *  "ya tiene guía" cuya orden no nace…). El panel cuenta lo mismo. */
+  en_campana?: boolean;
   visto?: string | null;
   desde?: string | null;
   estado_bitacora?: string;
@@ -55,6 +62,10 @@ export interface VentaCompraAuto {
   /** …y una persona la aceptó para liberar el job (se sigue conciliando sola). */
   aceptada?: boolean;
   detalle?: string | null;
+  /** Se compró después del límite de envío de Temu (30-sep: sin interruptor). */
+  tarde?: boolean;
+  /** De dónde salió el peso y la caja: "omnicanal · packing list (media)"… */
+  medidas?: string | null;
 }
 
 interface CompraEnsayo {
@@ -64,6 +75,8 @@ interface CompraEnsayo {
   fecha_envio?: string | null;
   horas?: number | null;
   ajustada?: boolean;
+  tarde?: boolean;
+  medidas?: string;
   llamadas?: Array<{ send_type: number; cajas: number }>;
 }
 
@@ -84,14 +97,34 @@ export interface CompraAutoEstado {
     ensayo?: boolean;
     /** MODO SIMPLE: sólo compra sola una caja sendType 0 (nace encendido). */
     solo_simple?: boolean;
-    /** TEMU_GUIAS_PAQUETERIA: "*" = la más barata de todas, drop off incluido. */
+    /** TEMU_GUIAS_PAQUETERIA, en orden de prioridad ("J&T,*": J&T primero y,
+     *  si no se ofrece, la más barata de las demás). */
     paqueteria?: string;
+    /** false = el primer renglón de TEMU_GUIAS_PAQUETERIA NO es J&T (el orden es
+     *  prioridad: las guías saldrían por esa otra paquetería). */
+    paqueteria_jt_primero?: boolean;
+    /** TEMU_COMPRA_GUIAS_AUTO_EXCEDE_JT: ¿se compra sola la caja que excede J&T? */
+    excede_jt_compra?: boolean;
+    /** TEMU_GUIAS_PESO_GUIA_X1_POR_PIEZAS: ¿la guía de 1 pieza × piezas cuenta en el peso? */
+    peso_guia_x1_por_piezas?: boolean;
+    jt_ship_company_id?: number;
+    /** Límites de J&T (30 kg / 100 cm / 160 cm, volumétrico ÷ 5000) y el sobre de
+     *  60×60×40 de sus preguntas frecuentes (sólo aviso). */
+    limites_jt?: { peso: number; lado: number; suma: number; divisor: number; aviso: number;
+                   aviso_corto?: number };
+    peso_min_kg?: number;
     sabado_alterno?: boolean;
     desde: string;
     minutos: number;
     revisar_min?: number;
     verificar_max_min?: number;
     topes: Topes;
+    /** Segundos de cada vuelta para EMPEZAR compras (lo demás, la siguiente). */
+    presupuesto_s?: number;
+    /** Quién opina en el peso y la caja (TEMU_GUIAS_FUENTES_MEDIDA): gana el
+     *  menor creíble, el orden ya no manda. */
+    fuentes_medida?: string[];
+    fuentes_medida_error?: string | null;
   };
   encendida?: boolean;
   detenido?: { desde?: string | null; motivo?: string | null; por?: string | null;
@@ -115,6 +148,16 @@ export interface CompraAutoEstado {
     motivo?: string | null;
     desde?: string | null;
   }>;
+  /** Ventas cuya compra automática Temu RECHAZÓ y siguen esperando guía: no
+   *  detienen el job; se pueden «Reintentar». */
+  rechazadas?: Array<{
+    parent_order_sn: string;
+    codigo?: string | null;
+    motivo?: string | null;
+    desde?: string | null;
+    /** disponible (se reintenta una vez si cambia su plan) | pedido | agotado */
+    reintento?: string;
+  }>;
   error?: string | null;
   ultima_vuelta?: {
     ts?: string | null;
@@ -124,7 +167,16 @@ export interface CompraAutoEstado {
     evaluadas?: number;
     manuales?: number;
     compradas?: Array<{ ventas: string[]; costo_mxn: number | null; paqueteria: string[];
-                        fecha_envio?: string | null; horas?: number | null }>;
+                        fecha_envio?: string | null; horas?: number | null;
+                        tarde?: boolean; medidas?: string;
+                        /** Por qué NO fue por J&T (si no lo fue) y avisos de medidas. */
+                        no_jt?: string[]; avisos?: Array<{ de: string; aviso: string }>;
+                        reintento?: string | null }>;
+    /** Las que Temu rechazó en esta vuelta (el job siguió con las demás). */
+    rechazadas?: Array<{ ventas: string[]; codigo: string; motivo: string }>;
+    /** Comprables que no cupieron en el tiempo de la vuelta: van en la siguiente. */
+    esperan_turno?: number;
+    presupuesto_agotado?: boolean;
     /** ENSAYO: lo que la vuelta HABRÍA comprado. */
     ensayo?: CompraEnsayo[];
   };
@@ -139,6 +191,15 @@ function fechaCorta(iso: string | null | undefined): string {
   if (!iso) return "—";
   const [a, m, d] = iso.slice(0, 10).split("-");
   return a && m && d ? `${Number(d)}-${MESES[Number(m) - 1] ?? m}` : iso;
+}
+
+/** El corte: "28-sep", o "28-sep 12:00" si TEMU_COMPRA_GUIAS_DESDE lleva hora (una venta
+ *  del 28 a las 11:33 queda fuera de un corte del 28 a las 12:00). */
+function corteTxt(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const hora = /[T ](\d{2}):(\d{2})/.exec(iso);
+  const dia = fechaCorta(iso);
+  return hora && `${hora[1]}:${hora[2]}` !== "00:00" ? `${dia} ${hora[1]}:${hora[2]}` : dia;
 }
 
 function hace(iso: string | null | undefined): string {
@@ -179,6 +240,9 @@ const ESTADO_VUELTA: Record<string, string> = {
   cola_larga: "candidatas fuera del alcance del plan",
   sin_turno: "no se pudo tomar el turno",
   turno_perdido: "el turno venció a media vuelta",
+  rechazos: "Temu rechazó compras (quedan manuales; siguió con las demás)",
+  rechazos_seguidos: "rechazos seguidos de Temu: la vuelta dejó de comprar (no está detenida; la siguiente prueba UNA venta)",
+  pasarela: "la pasarela de Temu rechazó la llamada (se reintenta sola)",
   error: "error",
 };
 
@@ -204,9 +268,10 @@ export function ChipCompraAuto({ v, compacto = false }: { v: VentaCompraAuto; co
       (v.paqueteria ?? []).join(" + ") || null,
       v.costo_mxn != null ? dinero(v.costo_mxn) : null,
       v.fecha_envio ? `entrega ${fechaCorta(v.fecha_envio)}${v.horas ? ` (${v.horas} h)` : ""}` : null,
+      v.tarde ? "comprada TARDE (límite de Temu ya vencido)" : null,
     ].filter(Boolean);
     texto = `Guía comprada automáticamente · ${partes.join(" · ")}${compacto ? "" : ` · ${verif}`}`;
-    titulo = v.detalle ?? verif;
+    titulo = [v.detalle ?? verif, v.medidas ? `medidas: ${v.medidas}` : null].filter(Boolean).join(" · ");
     if (v.verificacion === "no" || v.verificacion === "detenida") {
       fondo = "#FFF1F2"; tinta = "#9F1239"; borde = "#FDA4AF";
     } else if (v.verificacion === "ok") {
@@ -220,6 +285,12 @@ export function ChipCompraAuto({ v, compacto = false }: { v: VentaCompraAuto; co
     fondo = "#FFF1F2"; tinta = "#9F1239"; borde = "#FDA4AF";
     icono = <ShieldAlert className="h-3 w-3 shrink-0" />;
     texto = `Compra automática '${v.estado_bitacora ?? v.estado.slice(7)}': hay que conciliarla`;
+  } else if (v.clase === "ya_comprada" && v.en_campana) {
+    // Lleva horas "con guía" y su orden no nace: la etiqueta pudo fallar o
+    // anularse en Temu. Nadie la compra sola: que alguien la mire.
+    fondo = "#FFF1F2"; tinta = "#9F1239"; borde = "#FDA4AF";
+    icono = <AlertTriangle className="h-3 w-3 shrink-0" />;
+    texto = `Tiene etiqueta en Temu pero su orden no nace: revísala${compacto || !v.motivo ? "" : ` · ${v.motivo}`}`;
   } else if (v.clase === "ya_comprada") {
     fondo = "#F8FAFC"; tinta = "#475569"; borde = "#CBD5E1";
     icono = <CheckCircle2 className="h-3 w-3 shrink-0" />;
@@ -230,10 +301,13 @@ export function ChipCompraAuto({ v, compacto = false }: { v: VentaCompraAuto; co
     icono = <FlaskConical className="h-3 w-3 shrink-0" />;
     const m = (v.motivo ?? "").replace(/^ENSAYO: la compraría —\s*/i, "");
     texto = `Ensayo: la compraría${compacto || !m ? "" : ` · ${m}`}`;
-  } else if (v.clase === "rechazo") {
+  } else if (v.clase === "rechazo" || v.clase === "rechazo_final") {
+    // Temu RECHAZÓ su compra (seguro que no compró): no detiene el job. El
+    // motivo ya dice "compra manual · Temu la rechazó: <código y texto>".
     fondo = "#FFF1F2"; tinta = "#9F1239"; borde = "#FDA4AF";
     icono = <ShieldAlert className="h-3 w-3 shrink-0" />;
-    texto = `Requiere compra manual · la compra automática no salió${compacto || !v.motivo ? "" : `: ${v.motivo}`}`;
+    const m = (v.motivo ?? "").replace(/^compra manual · /i, "");
+    texto = `Compra manual · ${compacto || !m ? "Temu la rechazó" : m}`;
   } else if (v.urgente) {
     fondo = "#FFF1F2"; tinta = "#9F1239"; borde = "#FDA4AF";
     const m = (v.motivo ?? "").replace(/^compra manual URGENTE:\s*/i, "");
@@ -279,9 +353,13 @@ export default function CompraAutoTemu({ datos, puedeMover, onCambio }: {
   const hoy = datos.hoy ?? { compras: 0, gasto_mxn: 0 };
   const u = datos.ultima_vuelta ?? {};
   const ensayo = Boolean(b?.ensayo);
+  // Las anteriores al corte SÍ cuentan (30-sep: ninguna venta se queda sin guía
+  // en silencio); lo transitorio se reintenta solo la vuelta siguiente. Cuenta
+  // lo MISMO que la campana (`en_campana`): una transitoria que no se resuelve
+  // y una "ya tiene guía" cuya orden no nace también.
   const manuales = Object.entries(datos.ventas ?? {}).filter(
-    ([, v]) => v.estado === "manual" && v.clase !== "ya_comprada" && v.clase !== "anterior_corte"
-      && v.clase !== "transitorio" && v.clase !== "ensayo");
+    ([, v]) => v.estado === "manual" && (v.en_campana ?? (v.clase !== "ya_comprada"
+      && v.clase !== "transitorio" && v.clase !== "ensayo")));
   const urgentes = manuales.filter(([, v]) => v.urgente).map(([po]) => po);
   const porClase: Record<string, number> = {};
   for (const [, v] of manuales) {
@@ -313,19 +391,23 @@ export default function CompraAutoTemu({ datos, puedeMover, onCambio }: {
     }
   };
 
-  const conciliar = (po: string | null, liberar = false) => {
+  const conciliar = (po: string | null, liberar = false, reintentar = false) => {
     const qs = new URLSearchParams();
     if (po) qs.set("po", po);
     if (liberar) qs.set("liberar", "true");
-    void llamar(`conciliar:${po ?? "-"}:${liberar}`,
+    if (reintentar) qs.set("reintentar", "true");
+    void llamar(`${reintentar ? "reintentar" : "conciliar"}:${po ?? "-"}:${liberar}`,
       `${API_BASE}/api/automatizacion/temu/compra-auto/conciliar?${qs.toString()}`, (j) => {
         const c = (j.conciliacion ?? {}) as { accion?: string; estado?: string; motivo?: string };
         if (po && c.accion === "sin_rastro") setSinRastro((s) => ({ ...s, [po]: true }));
         const partes = [
           c.accion ? `${po}: ${c.accion}${c.estado ? ` (${c.estado})` : ""}` : null,
-          j.liberado ? "compra automática LIBERADA" : (typeof j.motivo === "string" ? j.motivo : null),
+          reintentar && typeof j.reintento_motivo === "string" ? j.reintento_motivo : null,
+          j.liberado ? "compra automática LIBERADA"
+            : (typeof j.motivo === "string" && j.motivo !== j.reintento_motivo ? j.motivo : null),
         ].filter(Boolean);
-        setAviso({ tono: j.ok ? "ok" : "mal", txt: partes.join(" · ") || "listo" });
+        const bien = reintentar ? j.reintento === true : Boolean(j.ok);
+        setAviso({ tono: bien ? "ok" : "mal", txt: partes.join(" · ") || "listo" });
       });
   };
 
@@ -340,10 +422,17 @@ export default function CompraAutoTemu({ datos, puedeMover, onCambio }: {
       : encendida
         ? { txt: `Encendida · cada ${b?.minutos ?? "?"} min`, bg: "#ECFDF5", fg: "#047857" }
         : { txt: "APAGADA", bg: "#F1F5F9", fg: "#475569" };
-  // "*" = la más barata de TODAS, drop off incluido: alguien lleva la caja a un
-  // punto de entrega. Se dice aquí porque nadie revisa el tipo antes de pagar.
-  const paq = b?.paqueteria ?? "*";
-  const paqTxt = paq.trim() === "*" ? "la más barata (recolección o DROP OFF)" : paq;
+  // J&T SIEMPRE primero (1-oct); la más barata sólo si J&T no se ofrece. Entre
+  // los servicios de J&T gana el más barato —hoy el DROP OFF: alguien lleva la
+  // caja a un punto de entrega—; se dice aquí porque nadie revisa el tipo antes
+  // de pagar. "J&T:Pickup,J&T,*" fija la recolección.
+  const paq = (b?.paqueteria ?? "J&T,*").trim();
+  const paqTxt = (b?.paqueteria_jt_primero === false ? "⚠ J&T NO va primero — " : "")
+    + (paq === "J&T,*" || paq === "*"
+      ? "J&T primero (su servicio más barato: recolección o DROP OFF); si J&T no se ofrece, la más barata"
+      : `${paq} (en orden de prioridad)`);
+  const rechazadas = datos.rechazadas ?? [];
+  const lj = b?.limites_jt;
 
   return (
     <section className="mt-[14px] rounded-[18px] border bg-white px-[20px] py-[14px]"
@@ -356,7 +445,7 @@ export default function CompraAutoTemu({ datos, puedeMover, onCambio }: {
               style={{ background: pastilla.bg, color: pastilla.fg }}>{pastilla.txt}</span>
         <span className="text-[12px] text-slate-400">
           {encendida
-            ? `Ventas desde el ${fechaCorta(b?.desde)} · de la compra a la orden confirmada con su guía y PDF`
+            ? `Ventas desde el ${corteTxt(b?.desde)} · de la compra a la orden confirmada con su guía y PDF`
             : !b?.compra_enabled
               ? "TEMU_COMPRA_GUIAS_ENABLED apagada"
               : "TEMU_COMPRA_GUIAS_AUTO apagada"}
@@ -385,7 +474,26 @@ export default function CompraAutoTemu({ datos, puedeMover, onCambio }: {
               Modo simple: sólo compra sola UNA caja sendType 0 (partidos y combinados, a mano)
             </span>
           )}
-          <span>Paquetería: {paqTxt}</span>
+          <span style={b?.paqueteria_jt_primero === false ? { color: "#B91C1C", fontWeight: 700 } : undefined}>
+            Paquetería: {paqTxt}
+          </span>
+          <span>Vencidas: se compran TARDE (el plazo más corto)</span>
+          <span>Rechazos de Temu: no detienen (esa venta queda manual y se sigue)</span>
+          {(b?.fuentes_medida ?? []).length > 0 && (
+            <span title={b?.fuentes_medida_error ?? "TEMU_GUIAS_FUENTES_MEDIDA"}>
+              Peso y caja: el MENOR creíble entre {(b?.fuentes_medida ?? []).join(" · ")}
+              {b?.fuentes_medida_error ? " (⚠ variable mal escrita: sólo almacén y guías de Temu)" : ""}
+            </span>
+          )}
+          {lj && (
+            <span title="TEMU_GUIAS_JT_*: con ellos se acomodan las piezas; una caja que no cabe se cotiza igual, con aviso">
+              Límites de J&T: {lj.peso} kg · {lj.lado} cm por lado · {lj.suma} cm sumando los tres
+              {b?.excede_jt_compra === false ? " (la caja que los excede queda manual)" : ""}
+            </span>
+          )}
+          {b?.peso_guia_x1_por_piezas === false && (
+            <span>Peso: la guía de 1 pieza NO se multiplica por las piezas</span>
+          )}
         </div>
       )}
 
@@ -406,9 +514,9 @@ export default function CompraAutoTemu({ datos, puedeMover, onCambio }: {
           {puedeMover && abiertas.length === 0 && sinAceptar.length === 0 && (
             <div className="mt-2 flex flex-wrap items-center gap-2">
               {/* Sin compras abiertas ni etiquetas en aplicación: la detención es
-                  por una orden de Odoo que no quedó bien o un rechazo de Temu.
-                  "Conciliar" mira Temu otra vez (un rechazo también) y, si todo
-                  está cerrado, libera el job; queda registrado quién. */}
+                  por una orden de Odoo que no quedó como dice su guía.
+                  "Conciliar" mira Temu otra vez y, si todo está cerrado, libera
+                  el job; queda registrado quién. */}
               {(detenido.ventas ?? []).map((po) => (
                 <button key={po} type="button" onClick={() => conciliar(po)} disabled={ocupado !== null}
                         className="rounded-[8px] px-3 py-[4px] text-[11.5px] font-bold text-white disabled:opacity-50"
@@ -466,6 +574,43 @@ export default function CompraAutoTemu({ datos, puedeMover, onCambio }: {
         </div>
       )}
 
+      {rechazadas.length > 0 && (
+        <div className="mt-2 space-y-1">
+          {rechazadas.map((x) => (
+            <div key={x.parent_order_sn}
+                 className="flex flex-wrap items-center gap-2 rounded-[10px] border px-3 py-[6px] text-[12px]"
+                 style={{ borderColor: "#FDA4AF" }}>
+              <code className="font-mono font-bold text-slate-800">{x.parent_order_sn}</code>
+              <span className="rounded-full px-[7px] py-[1px] text-[10.5px] font-extrabold"
+                    style={{ background: "#FFF1F2", color: "#9F1239" }}>
+                Temu la rechazó{x.codigo ? ` · ${x.codigo}` : ""}
+              </span>
+              <span className="min-w-0 flex-1 truncate text-slate-500" title={x.motivo ?? undefined}>
+                {x.motivo ?? ""} {x.desde ? `· ${hace(x.desde)}` : ""}
+              </span>
+              {x.reintento === "pedido" ? (
+                <span className="text-[11px] font-bold" style={{ color: "#075985" }}>
+                  se reintenta en la vuelta siguiente
+                </span>
+              ) : puedeMover && (
+                <button type="button" onClick={() => conciliar(x.parent_order_sn, false, true)}
+                        disabled={ocupado !== null}
+                        className="rounded-[8px] px-2 py-[3px] text-[11px] font-bold text-white disabled:opacity-50"
+                        style={{ background: "#4F46E5" }}
+                        title="Mira en Temu que no tenga guía y deja que la vuelta siguiente la vuelva a comprar (una vez). No detiene ni compra aquí.">
+                  {ocupado === `reintentar:${x.parent_order_sn}:false` ? "Mirando Temu…" : "Reintentar"}
+                </button>
+              )}
+            </div>
+          ))}
+          <div className="text-[11px] text-slate-400">
+            Un rechazo de Temu no detiene la compra automática: esa venta queda para compra manual y las
+            demás se siguen comprando. Sola se reintenta una vez, cuando cambia su plan (medidas,
+            paquetería o fecha).
+          </div>
+        </div>
+      )}
+
       {pendientes.length > 0 && (
         <div className="mt-2 space-y-1">
           {pendientes.map((p) => (
@@ -511,7 +656,9 @@ export default function CompraAutoTemu({ datos, puedeMover, onCambio }: {
               <code className="font-mono font-bold">{e.ventas.join(" + ")}</code>
               {" · "}{(e.paqueteria ?? []).join(" + ") || "?"} · {dinero(e.costo_mxn)}
               {e.fecha_envio ? ` · entrega ${fechaCorta(e.fecha_envio)}${e.horas ? ` (${e.horas} h)` : ""}` : ""}
-              {e.ajustada ? " · fecha adelantada por el límite de Temu" : ""}
+              {e.tarde ? " · comprada TARDE (límite de Temu ya vencido)"
+                : e.ajustada ? " · fecha adelantada por el límite de Temu" : ""}
+              {e.medidas ? ` · medidas: ${e.medidas}` : ""}
               {(e.llamadas ?? []).length > 0
                 ? ` · ${(e.llamadas ?? []).map((l) => `sendType ${l.send_type} · ${l.cajas} caja${l.cajas === 1 ? "" : "s"}`).join(" / ")}`
                 : ""}
@@ -534,6 +681,7 @@ export default function CompraAutoTemu({ datos, puedeMover, onCambio }: {
           Última vuelta: {u.ts ? `${hace(u.ts)} · ` : "todavía no corre en este arranque"}
           {u.estado ? (ESTADO_VUELTA[u.estado] ?? u.estado) : ""}
           {u.motivo && u.estado !== "compro" ? ` — ${u.motivo}` : ""}
+          {u.esperan_turno ? ` · ${u.esperan_turno} lista(s) para la vuelta siguiente` : ""}
         </span>
       </div>
 
@@ -546,7 +694,7 @@ export default function CompraAutoTemu({ datos, puedeMover, onCambio }: {
           {Object.keys(porClase).length > 0 && ` (${Object.entries(porClase).map(([k, n]) => `${k}: ${n}`).join(", ")})`}
           {urgentes.length > 0 && (
             <div className="mt-1 font-bold">
-              URGENTES (el límite de envío de Temu ya no alcanza la regla): {urgentes.join(", ")}
+              URGENTES (límite de envío de Temu vencido y la compra automática no puede comprarlas): {urgentes.join(", ")}
             </div>
           )}
           <div className="mt-1 text-[11px] opacity-80">

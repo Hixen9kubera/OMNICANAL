@@ -11,6 +11,12 @@
  * peso y caja (y DE DÓNDE salen), la paquetería y su costo, y el payload
  * EXACTO que se mandaría a `bg.logistics.shipment.create`, copiable.
  *
+ * PESO Y CAJA (1-oct): el MENOR creíble entre lo nuestro (almacén, packing
+ * list, Woo) y lo de Temu (guías, publicación). Cada caja dice de dónde salió
+ * su peso y su caja, su volumétrico y si cabe en J&T (30 kg / 100 cm / 160 cm),
+ * y lista los candidatos que se descartaron y por qué. PAQUETERÍA: J&T
+ * primero; si no fue J&T, dice por qué.
+ *
  * NO HAY BOTÓN DE COMPRAR, a propósito. La compra vive en el backend detrás de
  * `TEMU_COMPRA_GUIAS_ENABLED` (apagada), de la APROBACIÓN del grupo (su huella
  * firma payloads + fecha + costo y vence) y de la bitácora durable
@@ -42,18 +48,52 @@ interface Renglon {
   quantity: number;
 }
 
+/** Un candidato de PESO o de CAJA: el que ganó, los que perdieron y los descartados. */
+interface Candidato {
+  fuente?: string | null;
+  txt: string;
+  kg?: number | null;
+  cm?: number[] | null;
+  ok: boolean;
+  por?: string | null;
+  gana?: boolean;
+  facturable_kg?: number | null;
+  cabe_jt?: boolean | null;
+}
+
 interface Empaque {
   ok: boolean;
   peso_kg: number | null;
   largo_cm: number | null;
   ancho_cm: number | null;
   alto_cm: number | null;
+  /** De dónde salió la CAJA; `fuente_peso`, de dónde salió el PESO. */
   fuente: string | null;
-  confianza: "alta" | "media" | "ninguna";
+  fuente_peso?: string | null;
+  /** "peso: Temu · guía de 1 pieza × piezas · caja: omnicanal · packing list"… */
+  fuente_txt?: string | null;
+  confianza: "alta" | "media" | "baja" | "ninguna";
   muestras: number;
   detalle: string;
   motivo: string | null;
   aviso?: string | null;
+  avisos?: string[];
+  /** Los candidatos que no ganaron, con su porqué (en texto). */
+  descartes?: string[];
+  peso?: { kg: number | null; fuente_txt?: string | null; candidatos?: Candidato[] } | null;
+  caja?: {
+    cm: number[] | null;
+    fuente_txt?: string | null;
+    /** Volumen de la fila ÷ volumen por el que se pagó flete (≥ 3 = cartón master). */
+    R?: number | null;
+    rejilla?: number[] | null;
+    cabe_jt?: boolean | null;
+    volumetrico_kg?: number | null;
+    facturable_kg?: number | null;
+    suma_cm?: number | null;
+    partir?: string | null;
+    candidatos?: Candidato[];
+  } | null;
 }
 
 interface Canal {
@@ -64,6 +104,14 @@ interface Canal {
   estimatedAmount: string;
   estimatedText: string;
   monto: number | null;
+  es_jt?: boolean;
+}
+
+interface NoDisponible {
+  shippingCompanyName: string;
+  shipLogisticsType: string;
+  motivo: string;
+  es_jt?: boolean;
 }
 
 interface Caja {
@@ -79,6 +127,10 @@ interface Caja {
     opciones?: Canal[];
     mas_barata?: Canal | null;
     motivo: string | null;
+    es_jt?: boolean;
+    /** Por qué NO fue J&T (con el motivo de Temu), cuando no lo fue. */
+    porque_no_jt?: string | null;
+    no_disponibles?: NoDisponible[];
   } | null;
 }
 
@@ -90,6 +142,8 @@ interface Llamada {
   payload: Record<string, unknown> | null;
   huella: string | null;
   motivos: string[];
+  /** No bloquean: p. ej. la fecha va después del límite de Temu (comprada TARDE). */
+  avisos?: string[];
   comprable: boolean;
 }
 
@@ -103,6 +157,17 @@ interface Aprobacion {
   llamadas: number;
   cajas: number;
   costo_mxn: number;
+  /** El límite de envío de Temu ya no se alcanza: se compra igual, TARDE. */
+  tarde?: boolean;
+  /** Temu no dio el límite de alguna orden: el plazo más corto. */
+  sin_limite?: boolean;
+}
+
+interface FechaGrupo {
+  tarde?: boolean;
+  sin_limite?: boolean;
+  ajustada?: boolean;
+  ajuste?: string | null;
 }
 
 interface Grupo {
@@ -118,6 +183,7 @@ interface Grupo {
   limites: Record<string, string | null>;
   llamadas: Llamada[];
   aprobacion: Aprobacion | null;
+  fecha?: FechaGrupo | null;
 }
 
 interface FechaEnvio {
@@ -154,7 +220,11 @@ interface Plan {
   cola_truncada?: boolean;
   llamadas_temu?: number;
   resumen?: { grupos: number; ventas: number; comprables: number; bloqueados: number;
-              cajas: number; costo_estimado_mxn: number };
+              cajas: number; costo_estimado_mxn: number;
+              cajas_por_fuente?: Record<string, number>; tardes?: number };
+  fuentes_medida?: { escalera: Array<{ id: string; txt: string }>; error: string | null;
+                     regla?: string };
+  limites_jt?: { peso: number; lado: number; suma: number; divisor: number; aviso: number };
   grupos: Grupo[];
 }
 
@@ -167,19 +237,31 @@ interface Medida {
 
 /* ── Piezas chicas ────────────────────────────────────────────────────────── */
 
+/** Respaldo por si el backend no manda `fuente_txt` (lo manda siempre desde el 30-sep). */
 const FUENTE_TXT: Record<string, string> = {
   manual: "medida en el panel",
-  almacen: "medido por almacén",
-  historial_temu: "historial de guías",
-  interpolado_historial: "interpolado (propuesta)",
-  suma_estimada: "suma estimada",
+  almacen: "omnicanal · Checklist de almacén",
+  omnicanal_packing: "omnicanal · packing list",
+  omnicanal_woo: "omnicanal · Woo",
+  temu_guia: "Temu · guía de esas piezas",
+  temu_guia_x1: "Temu · guía de 1 pieza × piezas",
+  temu_guia_otra: "Temu · guía de otra cantidad",
+  temu_hermanas: "Temu · variante hermana",
+  temu_publicacion: "Temu · publicación",
+  suma_skus: "suma de SKUs",
 };
 
 const CONFIANZA: Record<Empaque["confianza"], { bg: string; fg: string }> = {
   alta: { bg: "#ECFDF5", fg: "#047857" },
   media: { bg: "#FFFBEB", fg: "#92400E" },
+  baja: { bg: "#FFF7ED", fg: "#9A3412" },
   ninguna: { bg: "#FFF1F2", fg: "#9F1239" },
 };
+
+function textoFuente(e: Empaque): string {
+  if (e.fuente_txt) return e.fuente_txt;
+  return e.fuente ? FUENTE_TXT[e.fuente] ?? e.fuente : "sin fuente";
+}
 
 function fechaCorta(iso: string | null | undefined): string {
   if (!iso) return "—";
@@ -199,6 +281,51 @@ function Pastilla({ bien, txt }: { bien: boolean; txt: string }) {
       {bien ? <CheckCircle2 className="h-[12px] w-[12px]" /> : <AlertTriangle className="h-[12px] w-[12px]" />}
       {txt}
     </span>
+  );
+}
+
+/** Los candidatos de peso y de caja de UNA caja: el que ganó y por qué perdieron los demás. */
+function Candidatos({ e }: { e: Empaque }) {
+  const [ver, setVer] = useState(false);
+  const pesos = e.peso?.candidatos ?? [];
+  const cajas = e.caja?.candidatos ?? [];
+  if (pesos.length + cajas.length === 0) return null;
+  const fila = (c: Candidato, valor: string, i: number) => (
+    <li key={i} style={{ color: c.gana ? "#047857" : c.ok ? "#475569" : "#94a3b8" }}>
+      {c.gana ? "✔ " : c.ok ? "· " : "✘ "}{c.txt}{valor ? ` = ${valor}` : ""}
+      {c.gana ? " — GANA" : c.ok ? " — no es el menor" : c.por ? ` — ${c.por}` : ""}
+    </li>
+  );
+  return (
+    <div className="mt-1">
+      <button type="button" onClick={() => setVer((v) => !v)}
+              className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-500 hover:text-indigo-600">
+        {ver ? <ChevronDown className="h-[11px] w-[11px]" /> : <ChevronRight className="h-[11px] w-[11px]" />}
+        {pesos.length + cajas.length} candidato{pesos.length + cajas.length === 1 ? "" : "s"} (peso y caja)
+      </button>
+      {ver && (
+        <div className="mt-1 rounded-[8px] border px-2 py-1 text-[11px]"
+             style={{ borderColor: "#e6e9f2", background: "#fbfcfe" }}>
+          {pesos.length > 0 && (
+            <>
+              <div className="font-bold text-slate-600">Peso</div>
+              <ul>{pesos.map((c, i) => fila(c, c.kg != null ? `${c.kg.toFixed(2)} kg` : "", i))}</ul>
+            </>
+          )}
+          {cajas.length > 0 && (
+            <>
+              <div className="mt-1 font-bold text-slate-600">Caja</div>
+              <ul>
+                {cajas.map((c, i) => fila(
+                  c,
+                  c.cm ? `${c.cm.join("×")} cm${c.facturable_kg != null ? ` · factura ${c.facturable_kg.toFixed(2)} kg` : ""}${c.cabe_jt === false ? " · NO cabe en J&T" : ""}` : "",
+                  i))}
+              </ul>
+            </>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -363,14 +490,31 @@ function TablaCajas({ ll, medidas, onGuardar, onQuitar }: {
                       ? ` · ${e.largo_cm}×${e.ancho_cm}×${e.alto_cm} cm` : " · sin caja"}
                   </div>
                   <span className="mt-1 inline-block rounded-full px-[7px] py-[1px] text-[10.5px] font-bold"
-                        style={{ background: tono.bg, color: tono.fg }} title={e.detalle}>
-                    {e.fuente ? FUENTE_TXT[e.fuente] ?? e.fuente : "sin fuente"}
+                        style={{ background: tono.bg, color: tono.fg }}
+                        title={[e.detalle, ...(e.descartes ?? []).map((d) => `no ganó · ${d}`)]
+                          .filter(Boolean).join("\n")}>
+                    {textoFuente(e)}
                     {e.muestras ? ` · ${e.muestras} muestra${e.muestras === 1 ? "" : "s"}` : ""}
                     {` · confianza ${e.confianza}`}
                   </span>
+                  {e.caja?.cm && (
+                    <div className="mt-1 text-[11px] text-slate-500">
+                      volumétrico {e.caja.volumetrico_kg != null ? e.caja.volumetrico_kg.toFixed(2) : "—"} kg
+                      {" · "}factura {e.caja.facturable_kg != null ? e.caja.facturable_kg.toFixed(2) : "—"} kg
+                      {" · "}lados suman {e.caja.suma_cm ?? "—"} cm
+                      {e.caja.R != null ? ` · ${e.caja.R}× el flete` : ""}{" · "}
+                      <span className="font-bold" style={{ color: e.caja.cabe_jt === false ? "#9F1239" : "#047857" }}>
+                        {e.caja.cabe_jt === false ? `NO cabe en J&T${e.caja.partir ? ` (${e.caja.partir})` : ""}` : "cabe en J&T"}
+                      </span>
+                    </div>
+                  )}
+                  {e.detalle && (
+                    <div className="mt-1 text-[11px] text-slate-500">{e.detalle}</div>
+                  )}
                   {e.aviso && (
                     <div className="mt-1 text-[11px] font-semibold" style={{ color: "#92400E" }}>{e.aviso}</div>
                   )}
+                  <Candidatos e={e} />
                   <MedirCaja key={c.clave} caja={c} actual={medidas[c.clave]}
                              onGuardar={onGuardar} onQuitar={onQuitar} />
                 </td>
@@ -384,9 +528,14 @@ function TablaCajas({ ll, medidas, onGuardar, onQuitar }: {
                       <div className="font-mono text-[10.5px] text-slate-400">
                         channel {el.channelId} · company {el.shipCompanyId}
                       </div>
+                      {c.cotizacion?.porque_no_jt && (
+                        <div className="mt-1 text-[11px] font-semibold" style={{ color: "#92400E" }}>
+                          No va por J&T: {c.cotizacion.porque_no_jt}
+                        </div>
+                      )}
                       {otraMasBarata && barata && (
                         <div className="mt-1 text-[11px] text-slate-500"
-                             title="La regla de paquetería (TEMU_GUIAS_PAQUETERIA) la deja fuera">
+                             title="J&T va primero (TEMU_GUIAS_PAQUETERIA en orden de prioridad): la más barata sólo se usa si J&T no se ofrece">
                           La más barata de todas: {barata.shippingCompanyName} · {barata.shipLogisticsType}{" "}
                           {barata.estimatedAmount}
                         </div>
@@ -425,6 +574,10 @@ function BloqueAprobacion({ ap }: { ap: Aprobacion }) {
       <span className="font-bold">Aprobación del grupo</span>
       <span className="font-mono" title={ap.huella}>{ap.huella.slice(0, 16)}…</span>
       <span>· entrega {ap.dia_envio} {fechaCorta(ap.fecha_envio)} ({ap.horas} h)</span>
+      {ap.tarde && (
+        <span className="font-extrabold" style={{ color: "#9F1239" }}>· comprada TARDE (límite de Temu ya vencido)</span>
+      )}
+      {!ap.tarde && ap.sin_limite && <span>· sin límite de Temu: el plazo más corto</span>}
       <span>· {ap.llamadas} llamada{ap.llamadas === 1 ? "" : "s"}, {ap.cajas} caja{ap.cajas === 1 ? "" : "s"}</span>
       <span>· ~MX${ap.costo_mxn.toFixed(2)}</span>
       <span>· vence {horaCorta(ap.vence)}</span>
@@ -469,6 +622,13 @@ function TarjetaGrupo({ g, medidas, onGuardar, onQuitar }: {
         </span>
       </div>
       {g.regla && <div className="mt-1 text-[12.5px] text-slate-600">{g.regla.texto}</div>}
+      {g.fecha?.tarde && (
+        <div className="mt-1 rounded-[8px] px-2 py-[3px] text-[11.5px] font-bold"
+             style={{ background: "#FFF1F2", color: "#9F1239" }}>
+          Límite de envío de Temu vencido: se compra IGUAL, TARDE, con el plazo más corto
+          {g.fecha.ajuste ? ` — ${g.fecha.ajuste}` : ""}
+        </div>
+      )}
       {Object.values(g.limites ?? {}).some(Boolean) && (
         <div className="mt-1 text-[11.5px] text-slate-400">
           Límite de envío de Temu:{" "}
@@ -503,6 +663,11 @@ function TarjetaGrupo({ g, medidas, onGuardar, onQuitar }: {
           {ll.motivos.length > 0 && (
             <ul className="mt-1 text-[11.5px]" style={{ color: "#92400E" }}>
               {ll.motivos.map((m, j) => <li key={j}>· {m}</li>)}
+            </ul>
+          )}
+          {(ll.avisos ?? []).length > 0 && (
+            <ul className="mt-1 text-[11.5px] text-slate-500">
+              {(ll.avisos ?? []).map((m, j) => <li key={j}>· {m}</li>)}
             </ul>
           )}
           <Payload ll={ll} />
@@ -680,9 +845,16 @@ export default function PlanGuiasTemu() {
                       </div>
                     ))}
                     <div className="text-[11.5px] text-slate-500">
-                      Regla: {(datos.paqueteria_preferida ?? []).join(", ").replace("*", "cualquiera")}
-                      {" "}(la más barata; empate → la más rápida)
+                      Paquetería, en orden de prioridad:{" "}
+                      {(datos.paqueteria_preferida ?? []).join(" → ").replace("*", "la más barata de las demás")}
+                      {" "}(J&T siempre primero; dentro de un renglón, la más barata; empate → la más rápida)
                     </div>
+                    {datos.limites_jt && (
+                      <div className="text-[11px] text-slate-400">
+                        Límites de J&T: {datos.limites_jt.peso} kg · {datos.limites_jt.lado} cm por lado ·{" "}
+                        {datos.limites_jt.suma} cm sumando los tres · volumétrico ÷ {datos.limites_jt.divisor}
+                      </div>
+                    )}
                     {ajena.length > 0 && (
                       <div className="mt-1 text-[11px] text-slate-500"
                            title="Ventas de otros canales que esperan guía y órdenes de Odoo en borrador: se restan de los dos almacenes">
@@ -710,7 +882,23 @@ export default function PlanGuiasTemu() {
                         ? `${datos.combinado.grupos} grupo(s) de Temu`
                         : `sin consultar — ${datos.combinado?.error ?? "?"}`}
                       {" · "}Historial: {datos.historial?.muestras ?? 0} guías medidas
+                      {datos.resumen?.tardes ? ` · ${datos.resumen.tardes} grupo(s) van TARDE` : ""}
                     </div>
+                    {datos.fuentes_medida && (
+                      <div className="text-[11px] text-slate-400"
+                           title={datos.fuentes_medida.error ?? "TEMU_GUIAS_FUENTES_MEDIDA"}>
+                        Peso y caja: la medida del panel manda; si no, el MENOR creíble entre{" "}
+                        {datos.fuentes_medida.escalera.map((f) => f.txt).join(" · ")}
+                        {datos.fuentes_medida.error ? " (⚠ variable mal escrita: sólo almacén y guías de Temu)" : ""}
+                      </div>
+                    )}
+                    {Object.keys(datos.resumen?.cajas_por_fuente ?? {}).length > 0 && (
+                      <div className="text-[11px] text-slate-400">
+                        Cajas por fuente:{" "}
+                        {Object.entries(datos.resumen?.cajas_por_fuente ?? {})
+                          .map(([k, n]) => `${k}: ${n}`).join(" · ")}
+                      </div>
+                    )}
                     {datos.bitacora?.leida && (
                       <div className="text-[11.5px] text-slate-500">
                         Bitácora de compras: {datos.bitacora.hechas.length} comprada(s) por el panel

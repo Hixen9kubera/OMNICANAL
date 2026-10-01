@@ -480,17 +480,80 @@ class Settings(BaseSettings):
     # Almacén de Odoo → warehouseId de Temu (confirmado por Brandon):
     # TEXCO = "IFULL NAVE 2", TEXCO II = "Dirección texco 2".
     temu_guias_almacenes: str = "135:WH-04038973460631627,150:WH-10610291507351627"
-    # "paquetería:tipo", separadas por coma; "*" = CUALQUIER paquetería. Gana la
-    # más barata de las que entran; empate → la de menos días. Por omisión:
-    # la más barata de TODAS, recolección o drop-off (regla de Brandon del
-    # 30-sep: "para la compra de las guías siempre tomar el más barato
-    # posible"). Con la cotización del 24-sep eso es J&T drop-off (MX$32.40):
-    # alguien lleva la caja al punto. Sólo recolección: "*:Pickup". Sólo J&T
-    # recolección: "J&T express:Pickup".
-    temu_guias_paqueteria: str = "*"
-    # Guías ya compradas del MISMO (SKU, piezas) que hacen falta para confiar
-    # en su peso y caja.
+    # "paquetería:tipo", separadas por coma y EN ORDEN DE PRIORIDAD: gana el
+    # primer renglón que tenga un canal usable; dentro de ese renglón, el más
+    # barato; empate → la de menos días. "*" = cualquier paquetería. Por omisión
+    # "J&T,*" (Brandon, 1-oct: "solamente selecciona J&T como el repartidor
+    # principal siempre; en caso de que no se encuentre en las opciones,
+    # utilizar el más barato"). Entre los servicios de J&T gana el más barato
+    # —hoy el DROP OFF (MX$32.40 contra MX$34.90 de la recolección): alguien
+    # lleva la caja al punto—; para fijar la recolección: "J&T:Pickup,J&T,*".
+    # ⚠️ Dentro de "*" J&T también va primero (`TEMU_GUIAS_JT_SHIP_COMPANY_ID`):
+    # una variable vieja en "*" NO vuelve a "la más barata de todas".
+    temu_guias_paqueteria: str = "J&T,*"
+    # El shipCompanyId de J&T en Temu (bitácora de compras: 202398511 = J&T,
+    # 202398515 = iMile). 0 = sin prioridad de J&T dentro de "*".
+    temu_guias_jt_ship_company_id: int = 202398511
+    # LÍMITES DE J&T Express México (sus T&C, cláusulas 4.9 y 6.1; los mismos
+    # que publica TikTok Shop MX): 30 kg, ningún lado de más de 100 cm, 160 cm
+    # sumando los tres lados, y volumétrico = L×A×H ÷ 5000 (cobra el mayor entre
+    # real y volumétrico). Con ellos se elige cómo se acomodan N piezas en una
+    # caja; una caja que no cabe se cotiza igual, con aviso (el árbitro es la
+    # cotización de Temu). El tope duro sigue en 70 kg / 300 cm por caja.
+    temu_guias_jt_peso_max_kg: float = 30.0
+    temu_guias_jt_lado_max_cm: float = 100.0
+    temu_guias_jt_suma_lados_max_cm: float = 160.0
+    temu_guias_divisor_volumetrico: float = 5000.0
+    # Sólo campana: el sobre de 60×60×40 cm que la PROPIA J&T México publica en
+    # las preguntas frecuentes de su sitio ("envíos de hasta 30 kg con medidas
+    # máximas de 60 cm de largo × 60 cm de ancho × 40 cm de alto"), más estricto
+    # que sus T&C (100/160). Una caja con un lado de más de 60 cm, o con los
+    # tres de más de 40, lleva aviso: un mostrador puede rechazarla. No bloquea.
+    temu_guias_lado_aviso_cm: float = 60.0
+    temu_guias_lado_corto_aviso_cm: float = 40.0
+    # Piso del peso DECLARADO por caja (kg): nada se declara por debajo.
+    temu_guias_peso_min_kg: float = 0.10
+    # ¿La guía de UNA pieza × piezas cuenta como "la multiplicación de Temu" en
+    # el peso? Encendida (la especificación del 1-oct): JUGU-0089-PLA × 3 = 3.00
+    # kg (1.00 × 3). ⚠️ Es una EXTRAPOLACIÓN de una guía comprada a mano, no un
+    # dato de Temu para esas piezas: las guías a mano de × 2/3/4 declararon
+    # 5.40/8.10/10.80 (el peso de Woo × piezas). Apagada —la lectura literal de
+    # Brandon: lo que Temu indica con SU multiplicación contra nuestra suma—,
+    # Temu(N) = la guía de exactamente N piezas o la publicación × N, y ese
+    # mismo SKU sale en 3.75 (lo nuestro, 1.25 × 3). Decisión de Brandon.
+    temu_guias_peso_guia_x1_por_piezas: bool = True
+    # Si la caja EXCEDE los límites de J&T y Temu igual ofrece J&T: apagada
+    # (la orden de Brandon del 1-oct: "J&T siempre; si no se encuentra en las
+    # opciones, la más barata") se compra J&T —el árbitro es la cotización de
+    # Temu— con su aviso; encendida, J&T deja de ser usable para ESA caja y se
+    # compra la más barata de las demás.
+    temu_guias_jt_excede_usa_otra: bool = False
+    # (Sin uso desde el 1-oct: con "el menor creíble" basta UNA guía de Temu del
+    # mismo SKU y piezas. Se conserva para no romper un Railway que la tenga.)
     temu_guias_empaque_min_muestras: int = 2
+    # QUIÉN OPINA EN EL PESO Y LA CAJA. Desde el 1-oct ya NO es una escalera por
+    # orden: gana EL MENOR CREÍBLE entre lo nuestro y lo de Temu (Brandon:
+    # "tienes un peso declarado en Woo y en Temu, siempre escoge el de menor
+    # peso… si Temu con su multiplicación es menor te vas por Temu, pero antes
+    # se hace una suma para ver cuánto peso tenemos nosotros y si es menos le
+    # pones el nuestro"; la caja, igual). Esta lista sólo dice qué fuentes
+    # participan (el ORDEN ya no manda; `historial_temu` y `temu_ultima_guia`
+    # son lo mismo: las guías del mismo SKU). Cordura: lados y peso > 0, ≤ 30 kg
+    # por pieza salvo medición real, densidad 10-4,000 kg/m³. La medida
+    # capturada en el panel manda siempre.
+    #   almacen           · Checklist de almacén (core.products.almacen_*), por pieza
+    #   historial_temu    · ≥ N guías del mismo SKU × piezas, sin dispersión
+    #   omnicanal_packing · costing.costos_validados, por pieza
+    #   omnicanal_woo     · _weight/_length/_width/_height de Woo, por pieza
+    #   temu_ultima_guia  · la última guía de Temu del SKU (basta una)
+    #   temu_hermanas     · guías de variantes de la MISMA familia (MASC-0016-*)
+    #   temu_publicacion  · el paquete de la publicación en Temu
+    #                       (bg.local.goods.sku.list.query, por skuId)
+    # Recortar sin deploy; la estricta de antes: "almacen,historial_temu".
+    # Mal escrita → la estricta (falla cerrado) y la vista previa lo dice.
+    # Odoo NO es fuente (su peso es basura: 181 kg un plato de bebé).
+    temu_guias_fuentes_medida: str = ("almacen,historial_temu,omnicanal_packing,omnicanal_woo,"
+                                      "temu_ultima_guia,temu_hermanas,temu_publicacion")
     temu_guias_plan_limite: int = 20         # ventas por vista previa
 
     # ── COMPRA AUTOMÁTICA DE GUÍAS DE TEMU (30-sep-2026) ──────────────────
@@ -509,11 +572,26 @@ class Settings(BaseSettings):
     #    sendType 1 con dos almacenes y el combinado no están probados por API.
     temu_compra_guias_auto_ensayo: bool = True
     temu_compra_guias_auto_solo_simple: bool = True
+    # Una caja que EXCEDE los límites de J&T (30 kg / 100 cm / 160 cm) y que
+    # Temu igual cotiza: ¿la compra sola la compra automática? Encendida (la
+    # especificación del 1-oct, B.8: "el árbitro es la cotización de Temu") se
+    # compra, con aviso y campana. Apagada, esa venta queda "compra manual ·
+    # excede paquetería: partir en N cajas" — la guía NO se puede cancelar por
+    # API y los T&C de J&T (6.1) dicen que esa caja no se acepta. Decisión de
+    # Brandon; no aplica a la cola del 1-oct (la mayor suma 110 cm).
+    temu_compra_guias_auto_excede_jt: bool = True
     # Corte: sólo ventas cuya fecha de VENTA (parentOrderTime de Temu) sea de
     # este día en adelante, hora de México. Lo anterior lo compra una persona.
-    # Mal escrito → no compra nada (falla cerrado). Al encender: el DÍA DEL
-    # ENCENDIDO (lo anterior ya lo está comprando el equipo a mano).
-    temu_compra_guias_desde: str = "2026-09-30"
+    # Mal escrito → no compra nada (falla cerrado). Brandon lo movió hacia
+    # atrás el 30-sep ("mueve el corte para agarrar las ventas de días
+    # anteriores"): 15-sep, que con la ventana de espera de 14 días
+    # (`ODOO_VENTAS_ESPERA_GUIA_DIAS`) cubre TODA la cola. Un combinado que
+    # mezcla una venta anterior con una nueva se compra entero.
+    temu_compra_guias_desde: str = "2026-09-15"
+    # Las VENCIDAS (límite de envío de Temu ya pasado, o que ningún plazo
+    # alcanza en día hábil) NO tienen interruptor (Brandon, 30-sep: "no hagas
+    # el nuevo interruptor"): se compran SIEMPRE con el plazo más corto en día
+    # hábil y quedan marcadas "comprada TARDE" (ver temu_guias_compra).
     temu_compra_guias_auto_min: int = 15     # cada cuántos minutos corre
     # TOPES. Por omisión UNA compra por vuelta y UNA por día: la primera compra
     # es controlada; subirlos es una decisión aparte, después de verificarla.

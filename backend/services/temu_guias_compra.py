@@ -27,8 +27,17 @@ aviso". Ejemplos suyos: compra mar 29-sep → jue 1-oct; compra sáb 3-oct → l
 
 NUNCA DESPUÉS DEL LÍMITE DE ENVÍO DE TEMU (Brandon, 30-sep): si +2 rebasa el
 `expectShipLatestTime` de la orden (de un grupo, el más cercano), se usa el
-MAYOR plazo permitido que sí lo cumpla y caiga en día hábil; si ni 24 h lo
-cumple, no se compra: "compra manual urgente". Ver `fecha_con_limite`.
+MAYOR plazo permitido que sí lo cumpla y caiga en día hábil. Si ninguno lo
+cumple —el límite ya pasó, o ni 24 h cae en día hábil antes de él— la guía SE
+COMPRA IGUAL, SIEMPRE, con el plazo MÁS CORTO que caiga en día hábil, y queda
+marcada "comprada TARDE (límite de Temu ya vencido)" en la bitácora, el panel
+y la nota de Odoo. Sin interruptor (Brandon: "no hagas el nuevo interruptor").
+`shipLater=false` NO es "entregar hoy": según la ficha de shipment.create
+("apply to ship the package with these tracking numbers and mark this package
+as shipped") marca la orden ENVIADA al comprar, sin que la paquetería la haya
+escaneado, y el paquete deja de salir en `unshipped.package.get` —de donde el
+refresco toma la guía para la orden de Odoo—. No se usa. Si Temu no da el
+límite de un PO, también el plazo más corto (`fecha_de_grupo`).
 
 Los FESTIVOS son los que Temu tiene configurados como "sin funcionamiento" en
 su panel para 2026 (1-ene, 2-feb, 16-mar, 1-may, 16-sep, 16-nov, 25-dic), más
@@ -74,7 +83,16 @@ de la cola de creación) y se recorre de la más vieja a la más nueva,
 descontando de una copia local del `free_qty`:
   · lo que ya se llevan las guías YA COMPRADAS (a mano o por el panel) sale
     del almacén REAL de cada caja (`bg.logistics.shipment.result.get`); si no
-    se puede saber, de ahí en adelante nada es comprable;
+    se puede saber de cuál, se resta de LOS DOS (a lo seguro) en vez de dejar
+    incierto todo lo que viene después (antes una sola guía rara congelaba la
+    cola entera, para siempre);
+  · una venta cuyo detalle no se pudo leer resta sus piezas de LOS DOS
+    almacenes con los renglones que kubera guardó al registrarla
+    (`ops.odoo_sale_order_items`); sólo si tampoco eso se lee, lo que viene
+    después queda incierto (y se reintenta la vuelta siguiente);
+  · un PO del grupo combinado que YA tiene guía sale del grupo y los demás se
+    compran entre sí; uno que Temu agrupa pero no está en la cola se espera 2 h
+    (va a entrar) y después se compra sin él;
   · lo que esperan OTROS canales (TikTok) y las órdenes que Odoo dejó en
     borrador (`no_se_pudo_confirmar`) se resta de LOS DOS almacenes, a lo
     seguro: esa demanda no dice de cuál saldrá;
@@ -93,7 +111,10 @@ caja (sendType 2, o 0 si es uno); un PO que cruza almacenes va SOLO en su
 propia llamada sendType 1.
 
 ⚠️ DOS warehouseId distintos en un mismo sendType 1 lo permite la ficha, pero
-NO está probado por API: la primera compra real debe ser un caso controlado.
+NO está probado por API. Desde el 30-sep entran a la compra automática
+(`TEMU_COMPRA_GUIAS_AUTO_SOLO_SIMPLE=false`): la verificación posterior compara
+en Odoo cada almacén y cada SKU contra lo que Temu dice que salió de cada caja,
+y cualquier diferencia DETIENE el job (`temu_guias_auto.verificar_contra_odoo`).
 
 EL GRUPO SE APRUEBA Y SE COMPRA ENTERO
 ──────────────────────────────────────
@@ -111,37 +132,118 @@ cada caja, momento de la vista previa} y vence a los
 cotización o el día, la huella no coincide: no compra. Justo antes de CADA
 shipment.create se recalcula la fecha y se vuelve a leer el detalle de esos PO.
 
-PESO Y MEDIDAS — NUNCA del catálogo
-───────────────────────────────────
-Las medidas de Woo/costos son CBM reconstruido (memoria
-dimensiones-son-cbm-reconstruido). En orden de precedencia:
-  0 · la medida CAPTURADA EN EL PANEL para esa caja (cualquier composición:
-      es la única forma de comprar una caja con SKUs distintos);
-  1 · medición de almacén (`core.products.almacen_*`), sólo caja de 1 pieza;
-  2 · el historial de Temu: lo DECLARADO en guías ya compradas del MISMO
-      (SKU, piezas), con ≥ `TEMU_GUIAS_EMPAQUE_MIN_MUESTRAS` muestras que no
-      se dispersen más de 15 % NI en peso NI en volumen: peso = el MÁXIMO
-      visto, caja = la MÁS GRANDE vista;
-  3 · interpolación dentro del rango visto del SKU → sólo PROPUESTA;
-  4 · nada → no se compra.
-A 1 y 2 se les exige además: densidad entre 10 y 4,000 kg/m³, peso ≥ 10 g, y
-que la caja del historial NO sea la del catálogo (`costing.costos_validados`):
-si coincide, quien compró la guía copió el catálogo y eso no es una medida.
-Los números se REDONDEAN HACIA ARRIBA a 2 decimales: declarar de menos es lo
-que la paquetería ajusta y cobra.
+PESO Y CAJA — EL MENOR CREÍBLE entre lo nuestro y lo de Temu (Brandon, 1-oct)
+──────────────────────────────────────────────────────────────────────────────
+"Tienes un peso declarado en Woo y en Temu, siempre escoge el de menor peso, e
+inclusive por las piezas: si Temu con su multiplicación es menor te vas por
+Temu, pero internamente antes de decidir se hace una suma para ver cuánto peso
+tenemos nosotros, y si es menos le pones el nuestro." Y para la caja: "ocupar
+Temu y Woo como para el peso", con la proporcionalidad de la pestaña de Costos
+(ahí se manejan cajas master) y el máximo de J&T. Sustituye a la ESCALERA por
+orden del 30-sep (`TEMU_GUIAS_FUENTES_MEDIDA` ya sólo dice QUIÉN opina).
 
-PAQUETERÍA — `TEMU_GUIAS_PAQUETERIA` (por omisión "*")
-──────────────────────────────────────────────────────
-"paquetería:tipo" separadas por coma; "*" es cualquiera. Gana la más barata de
-las que entran; empate → la de menos días (`estimatedText`). La omisión "*" es
-la regla de Brandon del 30-sep ("siempre la más barata, entre todas las
-paqueterías") y ⚠️ NO FILTRA EL TIPO: si el DROP OFF sale más barato que la
-recolección (J&T hoy: MX$32.40 contra MX$34.90) se compra DROP OFF, y ese
-paquete alguien lo tiene que LLEVAR a un punto de entrega. Si el almacén
-trabaja con recolección, la variable va en "*:Pickup" (decisión operativa de
-Brandon, antes de encender la compra automática). La vista previa muestra
-además la más barata de TODAS. Un canal que pide datos extra (`infoNeeded`),
-sólo sirve contra entrega o cotiza en otra moneda que no sea MXN no se elige.
+  0 · la medida CAPTURADA EN EL PANEL para esa caja manda siempre, sin comparar.
+
+EL PESO (`_empaque_sku`, parte A)
+  · NUESTRO por pieza (`lo_nuestro`): el de almacén (`core.products.almacen_*`,
+    medición real) si existe; si no, el MENOR creíble entre el packing list
+    (`costing.costos_validados`) y Woo (_weight). Creíble = 0.01-30 kg y
+    densidad 10-1,500 kg/m³ contra la pieza unitaria YA CORREGIDA (ver abajo).
+    NUESTRO(N) = por pieza × N (la "suma interna").
+  · TEMU(N) = el menor de: lo declarado en una guía de exactamente (SKU, N);
+    la guía de 1 pieza × N (la "multiplicación": es una EXTRAPOLACIÓN de una
+    guía a mano, no un dato de Temu para esas piezas — la caja lo dice en su
+    aviso, y `TEMU_GUIAS_PESO_GUIA_X1_POR_PIEZAS=false` la quita); y el peso de
+    la PUBLICACIÓN (`bg.local.goods.sku.list.query`) × N si no es el relleno
+    por omisión (Temu: 100 g y 10×20×30; `publicar_temu`: 500 g y 20×20×20 —
+    que rellena CADA CAMPO por separado: un peso de exactamente 0.1 o 0.5 kg
+    que no coincide con lo nuestro no opina en el peso, y unas medidas de
+    relleno no opinan para la caja).
+    ⚠️ Las guías que compró ESTE sistema (bitácora 0061) NO cuentan: son el eco
+    de esta misma regla, y con ellas un dato nuestro corregido nunca subiría.
+    Se excluyen DENTRO del SQL del historial (`_historial_candidatos`), antes
+    de tomar las 3 más nuevas por (SKU, piezas): si se quitaran después, cada
+    compra automática desplazaría a una guía a mano y el dato de Temu se
+    apagaría solo a media cola (el mismo SKU con dos pesos el mismo día).
+  · DECLARADO = el MENOR de los dos, con piso `TEMU_GUIAS_PESO_MIN_KG` (0.10)
+    y redondeado HACIA ARRIBA a 2 decimales. Empate → lo nuestro.
+  · Sin nada de eso: una guía de OTRA cantidad del mismo SKU (peso/k × N) y
+    después las variantes HERMANAS (misma familia `CAT-NNNN`, fuera las
+    `FAMILIAS_RECICLADAS`), con confianza baja. Sin nada → compra manual
+    ("hay que pesar y medir"); las demás ventas siguen.
+  · Caja con VARIOS SKUs: la suma de lo declarado de cada SKU, un solo redondeo;
+    si hay una guía a mano con esa MISMA composición, su peso también compite
+    (gana el menor; en empate, la suma).
+
+LA CAJA (`_empaque_sku`, parte B)
+  · VOLUMEN DE REFERENCIA: `v_ref = costo_cbm / 7500` (m³ por pieza por los que
+    se pagó flete; 7500 es `costos.TARIFA_CBM_M3`). Con R = volumen ÷ v_ref:
+  · PIEZA UNITARIA de cada fila de catálogo (`unitaria_de_catalogo`): R < 0.67
+    no opina; 0.67-3 es la pieza, tal cual; R ≥ 3 es el cartón MASTER y la
+    pieza sale con la MISMA función de la pestaña de Costos
+    (`packing_costos.dims_pieza`, importada: hasta 10 piezas se divide el lado
+    mayor; más de 10, raíz cúbica de los tres) dividiendo entre R. Entre 1.5 y
+    3, si la columna `piezas_por_caja` (≥ 2) coincide con R dentro de ± 25 %,
+    también es un cartón —de 2 o 3 piezas— y se reparte igual. Sin flete:
+    densidad < 50 kg/m³ con `piezas_por_caja` → master ÷ esa columna; < 10 sin
+    columna → no opina; lo demás tal cual, con AVISO si su densidad es menor de
+    50 (ahí caen los cartones master reales). La de almacén es unitaria directa.
+    La NUESTRA es UNA por SKU: almacén, o la de menor volumen entre packing y
+    Woo (empate dentro de 5 % → packing).
+    ⚠️ Si el CATÁLOGO no se pudo leer (costing.costos_validados no contestó),
+    Woo y la publicación NO opinan para la caja —sin el flete no se sabe si la
+    medida es el cartón master— y las guías de Temu no se usan: la caja queda
+    sin medida esa vuelta (falla CERRADO), y la compra automática no compra
+    con el plan a medias (`temu_guias_auto.plan_incompleto`).
+  · N PIEZAS (`mejor_acomodo`, sustituye a `apilar`): se prueban las rejillas
+    (i, j, k) con i·j·k ≥ N y gana la que CABE en J&T y paga menos: clave
+    (no cabe, facturable = max(peso, L×A×H/5000), suma de lados, lado mayor).
+  · CANDIDATAS DE TEMU (sin el eco): la guía de exactamente (SKU, N) tal cual
+    si 0.90 ≤ volumen ÷ (N·v_ref) < 3 —debajo las piezas no caben, arriba es el
+    master copiado—; la de 1 pieza como unitaria, acomodada; la publicación
+    como unitaria; y la de k > N piezas (la más cercana) tal cual.
+  · Entre la nuestra y las de Temu que pasan la cordura gana la MENOR con esa
+    misma clave; empate → la nuestra. Sin dato nuestro: sólo Temu; después las
+    hermanas (una caja de hermana que NO cabe en J&T no se cotiza: manual).
+  · VARIOS SKUs (`envolvente`, sustituye a `crecer`): la mejor caja de cada
+    SKU sumadas por la envolvente mínima, contra la guía de esa composición.
+  · LÍMITES DE J&T (T&C de J&T México, cláusulas 4.9 y 6.1; config
+    `TEMU_GUIAS_JT_*`): 30 kg, 100 cm por lado, 160 cm sumando los tres,
+    volumétrico ÷ 5000. Una caja que NO cabe se cotiza igual con su aviso y
+    cuántas cajas harían falta: el árbitro es la cotización de Temu (si ofrece
+    J&T se compra; si no, la más barata; si nadie la acepta, manual). No se
+    parte sola en dos cajas.
+  · AVISOS que no bloquean: la caja no entra en el sobre de 60×60×40 cm que la
+    propia J&T publica en sus preguntas frecuentes (sus T&C dicen 100/160;
+    `TEMU_GUIAS_LADO_AVISO_CM` y `TEMU_GUIAS_LADO_CORTO_AVISO_CM`); se declara
+    menos de la MITAD del volumen que el equipo declaraba a mano (J&T puede
+    re-medir y cobrar la diferencia); el flete y la columna piezas_por_caja no
+    cuadran; las fuentes no coinciden en el peso; el peso se extrapoló de la
+    guía de 1 pieza; una medida sin flete con densidad de cartón master; un
+    peso por pieza con el que su cartón master pesaría más de 40 kg.
+LA CORDURA sigue: ceros, ≤ 30 kg por pieza salvo medición real, ≤ 70 kg y
+≤ 300 cm por caja (bloqueo duro, `plausible`), densidad 10-4,000 kg/m³. Odoo
+NO es fuente (su peso es basura: 181 kg un plato de bebé). Cada caja dice en
+el plan, en el panel y en la bitácora 0061 (columna `reparto`, sin columnas
+nuevas) de dónde salió su PESO y su CAJA, R, volumétrico y facturable, y qué
+candidatos se descartaron y por qué.
+
+PAQUETERÍA — `TEMU_GUIAS_PAQUETERIA` (por omisión "J&T,*")
+──────────────────────────────────────────────────────────
+Brandon (1-oct): "solamente selecciona J&T como el repartidor principal
+siempre; en caso de que no se encuentre en las opciones, utilizar el más
+barato". "paquetería:tipo" separadas por coma y EN ORDEN DE PRIORIDAD: gana el
+primer renglón que tenga un canal usable; dentro de ese renglón, el más barato;
+empate → el de menos días (`estimatedText`). "*" es cualquiera — y dentro de
+"*" J&T va primero (`TEMU_GUIAS_JT_SHIP_COMPANY_ID`, 202398511; con 0 se
+apaga), para que una variable vieja en "*" no devuelva "la más barata de todas".
+Entre los servicios de J&T gana el más barato (hoy el DROP OFF: MX$32.40 contra
+MX$34.90 de la recolección — ese paquete alguien lo LLEVA a un punto); para
+fijar el tipo: "J&T:Pickup,J&T,*". Un canal que pide datos extra
+(`infoNeeded`), sólo sirve contra entrega o cotiza en otra moneda no se elige:
+si eso deja fuera a J&T, o Temu lo manda a `unavailableChannelDtoList`, se usa
+la más barata de las demás y el plan, el panel y la bitácora dicen POR QUÉ no
+fue J&T (`porque_no_jt`, con el `unavailableReason` de Temu).
 
 NUNCA COMPRAR DOS VECES — la bitácora DURABLE `ops.temu_guias_compras` (0061)
 ─────────────────────────────────────────────────────────────────────────────
@@ -152,10 +254,11 @@ etiqueta está "en aplicación" sus lecturas pueden no mostrarla. Así que:
     'no_enviada')`: sólo se toma una fila libre): sin fila, no hay compra. Sin
     la tabla (migración sin aplicar) o con kubera caída, no se compra;
   · la fila nace 'en_curso' y sólo sale de los estados que BLOQUEAN con un
-    rechazo DOCUMENTADO de Temu (los códigos de validación de la ficha y los
-    de la pasarela). Todo lo demás —4000000, timeout, código desconocido,
-    cancelación de la tarea, reinicio del contenedor— deja la orden bloqueada
-    hasta conciliarla (`conciliar()`, que mira Temu);
+    rechazo DOCUMENTADO de Temu: 'rechazada' con los códigos de validación de
+    la ficha (Temu juzgó la venta), 'no_enviada' con los de la pasarela y el
+    4000004 de velocidad (no la juzgó). Todo lo demás —4000000, timeout,
+    código desconocido, cancelación de la tarea, reinicio del contenedor—
+    deja la orden bloqueada hasta conciliarla (`conciliar()`, que mira Temu);
   · además: `packageSnInfo` vacío, estado 2, nada en `unshipped.package.get`
     ni en `temu.logistics.label.list.get`, y la relectura del detalle justo
     antes de cada compra. Después se espera el resultado asíncrono (1 = lista,
@@ -174,6 +277,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import hashlib
+import itertools
 import json
 import logging
 import math
@@ -186,6 +290,11 @@ from typing import Any, Iterable
 
 from config import settings
 from services import odoo_ventas
+# La proporcionalidad de la pestaña de COSTOS, importada (no copiada): cómo se
+# reparte el cartón master entre sus piezas, y la tarifa con que se cobra el
+# flete por volumen (de ahí sale el volumen de referencia por pieza).
+from services.costos import TARIFA_CBM_M3 as TARIFA_CBM
+from services.packing_costos import dims_pieza
 
 log = logging.getLogger("omnicanal.temu_guias_compra")
 
@@ -205,7 +314,8 @@ _FESTIVOS_OMISION = ("2026-01-01,2026-02-02,2026-03-16,2026-05-01,2026-09-16,"
                      "2026-11-16,2026-12-25,2027-01-01")
 _ALMACENES_OMISION = "135:WH-04038973460631627,150:WH-10610291507351627"
 _HORAS_OMISION = "24,48,72,96"
-_PAQUETERIA_OMISION = "*"
+_PAQUETERIA_OMISION = "J&T,*"
+_JT_SHIP_COMPANY_ID_OMISION = 202398511
 
 # Cómo se llama cada almacén en el seller center de Temu. Sólo para leer.
 NOMBRES_TEMU = {"WH-04038973460631627": "IFULL NAVE 2",
@@ -255,11 +365,101 @@ _ETIQUETAS_RENGLON_BLOQUEAN = {
 # de la memoria del catálogo deja fuera almohadas y peluches reales (13-20
 # kg/m³); 10 sigue atrapando la caja de 70×45×46 cm que "pesa" 1 g (0.007) y
 # la de 50×50×20 con 100 g (2 kg/m³). Arriba, 4,000: una mancuerna en su caja
-# ronda 2,300.
+# ronda 2,300. CALIBRADO con el catálogo real del 30-sep (medidas por pieza de
+# omnicanal): PASAN JUGU-0036-MUL 1.885 kg en 52×42×35 (24.7 kg/m³),
+# JUGU-0248-MUL 0.943 kg en 45×33×22 (28.9) y MASC-0019-MUL 2.16 kg en
+# 45×43×40 (27.9, historial); se RECHAZAN MASC-0016-NEG-M 0.099 kg en 60×40×40
+# (1.0: es la caja MASTER, no la pieza) y ACC-0574-LIL 0.704 kg en 57×43×43
+# (6.7).
 DENSIDAD_MIN = 10.0        # kg/m³
 DENSIDAD_MAX = 4000.0      # kg/m³
+# Un dato de CATÁLOGO (packing list, Woo, la publicación) por pieza más denso
+# que esto es, casi siempre, el peso de la caja MASTER con las medidas de UNA
+# pieza (revisión del 30-sep): el mismo umbral de 1.5 kg/L con que
+# `scripts/radar_estado_contenedores.py` reconoce ese error en
+# costing.costos_validados. Declararlo sería pagar de más por cada pieza; la
+# medición real (almacén, panel) conserva el tope de 4,000.
+DENSIDAD_MAX_CATALOGO = 1500.0   # kg/m³
 PESO_MIN_KG = 0.01
+# Por CAJA, los mismos topes que la captura del panel (`leer_medidas`): nada de
+# cajas de 3 m. Y POR PIEZA, 30 kg salvo que la fuente sea una medición real
+# (almacén o panel): el peso de Odoo dice 181 kg por un plato de bebé, y un
+# dato así en cualquier catálogo no se compra.
+PESO_MAX_KG = 70.0
+PESO_MAX_PIEZA_KG = 30.0
+LADO_MAX_CM = 300.0
 TOLERANCIA_CATALOGO_CM = 0.5
+
+# ── La pieza contra el flete (1-oct) ────────────────────────────────────────
+# R = volumen de la fila ÷ volumen por el que se pagó flete (costo_cbm / 7500).
+R_MIN = 0.67        # debajo, la pieza no cabe en esa medida: la fuente no opina
+R_PIEZA = 1.5       # hasta aquí, confianza media; hasta R_MASTER, baja
+R_MASTER = 3.0      # de aquí para arriba es el cartón MASTER, no la pieza
+PISO_TEMU = 0.90    # una guía de Temu con menos volumen que sus piezas: no caben
+# Sin flete con qué probarla: una fila con menos densidad que esto y con
+# `piezas_por_caja` es el cartón master.
+DENSIDAD_MASTER = 50.0   # kg/m³
+# Un peso POR PIEZA de una fila master con el que su cartón (peso × piezas por
+# cartón) pasaría de esto: quizá es el peso del CARTÓN. Sólo aviso — medido el
+# 1-oct en costing.costos_validados: de 1,966 filas master creíbles, 130 pasan
+# de 40 kg, y entre ellas hay pesos reales (mesas, piezas chicas en cartones
+# grandes) junto a los del cartón (calzado de 17 kg): no se puede rechazar.
+PESO_CARTON_AVISO_KG = 40.0
+# Con el catálogo ilegible, una medida de catálogo no opina para la caja.
+_SIN_CATALOGO = ("no se pudo leer el catálogo (costing.costos_validados no contestó): sin el flete no "
+                 "se sabe si esa medida es la pieza o el cartón MASTER — no opina para la caja")
+
+# ── La escalera de fuentes de peso y caja (Brandon, 30-sep) ─────────────────
+# id → cómo se dice en el panel. El orden vive en `TEMU_GUIAS_FUENTES_MEDIDA`.
+FUENTES_MEDIDA: dict[str, str] = {
+    "almacen": "omnicanal · Checklist de almacén",
+    "historial_temu": "Temu · guías del mismo SKU",
+    "omnicanal_packing": "omnicanal · packing list",
+    "omnicanal_woo": "omnicanal · Woo",
+    "temu_ultima_guia": "Temu · guías del mismo SKU",
+    "temu_hermanas": "Temu · variante hermana",
+    "temu_publicacion": "Temu · publicación",
+}
+# Todo lo que puede salir como fuente del PESO o de la CAJA de un empaque: los
+# ids de la variable (que desde el 1-oct sólo dicen QUIÉN opina, no en qué
+# orden) y los de cada candidato de Temu, la captura del panel y la suma de una
+# caja con varios SKUs.
+FUENTES_TXT: dict[str, str] = {
+    "manual": "panel · medida capturada",
+    **FUENTES_MEDIDA,
+    "temu_guia": "Temu · guía de esas piezas",
+    "temu_guia_x1": "Temu · guía de 1 pieza × piezas",
+    "temu_guia_otra": "Temu · guía de otra cantidad",
+    "suma_skus": "suma de SKUs",
+}
+FUENTES_OMISION: tuple[str, ...] = tuple(FUENTES_MEDIDA)
+# La de antes del 30-sep: sólo medición de almacén e historial con ≥ N muestras.
+FUENTES_ESTRICTAS: tuple[str, ...] = ("almacen", "historial_temu")
+_ALIAS_FUENTE = {"checklist": "almacen", "historial": "historial_temu",
+                 "packing": "omnicanal_packing", "packing_list": "omnicanal_packing",
+                 "costos_validados": "omnicanal_packing", "woo": "omnicanal_woo",
+                 "woocommerce": "omnicanal_woo", "ultima_guia": "temu_ultima_guia",
+                 "temu_guia": "temu_ultima_guia", "hermanas": "temu_hermanas",
+                 "hermana": "temu_hermanas", "familia": "temu_hermanas",
+                 "publicacion": "temu_publicacion"}
+# Las fuentes que son una MEDICIÓN real (una persona pesó y midió): no llevan
+# el tope de 30 kg por pieza.
+FUENTES_MEDIDAS_REALES = frozenset({"manual", "almacen"})
+# Las que son un dato de CATÁLOGO por pieza: llevan además el tope de densidad
+# de catálogo (`DENSIDAD_MAX_CATALOGO`).
+FUENTES_CATALOGO = frozenset({"omnicanal_packing", "omnicanal_woo", "temu_publicacion"})
+# Familias con SKUs RECICLADOS (CLAUDE.md, pendiente 7: el mismo número de
+# producto es OTRO producto en otra variante o cuenta — EST-0091 es una cómoda
+# y una repisa). Sus "hermanas" no son referencia de peso ni de caja.
+FAMILIAS_RECICLADAS = frozenset({"ORG-0579", "EST-0091", "TEC-0492", "ORG-0398", "ORG-0934",
+                                 "MAN-0490", "ACC-0653"})
+_CONFIANZA_NIVEL = {"ninguna": 0, "baja": 1, "media": 2, "alta": 3}
+
+# Lo que Temu (y `publicar_temu`) ponen cuando la publicación no trae paquete:
+# no es una medida, es relleno. (peso kg, lados ordenados en cm)
+_RELLENOS_PUBLICACION = ((0.1, (10.0, 20.0, 30.0)), (0.5, (20.0, 20.0, 20.0)))
+_PUB_CACHE: dict[int, tuple[float, dict[str, Any] | None]] = {}
+_PUB_TTL = 6 * 3600.0
 
 # El resultado de la compra es ASÍNCRONO (guía 37): segundos entre lecturas de
 # `shipment.result.get` antes de decir comprada / fallida / pendiente.
@@ -283,11 +483,19 @@ ESTADOS_LIBRES = frozenset({"rechazada", "no_enviada"})
 # vuelta siguiente podía volver a comprar la misma guía si las lecturas de
 # Temu todavía no la mostraban. Ahora son "desconocido": bloquean hasta
 # conciliar contra Temu.
+#
+# Y la pasarela NO juzga la venta (revisión del 30-sep): con un 3000xxx
+# (firma, credenciales, permisos, IP) el problema es del sistema, así que la
+# fila queda 'no_enviada' —libre, NO un "Temu rechazó esta venta"— y el job se
+# detiene; con 4000004 (demasiadas peticiones) es pasajero: 'no_enviada', sin
+# detener, y la venta se reintenta la vuelta siguiente. Antes los dos eran
+# 'rechazada': la venta quedaba excluida para siempre de la compra automática.
 _RECHAZO_PASARELA = frozenset({
     "3000000", "3000001", "3000002", "3000003", "3000004", "3000010", "3000011",
     "3000012", "3000013", "3000014", "3000019", "3000020", "3000021", "3000022",
     "3000025", "3000026", "3000027", "3000028", "3000030", "3000031", "3000032",
-    "3000033", "3000034", "3000040", "4000004"})
+    "3000033", "3000034", "3000040"})
+LIMITE_VELOCIDAD = frozenset({"4000004"})
 # Las validaciones de negocio DOCUMENTADAS en la ficha de shipment.create
 # (error_param_list). Fuera a propósito: 120012013 (ya había compra: se trata
 # aparte), 120011107 ("verification timed out"), 120018036 ("transaction is
@@ -307,6 +515,9 @@ _RECHAZO_NEGOCIO = frozenset({
     "120015521", "120011006", "120011072", "120012016", "120013002", "120012003"})
 RECHAZO_SEGURO = _RECHAZO_PASARELA | _RECHAZO_NEGOCIO
 YA_SOLICITADA = "120012013"
+# Lo que `clasificar_error` da cuando Temu NO compró, seguro: la fila queda
+# libre ('rechazada' o 'no_enviada') y la venta no va a `_DESCONOCIDAS`.
+NO_COMPRO = frozenset({"rechazada", "pasarela", "limite_velocidad"})
 
 
 def compra_habilitada() -> bool:
@@ -358,7 +569,8 @@ def mapa_almacenes(crudo: str | None = None) -> dict[int, str]:
 
 
 def preferencias_paqueteria(crudo: str | None = None) -> list[tuple[str, str]]:
-    """[(paquetería, tipo)] en orden: "J&T express:Pickup", "*:Pickup", "*"."""
+    """[(paquetería, tipo)] EN ORDEN DE PRIORIDAD: "J&T", "J&T:Pickup",
+    "*:Pickup", "*". Por omisión "J&T,*" (Brandon, 1-oct)."""
     texto = _cfg("temu_guias_paqueteria", _PAQUETERIA_OMISION) if crudo is None else crudo
     salida = []
     for par in (texto or "").split(","):
@@ -370,6 +582,121 @@ def preferencias_paqueteria(crudo: str | None = None) -> list[tuple[str, str]]:
 
 def _min_muestras() -> int:
     return max(1, int(getattr(settings, "temu_guias_empaque_min_muestras", 2) or 2))
+
+
+def _cfg_num(nombre: str, omision: float) -> float:
+    """Un número POSITIVO de la configuración; ilegible, cero o negativo → el de
+    fábrica (un límite en 0 dejaría pasar todo, o nada)."""
+    try:
+        v = getattr(settings, nombre, None)
+        f = float(omision if v is None else v)
+    except (TypeError, ValueError):
+        return float(omision)
+    return f if (f > 0 and not math.isnan(f) and not math.isinf(f)) else float(omision)
+
+
+def limites_jt() -> dict[str, float]:
+    """Los LÍMITES DE J&T Express México (sus T&C, cláusulas 4.9 y 6.1; los
+    mismos que TikTok Shop MX publica para J&T e iMile): 30 kg, ningún lado de
+    más de 100 cm, 160 cm sumando los tres, y volumétrico = L×A×H ÷ 5000 (cobra
+    el mayor entre real y volumétrico). `aviso` y `aviso_corto` (60 y 40 cm)
+    son sólo campana: el sobre de 60×60×40 que la PROPIA J&T publica en las
+    preguntas frecuentes de su sitio ("envíos de hasta 30 kg con medidas
+    máximas de 60 cm de largo × 60 cm de ancho × 40 cm de alto"), más estricto
+    que sus T&C. Variables `TEMU_GUIAS_JT_*` y `TEMU_GUIAS_LADO_*_AVISO_CM`."""
+    return {"peso": _cfg_num("temu_guias_jt_peso_max_kg", 30.0),
+            "lado": _cfg_num("temu_guias_jt_lado_max_cm", 100.0),
+            "suma": _cfg_num("temu_guias_jt_suma_lados_max_cm", 160.0),
+            "divisor": _cfg_num("temu_guias_divisor_volumetrico", 5000.0),
+            "aviso": _cfg_num("temu_guias_lado_aviso_cm", 60.0),
+            "aviso_corto": _cfg_num("temu_guias_lado_corto_aviso_cm", 40.0)}
+
+
+def piso_peso() -> float:
+    """El piso del peso DECLARADO por caja (`TEMU_GUIAS_PESO_MIN_KG`, 0.10 kg)."""
+    return max(PESO_MIN_KG, _cfg_num("temu_guias_peso_min_kg", 0.10))
+
+
+def guia_x1_por_piezas() -> bool:
+    """`TEMU_GUIAS_PESO_GUIA_X1_POR_PIEZAS` (nace ENCENDIDA: la especificación
+    del 1-oct): ¿la guía de 1 pieza × piezas cuenta como "la multiplicación de
+    Temu" en el peso? Es una EXTRAPOLACIÓN de una guía comprada a mano, no un
+    dato de Temu para esas piezas (las guías a mano de JUGU-0089-PLA × 2/3/4
+    declararon 5.40/8.10/10.80 = el peso de Woo × piezas, y la de × 1, 1.00).
+    Apagada (la lectura literal de Brandon): Temu(N) = la guía de exactamente N
+    piezas o la publicación × N, y la guía de 1 pieza sólo sirve de respaldo."""
+    return bool(getattr(settings, "temu_guias_peso_guia_x1_por_piezas", True))
+
+
+def jt_ship_company_id() -> int:
+    """El `shipCompanyId` de J&T en Temu (`TEMU_GUIAS_JT_SHIP_COMPANY_ID`,
+    202398511 en la bitácora de compras). 0 = sin prioridad de J&T dentro de
+    "*" (los renglones que nombran a J&T siguen sirviendo, por nombre)."""
+    v = getattr(settings, "temu_guias_jt_ship_company_id", _JT_SHIP_COMPANY_ID_OMISION)
+    try:
+        n = int(_JT_SHIP_COMPANY_ID_OMISION if v is None else v)
+    except (TypeError, ValueError):
+        return _JT_SHIP_COMPANY_ID_OMISION
+    return n if n > 0 else 0
+
+
+def texto_fuentes(orden: Iterable[str]) -> list[str]:
+    """Quién opina, en palabras y sin repetir (para el panel). PURA."""
+    vistos: list[str] = []
+    for f in orden:
+        t = FUENTES_TXT.get(f, f)
+        if t not in vistos:
+            vistos.append(t)
+    return vistos
+
+
+def leer_fuentes_medida(crudo: str | None = None) -> tuple[str, ...]:
+    """Las fuentes de peso y caja que PARTICIPAN (desde el 1-oct el orden ya no
+    manda: gana el menor creíble). ⚠️ LANZA ValueError si está mal escrita,
+    vacía, repite un escalón o nombra a Odoo."""
+    texto = (_cfg("temu_guias_fuentes_medida", ",".join(FUENTES_OMISION))
+             if crudo is None else crudo)
+    salida: list[str] = []
+    for t in re.split(r"[,\s;>]+", str(texto or "").strip().lower()):
+        if not t:
+            continue
+        if t.startswith("odoo"):
+            raise ValueError(f"{t!r}: Odoo NO es fuente de peso (su ficha dice 181 kg por un plato "
+                             "de bebé)")
+        n = _ALIAS_FUENTE.get(t, t)
+        if n not in FUENTES_MEDIDA:
+            raise ValueError(f"escalón desconocido {t!r} (válidos: {', '.join(FUENTES_MEDIDA)})")
+        if n in salida:
+            raise ValueError(f"escalón repetido {t!r}")
+        salida.append(n)
+    if not salida:
+        raise ValueError("vacía")
+    return tuple(salida)
+
+
+def fuentes_medida() -> tuple[tuple[str, ...], str | None]:
+    """(escalera vigente, error). Mal escrita → la ESTRICTA, con el error para
+    la vista previa: falla cerrado hacia lo que ya se compraba antes."""
+    try:
+        return leer_fuentes_medida(), None
+    except ValueError as exc:
+        return FUENTES_ESTRICTAS, (f"TEMU_GUIAS_FUENTES_MEDIDA mal escrita ({exc}): se usa la "
+                                   f"escalera ESTRICTA ({', '.join(FUENTES_ESTRICTAS)})")
+
+
+_FAMILIA = re.compile(r"^([A-Z]+-\d+)-[A-Z0-9].*$")
+
+
+def familia(sku: Any) -> str | None:
+    """La FAMILIA de un SKU: sus dos primeros segmentos cuando el segundo es el
+    número de producto — MASC-0016-NEG-M → MASC-0016, DEC-0015-ROJ →
+    DEC-0015. Sin variante (LIB-0001) o con otra forma → None: no tiene
+    hermanas. PURA."""
+    s = str(sku or "").strip().upper()
+    if not s or "+" in s or "*" in s:
+        return None
+    m = _FAMILIA.match(s)
+    return m.group(1) if m else None
 
 
 def _aprobacion_min() -> int:
@@ -452,12 +779,60 @@ MARGEN_LIMITE_S = 30 * 60
 
 
 def sabado_alterno() -> bool:
-    """¿El plazo ALTERNO (el adelantado por el límite de Temu) puede caer en
-    SÁBADO? `TEMU_GUIAS_SABADO_ALTERNO`, nace apagada (sábado = inhábil, como la
-    regla de siempre). Decisión operativa de Brandon: con el límite de Temu a
-    48 h de la venta, las ventas de viernes (y de sábado) salen "compra manual
-    urgente" porque 24 h cae en sábado/domingo."""
+    """¿El plazo ALTERNO (el adelantado por el límite de Temu, o el más corto
+    de una venta que va tarde) puede caer en SÁBADO? `TEMU_GUIAS_SABADO_ALTERNO`,
+    nace apagada (sábado = inhábil, como la regla de siempre). Con el límite de
+    Temu a ~48 h de la venta, una venta de viernes no alcanza su límite en día
+    hábil: se compra TARDE con entrega el lunes; encendida, el sábado."""
     return bool(getattr(settings, "temu_guias_sabado_alterno", False))
+
+
+# El texto con que se marca una guía comprada después del límite de Temu: la
+# bitácora (`reparto`), el panel, la nota de la orden de Odoo y el Excel.
+TEXTO_TARDE = "comprada TARDE (límite de Temu ya vencido)"
+
+
+def _es_habil(dia: date, fest: frozenset[date], sab: bool) -> bool:
+    return not (dia.weekday() == 6 or (dia.weekday() == 5 and not sab) or dia in fest)
+
+
+def _con_plazo(out: dict[str, Any], local: datetime, h: int, dia: date,
+               **extra: Any) -> dict[str, Any]:
+    vence = local + timedelta(hours=h)
+    return {**out, "valida": True, "motivos": [], "fecha_envio": dia.isoformat(),
+            "dia_envio": _DIAS[dia.weekday()], "dias_naturales": h // 24, "horas": h,
+            "ship_later_limit_time": str(h), "vence_local": vence.isoformat(timespec="minutes"),
+            "vence_ts": int(vence.timestamp()), "saltados": [], **extra}
+
+
+def _plazo_corto(out: dict[str, Any], local: datetime, ok_horas: Iterable[int],
+                 fest: frozenset[date], sab: bool, **extra: Any) -> dict[str, Any]:
+    """El plazo MÁS CORTO de `TEMU_GUIAS_HORAS_VALIDAS` que cae en día hábil
+    (lunes a viernes, no festivo; el sábado sólo con `TEMU_GUIAS_SABADO_ALTERNO`).
+    Con 24-96 h y los festivos de México siempre hay uno (vie → lun a 72 h, jue
+    antes de un viernes festivo → lun a 96 h); si no lo hubiera, el más corto
+    de todos, diciéndolo — nunca "no se compra". La lista de festivos vencida
+    SÍ falla cerrado: no se sabe si ese día es festivo. PURA."""
+    horas = sorted(h for h in ok_horas if h > 0 and not h % 24)
+    if not horas:
+        return {**out, "valida": False, "urgente": False,
+                "motivos": ["TEMU_GUIAS_HORAS_VALIDAS no trae plazos de días completos"]}
+    for h in horas:
+        dia = local.date() + timedelta(days=h // 24)
+        if not fest or not any(f >= dia for f in fest):
+            return {**out, "valida": False, "urgente": False,
+                    "motivos": [f"la lista de festivos termina antes del {dia.isoformat()}: agrega "
+                                "los del año siguiente a TEMU_GUIAS_FESTIVOS"]}
+        if _es_habil(dia, fest, sab):
+            return _con_plazo(out, local, h, dia, **extra)
+    h = horas[0]
+    dia = local.date() + timedelta(days=h // 24)
+    return _con_plazo(out, local, h, dia, inhabil=True, **extra)
+
+
+def _texto_plazo(r: dict[str, Any]) -> str:
+    txt = f"{r['dia_envio']} {r['fecha_envio']} ({r['horas']} h)"
+    return txt + (" — ningún plazo permitido cae en día hábil" if r.get("inhabil") else "")
 
 
 def fecha_con_limite(compra: datetime, limite_ts: int | None, *,
@@ -468,37 +843,44 @@ def fecha_con_limite(compra: datetime, limite_ts: int | None, *,
     """
     La fecha de envío con el LÍMITE DE ENVÍO de Temu encima
     (`expectShipLatestTime` de la orden; de un grupo, el MÁS CERCANO). PURA
-    (salvo `sabado=None`, que lee `sabado_alterno()`).
+    (salvo `sabado=None`, que lee `TEMU_GUIAS_SABADO_ALTERNO`).
 
-    Regla nueva de Brandon (30-sep): la fecha nunca después del límite.
-      · la regla de siempre (+2 naturales → hábil) vence antes del límite
-        (menos `margen_s`) → esa, sin cambios;
-      · si lo rebasa → el MAYOR plazo de `TEMU_GUIAS_HORAS_VALIDAS`, más corto
-        que el de la regla, que SÍ lo cumpla y caiga en día hábil (lunes a
-        viernes, no festivo: la regla de los días hábiles sigue mandando; el
-        sábado sólo con `TEMU_GUIAS_SABADO_ALTERNO`);
-      · si ni así → `valida=False`, `urgente=True`: "compra manual urgente".
+    Regla de Brandon (30-sep): la fecha nunca después del límite, y ninguna
+    venta se queda sin guía.
+      · la regla de siempre (+2 naturales → hábil) es un plazo permitido y
+        vence antes del límite (menos `margen_s`) → esa, sin cambios;
+      · si no → el MAYOR plazo de `TEMU_GUIAS_HORAS_VALIDAS`, más corto que el
+        de la regla, que SÍ lo cumpla y caiga en día hábil (la regla de los
+        días hábiles sigue mandando);
+      · si ni así (el límite ya pasó, o ningún plazo lo alcanza en día hábil)
+        → se compra IGUAL con el plazo MÁS CORTO en día hábil: `valida=True`,
+        `tarde=True`, "comprada TARDE (límite de Temu ya vencido)". Sin
+        interruptor (Brandon: "no hagas el nuevo interruptor").
+    `urgente` ya no sale nunca en True (se conserva la llave para el panel).
 
     `limite_ts=None` (Temu no lo dio) → la de la regla tal cual, con
-    `limite_ts=None`: quien llama decide si le basta (la compra automática no).
+    `limite_ts=None`. Para un GRUPO, `fecha_de_grupo` decide.
     """
     sab = sabado_alterno() if sabado is None else bool(sabado)
     base = fecha_envio(compra, festivos=festivos, dias=dias, validas=validas)
     lim = _entero(limite_ts)
     out: dict[str, Any] = {**base, "limite_ts": lim or None, "limite": _hora_mx(lim),
-                           "ajustada": False, "urgente": False, "ajuste": None,
+                           "ajustada": False, "urgente": False, "tarde": False,
+                           "sin_limite": False, "ajuste": None,
                            "regla_fecha": base["fecha_envio"], "regla_horas": base["horas"]}
     if not lim:
         return out
     tope = int(lim) - int(margen_s)
-    if base["vence_ts"] <= tope:
+    if base["valida"] and base["vence_ts"] <= tope:
         return out
     local = compra.astimezone(ZONA) if compra.tzinfo else compra.replace(tzinfo=ZONA)
     try:
         fest = frozenset(festivos) if festivos is not None else leer_festivos()
     except ValueError:
-        fest = frozenset()
+        return out          # `base` ya dice "TEMU_GUIAS_FESTIVOS mal escrito": no se calcula
     ok_horas = tuple(validas) if validas is not None else horas_validas()
+    por_regla = (f"rebasa el límite de envío de Temu ({out['limite']})"
+                 if base["vence_ts"] > tope else "no es un plazo permitido (TEMU_GUIAS_HORAS_VALIDAS)")
     descartes: list[str] = []
     for h in sorted(ok_horas, reverse=True):
         if h >= int(base["horas"]) or h <= 0 or h % 24:
@@ -516,18 +898,76 @@ def fecha_con_limite(compra: datetime, limite_ts: int | None, *,
             return {**out, "valida": False, "urgente": False,
                     "motivos": [f"la lista de festivos termina antes del {dia.isoformat()}: agrega "
                                 "los del año siguiente a TEMU_GUIAS_FESTIVOS"]}
-        return {**out, "valida": True, "motivos": [], "ajustada": True,
-                "fecha_envio": dia.isoformat(), "dia_envio": _DIAS[dia.weekday()],
-                "dias_naturales": h // 24, "horas": h, "ship_later_limit_time": str(h),
-                "vence_local": vence.isoformat(timespec="minutes"),
-                "vence_ts": int(vence.timestamp()), "saltados": [],
-                "ajuste": (f"la regla daba el {base['fecha_envio']} ({base['horas']} h) y rebasa el "
-                           f"límite de envío de Temu ({out['limite']}): se usa el "
-                           f"{_DIAS[dia.weekday()]} {dia.isoformat()} ({h} h)")}
+        return _con_plazo(out, local, h, dia, ajustada=True,
+                          ajuste=(f"la regla daba el {base['fecha_envio']} ({base['horas']} h) y "
+                                  f"{por_regla}: se usa el {_DIAS[dia.weekday()]} "
+                                  f"{dia.isoformat()} ({h} h)"))
+    # Ningún plazo cumple el límite en día hábil: la guía se compra IGUAL con
+    # lo más pronto que el almacén puede entregar, y se dice que va tarde.
+    ya = int(lim) <= int(local.timestamp())
     detalle = "; ".join(descartes) or "ningún plazo permitido es más corto"
-    return {**out, "valida": False, "urgente": True,
-            "motivos": [f"compra manual URGENTE: el límite de envío de Temu es {out['limite']} y "
-                        f"ningún plazo permitido lo cumple en día hábil ({detalle})"]}
+    por = "ya venció" if ya else f"no se alcanza con ningún plazo en día hábil ({detalle})"
+    r = _plazo_corto(out, local, ok_horas, fest, sab, ajustada=True, tarde=True)
+    if r["valida"]:
+        r["ajuste"] = (f"{TEXTO_TARDE}: el límite de envío ({out['limite']}) {por}; se compra IGUAL "
+                       f"con el plazo más corto en día hábil: {_texto_plazo(r)}")
+    return r
+
+
+def fecha_corta(compra: datetime, motivo: str, *,
+                festivos: Iterable[date] | None = None, dias: int | None = None,
+                validas: Iterable[int] | None = None,
+                sabado: bool | None = None) -> dict[str, Any]:
+    """El plazo MÁS CORTO en día hábil, cuando Temu no dio el límite de envío
+    de alguna orden del grupo (`sin_limite=True`): sin límite no se sabe
+    cuánto se puede esperar, y entregar lo antes posible nunca lo rebasa. PURA
+    (salvo `sabado=None`)."""
+    sab = bool(sabado) if sabado is not None else sabado_alterno()
+    base = fecha_envio(compra, festivos=festivos, dias=dias, validas=validas)
+    out: dict[str, Any] = {**base, "limite_ts": None, "limite": None, "ajustada": False,
+                           "urgente": False, "tarde": False, "sin_limite": True, "ajuste": None,
+                           "regla_fecha": base["fecha_envio"], "regla_horas": base["horas"]}
+    local = compra.astimezone(ZONA) if compra.tzinfo else compra.replace(tzinfo=ZONA)
+    try:
+        fest = frozenset(festivos) if festivos is not None else leer_festivos()
+    except ValueError:
+        return out
+    ok_horas = tuple(validas) if validas is not None else horas_validas()
+    r = _plazo_corto(out, local, ok_horas, fest, sab, ajustada=True)
+    if r["valida"]:
+        r["ajuste"] = f"{motivo}: se usa el plazo más corto en día hábil, {_texto_plazo(r)}"
+    return r
+
+
+def fecha_de_grupo(compra: datetime, limites: dict[str, Any], **kw: Any) -> dict[str, Any]:
+    """La fecha de un GRUPO (todas sus cajas comparten fecha): con el límite de
+    envío MÁS CERCANO de sus órdenes (`fecha_con_limite`); si Temu no dio el de
+    alguna, el plazo más corto en día hábil (`fecha_corta`) — antes eso era
+    "compra manual". `limites` = {PO: expectShipLatestTime o None}. PURA.
+
+    Sin el límite de una y CON el de otras (revisión del 30-sep): el plazo más
+    corto se compara además contra el más cercano de los conocidos; si ni así lo
+    alcanza (ya venció, o cae después), la guía va TARDE —se compra igual y se
+    dice— en vez de que la otra orden la frene como "riesgo de retraso"."""
+    lims = {str(po): _entero(x) for po, x in (limites or {}).items()}
+    sin = sorted(po for po, x in lims.items() if not x)
+    con = [x for x in lims.values() if x]
+    if sin:
+        margen = int(kw.pop("margen_s", MARGEN_LIMITE_S))
+        r = fecha_corta(compra, f"Temu no dio el límite de envío de {', '.join(sin)}", **kw)
+        if con and r.get("valida"):
+            lim = min(con)
+            r["limite_ts"], r["limite"] = lim, _hora_mx(lim)
+            if int(r["vence_ts"]) > lim - margen:
+                local = compra.astimezone(ZONA) if compra.tzinfo else compra.replace(tzinfo=ZONA)
+                por = ("ya venció" if lim <= int(local.timestamp())
+                       else "no se alcanza ni con el plazo más corto en día hábil")
+                r["tarde"] = True
+                r["ajuste"] = (f"{TEXTO_TARDE}: el límite de envío ({r['limite']}) {por} y Temu no "
+                               f"dio el de {', '.join(sin)}; se compra IGUAL con el plazo más corto "
+                               f"en día hábil: {_texto_plazo(r)}")
+        return r
+    return fecha_con_limite(compra, min(con) if con else None, **kw)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1014,11 +1454,19 @@ def muestra_de_paquete(entrada: dict[str, Any]) -> dict[str, Any] | None:
 
 def plausible(peso: float | None, largo: float | None, ancho: float | None,
               alto: float | None) -> str | None:
-    """None si la caja es físicamente creíble; si no, POR QUÉ. PURA."""
-    if not (peso and largo and ancho and alto):
+    """None si la CAJA es físicamente creíble; si no, POR QUÉ. PURA. Es LA
+    CORDURA de todos los escalones automáticos (con `cordura_pieza` para el
+    dato por pieza): lo que no pasa, no se compra — salta al escalón
+    siguiente."""
+    if not (peso and largo and ancho and alto) or min(peso, largo, ancho, alto) <= 0:
         return "faltan peso o medidas"
     if peso < PESO_MIN_KG:
         return f"pesa {peso:.3f} kg (menos de 10 g): no es un paquete real"
+    if peso > PESO_MAX_KG:
+        return f"pesa {peso:,.2f} kg (más de {PESO_MAX_KG:.0f}): no es un peso posible para esta guía"
+    if max(largo, ancho, alto) > LADO_MAX_CM:
+        return (f"un lado mide {max(largo, ancho, alto):,.1f} cm (más de {LADO_MAX_CM:.0f}): no es "
+                "una caja posible")
     vol_m3 = largo * ancho * alto / 1_000_000.0
     densidad = peso / vol_m3
     if densidad < DENSIDAD_MIN:
@@ -1027,6 +1475,30 @@ def plausible(peso: float | None, largo: float | None, ancho: float | None,
     if densidad > DENSIDAD_MAX:
         return (f"densidad de {densidad:,.0f} kg/m³ (máximo {DENSIDAD_MAX:,.0f}): caja chica "
                 "para su peso — la paquetería ajustaría el cobro")
+    return None
+
+
+def cordura_pieza(m: dict[str, Any] | None, real: bool = False,
+                  catalogo: bool = False) -> str | None:
+    """La cordura de UNA pieza (un catálogo, o una guía dividida entre sus
+    piezas): la de la caja (`plausible`) y, salvo que la fuente sea una
+    medición real (almacén o panel), ≤ 30 kg. `catalogo=True` (packing list,
+    Woo, publicación) exige además ≤ `DENSIDAD_MAX_CATALOGO`: más denso es el
+    peso de la caja master con las medidas de una pieza. None = pasa. PURA."""
+    if not m:
+        return "faltan peso o medidas"
+    mala = plausible(m.get("peso_kg"), m.get("largo_cm"), m.get("ancho_cm"), m.get("alto_cm"))
+    if mala:
+        return mala
+    if not real and float(m["peso_kg"]) > PESO_MAX_PIEZA_KG:
+        return (f"pesa {float(m['peso_kg']):,.2f} kg por pieza (más de {PESO_MAX_PIEZA_KG:.0f} sin "
+                "una medición real): no se declara")
+    if catalogo and not real:
+        dens = float(m["peso_kg"]) / (float(m["largo_cm"]) * float(m["ancho_cm"])
+                                      * float(m["alto_cm"]) / 1_000_000.0)
+        if dens > DENSIDAD_MAX_CATALOGO:
+            return (f"densidad de {dens:,.0f} kg/m³ (máximo {DENSIDAD_MAX_CATALOGO:,.0f} para un dato "
+                    "de catálogo): parece el peso de la caja MASTER con las medidas de una pieza")
     return None
 
 
@@ -1044,140 +1516,1192 @@ def es_caja_de_catalogo(largo: float, ancho: float, alto: float,
     return all(abs(x - y) <= TOLERANCIA_CATALOGO_CM for x, y in zip(m, c))
 
 
+def relleno_por_campo(m: dict[str, Any] | None) -> tuple[bool, bool]:
+    """(¿el PESO es el de relleno?, ¿las MEDIDAS son las de relleno?) del
+    paquete de una publicación: lo que Temu (100 g, 10×20×30) o `publicar_temu`
+    (500 g, 20×20×20) ponen cuando la publicación no trae uno. Eso no es una
+    medida. CADA CAMPO por separado: `publicar_temu` rellena así (peso por
+    omisión 500 g; largo, ancho y alto por omisión 20 cm, cada uno aparte), y
+    un producto que en Woo tenía medidas pero no peso quedó publicado con 500 g
+    y sus medidas reales — exigir las cuatro cosas juntas no lo reconocía, y
+    0.5 kg × piezas le ganaba a todo por ser el menor. PURA."""
+    if not m:
+        return False, False
+    try:
+        peso = float(m["peso_kg"])
+        lados = tuple(sorted(float(m[k]) for k in ("largo_cm", "ancho_cm", "alto_cm")))
+    except (KeyError, TypeError, ValueError):
+        return False, False
+    return (any(abs(peso - p) < 0.005 for p, _ls in _RELLENOS_PUBLICACION),
+            any(all(abs(x - y) < 0.05 for x, y in zip(lados, ls)) for _p, ls in _RELLENOS_PUBLICACION))
+
+
+def _medida(d: Any) -> dict[str, float] | None:
+    """{peso_kg, largo_cm, ancho_cm, alto_cm} positivos, o None si falta uno. PURA."""
+    if not isinstance(d, dict):
+        return None
+    m = {k: _num(d.get(k)) for k in ("peso_kg", "largo_cm", "ancho_cm", "alto_cm")}
+    return m if all(m.values()) else None  # type: ignore[return-value]
+
+
+def _arriba2(x: float) -> float:
+    """Redondeo HACIA ARRIBA a 2 decimales (el mismo del payload)."""
+    return float(_dos(x))
+
+
+def _caja_txt(c: Iterable[float]) -> str:
+    """"24.13×12.06×25.77" (sin ceros de sobra). PURA."""
+    return "×".join(f"{float(x):.2f}".rstrip("0").rstrip(".") for x in c)
+
+
+def _vol3(c: Iterable[float]) -> float:
+    l_, a_, h_ = (float(x) for x in c)
+    return l_ * a_ * h_
+
+
+def medir_caja(peso: float, caja: Iterable[float],
+               lim: dict[str, float] | None = None) -> dict[str, Any]:
+    """Una caja contra los LÍMITES DE J&T (`limites_jt`: 30 kg, 100 cm por lado,
+    160 cm sumando los tres) y lo que la paquetería cobraría: el MAYOR entre el
+    peso y el volumétrico (L×A×H ÷ 5000). Es un DATO —`cabe` ordena los
+    acomodos y avisa—; el bloqueo duro sigue en `plausible` (70 kg / 300 cm).
+    PURA (salvo `lim=None`, que lee la configuración)."""
+    lim = lim or limites_jt()
+    l_, a_, h_ = (float(x) for x in caja)
+    p = float(peso or 0.0)
+    suma, mayor = l_ + a_ + h_, max(l_, a_, h_)
+    vol_kg = l_ * a_ * h_ / float(lim["divisor"])
+    motivos: list[str] = []
+    if p > lim["peso"] + 1e-9:
+        motivos.append(f"pesa {p:.2f} kg (máximo {lim['peso']:g})")
+    if mayor > lim["lado"] + 1e-9:
+        motivos.append(f"un lado mide {mayor:g} cm (máximo {lim['lado']:g})")
+    if suma > lim["suma"] + 1e-9:
+        motivos.append(f"sus tres lados suman {suma:g} cm (máximo {lim['suma']:g})")
+    # Cuántos cm se pasa (de lado y de suma): entre dos cajas que NO caben, la
+    # que menos se pasa es la que un mostrador aceptaría antes.
+    exceso = max(0.0, mayor - lim["lado"]) + max(0.0, suma - lim["suma"])
+    return {"cabe": not motivos, "motivos": motivos, "suma_cm": round(suma, 2),
+            "lado_max_cm": round(mayor, 2), "volumetrico_kg": round(vol_kg, 2),
+            "facturable_kg": round(max(p, vol_kg), 2), "exceso_cm": round(exceso, 2)}
+
+
+def aviso_sobre(caja: Iterable[float], lim: dict[str, float] | None = None) -> str | None:
+    """El aviso (NO bloquea) de una caja que no entra en el sobre de 60×60×40 cm
+    que J&T publica en sus preguntas frecuentes: un lado de más de 60, o los
+    tres de más de 40 (50×50×50 cabe en los T&C y no en ese sobre). None si
+    entra. PURA (salvo `lim=None`, que lee la configuración)."""
+    lim = lim or limites_jt()
+    c3 = tuple(float(x) for x in caja)
+    menor, _medio, mayor = sorted(c3)
+    largo, corto = float(lim["aviso"]), float(lim.get("aviso_corto", 40.0))
+    sobre = f"{largo:g}×{largo:g}×{corto:g}"
+    cola = (f"no entra en el sobre de {sobre} cm que J&T publica en sus preguntas frecuentes — un "
+            "mostrador puede rechazar la caja")
+    if mayor > largo + 1e-9:
+        return f"un lado mide {round(mayor, 2):g} cm (más de {largo:g}): {cola}"
+    if menor > corto + 1e-9:
+        return f"sus tres lados pasan de {corto:g} cm ({_caja_txt(c3)}): {cola}"
+    return None
+
+
+def orden_caja(peso: float, caja: Iterable[float],
+               lim: dict[str, float] | None = None) -> tuple[int, float, float, float, float]:
+    """La CLAVE con que se comparan dos cajas (gana la menor): primero la que
+    cabe en J&T; entre las que caben, la que paga menos (facturable = el mayor
+    entre peso y volumétrico), la de menor suma de lados y la de lado mayor más
+    corto. Entre las que NO caben, antes que nada la que menos se pasa: 5 piezas
+    de 28×28×33 en fila dan 140 cm de lado, y en 3×2 una caja de 84×56×33 que
+    sólo se pasa 13 cm de suma. PURA."""
+    m = medir_caja(peso, caja, lim)
+    return (0 if m["cabe"] else 1, 0.0 if m["cabe"] else m["exceso_cm"], m["facturable_kg"],
+            m["suma_cm"], m["lado_max_cm"])
+
+
+def mejor_acomodo(unitaria: Iterable[float], n: int, peso: float,
+                  lim: dict[str, float] | None = None) -> dict[str, Any]:
+    """
+    La caja de `n` piezas iguales: se prueban TODAS las rejillas (i, j, k) con
+    i·j·k ≥ n y sin capa sobrante —en fila, 2×2, dos pisos…— y gana la de menor
+    `orden_caja`: la que cabe en J&T y paga menos. Cada lado es un múltiplo
+    entero del lado de la pieza y el volumen nunca es menor que n piezas. PURA.
+
+    Sustituye a `apilar()` (el lado más corto × n): con 28×28×33 × 4 daba
+    112×33×28 —no cabe en J&T— cuando 2×2 da 56×56×33, que sí.
+    Devuelve {caja, rejilla, cabe, medida}.
+    """
+    lim = lim or limites_jt()
+    l_, a_, h_ = (float(x) for x in unitaria)
+    n = max(1, int(n))
+    mejor: tuple[tuple[int, float, float, float, float], tuple[float, float, float],
+                 tuple[int, int, int]] | None = None
+    for i in range(1, n + 1):
+        for j in range(1, -(-n // i) + 1):
+            k = -(-n // (i * j))
+            if (i - 1) * j * k >= n or i * (j - 1) * k >= n:
+                continue                  # una fila o una columna entera de sobra
+            caja = (round(l_ * i, 2), round(a_ * j, 2), round(h_ * k, 2))
+            clave = orden_caja(peso, caja, lim)
+            if mejor is None or clave < mejor[0]:
+                mejor = (clave, caja, (i, j, k))
+    assert mejor is not None
+    return {"caja": mejor[1], "rejilla": mejor[2], "cabe": mejor[0][0] == 0,
+            "medida": medir_caja(peso, mejor[1], lim)}
+
+
+def piezas_que_caben(unitaria: Iterable[float], n: int, peso: float,
+                     lim: dict[str, float] | None = None) -> int:
+    """Cuántas piezas (≤ n) caben en UNA caja que J&T acepte, con el peso
+    repartido parejo; 0 si ni una. Con eso se dice "partir en ⌈n/n_max⌉ cajas".
+    PURA."""
+    u = tuple(float(x) for x in unitaria)
+    n = max(1, int(n))
+    for k in range(n, 0, -1):
+        if mejor_acomodo(u, k, float(peso) * k / n, lim)["cabe"]:
+            return k
+    return 0
+
+
+def envolvente(cajas: list[tuple[float, float, float]], peso: float,
+               lim: dict[str, float] | None = None) -> tuple[float, float, float]:
+    """La caja de una caja con VARIOS SKUs: la mejor caja de cada SKU, de la
+    más grande a la más chica, sumadas por la envolvente mínima — cada una se
+    prueba en sus 6 giros pegada por cada uno de los 3 ejes (en ese eje se
+    suma, en los otros dos manda el mayor) y gana la de menor `orden_caja`.
+    Sustituye a `crecer()`. PURA."""
+    lim = lim or limites_jt()
+    orden = sorted((tuple(float(x) for x in c) for c in cajas), key=lambda c: -_vol3(c))
+    acc = orden[0]
+    for b in orden[1:]:
+        mejor = None
+        for giro in sorted(set(itertools.permutations(b))):
+            for eje in range(3):
+                nueva = tuple(round(acc[x] + giro[x], 2) if x == eje else max(acc[x], giro[x])
+                              for x in range(3))
+                clave = orden_caja(peso, nueva, lim)
+                if mejor is None or clave < mejor[0]:
+                    mejor = (clave, nueva)
+        acc = mejor[1]  # type: ignore[index]
+    return acc  # type: ignore[return-value]
+
+
+def unitaria_de_catalogo(medida: dict[str, Any] | None, v_ref: float | None = None,
+                         piezas_por_caja: Any = None) -> dict[str, Any]:
+    """
+    La caja de UNA pieza a partir de una fila de catálogo (packing list o Woo),
+    que puede traer la pieza… o el cartón MASTER entero (en 4 de los 8 SKUs de
+    la cola del 1-oct: se declaraba 52×42×35 por un solo juguete). PURA.
+
+    `v_ref` = m³ por pieza por los que se pagó flete (`costo_cbm / 7500`, la
+    tarifa de Costos). Con R = volumen de la fila ÷ v_ref:
+      · R < 0.67        → la pieza no cabe en esa medida: la fuente NO OPINA;
+      · 0.67 ≤ R < 3    → es la pieza: tal cual (confianza media si R ≤ 1.5)
+                          — salvo que, con 1.5 ≤ R < 3, la columna
+                          `piezas_por_caja` (≥ 2) coincida con R dentro de
+                          ± 25 %: entonces es un cartón de 2 o 3 piezas y se
+                          reparte como el master (77 filas el 1-oct; 5 de ellas
+                          publicadas en Temu: 50×41×41 por una pieza de 2);
+      · R ≥ 3           → es el cartón master: la pieza sale con la MISMA
+                          función de Costos (`packing_costos.dims_pieza`: hasta
+                          10 piezas se divide el lado mayor, más de 10 la raíz
+                          cúbica de los tres) dividiendo entre R.
+    Sin `v_ref`: con densidad < 50 kg/m³ y `piezas_por_caja` > 1, master entre
+    esa columna; con densidad < 10 y sin columna, no opina (su peso sí sirve);
+    lo demás, tal cual con confianza baja — y con AVISO si su densidad es menor
+    de 50 kg/m³: ahí caen los cartones master reales (24-29 kg/m³ los de la
+    cola del 1-oct) y no hay flete con qué probar que sea la pieza.
+    Devuelve {caja | None, confianza, R, master, como, aviso}.
+    """
+    base: dict[str, Any] = {"caja": None, "confianza": "ninguna", "R": None, "master": False,
+                            "como": "", "aviso": None}
+    lados = [_num((medida or {}).get(k)) for k in ("largo_cm", "ancho_cm", "alto_cm")]
+    if not all(lados):
+        return {**base, "como": "sin las tres medidas"}
+    l_, a_, h_ = (float(x) for x in lados)  # type: ignore[arg-type]
+    vol = l_ * a_ * h_ / 1_000_000.0
+    ppc = _num(piezas_por_caja)
+    crudo = _caja_txt((l_, a_, h_))
+    tal_cual = (round(l_, 2), round(a_, 2), round(h_, 2))
+    if v_ref and float(v_ref) > 0:
+        r_ = vol / float(v_ref)
+        if r_ < R_MIN:
+            return {**base, "R": round(r_, 2),
+                    "como": (f"{crudo} cm ocupa {r_:.2f}× el volumen por el que pagó flete (menos de "
+                             f"{R_MIN:g}): la pieza no cabe en esa medida — no opina")}
+        if r_ < R_MASTER:
+            if r_ >= R_PIEZA and ppc and ppc >= 2 and abs(r_ / ppc - 1.0) <= 0.25:
+                # Un cartón de 2 o 3 piezas: por el flete van R piezas en esa
+                # medida y la columna piezas_por_caja dice lo mismo.
+                u2 = dims_pieza(l_, a_, h_, r_)
+                if all(x > 0 for x in u2):
+                    return {**base, "caja": tuple(float(x) for x in u2), "R": round(r_, 2),
+                            "master": True, "confianza": "baja",
+                            "como": (f"{crudo} cm es un cartón de {ppc:g} piezas (R={r_:.2f} contra el "
+                                     "flete y la columna piezas_por_caja coincide): pieza = cartón ÷ "
+                                     f"{r_:.2f} (lado mayor, como en Costos) = {_caja_txt(u2)} cm")}
+            return {**base, "caja": tal_cual, "R": round(r_, 2),
+                    "confianza": "media" if r_ <= R_PIEZA else "baja",
+                    "como": f"{crudo} cm tal cual: es la pieza (R={r_:.2f} contra el flete)"}
+        u = dims_pieza(l_, a_, h_, r_)
+        if not all(x > 0 for x in u):
+            return {**base, "R": round(r_, 2), "como": f"{crudo} cm: no se pudo repartir el master"}
+        aviso = None
+        if ppc and ppc > 1 and abs(r_ / ppc - 1.0) > 0.25:
+            aviso = (f"flete y columna no cuadran: por el flete van {r_:.1f} piezas por caja y la "
+                     f"columna piezas_por_caja dice {ppc:g}")
+        return {**base, "caja": tuple(float(x) for x in u), "R": round(r_, 2), "master": True,
+                "confianza": "baja", "aviso": aviso,
+                "como": (f"{crudo} cm es el cartón MASTER (R={r_:.2f} ≥ {R_MASTER:g}): pieza = master ÷ "
+                         f"{r_:.2f} ({'lado mayor' if r_ <= 10 else 'raíz cúbica'}, como en Costos) = "
+                         f"{_caja_txt(u)} cm")}
+    peso = _num((medida or {}).get("peso_kg"))
+    dens = (peso / vol) if peso else None
+    if dens is not None and dens < DENSIDAD_MASTER and ppc and ppc > 1:
+        u = dims_pieza(l_, a_, h_, ppc)
+        if all(x > 0 for x in u):
+            return {**base, "caja": tuple(float(x) for x in u), "master": True, "confianza": "baja",
+                    "como": (f"{crudo} cm con {dens:.1f} kg/m³ es el cartón MASTER (sin flete con qué "
+                             f"probarlo): pieza = master ÷ {ppc:g} piezas por caja = {_caja_txt(u)} cm")}
+    if dens is not None and dens < DENSIDAD_MIN:
+        return {**base, "como": (f"{crudo} cm con {peso:g} kg ({dens:.1f} kg/m³) es un cartón master y no "
+                                 "hay flete ni piezas por caja para repartirlo — no opina para la caja")}
+    aviso_sf = None
+    if dens is not None and dens < DENSIDAD_MASTER:
+        aviso_sf = (f"sin flete con qué probarla y con {dens:.1f} kg/m³ (menos de {DENSIDAD_MASTER:g}): "
+                    f"{crudo} cm puede ser el cartón MASTER y no la pieza — mídela (Checklist de "
+                    "almacén o captura en el panel)")
+    return {**base, "caja": tal_cual, "confianza": "baja", "aviso": aviso_sf,
+            "como": f"{crudo} cm tal cual (sin flete con qué probar que sea la pieza)"}
+
+
+def _fuentes_activas(orden: Iterable[str]) -> frozenset[str]:
+    """Qué fuentes PARTICIPAN, según `TEMU_GUIAS_FUENTES_MEDIDA`. Ya no es una
+    escalera por orden (gana el MENOR creíble): la variable sólo dice quién
+    opina. `historial_temu` y `temu_ultima_guia` son lo mismo: las guías del
+    mismo SKU. PURA."""
+    o = set(orden)
+    act: set[str] = set()
+    if "almacen" in o:
+        act.add("almacen")
+    if "omnicanal_packing" in o:
+        act.add("packing")
+    if "omnicanal_woo" in o:
+        act.add("woo")
+    if o & {"historial_temu", "temu_ultima_guia"}:
+        act.add("guias")
+    if "temu_hermanas" in o:
+        act.add("hermanas")
+    if "temu_publicacion" in o:
+        act.add("publicacion")
+    return frozenset(act)
+
+
+def v_ref_de(cat: dict[str, Any] | None) -> float | None:
+    """m³ POR PIEZA por los que se pagó flete: `costo_cbm / 7500` (la tarifa de
+    la pestaña de Costos, `costos.TARIFA_CBM_M3`). None si la fila no lo trae.
+    PURA."""
+    cc = _num((cat or {}).get("costo_cbm"))
+    return (cc / TARIFA_CBM) if cc else None
+
+
+def lo_nuestro(sku: str, medidas_almacen: dict[str, dict[str, Any]] | None = None,
+               omni: dict[str, Any] | None = None, cat: dict[str, Any] | None = None,
+               activas: Iterable[str] | None = None, *,
+               catalogo_leido: bool = True) -> dict[str, Any]:
+    """
+    Lo que OMNICANAL sabe de UNA pieza del SKU: su peso y su caja. PURA.
+
+    PESO: si almacén lo pesó (`core.products.almacen_peso_kg`), ése —es una
+    medición real y sustituye a packing y Woo—; si no, el MENOR creíble entre
+    el packing list y Woo. Creíble = 0.01-30 kg y densidad 10-1,500 kg/m³
+    contra la pieza unitaria YA CORREGIDA (no contra el L×A×H crudo de la fila:
+    con el cartón master, 0.099 kg en 60×40×40 daba 1 kg/m³ y se rechazaba).
+    CAJA (una sola, igual para toda cantidad): la medición de almacén; si no,
+    la de MENOR volumen entre la unitaria del packing y la de Woo
+    (`unitaria_de_catalogo`); si empatan dentro de 5 %, el packing.
+    Odoo NO es fuente: aquí sólo se leen `almacen`, `packing` y `woo`.
+    `catalogo_leido=False` (costing.costos_validados no contestó): Woo NO opina
+    para la caja —sin el flete no se sabe si su medida es la pieza o el cartón
+    master (se declaraba 52×42×35 por un juguete)—; la medición de almacén sí.
+    `avisos` son los de la CAJA y `avisos_peso` los del PESO (valen por
+    separado: cada uno acompaña a lo que gane de lo nuestro).
+    """
+    act = frozenset(activas) if activas is not None else frozenset({"almacen", "packing", "woo"})
+    omni = omni or {}
+    v_ref = v_ref_de(cat)
+    ppc = _num((cat or {}).get("piezas_por_caja"))
+    out: dict[str, Any] = {"peso_kg": None, "peso_fuente": None, "peso_conf": "ninguna",
+                           "unitaria": None, "caja_fuente": None, "caja_conf": "ninguna",
+                           "caja_como": "", "R": None, "v_ref": v_ref, "master": False,
+                           "descartes_peso": [], "descartes_caja": [], "avisos": [],
+                           "avisos_peso": [], "pesos_por_pieza": {}}
+
+    def _dp(fuente: str, kg: float | None, por: str) -> None:
+        out["descartes_peso"].append({"fuente": fuente, "kg_pieza": kg, "por": por})
+
+    def _dc(fuente: str, por: str) -> None:
+        out["descartes_caja"].append({"fuente": fuente, "por": por})
+
+    # ── Las unitarias de catálogo (packing list y Woo). Sólo esas dos llaves:
+    #    cualquier otra cosa que viniera en `omni` (Odoo) no se mira.
+    unidades: dict[str, dict[str, Any]] = {}
+    #    La columna piezas_por_caja acompaña también a la medida de Woo (es
+    #    del SKU, no de la fila): sin flete, es lo único que la reconoce master.
+    for fuente, llave, columna in (("omnicanal_packing", "packing", ppc),
+                                   ("omnicanal_woo", "woo", ppc)):
+        m = omni.get(llave) if llave in act else None
+        if not isinstance(m, dict) or not any(_num(m.get(k)) for k in (
+                "largo_cm", "ancho_cm", "alto_cm")):
+            continue
+        if catalogo_leido:
+            u = unitaria_de_catalogo(m, v_ref, columna)
+        else:
+            u = {"caja": None, "confianza": "ninguna", "R": None, "master": False, "aviso": None,
+                 "como": _SIN_CATALOGO}                     # falla cerrado
+        unidades[fuente] = u
+        if not u["caja"]:
+            _dc(fuente, u["como"])
+
+    # ── La medición de almacén (Checklist): por pieza, real, sin pasar por R.
+    #    El peso y la caja valen por separado: si almacén sólo pesó, ese peso es
+    #    el nuestro (y la caja sale del catálogo); si sólo midió, al revés.
+    alm = (medidas_almacen or {}).get(sku) if "almacen" in act else None
+    alm_peso: float | None = None
+    alm_caja: tuple[float, float, float] | None = None
+    if isinstance(alm, dict) and any(_num(alm.get(k)) for k in (
+            "peso_kg", "largo_cm", "ancho_cm", "alto_cm")):
+        w_alm = _num(alm.get("peso_kg"))
+        ld = [_num(alm.get(k)) for k in ("largo_cm", "ancho_cm", "alto_cm")]
+        if w_alm and all(ld):
+            mala = cordura_pieza({"peso_kg": w_alm, "largo_cm": ld[0], "ancho_cm": ld[1],
+                                  "alto_cm": ld[2]}, real=True)
+            if mala:
+                _dp("almacen", w_alm, f"la medición de almacén no es creíble: {mala}")
+                _dc("almacen", f"la medición de almacén no es creíble: {mala}")
+            else:
+                alm_peso, alm_caja = w_alm, (float(ld[0]), float(ld[1]), float(ld[2]))  # type: ignore[arg-type]
+        else:
+            if w_alm and PESO_MIN_KG <= w_alm <= PESO_MAX_KG:
+                alm_peso = w_alm
+            elif w_alm:
+                _dp("almacen", w_alm, f"la medición de almacén no es creíble: {w_alm:g} kg por pieza")
+            if all(ld) and max(ld) <= LADO_MAX_CM:  # type: ignore[type-var]
+                alm_caja = (float(ld[0]), float(ld[1]), float(ld[2]))  # type: ignore[arg-type]
+            elif any(ld):
+                _dc("almacen", "la medición de almacén no trae sus tres medidas (o un lado pasa de "
+                               f"{LADO_MAX_CM:.0f} cm)")
+    alm_ok = alm_peso is not None          # el peso de almacén sustituye a packing y Woo
+
+    # ── B.2 · La unitaria NUESTRA.
+    if alm_caja:
+        out.update(unitaria=alm_caja, caja_fuente="almacen", caja_conf="alta",
+                   caja_como="medición de almacén (Checklist), por pieza")
+        for fuente, u in unidades.items():
+            if u["caja"]:
+                _dc(fuente, "la sustituye la medición de almacén")
+    else:
+        con = [(f, u) for f, u in unidades.items() if u["caja"]]
+        if con:
+            gana = con[0]
+            if len(con) == 2:
+                vp, vw = _vol3(con[0][1]["caja"]), _vol3(con[1][1]["caja"])
+                # Empate dentro de 5 % → el packing (con[0]); si no, la menor.
+                if abs(vp - vw) > 0.05 * max(vp, vw) and vw < vp:
+                    gana = con[1]
+                pierde = con[1] if gana is con[0] else con[0]
+                _dc(pierde[0], (f"su pieza ({_caja_txt(pierde[1]['caja'])} cm, "
+                                f"{_vol3(pierde[1]['caja']) / 1000:.2f} L) no es la de menor volumen"
+                                + (" (empate dentro de 5 %: manda el packing list)"
+                                   if gana is con[0] and abs(vp - vw) <= 0.05 * max(vp, vw) else "")))
+            f, u = gana
+            out.update(unitaria=tuple(u["caja"]), caja_fuente=f, caja_conf=u["confianza"],
+                       caja_como=u["como"], R=u["R"], master=bool(u["master"]))
+            if u.get("aviso"):
+                out["avisos"].append(u["aviso"])
+
+    # ── A.2 · El peso NUESTRO por pieza.
+    if alm_ok:
+        out.update(peso_kg=alm_peso, peso_fuente="almacen", peso_conf="alta")
+        out["pesos_por_pieza"]["almacen"] = alm_peso
+    creibles: list[tuple[float, str]] = []
+    for fuente, llave in (("omnicanal_packing", "packing"), ("omnicanal_woo", "woo")):
+        m = omni.get(llave) if llave in act else None
+        w = _num((m or {}).get("peso_kg")) if isinstance(m, dict) else None
+        if not w:
+            continue
+        if alm_ok:
+            _dp(fuente, w, "lo sustituye el peso medido por almacén")
+            continue
+        if w < PESO_MIN_KG:
+            _dp(fuente, w, f"{w:g} kg por pieza (menos de 10 g): no es un peso real")
+            continue
+        if w > PESO_MAX_PIEZA_KG:
+            _dp(fuente, w, (f"{w:,.2f} kg por pieza (más de {PESO_MAX_PIEZA_KG:.0f} sin una medición "
+                            "real): no se declara"))
+            continue
+        ref = (unidades.get(fuente) or {}).get("caja") or out["unitaria"]
+        if ref:
+            dens = w / (_vol3(ref) / 1_000_000.0)
+            if dens < DENSIDAD_MIN:
+                _dp(fuente, w, (f"densidad de {dens:.1f} kg/m³ contra su pieza ({_caja_txt(ref)} cm; "
+                                f"mínimo {DENSIDAD_MIN:.0f}): caja enorme para ese peso"))
+                continue
+            if dens > DENSIDAD_MAX_CATALOGO:
+                _dp(fuente, w, (f"densidad de {dens:,.0f} kg/m³ contra su pieza ({_caja_txt(ref)} cm; "
+                                f"máximo {DENSIDAD_MAX_CATALOGO:,.0f} para un dato de catálogo): parece "
+                                "el peso de la caja MASTER con las medidas de una pieza"))
+                continue
+        creibles.append((w, fuente))
+        out["pesos_por_pieza"][fuente] = w
+    if creibles and not alm_ok:
+        w, f = min(creibles, key=lambda t: t[0])       # empate → el packing (va primero)
+        out.update(peso_kg=w, peso_fuente=f, peso_conf="media")
+        for w2, f2 in creibles:
+            if f2 != f:
+                _dp(f2, w2, f"{w2:g} kg por pieza: no es el menor de lo nuestro ({w:g} kg)")
+        # ¿Es el peso del CARTÓN? Una fila master cuyo peso "por pieza", por
+        # las piezas que van en el cartón, da un cartón de más de 40 kg. Sólo
+        # aviso (ver `PESO_CARTON_AVISO_KG`): con una guía de Temu creíble gana
+        # Temu; sin ella se declara éste, y se dice.
+        ug = unidades.get(f) or {}
+        por_carton = _num(ug.get("R")) or ppc
+        if ug.get("master") and por_carton and w * por_carton > PESO_CARTON_AVISO_KG:
+            out["avisos_peso"].append(
+                f"peso por pieza alto para una fila master: {w:g} kg × {por_carton:.1f} piezas por "
+                f"cartón = {w * por_carton:.0f} kg de cartón (más de {PESO_CARTON_AVISO_KG:g}) — "
+                f"¿{FUENTES_TXT[f]} trae el peso del CARTÓN? pésala")
+    return out
+
+
+def guia_contra_flete(caja: Iterable[float], piezas: float,
+                      v_ref: float | None) -> tuple[bool, float | None, str | None]:
+    """¿La caja declarada en una guía de Temu sirve para `piezas` piezas? Con
+    R = volumen ÷ (piezas × v_ref): debajo de 0.90 las piezas NO CABEN en ella
+    y de 3 para arriba es el cartón master (o una caja estándar) copiado. Sin
+    `v_ref` no hay con qué probarla: pasa. (ok, R, por qué no). PURA."""
+    if not v_ref or float(v_ref) <= 0 or float(piezas) <= 0:
+        return True, None, None
+    r_ = (_vol3(caja) / 1_000_000.0) / (float(piezas) * float(v_ref))
+    if r_ < PISO_TEMU:
+        return False, round(r_, 2), (f"las piezas no caben en esa caja (R={r_:.2f} contra el flete, "
+                                     f"menos de {PISO_TEMU:g})")
+    if r_ >= R_MASTER:
+        return False, round(r_, 2), (f"es el cartón master o una caja estándar copiada (R={r_:.2f} "
+                                     f"contra el flete, {R_MASTER:g} o más)")
+    return True, round(r_, 2), None
+
+
+def _fecha_txt(v: Any) -> str:
+    if isinstance(v, datetime):
+        return (v.astimezone(ZONA) if v.tzinfo else v).date().isoformat()
+    return str(v)[:10] if v else ""
+
+
+def _reciente(m: dict[str, Any]) -> str:
+    """Para ordenar muestras por fecha (texto ISO; sin fecha, la más vieja)."""
+    v = m.get("creado_at")
+    if isinstance(v, datetime):
+        return (v.astimezone(timezone.utc) if v.tzinfo else v.replace(tzinfo=timezone.utc)).isoformat()
+    return str(v or "")
+
+
+def _ref(m: dict[str, Any]) -> str:
+    """"PO-… del 2026-09-26" de una muestra del historial (sin datos del comprador)."""
+    po = str(m.get("parent_order_sn") or "—")
+    f = _fecha_txt(m.get("creado_at"))
+    return f"{po} del {f}" if f else po
+
+
+def _conf_min(*niveles: str) -> str:
+    return min(niveles, key=lambda c: _CONFIANZA_NIVEL.get(str(c), 0))
+
+
+def _base_empaque() -> dict[str, Any]:
+    return {"ok": False, "peso_kg": None, "largo_cm": None, "ancho_cm": None,
+            "alto_cm": None, "fuente": None, "fuente_peso": None, "fuente_txt": None,
+            "confianza": "ninguna", "muestras": 0, "detalle": "", "motivo": None, "aviso": None,
+            "avisos": [], "descartes": [], "peso": None, "caja": None}
+
+
+def _mala_guia(g: dict[str, Any]) -> str | None:
+    """Por qué lo declarado en una guía de Temu NO es creíble (None = pasa): la
+    cordura de la caja con su propio peso, y ≤ 30 kg por pieza. PURA."""
+    try:
+        k = max(1, int(g["cantidad"]))
+        w = float(g["peso_kg"])
+        mala = plausible(w, float(g["largo_cm"]), float(g["ancho_cm"]), float(g["alto_cm"]))
+    except (KeyError, TypeError, ValueError):
+        return "la guía no trae peso y caja legibles"
+    if not mala and w / k > PESO_MAX_PIEZA_KG:
+        mala = f"{w / k:,.2f} kg por pieza (más de {PESO_MAX_PIEZA_KG:.0f})"
+    return mala
+
+
 def elegir_empaque(contenido: dict[str, int], historial: list[dict[str, Any]],
                    medidas_almacen: dict[str, dict[str, Any]] | None = None,
                    min_muestras: int | None = None,
                    dispersion_max: float = 0.15, *,
                    manual: dict[str, Any] | None = None,
                    catalogo: dict[str, dict[str, Any]] | None = None,
-                   catalogo_leido: bool = True) -> dict[str, Any]:
+                   catalogo_leido: bool = True,
+                   omnicanal: dict[str, dict[str, Any]] | None = None,
+                   publicacion: dict[str, dict[str, Any]] | None = None,
+                   fuentes: Iterable[str] | None = None,
+                   eco: Iterable[str] | None = None,
+                   limites: dict[str, float] | None = None) -> dict[str, Any]:
     """
-    Peso y caja de UNA caja, diciendo de dónde salen. PURA.
+    Peso y caja de UNA caja, diciendo de dónde sale cada uno y qué candidatos
+    se descartaron. PURA (salvo `fuentes=None` / `limites=None`, que leen la
+    configuración). Ver el encabezado: EL MENOR CREÍBLE entre lo nuestro y lo
+    de Temu (Brandon, 1-oct).
 
-    `contenido` = {sku: piezas}. `historial` = muestras de guías ya compradas:
-    [{sku, cantidad, peso_kg, largo_cm, ancho_cm, alto_cm, parent_order_sn}].
-    `manual` = la medida capturada en el panel para ESTA caja (manda).
-    `catalogo` = {sku: {largo_cm, ancho_cm, alto_cm}} de costos_validados; con
-    `catalogo_leido=False` (no se pudo leer) el historial no es comprable.
-    `ok=True` sólo con confianza ALTA; lo demás se muestra y no se compra.
+    `contenido` = {sku: piezas}. `historial` = muestras de guías ya compradas
+    (así las da `_historial_empaque`): [{sku, cantidad, peso_kg, largo_cm,
+    ancho_cm, alto_cm, parent_order_sn, creado_at?, composicion?}] — las de las
+    variantes hermanas vienen con su propio SKU, y las de un PO con varios SKUs
+    con `composicion` {sku: piezas}.
+    `eco` = los PO cuya guía compró ESTE sistema (bitácora 0061): lo que ahí se
+    declaró salió de esta misma regla y NO cuenta como dato de Temu (ni en peso
+    ni en caja); si contara, un dato nuestro corregido nunca volvería a subir.
+    El plan ya NO lo pasa: el historial que arma (`_historial_candidatos`) lo
+    trae quitado desde el SQL, antes del tope por (SKU, piezas). Queda para
+    quien llame con su propio historial.
+    `manual` = la medida capturada en el panel para ESTA caja (manda, sin
+    comparar). `catalogo` = {sku: {largo_cm, ancho_cm, alto_cm, peso_kg?,
+    costo_cbm?, piezas_por_caja?}} de costos_validados (de ahí sale el volumen
+    de referencia del flete); con `catalogo_leido=False` las guías de Temu no
+    se usan (no se sabe cuáles copiaron el cartón master).
+    `omnicanal` = {sku: {"packing": medida por pieza, "woo": medida por pieza}}.
+    Y con `catalogo_leido=False` tampoco opinan para la CAJA ni Woo ni la
+    publicación (sin el flete no se sabe si su medida es el cartón master):
+    falla cerrado, la caja queda sin medida.
+    `publicacion` = {sku: medida por pieza} del paquete de la publicación.
+    `fuentes` = quién opina (`TEMU_GUIAS_FUENTES_MEDIDA`; el ORDEN ya no manda).
+    `min_muestras` y `dispersion_max` se conservan por compatibilidad: con "el
+    menor creíble" basta UNA guía.
+    `ok=True` = se puede comprar con él; lo demás se muestra con su motivo.
     """
-    minimo = _min_muestras() if min_muestras is None else max(1, int(min_muestras))
-    medidas_almacen = medidas_almacen or {}
-    base = {"ok": False, "peso_kg": None, "largo_cm": None, "ancho_cm": None,
-            "alto_cm": None, "fuente": None, "confianza": "ninguna", "muestras": 0,
-            "detalle": "", "motivo": None, "aviso": None}
+    orden = tuple(fuentes) if fuentes is not None else fuentes_medida()[0]
+    lim = limites or limites_jt()
+    base = _base_empaque()
 
     # 0 · La medida capturada en el panel para ESTA caja: es una persona que la
-    #     pesó y la midió, y la aprueba al aprobar el payload. Manda sobre todo
-    #     y es la única forma de comprar una caja con varios SKUs.
+    #     pesó y la midió, y la aprueba al aprobar el payload. Manda sobre todo.
     if manual:
+        tm = FUENTES_TXT["manual"]
         m = {k: _num(manual.get(k)) for k in ("peso_kg", "largo_cm", "ancho_cm", "alto_cm")}
         if not all(m.values()):
-            return {**base, "fuente": "manual",
+            return {**base, "fuente": "manual", "fuente_peso": "manual", "fuente_txt": tm,
                     "motivo": "la medida capturada está incompleta: peso y las tres medidas, positivos"}
         if m["peso_kg"] < PESO_MIN_KG:
-            return {**base, **m, "fuente": "manual",
+            return {**base, **m, "fuente": "manual", "fuente_peso": "manual", "fuente_txt": tm,
                     "motivo": f"el peso capturado ({m['peso_kg']} kg) es menor a 10 g"}
         rara = plausible(m["peso_kg"], m["largo_cm"], m["ancho_cm"], m["alto_cm"])
+        md = medir_caja(m["peso_kg"], (m["largo_cm"], m["ancho_cm"], m["alto_cm"]), lim)
+        avisos = ([f"revisa la captura: {rara}"] if rara else [])
+        if not md["cabe"] and not rara:
+            avisos.append(f"no cabe en J&T ({_limites_txt(lim)}): {'; '.join(md['motivos'])}")
         return {**base, **m, "ok": True, "confianza": "alta", "fuente": "manual",
-                "detalle": "medida capturada en el panel para esta caja",
-                "aviso": (f"revisa la captura: {rara}" if rara else None)}
+                "fuente_peso": "manual", "fuente_txt": tm,
+                "detalle": "medida capturada en el panel para esta caja (manda, sin comparar)",
+                "avisos": avisos, "aviso": " · ".join(avisos) or None,
+                "peso": {"kg": m["peso_kg"], "fuente": "manual", "fuente_txt": tm, "candidatos": []},
+                "caja": {"cm": [m["largo_cm"], m["ancho_cm"], m["alto_cm"]], "fuente": "manual",
+                         "fuente_txt": tm, "cabe_jt": md["cabe"], **md, "candidatos": []}}
 
+    ecos = {str(x) for x in (eco or ())}
+    hist = [m for m in (historial or []) if str(m.get("parent_order_sn") or "") not in ecos]
+    ctx: dict[str, Any] = {"historial": hist, "medidas_almacen": medidas_almacen or {},
+                           "catalogo": catalogo or {}, "catalogo_leido": catalogo_leido,
+                           "omnicanal": omnicanal or {}, "publicacion": publicacion or {},
+                           "activas": _fuentes_activas(orden), "lim": lim,
+                           "ecos": len(historial or []) - len(hist)}
     if len(contenido) != 1:
-        estimado = 0.0
-        completo = True
-        for sku, q in contenido.items():
-            porp = [m["peso_kg"] / m["cantidad"] for m in historial
-                    if m["sku"] == sku and m.get("cantidad")]
-            if not porp:
-                completo = False
-                break
-            estimado += max(porp) * q
-        return {**base, "peso_kg": round(estimado, 2) if completo else None,
-                "fuente": "suma_estimada" if completo else None,
-                "detalle": ("peso = Σ piezas × el mayor peso por pieza visto; SIN caja"
-                            if completo else ""),
-                "motivo": (f"caja con {len(contenido)} SKUs distintos: no hay historial de esa "
-                           "composición ni catálogo de cajas — NO se compra sola: pésala, mídela "
-                           "y captura la medida en el panel para poder aprobarla")}
+        return _empaque_mixto(contenido, **ctx)
     sku, q = next(iter(contenido.items()))
-    cat = (catalogo or {}).get(sku)
+    return _empaque_sku(str(sku), int(q), **ctx)
 
-    # 1 · Medición de almacén, sólo para 1 pieza (es la del producto empacado).
-    alm = medidas_almacen.get(sku) or {}
-    if q == 1 and all(_num(alm.get(k)) for k in ("peso_kg", "largo_cm", "ancho_cm", "alto_cm")):
-        vals = {k: float(alm[k]) for k in ("peso_kg", "largo_cm", "ancho_cm", "alto_cm")}
-        mala = plausible(vals["peso_kg"], vals["largo_cm"], vals["ancho_cm"], vals["alto_cm"])
+
+def _limites_txt(lim: dict[str, float]) -> str:
+    return f"{lim['peso']:g} kg / {lim['lado']:g} cm por lado / {lim['suma']:g} cm sumando los tres"
+
+
+def _empaque_sku(sku: str, q: int, *, historial: list[dict[str, Any]],
+                 medidas_almacen: dict[str, dict[str, Any]],
+                 catalogo: dict[str, dict[str, Any]], catalogo_leido: bool,
+                 omnicanal: dict[str, dict[str, Any]], publicacion: dict[str, dict[str, Any]],
+                 activas: frozenset[str], lim: dict[str, float],
+                 ecos: int = 0) -> dict[str, Any]:
+    """Peso y caja de UNA caja de UN SKU × `q` piezas. PURA. Ver el encabezado."""
+    base = _base_empaque()
+    q = max(1, int(q))
+    nu = lo_nuestro(sku, medidas_almacen, omnicanal.get(sku) or {}, catalogo.get(sku), activas,
+                    catalogo_leido=catalogo_leido)
+    v_ref = nu["v_ref"]
+    fam = familia(sku)
+    piso = piso_peso()
+
+    del_sku = [m for m in historial if m.get("sku") == sku]
+    usar_guias = "guias" in activas and catalogo_leido
+    guias = del_sku if usar_guias else []
+    buenas = [g for g in guias if not _mala_guia(g)]
+    hermanas: list[dict[str, Any]] = []
+    reciclada = bool(fam and fam in FAMILIAS_RECICLADAS)
+    if "hermanas" in activas and fam and not reciclada and catalogo_leido:
+        hermanas = [m for m in historial if m.get("sku") != sku and not m.get("composicion")
+                    and familia(m.get("sku")) == fam and not _mala_guia(m)]
+
+    # ═══ A · EL PESO ═══════════════════════════════════════════════════════
+    cp: list[dict[str, Any]] = []
+
+    def _peso(lado: str, fuente: str, kg: float, txt: str, conf: str) -> None:
+        cp.append({"lado": lado, "fuente": fuente, "kg": float(kg), "txt": txt, "confianza": conf,
+                   "ok": True, "por": None})
+
+    def _no_peso(fuente: str, txt: str, por: str, kg: float | None = None) -> None:
+        cp.append({"lado": "—", "fuente": fuente, "kg": kg, "txt": txt, "confianza": "ninguna",
+                   "ok": False, "por": por})
+
+    if nu["peso_kg"]:
+        _peso("nuestro", nu["peso_fuente"], nu["peso_kg"] * q,
+              f"{FUENTES_TXT[nu['peso_fuente']]}: {nu['peso_kg']:g} kg por pieza × {q}", nu["peso_conf"])
+    for d in nu["descartes_peso"]:
+        _no_peso(d["fuente"], FUENTES_TXT[d["fuente"]], d["por"],
+                 (d["kg_pieza"] * q) if d.get("kg_pieza") else None)
+    if del_sku and "guias" in activas and not catalogo_leido:
+        _no_peso("temu_guia", FUENTES_TXT["temu_guia"],
+                 "no se pudo leer el catálogo (costing.costos_validados no contestó): sin él no se "
+                 "sabe qué guías copiaron el cartón master — no se usan")
+    for g in guias:
+        mala = _mala_guia(g)
         if mala:
-            return {**base, **vals, "fuente": "almacen", "confianza": "media",
-                    "detalle": "medido por almacén (Checklist, core.products.almacen_*)",
-                    "motivo": f"la medición de almacén no es creíble: {mala} — vuelve a medir"}
-        return {**base, **vals, "ok": True, "confianza": "alta", "fuente": "almacen",
-                "detalle": "medido por almacén (Checklist, core.products.almacen_*)"}
+            _no_peso("temu_guia", f"guía de {sku} × {g.get('cantidad')} ({_ref(g)})",
+                     f"lo que declaró no es creíble: {mala}")
+    exactas = [g for g in buenas if int(g["cantidad"]) == q]
+    if exactas:
+        g = min(exactas, key=lambda m: float(m["peso_kg"]))
+        _peso("temu", "temu_guia", float(g["peso_kg"]),
+              (f"guía de {sku} × {q} ({_ref(g)}): {float(g['peso_kg']):g} kg"
+               + (f", la menor de {len(exactas)}" if len(exactas) > 1 else "")), "media")
+    unas = [g for g in buenas if int(g["cantidad"]) == 1]
+    x1 = guia_x1_por_piezas()
+    if q > 1 and unas and x1:
+        g = min(unas, key=lambda m: float(m["peso_kg"]))
+        _peso("temu", "temu_guia_x1", float(g["peso_kg"]) * q,
+              (f"guía de 1 pieza ({_ref(g)}): {float(g['peso_kg']):g} kg × {q} — EXTRAPOLADO, no es "
+               f"una guía de {q} piezas"), "media")
+    elif q > 1 and unas:
+        g = min(unas, key=lambda m: float(m["peso_kg"]))
+        _no_peso("temu_guia_x1", f"guía de 1 pieza ({_ref(g)}): {float(g['peso_kg']):g} kg × {q}",
+                 "TEMU_GUIAS_PESO_GUIA_X1_POR_PIEZAS está apagada: la guía de 1 pieza no se multiplica "
+                 "(de Temu sólo cuenta la guía de esas piezas y la publicación)",
+                 float(g["peso_kg"]) * q)
+    pub = publicacion.get(sku) if "publicacion" in activas else None
+    pm = _medida(pub) if isinstance(pub, dict) else None
+    pub_ok = False                # ¿su CAJA opina?
+    pub_caja_rell = False         # sus medidas son las de relleno
+    if isinstance(pub, dict) and not pm and any(_num(pub.get(k)) for k in (
+            "peso_kg", "largo_cm", "ancho_cm", "alto_cm")):
+        _no_peso("temu_publicacion", FUENTES_TXT["temu_publicacion"],
+                 "el paquete de la publicación está incompleto")
+    if pm:
+        # EL RELLENO, CADA CAMPO POR SEPARADO (`publicar_temu` rellena así): un
+        # peso de exactamente 0.1 o 0.5 kg con medidas reales no es el paquete
+        # de relleno entero, y × piezas le ganaría a todo por ser el menor.
+        peso_rell, pub_caja_rell = relleno_por_campo(pm)
+        if peso_rell and pub_caja_rell:
+            _no_peso("temu_publicacion", FUENTES_TXT["temu_publicacion"],
+                     "la publicación trae el paquete de RELLENO (100 g · 10×20×30 de Temu, o 500 g · "
+                     "20×20×20 de publicar_temu): no es una medida", pm["peso_kg"] * q)
+        else:
+            mala = cordura_pieza(pm, catalogo=True)
+            if mala:
+                _no_peso("temu_publicacion", FUENTES_TXT["temu_publicacion"],
+                         f"el paquete de la publicación no es creíble por pieza: {mala}",
+                         pm["peso_kg"] * q)
+            else:
+                if peso_rell and nu["peso_kg"] and abs(pm["peso_kg"] - nu["peso_kg"]) < 0.005:
+                    peso_rell = False           # coincide con lo nuestro: es su peso
+                if peso_rell:
+                    _no_peso("temu_publicacion", FUENTES_TXT["temu_publicacion"],
+                             (f"su peso ({pm['peso_kg']:g} kg) es exactamente el de RELLENO por omisión "
+                              "(100 g de Temu, 500 g de publicar_temu, que rellena cada campo por "
+                              "separado) y no coincide con lo nuestro: no opina en el peso"),
+                             pm["peso_kg"] * q)
+                else:
+                    _peso("temu", "temu_publicacion", pm["peso_kg"] * q,
+                          f"paquete de la publicación en Temu: {pm['peso_kg']:g} kg por pieza × {q}",
+                          "baja")
+                pub_ok = not pub_caja_rell
 
-    # 2 · Historial del MISMO (SKU, piezas).
-    mismas = [m for m in historial if m["sku"] == sku and int(m["cantidad"]) == int(q)]
-    if mismas:
-        pesos = [float(m["peso_kg"]) for m in mismas]
-        vols = [_vol(m) for m in mismas]
-        disp_p = (max(pesos) - min(pesos)) / max(pesos) if max(pesos) else 1.0
-        disp_v = (max(vols) - min(vols)) / max(vols) if max(vols) else 1.0
-        # El peso MÁS ALTO y la caja MÁS GRANDE vistos, aunque no sean de la
-        # misma guía: declarar de menos es lo que la paquetería ajusta y cobra.
-        caja = max(mismas, key=lambda m: (_vol(m), float(m["peso_kg"])))
-        salida = {**base, "peso_kg": max(pesos), "largo_cm": caja["largo_cm"],
-                  "ancho_cm": caja["ancho_cm"], "alto_cm": caja["alto_cm"],
-                  "fuente": "historial_temu", "muestras": len(mismas),
-                  "detalle": (f"lo declarado en {len(mismas)} guía(s) de {sku} × {q}: peso = el "
-                              f"mayor visto; caja = la más grande vista "
-                              f"({caja.get('parent_order_sn') or '—'})")}
-        motivos: list[str] = []
-        if len(mismas) < minimo:
-            motivos.append(f"sólo {len(mismas)} muestra(s) de {sku} × {q} (se piden {minimo})")
-        if disp_p > dispersion_max:
-            motivos.append(f"los pesos de {sku} × {q} se dispersan {disp_p:.0%} (tope "
-                           f"{dispersion_max:.0%})")
-        if disp_v > dispersion_max:
-            motivos.append(f"las cajas de {sku} × {q} se dispersan {disp_v:.0%} en volumen (tope "
-                           f"{dispersion_max:.0%})")
-        mala = plausible(salida["peso_kg"], caja["largo_cm"], caja["ancho_cm"], caja["alto_cm"])
-        if mala:
-            motivos.append(mala)
-        if not catalogo_leido:
-            motivos.append("no se pudo comparar la caja contra la medida de catálogo")
-        elif es_caja_de_catalogo(caja["largo_cm"], caja["ancho_cm"], caja["alto_cm"], cat):
-            motivos.append("la caja declarada en esas guías es IDÉNTICA a la medida de catálogo "
-                           "(CBM reconstruido, no es una medida): quien compró la guía copió "
-                           "el catálogo")
-        if not motivos:
-            return {**salida, "ok": True, "confianza": "alta"}
-        return {**salida, "confianza": "media",
-                "motivo": "; ".join(motivos) + ": confirma peso y caja (captúralos en el panel)"}
+    if not any(c["ok"] for c in cp):
+        # A.6 · Sin lo nuestro y sin Temu propio de esas piezas: una guía de
+        #       OTRA cantidad del mismo SKU, y después las variantes hermanas.
+        otras = [g for g in buenas if int(g["cantidad"]) not in ((1, q) if x1 else (q,))]
+        if otras:
+            g = min(otras, key=lambda m: float(m["peso_kg"]) / int(m["cantidad"]))
+            por_pz = float(g["peso_kg"]) / int(g["cantidad"])
+            _peso("respaldo", "temu_guia_otra", por_pz * q,
+                  (f"guía de {sku} × {g['cantidad']} ({_ref(g)}): {por_pz:.3f} kg por pieza × {q}"),
+                  "baja")
+        elif hermanas:
+            de_una = [g for g in hermanas if int(g["cantidad"]) == 1]
+            g = max(de_una or hermanas, key=_reciente)
+            por_pz = float(g["peso_kg"]) / int(g["cantidad"])
+            _peso("respaldo", "temu_hermanas", por_pz * q,
+                  (f"variante {g.get('sku')} × {g['cantidad']} ({_ref(g)}): {por_pz:.3f} kg por pieza "
+                   f"× {q} — misma familia; que sea el mismo producto NO está verificado"), "baja")
+        elif reciclada and "hermanas" in activas:
+            _no_peso("temu_hermanas", FUENTES_TXT["temu_hermanas"],
+                     f"la familia {fam} tiene SKUs RECICLADOS (el mismo número es otro producto, "
+                     "CLAUDE.md): sus variantes no sirven de referencia")
 
-    # 3 · Interpolación dentro del rango visto del SKU: sólo PROPUESTA.
-    por_q: dict[int, dict[str, Any]] = {}
-    for m in historial:
-        if m["sku"] != sku:
+    vivos_p = [c for c in cp if c["ok"]]
+    if not vivos_p:
+        descartes = [f"peso · {c['txt']}: {c['por']}" for c in cp if not c["ok"]]
+        quien = ", ".join(sorted({FUENTES_TXT[f] for f in ("almacen", "omnicanal_packing",
+                                                           "omnicanal_woo", "temu_guia",
+                                                           "temu_hermanas", "temu_publicacion")}))
+        return {**base, "descartes": descartes,
+                "peso": {"kg": None, "fuente": None, "candidatos": cp},
+                "motivo": (f"ninguna fuente ({quien}) tiene un peso creíble de {sku} × {q}"
+                           + (f" — {'; '.join(descartes)[:400]}" if descartes else "")
+                           + ": hay que pesar y medir la caja (y capturarla en el panel)")}
+    # El MENOR; en empate, lo nuestro.
+    pe = min(vivos_p, key=lambda c: (round(c["kg"], 6), 0 if c["lado"] == "nuestro" else 1))
+    pe["gana"] = True
+    peso = _arriba2(max(piso, pe["kg"]))
+
+    # ═══ B · LA CAJA ═══════════════════════════════════════════════════════
+    cc: list[dict[str, Any]] = []
+
+    def _caja(lado: str, fuente: str, caja: Iterable[float], txt: str, conf: str, *,
+              rejilla: tuple[int, int, int] | None = None,
+              unitaria: Iterable[float] | None = None, r_: float | None = None) -> None:
+        c3 = tuple(float(x) for x in caja)
+        mala = plausible(peso, c3[0], c3[1], c3[2])
+        cc.append({"lado": lado, "fuente": fuente, "caja": c3, "txt": txt, "confianza": conf,
+                   "rejilla": list(rejilla) if rejilla else None,
+                   "unitaria": list(unitaria) if unitaria else None, "R": r_,
+                   "ok": not mala, "por": (f"con {peso:.2f} kg: {mala}" if mala else None),
+                   "medida": medir_caja(peso, c3, lim)})
+
+    def _no_caja(fuente: str, txt: str, por: str, caja: Iterable[float] | None = None) -> None:
+        cc.append({"lado": "—", "fuente": fuente, "caja": tuple(caja) if caja else None, "txt": txt,
+                   "confianza": "ninguna", "rejilla": None, "unitaria": None, "R": None,
+                   "ok": False, "por": por, "medida": None})
+
+    def _rejilla_txt(ac: dict[str, Any]) -> str:
+        i, j, k = ac["rejilla"]
+        return f"{q} piezas en rejilla {i}×{j}×{k}"
+
+    if nu["unitaria"]:
+        ac = mejor_acomodo(nu["unitaria"], q, peso, lim)
+        _caja("nuestro", nu["caja_fuente"], ac["caja"],
+              f"{FUENTES_TXT[nu['caja_fuente']]}: {nu['caja_como']}"
+              + (f"; {_rejilla_txt(ac)}" if q > 1 else ""),
+              nu["caja_conf"] if q == 1 else _conf_min(nu["caja_conf"], "baja"),
+              rejilla=ac["rejilla"], unitaria=nu["unitaria"], r_=nu["R"])
+    for d in nu["descartes_caja"]:
+        _no_caja(d["fuente"], FUENTES_TXT[d["fuente"]], d["por"])
+
+    def _copio_master(g: dict[str, Any]) -> bool:
+        """Sin flete con qué probarla: ¿la guía declaró la caja IDÉNTICA a una
+        fila de catálogo (de su SKU o del que se compra) que NO es una pieza
+        (cartón master, o no opina)? Entonces copió el master."""
+        for s in {str(g.get("sku")), sku}:
+            fila = catalogo.get(s)
+            crudas = [fila] if fila else []
+            crudas += [x for x in (omnicanal.get(s) or {}).values() if isinstance(x, dict)]
+            for cr in crudas:
+                if not es_caja_de_catalogo(g["largo_cm"], g["ancho_cm"], g["alto_cm"], cr):
+                    continue
+                u = unitaria_de_catalogo({**cr, "peso_kg": cr.get("peso_kg")
+                                          or float(g["peso_kg"]) / max(1, int(g["cantidad"]))},
+                                         v_ref_de(catalogo.get(s)),
+                                         (catalogo.get(s) or {}).get("piezas_por_caja"))
+                if u["master"] or not u["caja"]:
+                    return True
+        return False
+
+    def _de_guias(lista: list[dict[str, Any]], lado: str) -> None:
+        """Las candidatas de Temu (B.4) de una lista de guías creíbles: del
+        mismo SKU (`lado='temu'`) o de sus variantes hermanas."""
+        vistas: set[tuple[Any, ...]] = set()
+
+        def _quien(g: dict[str, Any]) -> str:
+            return sku if lado == "temu" else f"la variante {g.get('sku')}"
+
+        def _vref(g: dict[str, Any]) -> float | None:
+            return v_ref if lado == "temu" else (v_ref_de(catalogo.get(str(g.get("sku")))) or v_ref)
+
+        def _probar(g: dict[str, Any], piezas: int, etiqueta: str) -> tuple[bool, float | None]:
+            caja = (float(g["largo_cm"]), float(g["ancho_cm"]), float(g["alto_cm"]))
+            vr = _vref(g)
+            ok, r_, por = guia_contra_flete(caja, piezas, vr)
+            if ok and vr is None and _copio_master(g):
+                ok, por = False, ("es IDÉNTICA a la medida de catálogo, que es el cartón master "
+                                  "(quien compró la guía copió el catálogo)")
+            if not ok:
+                _no_caja(etiqueta_fuente(piezas), f"{etiqueta} ({_ref(g)}, {_caja_txt(caja)} cm)",
+                         str(por), caja)
+            return ok, r_
+
+        def etiqueta_fuente(piezas: int) -> str:
+            if lado != "temu":
+                return "temu_hermanas"
+            return "temu_guia" if piezas == q else ("temu_guia_x1" if piezas == 1 else "temu_guia_otra")
+
+        nota = "" if lado == "temu" else " — misma familia; que sea el mismo producto NO está verificado"
+        # · de exactamente esas piezas: tal cual.
+        for g in lista:
+            if int(g["cantidad"]) != q:
+                continue
+            caja = (float(g["largo_cm"]), float(g["ancho_cm"]), float(g["alto_cm"]))
+            llave = ("=", str(g.get("sku")), tuple(sorted(caja)))
+            if llave in vistas:
+                continue
+            vistas.add(llave)
+            ok, r_ = _probar(g, q, f"caja de la guía de {_quien(g)} × {q}")
+            if ok:
+                _caja(lado, etiqueta_fuente(q), caja,
+                      (f"caja de la guía de {_quien(g)} × {q} ({_ref(g)}) tal cual"
+                       + (f" (R={r_:.2f} contra el flete)" if r_ is not None else "") + nota),
+                      "media" if lado == "temu" else "baja", r_=r_)
+        # · la de 1 pieza como unitaria, acomodada.
+        if q > 1:
+            for g in lista:
+                if int(g["cantidad"]) != 1:
+                    continue
+                caja = (float(g["largo_cm"]), float(g["ancho_cm"]), float(g["alto_cm"]))
+                llave = ("1", str(g.get("sku")), tuple(sorted(caja)))
+                if llave in vistas:
+                    continue
+                vistas.add(llave)
+                ok, r_ = _probar(g, 1, f"caja de la guía de 1 pieza de {_quien(g)}")
+                if ok:
+                    ac = mejor_acomodo(caja, q, peso, lim)
+                    _caja(lado, etiqueta_fuente(1), ac["caja"],
+                          (f"caja de la guía de 1 pieza de {_quien(g)} ({_ref(g)}, {_caja_txt(caja)} "
+                           f"cm); {_rejilla_txt(ac)}" + nota), "baja",
+                          rejilla=ac["rejilla"], unitaria=caja, r_=r_)
+        # · la de MÁS piezas (la más cercana): le cupieron más, le caben éstas.
+        mayores = sorted({int(g["cantidad"]) for g in lista if int(g["cantidad"]) > q})
+        if mayores:
+            k0 = mayores[0]
+            for g in lista:
+                if int(g["cantidad"]) != k0:
+                    continue
+                caja = (float(g["largo_cm"]), float(g["ancho_cm"]), float(g["alto_cm"]))
+                llave = (">", str(g.get("sku")), tuple(sorted(caja)))
+                if llave in vistas:
+                    continue
+                vistas.add(llave)
+                ok, r_ = _probar(g, k0, f"caja de la guía de {_quien(g)} × {k0}")
+                if ok:
+                    _caja(lado, etiqueta_fuente(k0) if lado == "temu" else "temu_hermanas", caja,
+                          (f"caja de la guía de {_quien(g)} × {k0} ({_ref(g)}) tal cual: le cupieron "
+                           f"{k0}" + nota), "baja", r_=r_)
+
+    if del_sku and "guias" in activas and not catalogo_leido:
+        _no_caja("temu_guia", FUENTES_TXT["temu_guia"],
+                 "no se pudo comparar la caja de sus guías contra el catálogo (costing.costos_validados "
+                 "no contestó): no se usan")
+    _de_guias(buenas, "temu")
+    if pm and pub_caja_rell:
+        _no_caja("temu_publicacion", FUENTES_TXT["temu_publicacion"],
+                 (f"sus medidas ({_caja_txt((pm['largo_cm'], pm['ancho_cm'], pm['alto_cm']))} cm) son "
+                  "las de RELLENO por omisión (10×20×30 de Temu, 20×20×20 de publicar_temu): no "
+                  "opina para la caja"))
+    elif pm and pub_ok and not catalogo_leido:
+        _no_caja("temu_publicacion", FUENTES_TXT["temu_publicacion"], _SIN_CATALOGO)
+        pub_ok = False
+    if pm and pub_ok:
+        caja_p = (pm["largo_cm"], pm["ancho_cm"], pm["alto_cm"])
+        ok, r_, por = guia_contra_flete(caja_p, 1, v_ref)
+        if not ok:
+            _no_caja("temu_publicacion", f"paquete de la publicación ({_caja_txt(caja_p)} cm)",
+                     str(por), caja_p)
+        else:
+            ac = mejor_acomodo(caja_p, q, peso, lim)
+            _caja("temu", "temu_publicacion", ac["caja"],
+                  (f"paquete de la publicación en Temu ({_caja_txt(caja_p)} cm por pieza)"
+                   + (f"; {_rejilla_txt(ac)}" if q > 1 else "")), "baja",
+                  rejilla=ac["rejilla"], unitaria=caja_p, r_=r_)
+    if not any(c["ok"] for c in cc):
+        # B.6 · Sin caja nuestra ni de Temu del mismo SKU: las variantes hermanas.
+        if hermanas:
+            _de_guias(hermanas, "hermanas")
+        elif reciclada and "hermanas" in activas:
+            _no_caja("temu_hermanas", FUENTES_TXT["temu_hermanas"],
+                     f"la familia {fam} tiene SKUs RECICLADOS (el mismo número es otro producto, "
+                     "CLAUDE.md): sus variantes no sirven de referencia")
+
+    def _clave(c: dict[str, Any]) -> tuple[Any, ...]:
+        return (*orden_caja(peso, c["caja"], lim), 0 if c["lado"] == "nuestro" else 1)
+
+    vivas = [c for c in cc if c["ok"]]
+    ce = min(vivas, key=_clave) if vivas else None
+    if ce is not None:
+        ce["gana"] = True
+
+    # ═══ El resultado, con todos sus candidatos ═══════════════════════════
+    descartes: list[str] = []
+    for c in cp:
+        if not c["ok"]:
+            descartes.append(f"peso · {c['txt']}: {c['por']}")
+        elif c is not pe:
+            descartes.append(f"peso · {c['txt']} = {c['kg']:.2f} kg: no es el menor")
+    for c in cc:
+        if not c["ok"]:
+            descartes.append(f"caja · {c['txt']}: {c['por']}")
+        elif c is not ce:
+            descartes.append(f"caja · {c['txt']} = {_caja_txt(c['caja'])} cm (facturable "
+                             f"{c['medida']['facturable_kg']:.2f} kg"
+                             + ("" if c["medida"]["cabe"] else ", NO cabe en J&T")
+                             + "): no es la menor")
+    if ecos:
+        descartes.append(f"Temu · {ecos} guía(s) que compró este sistema no cuentan como dato de Temu "
+                         "(son el eco de esta misma regla)")
+    peso_txt = (f"{peso:.2f} kg ← {pe['txt']}"
+                + (f" (piso de {piso:g} kg)" if pe["kg"] < piso else ""))
+    info_peso = {"kg": peso, "crudo_kg": round(pe["kg"], 4), "fuente": pe["fuente"],
+                 "fuente_txt": FUENTES_TXT[pe["fuente"]], "lado": pe["lado"],
+                 "confianza": pe["confianza"],
+                 "candidatos": [{"fuente": c["fuente"], "txt": c["txt"],
+                                 "kg": (round(c["kg"], 3) if c["kg"] is not None else None),
+                                 "ok": c["ok"], "por": c["por"], "gana": c is pe} for c in cp]}
+    info_cand_caja = [{"fuente": c["fuente"], "txt": c["txt"],
+                       "cm": (list(c["caja"]) if c["caja"] else None), "ok": c["ok"],
+                       "por": c["por"], "gana": c is ce,
+                       "facturable_kg": (c["medida"] or {}).get("facturable_kg"),
+                       "cabe_jt": (c["medida"] or {}).get("cabe")} for c in cc]
+    if ce is None:
+        return {**base, "peso_kg": peso, "peso_crudo_kg": pe["kg"], "fuente_peso": pe["fuente"],
+                "fuente_txt": f"peso: {FUENTES_TXT[pe['fuente']]} · caja: ninguna",
+                "confianza": "ninguna", "descartes": descartes, "peso": info_peso,
+                "caja": {"cm": None, "fuente": None, "candidatos": info_cand_caja},
+                "detalle": f"PESO {peso_txt}",
+                "motivo": ((f"no se pudo leer el catálogo (costing.costos_validados no contestó): sin "
+                            f"el flete no se sabe si la medida de {sku} es la pieza o el cartón master, "
+                            "y las guías de Temu no se usan — se reintenta sola (si urge: pésala, "
+                            "mídela y captúrala en el panel)") if not catalogo_leido else
+                           (f"hay peso de {sku} × {q} ({peso:.2f} kg) pero ninguna fuente da una caja "
+                            f"creíble" + (f" — {'; '.join(d for d in descartes if d.startswith('caja'))[:400]}"
+                                          if any(d.startswith("caja") for d in descartes) else "")
+                            + ": hay que pesar y medir la caja (y capturarla en el panel)"))}
+
+    md = ce["medida"]
+    caja = ce["caja"]
+    avisos: list[str] = []
+    if ce["lado"] == "nuestro":
+        avisos.extend(nu["avisos"])
+    if pe["lado"] == "nuestro":
+        avisos.extend(nu["avisos_peso"])
+    if pe["fuente"] == "temu_guia_x1":
+        avisos.append(f"el peso ({peso:.2f} kg) se EXTRAPOLÓ de la guía de 1 pieza × {q}: no es un "
+                      f"dato de Temu para {q} piezas"
+                      + (f" (sus guías de × {q} declararon "
+                         f"{min(float(g['peso_kg']) for g in exactas):g} kg)" if exactas else "")
+                      + (f"; lo nuestro suma {nu['peso_kg'] * q:g} kg" if nu["peso_kg"] else ""))
+    n_max: int | None = None
+    partir: str | None = None
+    if not md["cabe"]:
+        u = ce.get("unitaria") or nu["unitaria"]
+        n_max = piezas_que_caben(u, q, peso, lim) if u else 0
+        if n_max and q > 1:
+            partir = f"partir en {math.ceil(q / n_max)} cajas (caben {n_max} por caja)"
+        else:
+            partir = "ni una pieza cabe con esas medidas: revísalas"
+    sobre = aviso_sobre(caja, lim)
+    if sobre:
+        avisos.append(sobre)
+    # Sub-declaración: lo que se declara contra lo que el equipo declaraba a
+    # mano para ese SKU (las guías de este sistema no cuentan).
+    ref_vol, ref_txt = None, ""
+    ex_todas = [g for g in del_sku if int(g.get("cantidad") or 0) == q]
+    de_una_todas = [g for g in del_sku if int(g.get("cantidad") or 0) == 1]
+    if ex_todas:
+        g = max(ex_todas, key=_reciente)
+        ref_vol, ref_txt = _vol(g), f"la guía de × {q} ({_ref(g)})"
+    elif de_una_todas:
+        g = max(de_una_todas, key=_reciente)
+        ref_vol, ref_txt = _vol(g) * q, f"la guía de 1 pieza × {q} ({_ref(g)})"
+    if ref_vol and _vol3(caja) < 0.5 * ref_vol:
+        avisos.append(f"se declaran {_vol3(caja) / 1000:.1f} L y a mano se declaraban "
+                      f"{ref_vol / 1000:.1f} L ({ref_txt}): menos de la mitad — J&T puede re-medir y "
+                      "cobrar la diferencia")
+    # Las fuentes no coinciden en el peso por pieza: se declara el menor, y se dice.
+    por_pieza = [c["kg"] / q for c in cp if c["ok"]]
+    if len(por_pieza) > 1 and min(por_pieza) > 0 and max(por_pieza) / min(por_pieza) >= 1.5:
+        txt = " · ".join(f"{c['txt'].split(':')[0]} {c['kg'] / q:.3f} kg" for c in cp if c["ok"])
+        avisos.append(f"las fuentes NO coinciden en el peso por pieza de {sku} ({txt}); se declara "
+                      f"el MENOR ({peso:.2f} kg para {q} pieza(s)) — si la paquetería ajusta, corrige "
+                      "el dato que está mal")
+    conf = _conf_min(pe["confianza"], ce["confianza"])
+    ftxt = (FUENTES_TXT[pe["fuente"]] if pe["fuente"] == ce["fuente"]
+            else f"peso: {FUENTES_TXT[pe['fuente']]} · caja: {FUENTES_TXT[ce['fuente']]}")
+    info_caja = {"cm": list(caja), "fuente": ce["fuente"], "fuente_txt": FUENTES_TXT[ce["fuente"]],
+                 "lado": ce["lado"], "confianza": ce["confianza"], "rejilla": ce["rejilla"],
+                 "unitaria_cm": ce["unitaria"], "R": ce["R"], "cabe_jt": md["cabe"],
+                 "piezas_por_caja_max": n_max, "partir": partir, **md,
+                 "candidatos": info_cand_caja}
+    res = {**base, "peso_kg": peso, "peso_crudo_kg": pe["kg"], "largo_cm": caja[0],
+           "ancho_cm": caja[1], "alto_cm": caja[2], "fuente": ce["fuente"],
+           "fuente_peso": pe["fuente"], "fuente_txt": ftxt, "confianza": conf,
+           "muestras": len(exactas) if "temu_guia" in (pe["fuente"], ce["fuente"]) else 0,
+           "descartes": descartes, "peso": info_peso, "caja": info_caja,
+           "detalle": (f"PESO {peso_txt} · CAJA {_caja_txt(caja)} cm ← {ce['txt']} · volumétrico "
+                       f"{md['volumetrico_kg']:.2f} kg, facturable {md['facturable_kg']:.2f} kg, lados "
+                       f"suman {md['suma_cm']:g} cm")}
+    if not md["cabe"]:
+        no_cabe = f"no cabe en J&T ({_limites_txt(lim)}): {'; '.join(md['motivos'])}"
+        if ce["lado"] == "hermanas":
+            # Una caja armada con datos de OTRA variante (sin verificar) que
+            # además no cabe: no se cotiza a ciegas.
+            return {**res, "avisos": avisos, "aviso": " · ".join(avisos) or None,
+                    "motivo": (f"excede paquetería: {partir} — {no_cabe}; la caja sale de una variante "
+                               "hermana (sin verificar): pésala, mídela y captúrala en el panel")}
+        avisos.insert(0, f"{no_cabe} — {partir}; se cotiza igual: si Temu ofrece J&T se compra, si no "
+                         "la más barata disponible")
+    return {**res, "ok": True, "avisos": avisos, "aviso": " · ".join(avisos) or None}
+
+
+def _empaque_mixto(contenido: dict[str, int], **ctx: Any) -> dict[str, Any]:
+    """Una caja con VARIOS SKUs: peso = la SUMA de lo que se declara de cada
+    SKU con sus piezas (un solo redondeo al final), contra el peso de una guía
+    a mano con esa MISMA composición — el menor; en empate, la suma—; caja = la
+    mejor de cada SKU sumadas por la envolvente mínima (`envolvente`), contra
+    la de esa guía — gana la menor; en empate, la nuestra. PURA."""
+    base = _base_empaque()
+    lim = ctx["lim"]
+    comp = {str(s): int(q) for s, q in contenido.items()}
+    n = len(comp)
+    partes = {s: _empaque_sku(s, q, **ctx) for s, q in sorted(comp.items())}
+    resumen = {s: {"fuente": e.get("fuente"), "fuente_peso": e.get("fuente_peso"),
+                   "fuente_txt": e.get("fuente_txt"), "confianza": e.get("confianza"),
+                   "peso_kg": e.get("peso_kg"),
+                   "caja_cm": ([e["largo_cm"], e["ancho_cm"], e["alto_cm"]] if e.get("largo_cm")
+                               else None), "ok": e["ok"]}
+               for s, e in partes.items()}
+    malas = [(s, e) for s, e in partes.items() if not e["ok"]]
+    if malas:
+        txt = " | ".join(f"{s}: {e.get('motivo') or 'sin datos'}" for s, e in malas)
+        return {**base, "fuente": "suma_skus", "fuente_peso": "suma_skus",
+                "fuente_txt": f"suma de {n} SKUs", "partes": resumen,
+                "descartes": [f"{s}: {e.get('motivo')}" for s, e in malas],
+                "motivo": (f"caja con {n} SKUs distintos: falta el peso o la caja de "
+                           f"{', '.join(s for s, _e in malas)} ({txt[:400]}) — NO se compra sola: "
+                           "pésala, mídela y captura la medida en el panel")}
+    crudo = sum(float(e["peso_crudo_kg"]) for e in partes.values())
+    # Las guías a mano con esa MISMA composición (sin el eco): su caja compite
+    # con la envolvente y su PESO con la suma.
+    iguales = [m for m in ctx["historial"] if isinstance(m.get("composicion"), dict)
+               and {str(k): int(v) for k, v in m["composicion"].items()} == comp
+               and "guias" in ctx["activas"] and ctx["catalogo_leido"] and not _mala_guia(m)]
+    g_peso = min(iguales, key=lambda m: float(m["peso_kg"])) if iguales else None
+    de_temu = bool(g_peso and float(g_peso["peso_kg"]) < crudo - 1e-9)
+    peso_crudo = float(g_peso["peso_kg"]) if (g_peso and de_temu) else crudo
+    f_peso = "temu_guia" if de_temu else "suma_skus"
+    peso = _arriba2(max(piso_peso(), peso_crudo))
+    cajas = [(float(e["largo_cm"]), float(e["ancho_cm"]), float(e["alto_cm"])) for e in partes.values()]
+    nuestra = envolvente(cajas, peso, lim)
+    cands: list[dict[str, Any]] = []
+
+    def _cand(lado: str, caja: Iterable[float], txt: str, conf: str, r_: float | None = None) -> None:
+        c3 = tuple(float(x) for x in caja)
+        mala = plausible(peso, c3[0], c3[1], c3[2])
+        cands.append({"lado": lado, "caja": c3, "txt": txt, "confianza": conf, "R": r_,
+                      "ok": not mala, "por": (f"con {peso:.2f} kg: {mala}" if mala else None),
+                      "medida": medir_caja(peso, c3, lim)})
+
+    _cand("nuestro", nuestra, ("la mejor caja de cada SKU sumadas por la envolvente mínima ("
+                               + " + ".join(_caja_txt(c) for c in cajas) + ")"), "baja")
+    refs = [v_ref_de(ctx["catalogo"].get(s)) for s in comp]
+    v_total = sum(v * comp[s] for s, v in zip(comp, refs)) if all(refs) else None  # type: ignore[operator]
+    vistas: set[tuple[float, ...]] = set()
+    for g in iguales:
+        caja_g = (float(g["largo_cm"]), float(g["ancho_cm"]), float(g["alto_cm"]))
+        if tuple(sorted(caja_g)) in vistas:
             continue
-        k = int(m["cantidad"])
-        if k not in por_q or m["peso_kg"] > por_q[k]["peso_kg"]:
-            por_q[k] = m
-    abajo = [k for k in por_q if k < q]
-    arriba = [k for k in por_q if k > q]
-    if abajo and arriba:
-        qa, qb = max(abajo), min(arriba)
-        pa, pb = por_q[qa]["peso_kg"], por_q[qb]["peso_kg"]
-        peso = pa + (pb - pa) * (q - qa) / (qb - qa)
-        caja = por_q[qb]
-        return {**base, "peso_kg": round(peso, 2), "largo_cm": caja["largo_cm"],
-                "ancho_cm": caja["ancho_cm"], "alto_cm": caja["alto_cm"],
-                "fuente": "interpolado_historial", "confianza": "media",
-                "muestras": len([m for m in historial if m["sku"] == sku]),
-                "detalle": (f"peso interpolado entre {sku} × {qa} y × {qb}; caja de la de "
-                            f"{qb} piezas (ya se usó y cupo)"),
-                "motivo": f"no hay guías de {sku} × {q}: la propuesta es interpolada, confírmala"}
-    return {**base, "motivo": (f"sin medición de almacén ni historial de {sku} × {q}: "
-                               "hay que pesar y medir la caja (y capturarla en el panel)")}
+        vistas.add(tuple(sorted(caja_g)))
+        ok, r_, por = guia_contra_flete(caja_g, 1, v_total)
+        if not ok:
+            cands.append({"lado": "—", "caja": caja_g, "txt": f"guía con esa composición ({_ref(g)})",
+                          "confianza": "ninguna", "R": r_, "ok": False, "por": por, "medida": None})
+            continue
+        _cand("temu", caja_g, f"caja de una guía anterior con esa MISMA composición ({_ref(g)})",
+              "media", r_)
+    vivas = [c for c in cands if c["ok"]]
+    fuentes_txt = sorted({str(e["fuente_txt"]) for e in partes.values()})
+    # Cada SKU con SU fuente (antes sólo "SKU × piezas": la bitácora perdía de
+    # dónde salió cada peso), y la guía de esa composición si la hay.
+    cand_peso = [{"fuente": e["fuente_peso"],
+                  "txt": (f"{s} × {comp[s]} ← "
+                          + str((e.get("peso") or {}).get("fuente_txt")
+                                or FUENTES_TXT.get(str(e["fuente_peso"]), e["fuente_peso"]))),
+                  "kg": round(float(e["peso_crudo_kg"]), 3), "ok": True, "por": None,
+                  "gana": not de_temu} for s, e in partes.items()]
+    if g_peso:
+        cand_peso.append({"fuente": "temu_guia", "kg": round(float(g_peso["peso_kg"]), 3), "ok": True,
+                          "txt": f"guía a mano con esa MISMA composición ({_ref(g_peso)})",
+                          "por": (None if de_temu else f"no es menos que la suma ({crudo:.3f} kg)"),
+                          "gana": de_temu})
+    info_peso = {"kg": peso, "crudo_kg": round(peso_crudo, 4), "fuente": f_peso,
+                 "fuente_txt": ("Temu · guía de esa composición" if de_temu else f"suma de {n} SKUs"),
+                 "lado": "temu" if de_temu else "nuestro", "candidatos": cand_peso}
+    detalle_peso = ("PESO " + " + ".join(f"{s} × {comp[s]} {float(e['peso_crudo_kg']):.3f} kg "
+                                         f"({(e['peso'] or {}).get('fuente_txt')})"
+                                         for s, e in partes.items())
+                    + (f" = {crudo:.3f} kg; la guía a mano con esa composición ({_ref(g_peso)}) declaró "
+                       f"{float(g_peso['peso_kg']):g} kg, que es MENOS → {peso:.2f} kg"
+                       if (g_peso and de_temu) else f" = {peso:.2f} kg"))
+    descartes = [f"{s} · {d}" for s, e in partes.items() for d in e.get("descartes") or []]
+    descartes += [f"caja · {c['txt']}: {c['por']}" for c in cands if not c["ok"]]
+    if not vivas:
+        return {**base, "peso_kg": peso, "peso_crudo_kg": peso_crudo, "fuente": "suma_skus",
+                "fuente_peso": f_peso, "fuente_txt": f"suma de {n} SKUs ({' + '.join(fuentes_txt)})",
+                "partes": resumen, "descartes": descartes, "peso": info_peso, "detalle": detalle_peso,
+                "motivo": (f"la suma de {n} SKUs no da una caja creíble: "
+                           + "; ".join(str(c["por"]) for c in cands if c["por"])[:300])}
+    ce = min(vivas, key=lambda c: (*orden_caja(peso, c["caja"], lim), 0 if c["lado"] == "nuestro" else 1))
+    md = ce["medida"]
+    caja = ce["caja"]
+    descartes += [f"caja · {c['txt']} = {_caja_txt(c['caja'])} cm (facturable "
+                  f"{c['medida']['facturable_kg']:.2f} kg): no es la menor"
+                  for c in vivas if c is not ce]
+    avisos = [f"{s}: {a}" for s, e in partes.items() for a in e.get("avisos") or []
+              if "no cabe en J&T" not in a]
+    if not md["cabe"]:
+        avisos.insert(0, f"no cabe en J&T ({_limites_txt(lim)}): {'; '.join(md['motivos'])} — partir en "
+                         "varias cajas; se cotiza igual: si Temu ofrece J&T se compra, si no la más "
+                         "barata disponible")
+    sobre = aviso_sobre(caja, lim)
+    if sobre:
+        avisos.append(sobre)
+    # La confianza: la de la caja elegida y la del PESO de cada SKU (la caja de
+    # cada parte ya no cuenta si se usa la de una guía de esa composición); la
+    # envolvente nuestra es una estimación: baja.
+    conf = _conf_min(ce["confianza"], *(str((e.get("peso") or {}).get("confianza")
+                                            or e["confianza"]) for e in partes.values()))
+    if ce["lado"] == "nuestro":
+        conf = "baja"
+    return {**base, "ok": True, "peso_kg": peso, "peso_crudo_kg": peso_crudo, "largo_cm": caja[0],
+            "ancho_cm": caja[1], "alto_cm": caja[2], "fuente": "suma_skus", "fuente_peso": f_peso,
+            "fuente_txt": f"suma de {n} SKUs ({' + '.join(fuentes_txt)})", "confianza": conf,
+            "muestras": len(iguales), "partes": resumen, "descartes": descartes,
+            "avisos": avisos, "aviso": " · ".join(avisos) or None, "peso": info_peso,
+            "caja": {"cm": list(caja), "fuente": "suma_skus", "fuente_txt": ce["txt"],
+                     "lado": ce["lado"], "R": ce["R"], "cabe_jt": md["cabe"],
+                     "piezas_por_caja_max": None,
+                     "partir": (None if md["cabe"] else "partir en varias cajas"), **md,
+                     "candidatos": [{"fuente": "suma_skus", "txt": c["txt"], "cm": list(c["caja"]),
+                                     "ok": c["ok"], "por": c["por"], "gana": c is ce,
+                                     "facturable_kg": (c["medida"] or {}).get("facturable_kg"),
+                                     "cabe_jt": (c["medida"] or {}).get("cabe")} for c in cands]},
+            "detalle": (f"{detalle_peso} · CAJA {_caja_txt(caja)} cm ← {ce['txt']} · volumétrico "
+                        f"{md['volumetrico_kg']:.2f} kg, facturable {md['facturable_kg']:.2f} kg, lados "
+                        f"suman {md['suma_cm']:g} cm")}
 
 
 def _dos(x: float) -> str:
@@ -1279,13 +2803,56 @@ def _dias_texto(t: Any) -> tuple[float, float]:
     return (math.inf, math.inf)
 
 
+def _fila_es_jt(emp: str) -> bool:
+    n = _norm(emp)
+    return n.startswith("j&t") or n in ("jt", "jtexpress", "jyt")
+
+
+def es_jt(canal: dict[str, Any], jt_id: int | None = None) -> bool:
+    """¿El canal es de J&T? Por su `shipCompanyId` (`TEMU_GUIAS_JT_SHIP_COMPANY_ID`)
+    o por su nombre. PURA (salvo `jt_id=None`, que lee la configuración)."""
+    jid = jt_ship_company_id() if jt_id is None else int(jt_id or 0)
+    return bool((jid and _entero(canal.get("shipCompanyId")) == jid)
+                or "j&t" in _norm(canal.get("shippingCompanyName")))
+
+
+def jt_excede_usa_otra() -> bool:
+    """`TEMU_GUIAS_JT_EXCEDE_USA_OTRA` (nace APAGADA): si la caja excede los
+    límites de J&T y Temu IGUAL ofrece J&T, ¿se compra la más barata de las
+    demás? Apagada (la orden de Brandon del 1-oct, "J&T siempre; si no se
+    encuentra en las opciones, la más barata"): se compra J&T —el árbitro es la
+    cotización de Temu— y la caja lleva su aviso."""
+    return bool(getattr(settings, "temu_guias_jt_excede_usa_otra", False))
+
+
 def elegir_canal(respuesta: dict[str, Any],
-                 preferencias: list[tuple[str, str]] | None = None) -> dict[str, Any]:
-    """De la cotización, el canal a comprar: el MÁS BARATO de los que entran en
-    las preferencias ("*" = cualquier paquetería o tipo); empate → el de menos
-    días. PURA. Nunca cambia sola a algo que no esté en la lista. `mas_barata`
-    es la más barata de TODAS (para que se vea lo que la regla dejó fuera)."""
+                 preferencias: list[tuple[str, str]] | None = None,
+                 jt_id: int | None = None, jt_excede: str | None = None) -> dict[str, Any]:
+    """
+    De la cotización, el canal a comprar. PURA (salvo los `None`, que leen la
+    configuración). Regla de Brandon (1-oct): J&T SIEMPRE primero; sólo si J&T
+    no se ofrece —o no es usable— se toma la más barata de las demás.
+
+    `preferencias` va EN ORDEN DE PRIORIDAD: gana el primer renglón que tenga
+    un canal usable; dentro de ese renglón, el más barato; empate → el de menos
+    días. "*" es cualquier paquetería — y dentro de "*" J&T va primero
+    (`TEMU_GUIAS_JT_SHIP_COMPANY_ID`; con 0, no). Entre los servicios de J&T
+    (drop-off / recolección) gana el más barato salvo que un renglón fije el
+    tipo ("J&T:Pickup,J&T,*"). No es usable el canal que pide datos extra
+    (`infoNeeded`), sólo sirve contra entrega o cotiza en otra moneda. Nunca
+    cambia sola a algo que no esté en la lista.
+
+    `jt_excede` = por qué la caja excede los límites de J&T: con él, los
+    canales de J&T dejan de ser usables aunque Temu los ofrezca (sólo lo pasa
+    quien llama con `TEMU_GUIAS_JT_EXCEDE_USA_OTRA` encendida).
+
+    Devuelve además `mas_barata` (la más barata de TODAS), `es_jt`,
+    `porque_no_jt` (por qué no fue J&T cuando no lo fue, con el
+    `unavailableReason` de Temu) y, por opción, sus `reglas` (`channelRules`:
+    el único lugar donde Temu dice el límite real de cada canal).
+    """
     prefs = preferencias_paqueteria() if preferencias is None else preferencias
+    jid = jt_ship_company_id() if jt_id is None else int(jt_id or 0)
     opciones = []
     for c in (respuesta or {}).get("onlineChannelDtoList") or []:
         if not isinstance(c, dict):
@@ -1307,47 +2874,93 @@ def elegir_canal(respuesta: dict[str, Any],
             "pide_datos": list(c.get("infoNeeded") or []),
             "solo_cod": _entero(c.get("payWayCode")) == 2,
             "no_mxn": not mxn,
+            "es_jt": es_jt(c, jid),
+            "reglas": (str(c.get("channelRules"))[:300] if c.get("channelRules") else None),
         })
     no_disp = [{"shippingCompanyName": str(c.get("shippingCompanyName") or ""),
                 "shipLogisticsType": str(c.get("shipLogisticsType") or ""),
+                "shipCompanyId": _entero(c.get("shipCompanyId")),
+                "channelId": _entero(c.get("channelId")),
+                "es_jt": es_jt(c, jid),
                 "motivo": str(c.get("unavailableReason") or "")[:200]}
                for c in (respuesta or {}).get("unavailableChannelDtoList") or []
                if isinstance(c, dict)]
 
     def _usable(o: dict[str, Any]) -> bool:
         return not (o["pide_datos"] or o["solo_cod"] or not o["channelId"]
-                    or not o["shipCompanyId"] or o["no_mxn"])
+                    or not o["shipCompanyId"] or o["no_mxn"] or (jt_excede and o["es_jt"]))
 
-    def _clave(o: dict[str, Any], rango: int) -> tuple[float, float, float, int]:
-        return (o["monto"] if o["monto"] is not None else math.inf,
-                o["dias"][0], o["dias"][1], rango)
+    def _clave(o: dict[str, Any]) -> tuple[float, float, float]:
+        return (o["monto"] if o["monto"] is not None else math.inf, o["dias"][0], o["dias"][1])
 
-    candidatos: dict[int, tuple[int, dict[str, Any]]] = {}
-    for rango, (emp, tipo) in enumerate(prefs):
-        for o in opciones:
-            if emp != "*" and _norm(emp) not in _norm(o["shippingCompanyName"]):
-                continue
-            if tipo and tipo != "*" and _norm(tipo) != _norm(o["shipLogisticsType"]):
-                continue
-            if not _usable(o):
-                continue
-            if o["channelId"] not in candidatos or rango < candidatos[o["channelId"]][0]:
-                candidatos[o["channelId"]] = (rango, o)
-    todas = sorted((o for o in opciones if _usable(o)), key=lambda o: _clave(o, 0))
+    def _entra(o: dict[str, Any], emp: str, tipo: str) -> bool:
+        if emp != "*" and not (_norm(emp) in _norm(o["shippingCompanyName"])
+                               or (_fila_es_jt(emp) and o["es_jt"])):
+            return False
+        return not (tipo and tipo != "*" and _norm(tipo) != _norm(o["shipLogisticsType"]))
+
+    def _nombre(o: dict[str, Any]) -> str:
+        return " ".join(x for x in (o["shippingCompanyName"], o["shipLogisticsType"],
+                                    o.get("estimatedAmount") or "") if x)
+
+    # EL ORDEN ES PRIORIDAD: el primer renglón con un canal usable gana.
+    elegido: dict[str, Any] | None = None
+    fila: tuple[str, str] | None = None
+    for emp, tipo in prefs:
+        entran = [o for o in opciones if _entra(o, emp, tipo) and _usable(o)]
+        if not entran:
+            continue
+        if emp == "*" and jid:
+            entran = [o for o in entran if o["es_jt"]] or entran      # J&T primero
+        elegido = min(entran, key=_clave)
+        fila = (emp, tipo)
+        break
+    todas = sorted((o for o in opciones if _usable(o)), key=_clave)
     mas_barata = todas[0] if todas else None
-    if not candidatos:
-        ofrecidas = ", ".join(f"{o['shippingCompanyName']} {o['shipLogisticsType']} "
-                              f"{o['estimatedAmount']}" for o in opciones) or "ninguna"
+    regla = ("J&T siempre primero; si no se ofrece o no es usable, la más barata de las demás "
+             f"(TEMU_GUIAS_PAQUETERIA = {', '.join(':'.join(x for x in p if x) for p in prefs)}, en "
+             "orden de prioridad)")
+    nd_txt = "; ".join(f"{x['shippingCompanyName']} {x['shipLogisticsType']}: "
+                       f"{x['motivo'] or 'sin motivo'}" for x in no_disp)
+    if elegido is None:
+        ofrecidas = ", ".join(_nombre(o) for o in opciones) or "ninguna"
         otra_moneda = sorted({o["moneda"] for o in opciones if o["no_mxn"]})
         return {"elegido": None, "opciones": opciones, "no_disponibles": no_disp,
-                "mas_barata": mas_barata,
+                "mas_barata": mas_barata, "es_jt": False, "porque_no_jt": None, "regla": regla,
                 "motivo": (f"la paquetería preferida ({', '.join(':'.join(p) for p in prefs)}) "
                            f"no se ofreció para esta caja; Temu ofreció: {ofrecidas}"
                            + (f" (cotizado en {', '.join(otra_moneda)}, no en MXN: no se "
-                              "compara con los topes en pesos)" if otra_moneda else ""))}
-    elegido = min(candidatos.values(), key=lambda t: _clave(t[1], t[0]))[1]
+                              "compara con los topes en pesos)" if otra_moneda else "")
+                           + (f"; no disponibles: {nd_txt}" if nd_txt else ""))}
+    porque: str | None = None
+    if not elegido["es_jt"]:
+        jt_ofr = [o for o in opciones if o["es_jt"]]
+        jt_nd = [x for x in no_disp if x["es_jt"]]
+        if any(_usable(o) for o in jt_ofr):
+            porque = (f"TEMU_GUIAS_PAQUETERIA pone antes el renglón «{':'.join(x for x in fila if x)}»"  # type: ignore[union-attr]
+                      f" y J&T ({', '.join(_nombre(o) for o in jt_ofr if _usable(o))}) no entra en él")
+        elif jt_ofr:
+            peros = []
+            for o in jt_ofr:
+                por = ([f"pide datos extra ({', '.join(str(x) for x in o['pide_datos'])})"]
+                       if o["pide_datos"] else [])
+                por += ["sólo contra entrega"] if o["solo_cod"] else []
+                por += [f"cotiza en {o['moneda']}, no en MXN"] if o["no_mxn"] else []
+                por += (["sin channelId o shipCompanyId"]
+                        if not (o["channelId"] and o["shipCompanyId"]) else [])
+                por += [f"la caja excede sus límites ({jt_excede})"] if jt_excede else []
+                peros.append(f"{o['shipLogisticsType'] or 'J&T'}: {', '.join(por) or 'no usable'}")
+            porque = f"J&T se ofreció pero no es usable ({'; '.join(peros)})"
+        elif jt_nd:
+            porque = ("J&T no está disponible para esta caja — Temu: "
+                      + "; ".join(f"{x['shipLogisticsType'] or 'J&T'}: {x['motivo'] or 'sin motivo'}"
+                                  for x in jt_nd))
+        else:
+            porque = "Temu no ofreció J&T para esta caja"
+        porque += f": se usa la más barata de las demás ({_nombre(elegido)})"
     return {"elegido": elegido, "opciones": opciones, "no_disponibles": no_disp,
-            "mas_barata": mas_barata, "motivo": None}
+            "mas_barata": mas_barata, "motivo": None, "es_jt": bool(elegido["es_jt"]),
+            "porque_no_jt": porque, "regla": regla}
 
 
 def payload_compra(llamada: dict[str, Any], horas: int | str) -> dict[str, Any]:
@@ -1505,6 +3118,11 @@ def paqueteria_de(caja: dict[str, Any]) -> str | None:
     txt = " · ".join(x for x in (str(el.get("shippingCompanyName") or "").strip(),
                                  str(el.get("shipLogisticsType") or "").strip()) if x)
     return txt or None
+
+
+def porque_no_jt_de(caja: dict[str, Any]) -> str | None:
+    """Por qué la caja NO va por J&T (None si va por J&T, o si no se cotizó). PURA."""
+    return (caja.get("cotizacion") or {}).get("porque_no_jt") or None
 
 
 def huella(obj: Any) -> str:
@@ -1697,41 +3315,93 @@ def _demanda_ajena(dias: int) -> dict[str, float]:
             if str(f.get("sku") or "").strip() and float(f.get("piezas") or 0) > 0}
 
 
+def clave_composicion(contenido: dict[str, int]) -> str:
+    """"A*1+B*4": la composición de una caja con varios SKUs, ordenada por SKU
+    (como el `string_agg … collate "C"` de `_historial_candidatos`). PURA."""
+    return "+".join(f"{s}*{int(q)}" for s, q in sorted((str(k), v) for k, v in contenido.items()))
+
+
+def _leer_composicion(k: str) -> dict[str, int] | None:
+    salida: dict[str, int] = {}
+    for parte in str(k or "").split("+"):
+        s, sep, q = parte.rpartition("*")
+        if not sep or not s or not q.isdigit():
+            return None
+        salida[s] = salida.get(s, 0) + int(q)
+    return salida or None
+
+
+# El eco, fuera del historial: las ventas cuya guía compró este sistema.
+_ECO_SQL = """
+                and not exists (select 1 from ops.temu_guias_compras b
+                                 where b.parent_order_sn = o.external_order_id
+                                   and b.estado not in ('rechazada', 'no_enviada'))"""
+
+
 def _historial_candidatos(skus: list[str], por_cantidad: int = 3,
-                          por_sku: int = 12) -> list[dict[str, Any]]:
-    """Ventas de Temu YA SURTIDAS de UN solo SKU, con guía propia (no
-    compartida, no dividida): de ahí sale lo que se declaró al comprar su guía.
-    El tope va POR SKU dentro del SQL (antes era un `limit 600` global: un SKU
-    con muchas ventas dejaba sin muestras a otro según qué más hubiera en el
-    lote, y la vista previa y la compra veían historiales distintos).
+                          por_sku: int = 12, *, familias: Iterable[str] | None = None,
+                          composiciones: Iterable[str] | None = None) -> list[dict[str, Any]]:
+    """Ventas de Temu YA SURTIDAS con guía propia (no compartida, no dividida):
+    de ahí sale lo que se declaró al comprar su guía. Tres clases:
+      · de UN solo SKU pedido (`skus`);
+      · de UN solo SKU de la misma FAMILIA (`familias`, "MASC-0016": las
+        variantes hermanas, escalón `temu_hermanas`);
+      · de VARIOS SKUs con una composición pedida (`composiciones`,
+        "A*1+B*4"): la caja de un PO con dos SKUs.
+    El tope va POR SKU (o composición) dentro del SQL (antes era un `limit 600`
+    global: un SKU con muchas ventas dejaba sin muestras a otro según qué más
+    hubiera en el lote, y la vista previa y la compra veían historiales
+    distintos).
+    EL ECO SE QUITA AQUÍ, ANTES DEL TOPE (revisión del 1-oct): las ventas cuya
+    guía compró ESTE sistema (fila en `ops.temu_guias_compras` que no quedó
+    'rechazada' ni 'no_enviada') no son un dato de Temu. Si se quitaran después
+    del `row_number`, cada compra automática ocuparía un lugar de las 3 más
+    nuevas y desplazaría a las guías a mano: JUGU-0089-PLA pasaba de 1.00 a
+    1.25 kg a media cola. Sin la tabla (migración 0061 sin aplicar) no hay eco
+    que quitar: se consulta sin ese filtro.
     ⚠️ BLOQUEA (psycopg2): llamar desde un hilo. Sólo SELECT."""
     from services import supabase_db as sdb
-    if not skus:
+    fams = sorted({f for f in (familias or []) if f and re.fullmatch(r"[A-Z]+-\d+", f)})
+    comps = sorted({c for c in (composiciones or []) if c})
+    if not skus and not fams and not comps:
         return []
-    filas = sdb.fetch_all(
+    sql = (
         """/* tgc:historial */ with v as (
              select o.external_order_id po, o.guia, max(o.creado_at) creado_at,
-                    count(*) lineas, min(i.sku::text) sku, sum(i.cantidad) q
+                    count(*) lineas, min(i.sku::text) sku, sum(i.cantidad) q,
+                    string_agg(i.sku::text || '*' || i.cantidad::text, '+'
+                               order by i.sku::text collate "C") comp
                from ops.odoo_sale_orders o
                join ops.odoo_sale_order_items i using (canal, external_order_id)
               where o.canal = 'temu' and o.odoo_order_id is not null
                 and coalesce(o.guia, '') <> '' and position('+' in o.guia) = 0
-                and o.creado_at > now() - interval '120 days'
+                and o.creado_at > now() - interval '120 days'/*ECO*/
               group by 1, 2),
            g as (select guia, count(*) n from v group by 1),
-           c as (select v.po, v.sku, v.q, v.creado_at
+           c as (select v.po, case when v.lineas = 1 then v.sku else v.comp end k,
+                        v.lineas, v.q, v.creado_at
                    from v join g using (guia)
-                  where v.lineas = 1 and g.n = 1 and v.q > 0 and v.sku = any(%(s)s)),
-           r1 as (select c.*, row_number() over (partition by sku, q
+                  where g.n = 1 and v.q > 0
+                    and ((v.lineas = 1 and (v.sku = any(%(s)s::text[])
+                                            or v.sku like any(%(f)s::text[])))
+                         or (v.lineas > 1 and v.comp = any(%(k)s::text[])))),
+           r1 as (select c.*, row_number() over (partition by k, q
                                                  order by creado_at desc, po) rq
                     from c),
-           r2 as (select r1.*, row_number() over (partition by sku
+           r2 as (select r1.*, row_number() over (partition by k
                                                   order by creado_at desc, po) rs
                     from r1 where rq <= %(pq)s)
-           select po, sku, q, creado_at from r2
+           select po, k sku, lineas, q, creado_at from r2
             where rs <= %(ps)s
-            order by sku, creado_at desc, po""",
-        {"s": list(skus), "pq": int(por_cantidad), "ps": int(por_sku)})
+            order by k, creado_at desc, po""")
+    params = {"s": list(skus), "f": [f"{x}-%" for x in fams], "k": comps,
+              "pq": int(por_cantidad), "ps": int(por_sku)}
+    try:
+        filas = sdb.fetch_all(sql.replace("/*ECO*/", _ECO_SQL), params)
+    except Exception as exc:  # noqa: BLE001
+        if not es_tabla_ausente(exc):
+            raise
+        filas = sdb.fetch_all(sql.replace("/*ECO*/", ""), params)
     salida: list[dict[str, Any]] = []
     cuenta_q: dict[tuple[str, int], int] = {}
     cuenta_s: dict[str, int] = {}
@@ -1739,14 +3409,100 @@ def _historial_candidatos(skus: list[str], por_cantidad: int = 3,
         k = (str(f["sku"]), int(f["q"] or 0))
         if k[1] <= 0 or cuenta_q.get(k, 0) >= por_cantidad or cuenta_s.get(k[0], 0) >= por_sku:
             continue
+        comp = _leer_composicion(k[0]) if int(f.get("lineas") or 1) > 1 else None
+        if int(f.get("lineas") or 1) > 1 and not comp:
+            continue
         cuenta_q[k] = cuenta_q.get(k, 0) + 1
         cuenta_s[k[0]] = cuenta_s.get(k[0], 0) + 1
-        salida.append({"po": str(f["po"]), "sku": k[0], "cantidad": k[1]})
+        # En el orden del SQL: por SKU, de la MÁS RECIENTE a la más vieja (el
+        # escalón "Temu · última guía" toma la primera).
+        salida.append({"po": str(f["po"]), "sku": k[0], "cantidad": k[1],
+                       "creado_at": f.get("creado_at"), "composicion": comp})
+    return salida
+
+
+def _items_kubera(pos: list[str]) -> dict[str, dict[str, int]]:
+    """{PO: {sku: piezas}} que kubera guardó al registrar cada venta de Temu
+    (`ops.odoo_sale_order_items`). Para restar del stock, A LO SEGURO, una
+    venta cuyo detalle Temu no contestó. ⚠️ BLOQUEA. Sólo SELECT. LANZA."""
+    from services import supabase_db as sdb
+    if not pos:
+        return {}
+    filas = sdb.fetch_all(
+        """/* tgc:items */ select external_order_id po, sku::text sku, sum(cantidad) piezas
+             from ops.odoo_sale_order_items
+            where canal = %(c)s and external_order_id = any(%(p)s::text[])
+            group by 1, 2""", {"c": CANAL, "p": list(pos)})
+    salida: dict[str, dict[str, int]] = {}
+    for f in filas:
+        s, n = str(f.get("sku") or "").strip(), int(f.get("piezas") or 0)
+        if s and n > 0:
+            salida.setdefault(str(f["po"]), {})[s] = n
+    return salida
+
+
+_UNIDAD_PESO_PUB = {"kg": 1.0, "g": 0.001, "lb": 0.45359237, "oz": 0.028349523125}
+_UNIDAD_LADO_PUB = {"cm": 1.0, "mm": 0.1, "m": 100.0, "in": 2.54}
+
+
+def medida_de_publicacion(fila: dict[str, Any]) -> dict[str, float] | None:
+    """{peso_kg, largo_cm, ancho_cm, alto_cm} de UNA fila de
+    `bg.local.goods.sku.list.query` (`weightInfo`, `volumeInfo`), o None si
+    falta algo o la unidad no se sabe convertir (falla cerrado: una unidad mal
+    leída es un peso 1,000 veces distinto). PURA."""
+    w = fila.get("weightInfo") if isinstance(fila.get("weightInfo"), dict) else {}
+    v = fila.get("volumeInfo") if isinstance(fila.get("volumeInfo"), dict) else {}
+    fp = _UNIDAD_PESO_PUB.get(str(w.get("unit") or "").strip().lower())
+    fd = _UNIDAD_LADO_PUB.get(str(v.get("unit") or "").strip().lower())
+    peso = _num(w.get("weight"))
+    lados = [_num(v.get(k)) for k in ("length", "width", "height")]
+    if fp is None or fd is None or not peso or not all(lados):
+        return None
+    return {"peso_kg": round(peso * fp, 4), "largo_cm": round(lados[0] * fd, 2),  # type: ignore[operator]
+            "ancho_cm": round(lados[1] * fd, 2), "alto_cm": round(lados[2] * fd, 2)}  # type: ignore[operator]
+
+
+async def _medidas_publicacion(s: "_Sesion", ids: dict[str, int]) -> dict[str, dict[str, float]]:
+    """{sku: medida por pieza} del paquete de la PUBLICACIÓN de Temu, por el
+    skuId que trae el detalle de la orden: `bg.local.goods.sku.list.query`
+    (termina en `query`: lectura, pasa el candado de /investigacion). Sólo se
+    usa una fila cuyo `skuSn` ES el SKU (el skuId del detalle no se da por
+    bueno a ciegas). Se guarda 6 h por skuId: el paquete de una publicación
+    casi no cambia y la cuota es la de producción. LANZA si Temu no contesta."""
+    salida: dict[str, dict[str, float]] = {}
+    ahora = time.monotonic()
+    pedir: dict[int, str] = {}
+    for sku, kid in ids.items():
+        k = _entero(kid)
+        if not k:
+            continue
+        c = _PUB_CACHE.get(k)
+        if c is None or ahora - c[0] >= _PUB_TTL:
+            pedir[k] = sku
+    lista = sorted(pedir)
+    for i in range(0, len(lista), 100):
+        lote = lista[i:i + 100]
+        res = await s.llamar("bg.local.goods.sku.list.query",
+                             {"skuIdList": lote, "pageNo": 1, "pageSize": 100})
+        vistas: dict[int, dict[str, Any]] = {}
+        for f in _lista(res, "skuList"):
+            k = _entero(f.get("skuId"))
+            if k:
+                vistas[k] = {"sku": str(f.get("skuSn") or "").strip(), "medida": medida_de_publicacion(f)}
+        for k in lote:
+            _PUB_CACHE[k] = (ahora, vistas.get(k))
+    for sku, kid in ids.items():
+        c = _PUB_CACHE.get(_entero(kid) or -1)
+        dato = c[1] if c else None
+        if dato and dato.get("medida") and dato["sku"].upper() == str(sku).strip().upper():
+            salida[sku] = dict(dato["medida"])
     return salida
 
 
 def _medidas_almacen(skus: list[str]) -> dict[str, dict[str, Any]]:
-    """Lo que almacén midió del producto empacado (Checklist). ⚠️ BLOQUEA. SELECT."""
+    """Lo que almacén midió del producto empacado (Checklist), POR PIEZA. Trae
+    la fila si tiene el PESO o las TRES medidas (valen por separado: con sólo
+    el peso, ése es el nuestro y la caja sale del catálogo). ⚠️ BLOQUEA. SELECT."""
     from services import supabase_db as sdb
     if not skus:
         return {}
@@ -1754,27 +3510,108 @@ def _medidas_almacen(skus: list[str]) -> dict[str, dict[str, Any]]:
         """/* tgc:medidas */ select sku::text sku, almacen_largo_cm largo_cm,
                   almacen_ancho_cm ancho_cm, almacen_alto_cm alto_cm, almacen_peso_kg peso_kg
              from core.products
-            where sku = any(%(s)s::citext[]) and almacen_peso_kg is not null
-              and almacen_largo_cm is not null and almacen_ancho_cm is not null
-              and almacen_alto_cm is not null""", {"s": list(skus)})
-    return {str(f["sku"]): {k: float(f[k]) for k in ("largo_cm", "ancho_cm", "alto_cm", "peso_kg")}
+            where sku = any(%(s)s::citext[])
+              and (almacen_peso_kg is not null
+                   or (almacen_largo_cm is not null and almacen_ancho_cm is not null
+                       and almacen_alto_cm is not null))""", {"s": list(skus)})
+    return {str(f["sku"]): {k: float(f[k]) for k in ("largo_cm", "ancho_cm", "alto_cm", "peso_kg")
+                            if f.get(k) is not None}
             for f in filas}
 
 
-def _medidas_catalogo(skus: list[str]) -> dict[str, dict[str, float]]:
-    """Las medidas de CATÁLOGO (costing.costos_validados: CBM reconstruido, NO
-    medidas). Sólo para detectar un historial que las copió. ⚠️ BLOQUEA. SELECT.
+def _medidas_catalogo(skus: list[str],
+                      familias: Iterable[str] | None = None) -> dict[str, dict[str, float]]:
+    """La fila del PACKING LIST (costing.costos_validados) de cada SKU:
+    {sku: {largo_cm, ancho_cm, alto_cm, peso_kg?, costo_cbm?, piezas_por_caja?}}.
+    ⚠️ Sus medidas pueden ser las de la PIEZA o las del cartón MASTER: lo dice
+    `costo_cbm` (el flete por pieza: ÷ 7500 = el volumen por el que se pagó,
+    `v_ref_de`) y, sin él, `piezas_por_caja` (`unitaria_de_catalogo`).
+    `familias` ("MASC-0016"): también los SKUs de esas familias, para probar la
+    guía de una variante HERMANA contra SU flete. Una fila sin medidas se trae
+    igual (su flete sirve para probar la medida de Woo). ⚠️ BLOQUEA. SELECT.
     LANZA si falla."""
     from services import supabase_db as sdb
-    if not skus:
+    fams = sorted({f for f in (familias or []) if f and re.fullmatch(r"[A-Z]+-\d+", f)})
+    if not skus and not fams:
         return {}
     filas = sdb.fetch_all(
-        """/* tgc:catalogo */ select sku::text sku, largo largo_cm, ancho ancho_cm, alto alto_cm
+        """/* tgc:catalogo */ select sku::text sku, largo largo_cm, ancho ancho_cm, alto alto_cm,
+                  peso peso_kg, costo_cbm, piezas_por_caja
              from costing.costos_validados
-            where sku = any(%(s)s::citext[]) and largo is not null and ancho is not null
-              and alto is not null""", {"s": list(skus)})
-    return {str(f["sku"]): {k: float(f[k]) for k in ("largo_cm", "ancho_cm", "alto_cm")}
-            for f in filas}
+            where (sku = any(%(s)s::citext[]) or sku::text like any(%(f)s::text[]))""",
+        {"s": list(skus), "f": [f"{x}-%" for x in fams]})
+    salida: dict[str, dict[str, float]] = {}
+    for f in filas:
+        m: dict[str, float] = {}
+        lados = {k: _num(f.get(k)) for k in ("largo_cm", "ancho_cm", "alto_cm")}
+        if all(lados.values()):
+            m.update({k: float(v) for k, v in lados.items()})  # type: ignore[arg-type]
+        for k in ("peso_kg", "costo_cbm", "piezas_por_caja"):
+            v = _num(f.get(k))
+            if v:
+                m[k] = v
+        if m:
+            salida[str(f["sku"])] = m
+    return salida
+
+
+_UNIDAD_PESO = {"kg": 1.0, "g": 0.001}
+_UNIDAD_LADO = {"cm": 1.0, "mm": 0.1, "m": 100.0}
+
+
+def _medidas_woo(skus: list[str]) -> dict[str, dict[str, float]]:
+    """Peso y caja POR PIEZA de la ficha de Woo (`_weight`, `_length`,
+    `_width`, `_height`), en kg y cm según las unidades de la tienda. Escalón
+    `omnicanal_woo`. Sólo la ficha DEL SKU: una variación sin medidas propias
+    NO hereda las del padre (el padre agrupa tallas y largos distintos: el
+    ACC-0696 de 90, 120 y 140 cm). Un SKU en dos fichas que no coinciden no se
+    usa. ⚠️ BLOQUEA (pymysql): llamar desde un hilo. Sólo SELECT. LANZA."""
+    from services import wp_db
+    if not skus:
+        return {}
+    P = wp_db._prefix()  # noqa: SLF001
+    unidades = {str(f["option_name"]): str(f.get("option_value") or "").strip().lower()
+                for f in wp_db._fetch_all(  # noqa: SLF001
+                    f"""/* tgc:woo_unidades */ SELECT option_name, option_value FROM {P}options
+                        WHERE option_name IN ('woocommerce_weight_unit',
+                                              'woocommerce_dimension_unit')""")}
+    # Sin la opción, Woo usa kg y cm (sus valores por omisión).
+    fp = _UNIDAD_PESO.get(unidades.get("woocommerce_weight_unit") or "kg")
+    fd = _UNIDAD_LADO.get(unidades.get("woocommerce_dimension_unit") or "cm")
+    if fp is None or fd is None:
+        raise ValueError(f"unidades de Woo que no se saben convertir: {unidades}")
+    pedidos = {str(s).strip().lower(): str(s).strip() for s in skus if str(s).strip()}
+    ph = ",".join(["%s"] * len(pedidos))
+    filas = wp_db._fetch_all(  # noqa: SLF001
+        f"""/* tgc:woo */ SELECT sk.meta_value AS sku, p.ID AS id,
+                   MAX(CASE WHEN m.meta_key = '_weight' THEN m.meta_value END) AS peso,
+                   MAX(CASE WHEN m.meta_key = '_length' THEN m.meta_value END) AS largo,
+                   MAX(CASE WHEN m.meta_key = '_width'  THEN m.meta_value END) AS ancho,
+                   MAX(CASE WHEN m.meta_key = '_height' THEN m.meta_value END) AS alto
+              FROM {P}posts p
+              JOIN {P}postmeta sk ON sk.post_id = p.ID AND sk.meta_key = '_sku'
+              LEFT JOIN {P}postmeta m ON m.post_id = p.ID
+                   AND m.meta_key IN ('_weight', '_length', '_width', '_height')
+             WHERE p.post_type IN ('product', 'product_variation')
+               AND p.post_status <> 'trash' AND sk.meta_value IN ({ph})
+             GROUP BY p.ID, sk.meta_value""", tuple(pedidos.values()))
+    por_sku: dict[str, list[dict[str, float | None]]] = {}
+    for f in filas:
+        sku = pedidos.get(str(f.get("sku") or "").strip().lower())
+        if not sku:
+            continue
+        crudo = {"peso_kg": (_num(f.get("peso")), fp), "largo_cm": (_num(f.get("largo")), fd),
+                 "ancho_cm": (_num(f.get("ancho")), fd), "alto_cm": (_num(f.get("alto")), fd)}
+        if not any(v for v, _f in crudo.values()):
+            continue                                   # ficha sin medidas: no opina
+        # Incompleta se pasa tal cual: el escalón dice "incompleto" y no la usa.
+        por_sku.setdefault(sku, []).append(
+            {k: (round(v * fac, 4) if v else None) for k, (v, fac) in crudo.items()})
+    salida: dict[str, dict[str, float]] = {}
+    for sku, lista in por_sku.items():
+        if len({json.dumps(m, sort_keys=True) for m in lista}) == 1:
+            salida[sku] = lista[0]  # type: ignore[assignment]
+    return salida
 
 
 def _stock_odoo(skus: list[str]) -> tuple[dict[str, int], dict[int, dict[int, float]]]:
@@ -1879,11 +3716,26 @@ def entrega_comprada(order_id: str) -> dict[str, Any] | None:
         return None
     if not fila or fila.get("estado") not in ESTADOS_HECHOS or not fila.get("fecha_envio"):
         return None
-    return {"fecha_envio": fila.get("fecha_envio"), "horas": _entero(fila.get("horas"))}
+    return {"fecha_envio": fila.get("fecha_envio"), "horas": _entero(fila.get("horas")),
+            "tarde": fue_tarde(fila)}
+
+
+def fue_tarde(fila: dict[str, Any]) -> bool:
+    """¿La guía de esa fila de la bitácora se compró después del límite de envío
+    de Temu? Lo dice su `reparto` (la columna que ya existe: la migración 0061
+    no cambia). PURA."""
+    rep = fila.get("reparto")
+    if isinstance(rep, str):
+        try:
+            rep = json.loads(rep)
+        except ValueError:
+            return False
+    return any(isinstance(x, dict) and x.get("tarde") for x in (rep or []))
 
 
 def texto_entrega(entrega: dict[str, Any] | None) -> str | None:
-    """"jueves 01-10-2026 (24 h)" para el almacén. PURA."""
+    """"jueves 01-10-2026 (24 h)" para el almacén — y, si se compró después del
+    límite de Temu, "… · comprada TARDE (límite de Temu ya vencido)". PURA."""
     if not entrega or not entrega.get("fecha_envio"):
         return None
     f = entrega["fecha_envio"]
@@ -1892,14 +3744,16 @@ def texto_entrega(entrega: dict[str, Any] | None) -> str | None:
     except ValueError:
         return None
     h = entrega.get("horas")
-    return f"{_DIAS[d.weekday()]} {d:%d-%m-%Y}" + (f" ({h} h)" if h else "")
+    return (f"{_DIAS[d.weekday()]} {d:%d-%m-%Y}" + (f" ({h} h)" if h else "")
+            + (f" · {TEXTO_TARDE}" if entrega.get("tarde") else ""))
 
 
 def entregas_compradas(pos: list[str]) -> dict[str, dict[str, Any]]:
-    """{PO: {fecha_envio, horas}} de las guías que compró el panel. ⚠️ BLOQUEA.
-    Sólo SELECT. LANZA (quien llama decide; la tabla puede no existir)."""
+    """{PO: {fecha_envio, horas, tarde}} de las guías que compró el panel. ⚠️
+    BLOQUEA. Sólo SELECT. LANZA (quien llama decide; la tabla puede no existir)."""
     filas = _reclamos_de(sorted({str(p) for p in pos if p}))
-    return {po: {"fecha_envio": f.get("fecha_envio"), "horas": _entero(f.get("horas"))}
+    return {po: {"fecha_envio": f.get("fecha_envio"), "horas": _entero(f.get("horas")),
+                 "tarde": fue_tarde(f)}
             for po, f in filas.items()
             if f.get("estado") in ESTADOS_HECHOS and f.get("fecha_envio")}
 
@@ -1941,8 +3795,8 @@ def compras_recientes(dias: int = 3, limite: int = 500) -> list[dict[str, Any]]:
     from services import supabase_db as sdb
     filas = sdb.fetch_all(
         """/* tgc:recientes */ select parent_order_sn, estado, reclamo, grupo, aprobado_por,
-                  send_type, reparto, reparto_real, package_sn, fecha_envio, horas,
-                  codigo, motivo, creado_at, actualizado_at
+                  send_type, payload, reparto, reparto_real, package_sn, fecha_envio, horas,
+                  codigo, motivo, intentos, creado_at, actualizado_at
              from ops.temu_guias_compras
             where actualizado_at > now() - make_interval(days => %(d)s)
             order by actualizado_at desc
@@ -2028,8 +3882,11 @@ _HIST_TTL = 6 * 3600.0
 #     descontar stock: si mientras tanto se canceló, se descuenta de más (lo
 #     conservador); si le compraron la guía a mano, `unshipped`/`label.list`
 #     —que se leen siempre— lo dicen.
+#   · 20 min y no 10 (30-sep): con hasta 10 compras por vuelta, las últimas de
+#     la vuelta releían la cola entera en su re-plan porque el caché del plan
+#     del job ya había vencido.
 _DET_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-_DET_TTL = 600.0
+_DET_TTL = 1200.0
 _DET_RESPALDO = 3600.0
 
 
@@ -2039,12 +3896,18 @@ def _podar_detalles() -> None:
         _DET_CACHE.pop(k, None)
 
 
-async def _historial_empaque(s: _Sesion, skus: list[str]) -> dict[str, Any]:
-    """Muestras de peso y caja declaradas en guías ya compradas. Nunca lanza:
-    sin historial, el empaque sale "ninguna" y no se compra."""
+async def _historial_empaque(s: _Sesion, skus: list[str], *,
+                             familias: Iterable[str] | None = None,
+                             composiciones: Iterable[str] | None = None) -> dict[str, Any]:
+    """Muestras de peso y caja declaradas en guías ya compradas: del mismo SKU,
+    de sus variantes hermanas (`familias`) y de cajas con varios SKUs
+    (`composiciones`). Nunca lanza: sin historial, esos escalones no tienen
+    datos y se prueba el siguiente."""
     info: dict[str, Any] = {"muestras": [], "fuente": None, "errores": {}, "candidatos": 0}
     try:
-        cand = await asyncio.to_thread(_historial_candidatos, skus)
+        cand = await asyncio.to_thread(
+            lambda: _historial_candidatos(skus, familias=list(familias or []),
+                                          composiciones=list(composiciones or [])))
     except Exception as exc:  # noqa: BLE001
         info["errores"]["kubera"] = str(exc)[:200]
         return info
@@ -2084,7 +3947,8 @@ async def _historial_empaque(s: _Sesion, skus: list[str]) -> dict[str, Any]:
         if m.get("cantidad_paquete") and int(m["cantidad_paquete"]) != int(c["cantidad"]):
             continue     # el paquete no lleva lo que dice la bitácora: no sirve
         info["muestras"].append({"sku": c["sku"], "cantidad": c["cantidad"],
-                                 "parent_order_sn": c["po"],
+                                 "parent_order_sn": c["po"], "creado_at": c.get("creado_at"),
+                                 "composicion": c.get("composicion"),
                                  "package_sn": m.get("package_sn"),
                                  **{k: m[k] for k in ("peso_kg", "largo_cm", "ancho_cm",
                                                       "alto_cm")}})
@@ -2255,6 +4119,14 @@ _PLAN_TTL = 45.0
 _LIMITE_MAX = 120
 
 
+def limite_max_auto() -> int:
+    """Cuántas ventas en espera puede planear la COMPRA AUTOMÁTICA (`cotizar`):
+    la cola ENTERA (`TEMU_GUIAS_COLA_MAX`), no las 120 de la vista previa del
+    panel — antes lo que pasaba de 120 quedaba "fuera del alcance del plan",
+    es decir, sin comprarse nunca."""
+    return max(_LIMITE_MAX, _cola_max())
+
+
 def _limite_omision() -> int:
     return max(1, min(60, int(getattr(settings, "temu_guias_plan_limite", 20) or 20)))
 
@@ -2288,14 +4160,17 @@ async def plan_guias(limite: int | None = None, *, solo: str | None = None,
     Lo usa la compra automática: no gasta cuota cotizando ventas anteriores al
     corte, que nunca va a comprar.
     """
-    lim = _limite_omision() if limite is None else max(1, min(_LIMITE_MAX, int(limite)))
+    # La compra automática (`cotizar`) puede planear la cola ENTERA; la vista
+    # previa del panel, hasta 120 (es una petición: el proxy la cortaría).
+    tope_lim = limite_max_auto() if cotizar is not None else _LIMITE_MAX
+    lim = _limite_omision() if limite is None else max(1, min(tope_lim, int(limite)))
     if lim > 60:
         # "¿Se puede comprar la guía de TODAS?" (Brandon, 30-sep, con ~92 en
         # espera): más de 60 ventas piden más lecturas (detalle + cotización por
         # caja ≈ 3 por venta) y más tiempo. Sólo se sube cuando se pide; lo que
         # no alcance a leerse sale en `no_leidas`, nunca en silencio.
         tope_llamadas = max(tope_llamadas, 3 * lim + 30)
-        segundos_max = max(segundos_max, 270.0)
+        segundos_max = max(segundos_max, 270.0, 1.5 * lim)
     try:
         med = leer_medidas(medidas)
     except (ValueError, TypeError) as exc:
@@ -2323,6 +4198,47 @@ async def plan_guias(limite: int | None = None, *, solo: str | None = None,
         return res
 
 
+def tiene_guia(v: dict[str, Any]) -> bool:
+    """¿La venta YA tiene paquete o etiqueta en Temu (comprada a mano, o una
+    etiqueta en cualquier estado)? Lo dicen el detalle, `unshipped` y
+    `label.list`. PURA."""
+    return bool(v.get("paquetes") or v.get("paquete_sin_numero")
+                or any(("YA tiene paquete" in str(b)) or (" ya muestra " in str(b))
+                       for b in v.get("bloqueos") or []))
+
+
+def consumo_ambos(renglones: Iterable[dict[str, Any]], productos: dict[str, int],
+                  mapa: dict[int, str]) -> dict[int, dict[int, int]]:
+    """{product_id: {almacén: piezas}} con las piezas de `renglones` restadas de
+    TODOS los almacenes: lo que no se sabe de cuál sale, A LO SEGURO (la misma
+    regla que la demanda de otros canales). PURA."""
+    total: dict[str, int] = {}
+    for r in renglones or []:
+        s = str(r.get("sku") or "").strip()
+        n = int(r.get("cantidad") or r.get("quantity") or 0)
+        if s and n > 0:
+            total[s] = total.get(s, 0) + n
+    salida: dict[int, dict[int, int]] = {}
+    for s, n in total.items():
+        pid = productos.get(s)
+        if pid is not None:
+            salida[pid] = {wid: n for wid in mapa}
+    return salida
+
+
+def _sumar_consumo(a: dict[int, dict[int, int]], b: dict[int, dict[int, int]]) -> dict[int, dict[int, int]]:
+    salida = {pid: dict(por) for pid, por in a.items()}
+    for pid, por in b.items():
+        for wid, n in por.items():
+            salida.setdefault(pid, {})[wid] = salida.get(pid, {}).get(wid, 0) + n
+    return salida
+
+
+# Cuánto se espera a una orden que Temu agrupa con las de la cola pero que
+# todavía no entra a ella (recién vendida): después, el grupo se compra sin ella.
+_FUERA_ESPERA_H = 2.0
+
+
 async def _plan(lim: int, solo: str | None, ahora: datetime | None,
                 tope_llamadas: int, segundos_max: float, emitida: int | None,
                 medidas: dict[str, dict[str, float]],
@@ -2333,6 +4249,9 @@ async def _plan(lim: int, solo: str | None, ahora: datetime | None,
     emitida = int(emitida) if emitida is not None else int(momento.timestamp())
     ttl = _aprobacion_min()
     vence = datetime.fromtimestamp(emitida + ttl * 60, tz=timezone.utc).astimezone(ZONA)
+    fuentes, fuentes_error = fuentes_medida()
+    if fuentes_error:
+        log.warning("plan de guías Temu: %s", fuentes_error)
     r: dict[str, Any] = {
         "ok": False, "modo": "VISTA PREVIA · no compra nada",
         "compra_habilitada": compra_habilitada(),
@@ -2347,24 +4266,44 @@ async def _plan(lim: int, solo: str | None, ahora: datetime | None,
                       "después del límite de envío de Temu: si lo rebasa, el mayor plazo que "
                       "lo cumpla en día hábil (sábado sólo con TEMU_GUIAS_SABADO_ALTERNO: "
                       + ("encendida" if sabado_alterno() else "apagada")
-                      + "); si ninguno, compra manual urgente. Ver 'limites'."),
+                      + "). Si ninguno lo cumple (el límite ya pasó), la guía se compra IGUAL "
+                        "con el plazo más corto en día hábil y queda marcada 'comprada TARDE'; "
+                        "sin límite de Temu, también el más corto. Ver 'limites'."),
             "reparto": ("odoo_ventas.planear_almacenes (la de Automatización): un almacén que "
                         "cubra todo; si no, por SKU. La cola se lee ENTERA y se descuenta de la "
-                        "más vieja a la más nueva; lo ya comprado sale de su almacén real y lo "
-                        "de otros canales se resta de los dos almacenes."),
-            "empaque": ("medida capturada en el panel > medición de almacén (1 pieza) > "
-                        "historial del mismo SKU × piezas (≥ N muestras, sin dispersión en peso "
-                        "ni volumen, peso = el mayor, caja = la más grande) > nada. Densidad "
-                        "creíble y nunca el catálogo."),
-            "paqueteria": ("la más barata de TEMU_GUIAS_PAQUETERIA ('*' = cualquiera); empate → "
-                           "la de menos días; nunca cambia sola."),
+                        "más vieja a la más nueva; lo ya comprado sale de su almacén real, y lo "
+                        "de otros canales —o lo que no se sabe de qué almacén sale— se resta de "
+                        "los dos almacenes."),
+            "empaque": ("la medida capturada en el panel manda. Si no: EL MENOR CREÍBLE entre lo "
+                        "nuestro y lo de Temu (opinan: " + ", ".join(texto_fuentes(fuentes)) + "). "
+                        "PESO = min(nuestro por pieza × piezas, guía de Temu de esas piezas, "
+                        + ("guía de 1 pieza × piezas (extrapolada), " if guia_x1_por_piezas() else "")
+                        + "publicación × piezas), con piso de "
+                        f"{piso_peso():g} kg. CAJA = la menor (la que cabe en J&T y paga menos) "
+                        "entre la nuestra —pieza unitaria × piezas en la mejor rejilla; si la fila "
+                        "trae el cartón master (≥ 3 veces el volumen del flete) se reparte como en "
+                        "Costos— y la de Temu, que sólo cuenta si las piezas caben en ella y no es "
+                        "el master copiado. Varios SKUs: suma de pesos y envolvente mínima. Las "
+                        "guías que compró este sistema no cuentan como dato de Temu. Cordura: ≤ 30 "
+                        "kg por pieza salvo medición real, densidad 10-4,000 kg/m³, ≤ 70 kg y ≤ 300 "
+                        f"cm por caja. Límites de J&T: {_limites_txt(limites_jt())} (una caja que "
+                        "no cabe se cotiza igual, con aviso). Odoo nunca."),
+            "paqueteria": ("J&T SIEMPRE primero; si no se ofrece o no es usable (pide datos, contra "
+                           "entrega, otra moneda), la más barata de las demás. TEMU_GUIAS_PAQUETERIA "
+                           "va en orden de prioridad: gana el primer renglón con un canal usable; "
+                           "dentro, el más barato; empate → menos días."),
             "combinado": ("mismo almacén → una caja (sendType 2); almacenes mezclados → se "
                           "separa por almacén; un PO que cruza almacenes va solo (sendType 1). "
-                          "El grupo se aprueba y se compra ENTERO."),
+                          "El grupo se aprueba y se compra ENTERO; un PO del grupo que ya tiene "
+                          "guía sale de él y los demás se compran entre sí."),
             "aprobacion": (f"la huella firma payloads + fecha de envío + costo por caja + "
                            f"momento de la vista previa, y vence a los {ttl} min."),
         },
         "grupos": [], "resumen": {}, "llamadas_temu": 0,
+        "fuentes_medida": {"escalera": [{"id": t_, "txt": t_} for t_ in texto_fuentes(fuentes)],
+                           "error": fuentes_error,
+                           "regla": "el menor creíble entre lo nuestro y lo de Temu"},
+        "limites_jt": limites_jt(),
     }
     if not temu.disponible():
         return {**r, "error": "Temu no está configurado (faltan credenciales)"}
@@ -2511,8 +4450,66 @@ async def _plan(lim: int, solo: str | None, ahora: datetime | None,
                     v["paquete_sin_numero"] = (v.get("paquete_sin_numero")
                                                or any(c == "?" for c in cosas))
 
+    # 5b · Un PO del grupo que YA tiene guía (comprada a mano, o con etiqueta en
+    #      Temu) no bloquea a los demás (antes el grupo entero quedaba "compra
+    #      manual"): sale del grupo —queda solo, "ya tiene guía"— y el resto se
+    #      compra entre sí. Va PRIMERO: sus piezas ya salieron. Lo que compró
+    #      el PANEL no se separa (ya cuenta como hecho dentro de su grupo), ni
+    #      una compra ABIERTA (bloquea a su grupo hasta conciliarla).
+    con_guia = {po for po, v in ventas.items() if tiene_guia(v)
+                and (bitacora.get(po) or {}).get("estado") not in (ESTADOS_HECHOS | ESTADOS_ABIERTOS)}
+    partido: list[list[str]] = []
+    for g in leer:
+        if len(g) > 1 and con_guia & set(g) and not set(g) <= con_guia:
+            partido.extend([po] for po in g if po in con_guia)
+            partido.append([po for po in g if po not in con_guia])
+        else:
+            partido.append(g)
+    leer = partido
+    objetivo = next((g for g in leer if solo in g), None) if solo else None
+
+    # 5c · Los que Temu agrupa con los de la cola pero NO están en ella: ¿les
+    #      falta guía? Enviados, cancelados o con paquete → no cuentan. Por
+    #      enviar y sin paquete: recién vendidos (< 2 h) se esperan —van a
+    #      entrar a la cola—; más viejos, el grupo se compra SIN ellos (su guía
+    #      va aparte) en vez de quedarse "revísalo a mano" para siempre.
+    hechas_bit = {x for x, f in bitacora.items() if f.get("estado") in ESTADOS_HECHOS}
+    fuera_pos = sorted({x for po in pos for x in (grupos_temu.get(po) or ())}
+                       - set(pos) - hechas_bit)
+    fuera_info: dict[str, dict[str, Any]] = {}
+    for x in fuera_pos:
+        if len(fuera_info) >= 40:
+            fuera_info[x] = {"estado": "ilegible", "txt": "no se alcanzó a leer"}
+            continue
+        try:
+            vx = leer_venta(x, await s.llamar("bg.order.detail.v2.get", {"parentOrderSn": x}) or {})
+        except Exception as exc:  # noqa: BLE001
+            fuera_info[x] = {"estado": "ilegible", "txt": _texto_error(exc)[:100]}
+            continue
+        if vx.get("estado") != 2 or vx.get("paquetes") or vx.get("paquete_sin_numero"):
+            fuera_info[x] = {"estado": "no_cuenta", "txt": vx.get("estado_txt")}
+            continue
+        vts = _entero(vx.get("venta_ts"))
+        edad_h = (momento.timestamp() - vts) / 3600.0 if vts else None
+        fuera_info[x] = {"estado": ("espera" if edad_h is not None and edad_h < _FUERA_ESPERA_H
+                                    else "sin_ella"),
+                         "edad_h": round(edad_h, 1) if edad_h is not None else None}
+    r["fuera_de_cola"] = {x: i.get("estado") for x, i in fuera_info.items()}
+
+    # 5d · Las ventas cuyo detalle no se pudo leer: sus renglones, de kubera
+    #      (lo que se registró al entrar la venta), para restar sus piezas de
+    #      los DOS almacenes en vez de dejar incierto todo lo que viene después.
+    ilegibles = [po for po in pos if ventas[po].get("ilegible")]
+    items_ileg: dict[str, dict[str, int]] = {}
+    if ilegibles:
+        try:
+            items_ileg = await asyncio.to_thread(_items_kubera, ilegibles)
+        except Exception as exc:  # noqa: BLE001
+            r["items_error"] = str(exc)[:160]
+
     # 6 · Stock de Odoo, una lectura para todo el lote.
-    skus = sorted({ren["sku"] for v in ventas.values() for ren in v["renglones"]})
+    skus = sorted({ren["sku"] for v in ventas.values() for ren in v["renglones"]}
+                  | {s_ for it in items_ileg.values() for s_ in it})
     productos: dict[str, int] = {}
     libres: dict[int, dict[int, float]] = {}
     error_odoo = None
@@ -2553,16 +4550,78 @@ async def _plan(lim: int, solo: str | None, ahora: datetime | None,
         medidas_alm = await asyncio.to_thread(_medidas_almacen, skus_cot)
     except Exception as exc:  # noqa: BLE001
         r["medidas_error"] = str(exc)[:200]
+    # Las variantes hermanas (misma familia): su historial y SU catálogo (para
+    # reconocer una guía de hermana que copió la caja de catálogo). Las familias
+    # recicladas no se piden: sus variantes no son referencia.
+    familias = (sorted({f for f in (familia(x) for x in skus_cot)
+                        if f and f not in FAMILIAS_RECICLADAS})
+                if "temu_hermanas" in fuentes else [])
     catalogo: dict[str, dict[str, float]] = {}
     catalogo_leido = True
     try:
-        catalogo = await asyncio.to_thread(_medidas_catalogo, skus_cot)
+        catalogo = await asyncio.to_thread(_medidas_catalogo, skus_cot, familias)
     except Exception as exc:  # noqa: BLE001
         catalogo_leido = False
         r["catalogo_error"] = str(exc)[:200]
-    hist = await _historial_empaque(s, skus_cot)
+    # Lo que omnicanal tiene POR PIEZA (packing list y Woo). Sólo se lee lo que
+    # la variable deja opinar: con la estricta, Woo ni se consulta. Si una
+    # lectura falla, esa fuente no opina (queda lo demás). El packing sirve con
+    # peso O con medidas: desde el 1-oct el peso y la caja se eligen aparte.
+    omnicanal: dict[str, dict[str, Any]] = {}
+    if "omnicanal_packing" in fuentes:
+        for sku_, c in catalogo.items():
+            if c.get("peso_kg") or c.get("largo_cm"):
+                omnicanal.setdefault(sku_, {})["packing"] = c
+    if "omnicanal_woo" in fuentes and skus_cot:
+        try:
+            for sku_, c in (await asyncio.to_thread(_medidas_woo, skus_cot)).items():
+                omnicanal.setdefault(sku_, {})["woo"] = c
+        except Exception as exc:  # noqa: BLE001
+            r["woo_error"] = str(exc)[:200]
+    # Las cajas con varios SKUs que probablemente se armen (cada PO y cada
+    # grupo): su historial también.
+    comps: set[str] = set()
+    for g in cotizados:
+        total: dict[str, int] = {}
+        for po in g:
+            propio: dict[str, int] = {}
+            for ren in ventas[po]["renglones"]:
+                propio[ren["sku"]] = propio.get(ren["sku"], 0) + int(ren["cantidad"])
+                total[ren["sku"]] = total.get(ren["sku"], 0) + int(ren["cantidad"])
+            if len(propio) > 1:
+                comps.add(clave_composicion(propio))
+        if len(total) > 1:
+            comps.add(clave_composicion(total))
+    hist = await _historial_empaque(s, skus_cot, familias=familias, composiciones=sorted(comps))
+    # EL ECO —las guías que compró ESTE sistema (bitácora 0061): declararon lo
+    # que esta misma regla calculó, no son un dato de Temu— ya viene QUITADO del
+    # historial dentro de su SQL, antes del tope de 3 por (SKU, piezas)
+    # (`_historial_candidatos`; la relectura que se hacía aquí llegaba tarde:
+    # las compras automáticas ya habían desplazado a las guías a mano). Si esa
+    # lectura falla no hay muestras (`errores.kubera`) y la compra automática no
+    # compra con el plan a medias (`temu_guias_auto.plan_incompleto`).
     r["historial"] = {"fuente": hist["fuente"], "candidatos": hist["candidatos"],
-                      "muestras": len(hist["muestras"]), "errores": hist["errores"]}
+                      "muestras": len(hist["muestras"]), "errores": hist["errores"],
+                      "familias": familias, "composiciones": len(comps)}
+    # El paquete de la PUBLICACIÓN de Temu: es "el peso declarado en Temu" de la
+    # regla de Brandon (1-oct), así que se pide el de TODOS los SKUs que se
+    # cotizan (antes sólo el de los que omnicanal no cubría): una lectura por
+    # cada 100, con caché de 6 h. Si falla, la publicación no opina.
+    publicacion: dict[str, dict[str, float]] = {}
+    if "temu_publicacion" in fuentes:
+        ids_pub: dict[str, int] = {}
+        for g in cotizados:
+            for po in g:
+                for ren in ventas[po]["renglones"]:
+                    if ren.get("skuId"):
+                        ids_pub.setdefault(ren["sku"], int(ren["skuId"]))
+        pedir = dict(ids_pub)
+        if pedir:
+            try:
+                publicacion = await _medidas_publicacion(s, pedir)
+            except Exception as exc:  # noqa: BLE001
+                r["publicacion_error"] = _texto_error(exc)[:200]
+        r["publicacion"] = {"pedidas": len(pedir), "con_paquete": len(publicacion)}
 
     # 10 · El stock que queda. Lo de otros canales, A LO SEGURO, de los dos
     #      almacenes: no se sabe de cuál saldrá, y restarlo de ambos garantiza
@@ -2600,8 +4659,8 @@ async def _plan(lim: int, solo: str | None, ahora: datetime | None,
             extra.append("no se pudo consultar qué órdenes quiere Temu juntas "
                          "(combinedshipment.list.get): no se compra a ciegas")
         if lote_incierto:
-            extra.append("una venta anterior del lote no se pudo leer (o no se sabe de qué "
-                         "almacén sale su guía ya comprada): el stock que queda es incierto")
+            extra.append("una venta anterior del lote no se pudo leer ni en Temu ni en kubera: "
+                         "el stock que queda es incierto — se reintenta la vuelta siguiente")
         if bit_error:
             extra.append(bit_error)
         if ajena_error:
@@ -2614,15 +4673,28 @@ async def _plan(lim: int, solo: str | None, ahora: datetime | None,
                          "comprar otra guía")
         g_temu = grupos_temu.get(miembros[0])
         if g_temu:
-            fuera = (set(g_temu) - set(miembros)
+            fuera = (set(g_temu) - set(miembros) - con_guia
                      - {x for x in g_temu if (bitacora.get(x) or {}).get("estado") in ESTADOS_HECHOS})
-            if fuera:
-                extra.append(f"Temu agrupa este PO con {len(fuera)} orden(es) que no están en la "
-                             "cola de espera: el grupo se compra entero o no se compra — "
-                             "revísalo a mano")
+            for x in sorted(fuera):
+                inf = fuera_info.get(x) or {"estado": "ilegible", "txt": "no se leyó"}
+                if inf["estado"] == "no_cuenta":
+                    continue
+                if inf["estado"] == "sin_ella":
+                    gs["avisos"].append(
+                        f"Temu agrupa este envío con {x}, que sigue por enviar y no está en la cola "
+                        f"de espera (vendida hace {inf.get('edad_h') or '?'} h): se compra SIN ella "
+                        "— su guía va aparte")
+                elif inf["estado"] == "espera":
+                    extra.append(f"Temu agrupa este PO con {x}, vendida hace {inf.get('edad_h')} h, "
+                                 "que todavía no entra a la cola de espera: se reintenta sola "
+                                 f"(se espera hasta {_FUERA_ESPERA_H:g} h para comprarlas juntas)")
+                else:
+                    extra.append(f"no se pudo leer {x}, que Temu agrupa con este PO "
+                                 f"({inf.get('txt')}): se reintenta sola")
 
         # 10a · Lo ya comprometido: guías compradas (a mano o por el panel) desde
-        #       su almacén REAL, y compras abiertas desde lo que se reclamó.
+        #       su almacén REAL, y compras abiertas desde lo que se reclamó. Lo
+        #       que no se sabe de qué almacén sale, de los DOS (a lo seguro).
         resto: dict[str, dict[str, Any] | None] = {}
         incierto_aqui = False
         for po in miembros:
@@ -2632,24 +4704,44 @@ async def _plan(lim: int, solo: str | None, ahora: datetime | None,
                 # La compró (o la está comprando) el PANEL: la bitácora sabe
                 # qué salió de dónde (lo real de result.get, o lo reclamado).
                 c = consumo_de_reparto(f, productos)
-                if not c and v.get("renglones"):
-                    incierto_aqui = True
-                    extra.append(f"{po}: la bitácora no dice de qué almacén sale su compra")
                 prob: list[str] = []
-                rv: dict[str, Any] = {**v, "renglones": []}
+                if not c and v.get("renglones"):
+                    prob = ["la bitácora no dice de qué almacén sale su compra"]
+                    rv: dict[str, Any] = v
+                else:
+                    rv = {**v, "renglones": []}
             elif v.get("paquetes") or v.get("paquete_sin_numero"):
                 # Guía comprada A MANO: su almacén real, de shipment.result.get.
                 if paquetes_error:
                     c, rv, prob = {}, v, [f"shipment.result.get falló: {paquetes_error}"]
                 else:
                     c, rv, prob = consumo_de_paquetes(v, productos, info_paquetes, mapa_inv)
+            elif v.get("ilegible"):
+                # Sin detalle: sus renglones de kubera, de los DOS almacenes.
+                propios = items_ileg.get(po)
+                c = consumo_ambos([{"sku": k, "cantidad": n} for k, n in (propios or {}).items()],
+                                  productos, mapa)
+                if propios:
+                    gs["avisos"].append(f"{po}: Temu no dio su detalle; sus piezas (según kubera) se "
+                                        "restan de los dos almacenes")
+                else:
+                    incierto_aqui = True
+                if c:
+                    descontar(restante, c)
+                    gs["apartado"] = True
+                resto[po] = None
+                continue
             else:
                 resto[po] = v
                 continue
             if prob:
-                incierto_aqui = True
-                extra.append(f"{po}: no se sabe de qué almacén sale su guía ya comprada "
-                             f"({'; '.join(prob)[:160]})")
+                # No se sabe de qué almacén sale lo que ninguna caja conocida
+                # cubre: se resta de LOS DOS en vez de dejar incierto el lote.
+                c = _sumar_consumo(c, consumo_ambos(rv.get("renglones") or [], productos, mapa))
+                gs["avisos"].append(f"{po}: no se sabe de qué almacén sale su guía ya comprada "
+                                    f"({'; '.join(prob)[:160]}): sus piezas se restan de los dos "
+                                    "almacenes")
+                rv = {**rv, "renglones": []}
             if c:
                 descontar(restante, c)
                 gs["apartado"] = True
@@ -2675,8 +4767,7 @@ async def _plan(lim: int, solo: str | None, ahora: datetime | None,
             if ap:
                 descontar(restante, ap)
                 gs["apartado"] = True
-        lote_incierto = (lote_incierto or incierto_aqui
-                         or any(ventas[po].get("ilegible") for po in miembros))
+        lote_incierto = lote_incierto or incierto_aqui
         gs["regla"] = plan.get("regla") or gs.get("regla")
         gs["cobertura"] = plan.get("cobertura")
         gs["stock"] = {s_: foto_inicial.get(s_, {}) for s_ in
@@ -2684,25 +4775,29 @@ async def _plan(lim: int, solo: str | None, ahora: datetime | None,
         gs["motivos"] = extra + plan["motivos"]
         # LA FECHA DEL GRUPO, con el límite de envío de Temu encima (30-sep): el
         # MÁS CERCANO de los PO que se compran, porque todas sus cajas comparten
-        # fecha (una por llamada). Ver `fecha_con_limite`.
+        # fecha (una por llamada); sin el de alguno, el plazo más corto. Una
+        # venta que ya no alcanza su límite se compra IGUAL, "TARDE". Ver
+        # `fecha_de_grupo`.
         limites_g = {po: _entero(ventas[po].get("limite_envio_ts")) for po in a_comprar}
-        con_limite = [x for x in limites_g.values() if x]
-        fecha_g = fecha_con_limite(momento, min(con_limite) if con_limite else None)
+        fecha_g = fecha_de_grupo(momento, limites_g)
         gs["ventas_ts"] = {po: ventas[po].get("venta_ts") for po in miembros}
         gs["limites_ts"] = {po: _entero(ventas[po].get("limite_envio_ts")) for po in miembros}
         # Las que NO se pudieron leer: su "sin fecha de venta" es una lectura
         # fallida (se reintenta), no un dato que Temu no tenga.
         gs["ilegibles"] = sorted(po for po in miembros if ventas[po].get("ilegible"))
         gs["sin_limite"] = sorted(po for po, x in limites_g.items() if not x)
+        gs["con_guia"] = sorted(po for po in miembros if po in con_guia)
         gs["fecha"] = {k: fecha_g.get(k) for k in (
-            "fecha_envio", "dia_envio", "horas", "valida", "ajustada", "urgente", "ajuste",
-            "limite", "limite_ts", "regla_fecha", "regla_horas", "motivos")}
+            "fecha_envio", "dia_envio", "horas", "valida", "ajustada", "urgente", "tarde",
+            "sin_limite", "ajuste", "limite", "limite_ts", "regla_fecha", "regla_horas",
+            "motivos")}
         cotizar = ((objetivo is None or miembros == objetivo)
                    and (solo_cot is None or any(po in solo_cot for po in miembros)))
         for ll in plan["llamadas"]:
             gs["llamadas"].append(await _armar_llamada(
                 s, ll, fecha_g, plan_ventas, hist["muestras"], medidas_alm, cotizar,
-                medidas, catalogo, catalogo_leido))
+                medidas, catalogo, catalogo_leido, omnicanal=omnicanal, publicacion=publicacion,
+                fuentes=fuentes))
         gs["comprable"] = bool(plan["planeado"] and not gs["motivos"] and gs["llamadas"]
                                and all(x["comprable"] for x in gs["llamadas"]))
         if gs["comprable"]:
@@ -2712,6 +4807,10 @@ async def _plan(lim: int, solo: str | None, ahora: datetime | None,
                 "vence": r["aprobacion_vence"], "fecha_envio": fecha_g["fecha_envio"],
                 "dia_envio": fecha_g["dia_envio"], "horas": fecha_g["horas"],
                 "limite_ts": fecha_g.get("limite_ts"), "ajustada": fecha_g.get("ajustada"),
+                "tarde": bool(fecha_g.get("tarde")),
+                "sin_limite": bool(fecha_g.get("sin_limite")),
+                "ajuste": fecha_g.get("ajuste"),
+                "medidas": medidas_de(gs),
                 "llamadas": len(gs["llamadas"]),
                 "cajas": sum(len(ll["paquetes"]) for ll in gs["llamadas"]),
                 "costo_mxn": round(sum(((p.get("cotizacion") or {}).get("elegido") or {})
@@ -2732,6 +4831,10 @@ async def _plan(lim: int, solo: str | None, ahora: datetime | None,
             ((p.get("cotizacion") or {}).get("elegido") or {}).get("monto") or 0
             for g in r["grupos"] if g["comprable"] for ll in g["llamadas"]
             for p in ll["paquetes"]), 2),
+        # De qué fuente salió cada caja que se podría comprar (y cuántas no
+        # tienen ninguna): la pregunta de "¿cuántas salen solas con qué dato?".
+        "cajas_por_fuente": _cajas_por_fuente(r["grupos"]),
+        "tardes": sum(1 for g in r["grupos"] if g["comprable"] and (g.get("fecha") or {}).get("tarde")),
     }
     r["ok"] = True
     log.info("plan de guías Temu: %s grupos, %s comprables, %s llamadas a Temu",
@@ -2739,17 +4842,89 @@ async def _plan(lim: int, solo: str | None, ahora: datetime | None,
     return r
 
 
+def _medida_para_bitacora(e: dict[str, Any]) -> dict[str, Any]:
+    """Lo que la bitácora 0061 guarda del empaque de una caja (columna
+    `reparto`, sin columnas nuevas): de dónde salió su PESO y su CAJA, la
+    confianza, lo declarado, R, volumétrico y facturable, si cabe en J&T, y
+    TODOS los candidatos con el porqué de los descartados. PURA."""
+    peso = e.get("peso") if isinstance(e.get("peso"), dict) else {}
+    caja = e.get("caja") if isinstance(e.get("caja"), dict) else {}
+
+    def _corto(c: dict[str, Any], llave: str) -> dict[str, Any]:
+        return {"de": str(c.get("txt") or "")[:160], llave: c.get(llave), "ok": bool(c.get("ok")),
+                "gana": bool(c.get("gana")), "por": (str(c["por"])[:200] if c.get("por") else None)}
+    return {"fuente": e.get("fuente"), "fuente_peso": e.get("fuente_peso"),
+            "fuente_txt": e.get("fuente_txt") or FUENTES_TXT.get(str(e.get("fuente"))),
+            "confianza": e.get("confianza"), "peso_kg": e.get("peso_kg"),
+            "caja_cm": ([e.get("largo_cm"), e.get("ancho_cm"), e.get("alto_cm")]
+                        if e.get("largo_cm") else None),
+            "peso_de": peso.get("fuente_txt"), "caja_de": caja.get("fuente_txt"),
+            "R": caja.get("R"), "rejilla": caja.get("rejilla"),
+            "volumetrico_kg": caja.get("volumetrico_kg"),
+            "facturable_kg": caja.get("facturable_kg"), "suma_lados_cm": caja.get("suma_cm"),
+            "cabe_jt": caja.get("cabe_jt"), "partir": caja.get("partir"),
+            "candidatos_peso": [_corto(c, "kg") for c in (peso.get("candidatos") or [])[:12]],
+            "candidatos_caja": [_corto(c, "cm") for c in (caja.get("candidatos") or [])[:12]],
+            "avisos": [str(a)[:240] for a in (e.get("avisos") or [])[:6]] or None,
+            "detalle": str(e.get("detalle") or "")[:400] or None}
+
+
+def medidas_de(grupo: dict[str, Any]) -> list[dict[str, Any]]:
+    """De dónde salió el peso y la caja de CADA caja del grupo, sin datos del
+    comprador: [{caja, contenido, fuente, fuente_txt, confianza, ok}]. PURA."""
+    salida = []
+    for ll in grupo.get("llamadas") or []:
+        for p in ll.get("paquetes") or []:
+            e = p.get("empaque") or {}
+            salida.append({"caja": p.get("clave"), "almacen": p.get("almacen"),
+                           "contenido": ", ".join(f"{x.get('sku')} × {x.get('quantity')}"
+                                                  for x in p.get("renglones") or []),
+                           "fuente": e.get("fuente"), "fuente_peso": e.get("fuente_peso"),
+                           "fuente_txt": e.get("fuente_txt") or FUENTES_TXT.get(
+                               str(e.get("fuente")), e.get("fuente")),
+                           "avisos": list(e.get("avisos") or []),
+                           "cabe_jt": (e.get("caja") or {}).get("cabe_jt"),
+                           "partir": (e.get("caja") or {}).get("partir"),
+                           "no_jt": porque_no_jt_de(p),
+                           "confianza": e.get("confianza"), "ok": bool(e.get("ok")),
+                           "peso_kg": e.get("peso_kg"),
+                           "caja_cm": ([e.get("largo_cm"), e.get("ancho_cm"), e.get("alto_cm")]
+                                       if e.get("largo_cm") else None),
+                           "detalle": str(e.get("detalle") or "")[:300] or None})
+    return salida
+
+
+def texto_medidas(medidas: Iterable[dict[str, Any]]) -> str:
+    """"omnicanal · packing list (media)" por caja, sin repetir. PURA."""
+    vistos: list[str] = []
+    for m in medidas or []:
+        t = f"{m.get('fuente_txt') or 'sin fuente'} ({m.get('confianza') or '?'})"
+        if t not in vistos:
+            vistos.append(t)
+    return " + ".join(vistos)
+
+
+def _cajas_por_fuente(grupos: list[dict[str, Any]]) -> dict[str, int]:
+    """{fuente: cajas} de los grupos leídos; 'ninguna' = sin peso ni caja. PURA."""
+    cuenta: dict[str, int] = {}
+    for g in grupos or []:
+        for m in medidas_de(g):
+            k = (m["fuente_txt"] or "ninguna") if m["ok"] else "sin medida comprable"
+            cuenta[k] = cuenta.get(k, 0) + 1
+    return dict(sorted(cuenta.items(), key=lambda kv: -kv[1]))
+
+
 def resumen_limites(grupos: list[dict[str, Any]]) -> dict[str, Any]:
     """
     Cuánto deja Temu entre la VENTA y su LÍMITE DE ENVÍO, por día de la semana
     de la venta (hora de México), y cuántos grupos salieron con la fecha
-    adelantada o "urgente" por ese límite. PURA.
+    adelantada, o comprados TARDE (ningún plazo alcanzaba el límite en día
+    hábil). PURA.
 
-    Es la medición que pide la decisión de Brandon antes de encender la compra
-    automática (revisión del 30-sep): con el límite a ~48 h de la venta la regla
-    de +2 días casi nunca cabe (se adelanta a 24 h) y las ventas de viernes y
-    sábado salen urgentes porque 24 h cae en fin de semana
-    (`TEMU_GUIAS_SABADO_ALTERNO`). Sin datos del comprador.
+    Es la medición que pide la decisión de Brandon (revisión del 30-sep): con el
+    límite a ~48 h de la venta la regla de +2 días casi nunca cabe (se adelanta
+    a 24 h) y las ventas de viernes y sábado van TARDE porque 24 h cae en fin de
+    semana (`TEMU_GUIAS_SABADO_ALTERNO`). Sin datos del comprador.
     """
     por_dia: dict[str, dict[str, Any]] = {}
     for g in grupos or []:
@@ -2760,11 +4935,13 @@ def resumen_limites(grupos: list[dict[str, Any]]) -> dict[str, Any]:
             if not v or not lim:
                 continue
             dia = _DIAS[datetime.fromtimestamp(v, tz=timezone.utc).astimezone(ZONA).weekday()]
-            d = por_dia.setdefault(dia, {"ventas": 0, "horas": [], "ajustadas": 0, "urgentes": 0})
+            d = por_dia.setdefault(dia, {"ventas": 0, "horas": [], "ajustadas": 0, "urgentes": 0,
+                                         "tardes": 0})
             d["ventas"] += 1
             d["horas"].append(round((lim - v) / 3600.0, 1))
-            d["ajustadas"] += 1 if f.get("ajustada") else 0
+            d["ajustadas"] += 1 if f.get("ajustada") and not f.get("tarde") else 0
             d["urgentes"] += 1 if f.get("urgente") else 0
+            d["tardes"] += 1 if f.get("tarde") else 0
     salida: dict[str, Any] = {}
     for dia in _DIAS:
         d = por_dia.get(dia)
@@ -2772,12 +4949,13 @@ def resumen_limites(grupos: list[dict[str, Any]]) -> dict[str, Any]:
             continue
         hs = sorted(d["horas"])
         salida[dia] = {"ventas": d["ventas"], "ajustadas": d["ajustadas"],
-                       "urgentes": d["urgentes"], "horas_min": hs[0],
+                       "urgentes": d["urgentes"], "tardes": d["tardes"], "horas_min": hs[0],
                        "horas_mediana": hs[len(hs) // 2], "horas_max": hs[-1]}
     return {"por_dia_de_venta": salida,
             "explica": ("horas = límite de envío de Temu − hora de la venta. 'ajustadas': la "
-                        "regla de +2 días rebasaba el límite y se adelantó; 'urgentes': ni 24 h "
-                        "cabe en día hábil (compra manual)")}
+                        "regla de +2 días rebasaba el límite y se adelantó; 'tardes': ningún "
+                        "plazo cabía en día hábil antes del límite y se compran IGUAL con el más "
+                        "corto; 'urgentes' ya no ocurre (se conserva por el panel)")}
 
 
 async def _armar_llamada(s: _Sesion, ll: dict[str, Any], fecha: dict[str, Any],
@@ -2785,9 +4963,14 @@ async def _armar_llamada(s: _Sesion, ll: dict[str, Any], fecha: dict[str, Any],
                          medidas_alm: dict[str, dict[str, Any]], cotizar: bool,
                          manuales: dict[str, dict[str, float]],
                          catalogo: dict[str, dict[str, float]],
-                         catalogo_leido: bool) -> dict[str, Any]:
-    """Empaque, cotización y payload de UNA llamada. Nunca lanza."""
+                         catalogo_leido: bool, *,
+                         omnicanal: dict[str, dict[str, Any]] | None = None,
+                         publicacion: dict[str, dict[str, float]] | None = None,
+                         fuentes: Iterable[str] | None = None) -> dict[str, Any]:
+    """Empaque, cotización y payload de UNA llamada. Nunca lanza. (`muestras`
+    ya viene sin el eco: lo quita el SQL del historial.)"""
     motivos: list[str] = list(fecha["motivos"])
+    avisos: list[str] = []
     paquetes = []
     for p in ll["paquetes"]:
         contenido: dict[str, int] = {}
@@ -2795,7 +4978,8 @@ async def _armar_llamada(s: _Sesion, ll: dict[str, Any], fecha: dict[str, Any],
             contenido[e["sku"]] = contenido.get(e["sku"], 0) + int(e["quantity"])
         clave = clave_caja(p)
         emp = elegir_empaque(contenido, muestras, medidas_alm, manual=manuales.get(clave),
-                             catalogo=catalogo, catalogo_leido=catalogo_leido)
+                             catalogo=catalogo, catalogo_leido=catalogo_leido,
+                             omnicanal=omnicanal, publicacion=publicacion, fuentes=fuentes)
         caja = {**p, "clave": clave, "empaque": emp, "cotizacion": None,
                 "payload_cotizacion": None}
         if not emp["ok"]:
@@ -2805,29 +4989,48 @@ async def _armar_llamada(s: _Sesion, ll: dict[str, Any], fecha: dict[str, Any],
             try:
                 res = await s.llamar("bg.logistics.shippingservices.get",
                                      caja["payload_cotizacion"])
-                caja["cotizacion"] = elegir_canal(res or {})
-                if caja["cotizacion"]["motivo"]:
-                    motivos.append(f"caja de {p['almacen']}: {caja['cotizacion']['motivo']}")
+                info_caja = emp.get("caja") if isinstance(emp.get("caja"), dict) else {}
+                excede = None
+                if info_caja.get("cabe_jt") is False and jt_excede_usa_otra():
+                    excede = "; ".join(str(x) for x in info_caja.get("motivos") or []) or "no cabe"
+                caja["cotizacion"] = elegir_canal(res or {}, jt_excede=excede)
+                cot = caja["cotizacion"]
+                if cot["motivo"] and info_caja.get("cabe_jt") is False:
+                    # La caja no cabe en J&T y NINGÚN canal la aceptó: manual,
+                    # diciendo cuántas cajas harían falta. Las demás siguen.
+                    motivos.append(f"caja de {p['almacen']}: excede paquetería: "
+                                   f"{info_caja.get('partir') or 'partir en varias cajas'} — "
+                                   f"{cot['motivo']}")
+                elif cot["motivo"]:
+                    motivos.append(f"caja de {p['almacen']}: {cot['motivo']}")
+                elif cot.get("porque_no_jt"):
+                    avisos.append(f"caja de {p['almacen']}: no va por J&T — {cot['porque_no_jt']}")
             except Exception as exc:  # noqa: BLE001
                 caja["cotizacion"] = {"elegido": None, "opciones": [], "mas_barata": None,
+                                      "no_disponibles": [], "es_jt": False, "porque_no_jt": None,
                                       "motivo": f"no se pudo cotizar: {_texto_error(exc)}"}
                 motivos.append(f"caja de {p['almacen']}: no se pudo cotizar")
         elif not cotizar:
             motivos.append("no se cotizó (fuera del grupo pedido)")
         paquetes.append(caja)
 
-    # La fecha contra el límite de envío de Temu, por PO.
+    # La fecha contra el límite de envío de Temu, por PO. Una fecha "TARDE" es
+    # la decisión de Brandon (comprar igual con el plazo más corto): se AVISA,
+    # no bloquea. Cualquier otra fecha después del límite es un error del plan.
     pos = set(ll["ventas"])
     for v in g_ventas:
         if v["parent_order_sn"] in pos and v.get("limite_envio_ts") and fecha.get("vence_ts") \
                 and fecha["vence_ts"] > int(v["limite_envio_ts"]):
-            motivos.append(f"{v['parent_order_sn']}: la fecha de envío ({fecha['fecha_envio']}) "
-                           f"cae DESPUÉS del límite de Temu ({v['limite_envio']}): decide "
-                           "Brandon — riesgo de retraso en el cumplimiento")
+            txt = (f"{v['parent_order_sn']}: la fecha de envío ({fecha['fecha_envio']}) cae "
+                   f"DESPUÉS del límite de Temu ({v['limite_envio']})")
+            if fecha.get("tarde"):
+                avisos.append(f"{txt} — {TEXTO_TARDE}: se entrega a la paquetería en cuanto se pueda")
+            else:
+                motivos.append(f"{txt}: riesgo de retraso en el cumplimiento, no se compra así")
 
     salida = {"send_type": ll["send_type"], "explica": ll["explica"], "ventas": ll["ventas"],
               "paquetes": paquetes, "payload": None, "huella": None, "motivos": motivos,
-              "comprable": False, "errores_payload": []}
+              "avisos": avisos, "comprable": False, "errores_payload": []}
     try:
         payload = payload_compra({**ll, "paquetes": paquetes}, fecha["horas"])
     except ValueError as exc:
@@ -2866,29 +5069,43 @@ def _codigo(exc: BaseException) -> str | None:
 
 def clasificar_error(exc: BaseException) -> str:
     """Qué significa un error de `shipment.create`:
-      · 'rechazada'     — un rechazo DOCUMENTADO que ocurre antes de comprar
-                          (pasarela o validación de negocio de la ficha);
-      · 'ya_solicitada' — 120012013: ya había una compra de esa orden;
-      · 'desconocido'   — todo lo demás: 4000000, códigos no documentados,
-                          timeouts, cancelación. NO se sabe si compró."""
+      · 'rechazada'        — Temu rechazó ESTA venta con una validación de
+                             negocio DOCUMENTADA en la ficha (no compró);
+      · 'pasarela'         — la pasarela rechazó la llamada antes de llegar al
+                             negocio (firma, credenciales, permisos, IP): no
+                             compró, y no es culpa de la venta;
+      · 'limite_velocidad' — 4000004, demasiadas peticiones: no compró y es
+                             pasajero (se reintenta la vuelta siguiente);
+      · 'ya_solicitada'    — 120012013: ya había una compra de esa orden;
+      · 'desconocido'      — todo lo demás: 4000000, códigos no documentados,
+                             timeouts, cancelación. NO se sabe si compró."""
     if not isinstance(exc, Exception):
         return "desconocido"
     cod = _codigo(exc)
     if cod == YA_SOLICITADA:
         return "ya_solicitada"
+    if cod in LIMITE_VELOCIDAD:
+        return "limite_velocidad"
+    if cod in _RECHAZO_PASARELA:
+        return "pasarela"
     if cod in RECHAZO_SEGURO:
         return "rechazada"
     return "desconocido"
 
 
 async def _verificar_antes(ll: dict[str, Any], aprob: dict[str, Any],
-                           momento: datetime | None = None) -> list[str]:
+                           momento: datetime | None = None, *,
+                           revisar_tarde: bool = True) -> list[str]:
     """
     La última revisión, JUSTO antes de `shipment.create` de UNA llamada. Vacía
     = se puede comprar. Relee el detalle de SUS PO (estado 2, sin paquete, sin
     cancelación ni cambio de dirección pendientes, mismas piezas),
     `unshipped.package.get`, y recalcula la fecha: si el día ya no da la fecha
-    aprobada (o las horas del payload), no se compra.
+    aprobada (o las horas del payload), no se compra. Con `revisar_tarde`
+    (la PRIMERA llamada del grupo), tampoco si la guía cambió de "a tiempo" a
+    "TARDE" (o al revés): la marca ya se escribió al reclamar. En las llamadas
+    siguientes de un grupo partido no se revisa: la primera ya compró con esa
+    marca, y detenerse a la mitad dejaría el grupo a medias por un aviso.
     """
     motivos: list[str] = []
     payload = ll["payload"]
@@ -2899,8 +5116,13 @@ async def _verificar_antes(ll: dict[str, Any], aprob: dict[str, Any],
             d[rr["orderSn"]] = d.get(rr["orderSn"], 0) + int(rr["quantity"])
     # El límite de envío con el que se aprobó (el del grupo) y los que Temu
     # dice AHORA de estos PO: manda el más cercano. Si Temu lo adelantó, la
-    # fecha recalculada ya no es la aprobada y no se compra.
-    limites: list[int] = [int(aprob["limite_ts"])] if _entero(aprob.get("limite_ts")) else []
+    # fecha recalculada ya no es la aprobada y no se compra. Sin el límite de
+    # alguno (ahora o al aprobar) → el plazo más corto, igual que el plan.
+    limites: dict[str, Any] = {}
+    if _entero(aprob.get("limite_ts")):
+        limites["(aprobado)"] = int(aprob["limite_ts"])
+    if aprob.get("sin_limite"):
+        limites["(aprobado sin límite)"] = None
     s = _Sesion(4 + 2 * len(ll["ventas"]), 90)
     for po in ll["ventas"]:
         try:
@@ -2909,14 +5131,12 @@ async def _verificar_antes(ll: dict[str, Any], aprob: dict[str, Any],
             motivos.append(f"{po}: no se pudo releer el detalle ({_texto_error(exc)[:120]})")
             continue
         v = leer_venta(po, det or {})
-        if _entero(v.get("limite_envio_ts")):
-            limites.append(int(v["limite_envio_ts"]))
+        limites[po] = _entero(v.get("limite_envio_ts"))
         motivos.extend(f"{po}: {b}" for b in v["bloqueos"])
         pedido = {x["orderSn"]: int(x["cantidad"]) for x in v["renglones"]}
         if pedido != esperado.get(po, {}):
             motivos.append(f"{po}: lo pedido en Temu cambió desde la aprobación")
-    f = fecha_con_limite(momento or datetime.now(timezone.utc),
-                         min(limites) if limites else None)
+    f = fecha_de_grupo(momento or datetime.now(timezone.utc), limites)
     if not f["valida"]:
         motivos.extend(f["motivos"])
     if f["fecha_envio"] != aprob["fecha_envio"] or str(f["horas"]) != str(payload["shipLaterLimitTime"]):
@@ -2924,6 +5144,13 @@ async def _verificar_antes(ll: dict[str, Any], aprob: dict[str, Any],
                        f"{f['fecha_envio']} a {f['horas']} h y se aprobó el "
                        f"{aprob['fecha_envio']} a {payload['shipLaterLimitTime']} h — vuelve a "
                        "revisar la vista previa")
+    elif revisar_tarde and f["valida"] and bool(f.get("tarde")) != bool(aprob.get("tarde")):
+        # Mismo día y mismas horas, pero el límite de Temu quedó del otro lado
+        # (revisión del 30-sep): comprar así dejaría la bitácora, el panel y la
+        # nota de Odoo diciendo lo contrario de lo que pasó. Se vuelve a planear.
+        motivos.append("la guía " + ("pasó a comprarse TARDE (el límite de Temu ya no se alcanza)"
+                                     if f.get("tarde") else "ya no va TARDE (Temu movió el límite)")
+                       + " desde la aprobación: se vuelve a planear para que quede dicho")
     try:
         hallados = await _paquetes_sin_enviar(s, list(ll["ventas"]))
         for po, cosas in hallados.items():
@@ -3069,11 +5296,29 @@ async def comprar(parent_order_sn: str, huella_aprobada: str, emitida: int | str
                     # costo cotizado, y cuándo se reclamó. Con eso la bitácora
                     # dice "comprada (paquetería, costo, fecha)" y los topes
                     # del día de la compra automática sobreviven a un reinicio.
+                    # Y (30-sep) DE DÓNDE salió el peso y la caja de cada caja
+                    # y si se compró después del límite de Temu ("TARDE"): la
+                    # columna `reparto` ya existe, la migración 0061 no cambia.
                     reparto = [{"orderSn": e["orderSn"], "sku": e["sku"],
                                 "quantity": int(e["quantity"]), "warehouse_id": p["warehouse_id"],
                                 "almacen_id": p["almacen_id"], "caja": p.get("clave"),
                                 "paqueteria": paqueteria_de(p), "costo_mxn": costo_de(p),
-                                "reclamado_at": reclamado_at}
+                                # Por qué NO fue J&T (si no lo fue), lo que Temu
+                                # dijo de los canales no disponibles y las reglas
+                                # del canal comprado: la única forma de conocer
+                                # el límite real que Temu aplica.
+                                "no_jt": porque_no_jt_de(p),
+                                "no_disponibles": [
+                                    {"paqueteria": x.get("shippingCompanyName"),
+                                     "tipo": x.get("shipLogisticsType"), "motivo": x.get("motivo")}
+                                    for x in ((p.get("cotizacion") or {}).get("no_disponibles")
+                                              or [])[:6]] or None,
+                                "reglas_canal": (((p.get("cotizacion") or {}).get("elegido") or {})
+                                                 .get("reglas")),
+                                "reclamado_at": reclamado_at,
+                                "medida": _medida_para_bitacora(p.get("empaque") or {}),
+                                "tarde": bool(aprob.get("tarde")),
+                                "sin_limite": bool(aprob.get("sin_limite"))}
                                for p in ll["paquetes"] for e in p["renglones"]
                                if e["parentOrderSn"] == po]
                     filas.append({"po": po, "reclamo": reclamo, "grupo": list(grupo["a_comprar"]),
@@ -3120,7 +5365,7 @@ async def _comprar_grupo(grupo: dict[str, Any], reclamo: str, base: dict[str, An
         payload = ll["payload"]
 
         # 1 · La última revisión.
-        motivos = await _verificar_antes(ll, aprob)
+        motivos = await _verificar_antes(ll, aprob, revisar_tarde=not i)
         if motivos:
             await _anotar(reclamo, {**{po: {"estado": "no_enviada",
                                            "motivo": "revisión final: " + "; ".join(motivos)}
@@ -3139,10 +5384,18 @@ async def _comprar_grupo(grupo: dict[str, Any], reclamo: str, base: dict[str, An
         except BaseException as exc:  # noqa: BLE001
             cod = _codigo(exc) if isinstance(exc, Exception) else None
             clase = clasificar_error(exc)
-            if clase != "rechazada":
+            if clase not in NO_COMPRO:
                 _DESCONOCIDAS.update(pos_ll)
             txt = _texto_error(exc) if isinstance(exc, Exception) else type(exc).__name__
-            await _anotar(reclamo, {**{po: {"estado": clase, "codigo": cod, "motivo": txt}
+            # La pasarela y el límite de velocidad no juzgan la venta: su fila
+            # queda 'no_enviada' (libre), NUNCA 'rechazada' (que la compra
+            # automática ya no reintenta).
+            estado_fila = "no_enviada" if clase in ("pasarela", "limite_velocidad") else clase
+            if estado_fila != clase:
+                quien_txt = ("Temu pidió bajar la velocidad" if clase == "limite_velocidad"
+                             else "la pasarela de Temu rechazó la llamada")
+                txt = f"{quien_txt} ({cod}): no compró — {txt}"
+            await _anotar(reclamo, {**{po: {"estado": estado_fila, "codigo": cod, "motivo": txt}
                                        for po in pos_ll}, **no_salio}, blindado=True)
             log.error("COMPRA de guía Temu %s: %s (%s)", ", ".join(pos_ll), clase,
                       cod or type(exc).__name__)
@@ -3214,6 +5467,10 @@ async def _comprar_grupo(grupo: dict[str, Any], reclamo: str, base: dict[str, An
                            "que no salió queda libre para comprarse con una nueva aprobación"),
         "detenida": "la revisión final encontró un cambio: no se compró nada",
         "rechazada": "Temu rechazó la compra con un error documentado: no se compró",
+        "pasarela": ("la pasarela de Temu rechazó la llamada (firma, credenciales, permisos o IP): "
+                     "no se compró y la venta queda libre — el problema es del sistema"),
+        "limite_velocidad": ("Temu pidió bajar la velocidad (4000004, demasiadas peticiones): no se "
+                             "compró y la venta queda libre — se reintenta la vuelta siguiente"),
         "ya_solicitada": ("Temu dice que ya había una compra (120012013): la orden queda "
                           "bloqueada hasta conciliar"),
         "desconocido": ("no se sabe si Temu compró la guía: NO reintentar; concilia con el "
@@ -3230,8 +5487,44 @@ async def _comprar_grupo(grupo: dict[str, Any], reclamo: str, base: dict[str, An
             "huella": aprob["huella"], "reclamo": reclamo, "motivo": motivos_txt.get(accion)}
 
 
+def paquetes_ajenos(payload: Any, paquetes: dict[str, dict[str, Any]]) -> bool:
+    """¿Se puede PROBAR que los paquetes que Temu muestra NO salieron de ESTA
+    llamada (`payload` de shipment.create)? True sólo si algún paquete legible
+    (almacén, peso y caja de `shipment.result.get`) no coincide con NINGUNA caja
+    del payload: lo declaró otra persona, con otras medidas o desde otro
+    almacén. Sin con qué comparar (Temu no dio medidas, payload ilegible) →
+    False: no se prueba nada. PURA."""
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except ValueError:
+            return False
+    if not isinstance(payload, dict):
+        return False
+    cajas: list[tuple[str, float, list[float]]] = []
+    for c in payload.get("sendRequestList") or []:
+        try:
+            cajas.append((str(c["warehouseId"]), float(c["weight"]),
+                          sorted(float(c[k]) for k in ("length", "width", "height"))))
+        except (KeyError, TypeError, ValueError):
+            return False
+    if not cajas:
+        return False
+    for p in (paquetes or {}).values():
+        m = muestra_de_paquete(p) if isinstance(p, dict) else None
+        wh = str((p or {}).get("warehouseId") or "").strip() if isinstance(p, dict) else ""
+        if not m or not wh:
+            continue                           # ilegible: no prueba nada
+        lados = sorted((float(m["largo_cm"]), float(m["ancho_cm"]), float(m["alto_cm"])))
+        if not any(wh == w and abs(float(m["peso_kg"]) - kg) < 0.006
+                   and all(abs(x - y) < 0.006 for x, y in zip(lados, ls)) for w, kg, ls in cajas):
+            return True
+    return False
+
+
 async def conciliar(parent_order_sn: str, *, liberar: bool = False,
-                    quien: str = "", revisar_rechazada: bool = False) -> dict[str, Any]:
+                    quien: str = "", revisar_rechazada: bool = False,
+                    payload_propio: Any = None) -> dict[str, Any]:
     """
     Concilia la compra ABIERTA de un PO mirando Temu (detalle, unshipped,
     result.get). SÓLO escribe en la bitácora; nunca compra. La invoca el botón
@@ -3248,6 +5541,13 @@ async def conciliar(parent_order_sn: str, *, liberar: bool = False,
     por bueno. Es lo que pide la compra automática antes de liberarse: el
     rechazo lo clasificó una lista de códigos, y si Temu sí compró, la fila
     tiene que decirlo (y bloquear) en vez de quedar libre.
+
+    `payload_propio` (con `revisar_rechazada`; lo pasa la mirada AUTOMÁTICA de
+    la compra automática, no el botón) = el payload de la llamada que Temu
+    rechazó: si la guía que Temu muestra se declaró DISTINTO (otro peso, otra
+    caja u otro almacén: `paquetes_ajenos`), la compró una persona después —el
+    flujo normal de una venta en "compra manual"— y la fila NO se toca
+    (`accion='guia_ajena'`).
     """
     sn = str(parent_order_sn or "").strip()
     try:
@@ -3284,6 +5584,9 @@ async def conciliar(parent_order_sn: str, *, liberar: bool = False,
                     "mirado_en_temu": True, "parent_order_sn": sn}
         if psns:
             filas = await _resultados_de(s, psns)
+            if mirar_rechazada and payload_propio is not None and paquetes_ajenos(payload_propio, filas):
+                return {"ok": True, "accion": "guia_ajena", "estado": "rechazada",
+                        "package_sn": psns, "mirado_en_temu": True, "parent_order_sn": sn}
             st = [_entero((filas.get(p) or {}).get("shippingLabelStatus")) for p in psns]
             estado = ("fallida" if any(x == 2 for x in st) else
                       "comprada" if st and all(x == 1 for x in st) else "pendiente")

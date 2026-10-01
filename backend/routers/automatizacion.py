@@ -1009,6 +1009,10 @@ async def temu_compra_auto_conciliar(
                                              "compra abierta sin rastro en Temu pasados 30 min se "
                                              "da por no hecha; una etiqueta automática que sigue "
                                              "en aplicación se ACEPTA (se sigue vigilando sola)"),
+    reintentar: bool = Query(False, description="true (botón «Reintentar» de una venta cuya compra "
+                                                "automática Temu RECHAZÓ): se mira Temu y, si no "
+                                                "hay guía, la vuelta siguiente la vuelve a comprar "
+                                                "UNA vez"),
     request: Request = None,  # noqa: B008
 ):
     """
@@ -1017,13 +1021,18 @@ async def temu_compra_auto_conciliar(
     mira); si la conciliación salió bien y ya no queda NINGUNA compra abierta ni
     etiqueta automática en aplicación sin aceptar, LIBERA la compra automática
     detenida. Queda registrado quién. Nunca compra.
+
+    Con `reintentar=true` sobre una venta que Temu RECHAZÓ (ya no detiene el
+    job: queda "compra manual · Temu la rechazó"), además la deja marcada para
+    que la vuelta siguiente la reintente una vez. Tampoco compra aquí.
     """
     from services import temu_guias_auto as tga
 
     sn = (po or "").strip() or None
     if sn and not re.fullmatch(r"PO-[0-9A-Za-z-]{4,60}", sn):
         raise HTTPException(status_code=422, detail="po tiene que ser un parentOrderSn 'PO-…'")
-    return await tga.conciliar_y_liberar(sn, liberar=bool(liberar), quien=_quien(request))
+    return await tga.conciliar_y_liberar(sn, liberar=bool(liberar), quien=_quien(request),
+                                         reintentar=bool(reintentar))
 
 
 @router.post("/temu/compra-auto/vuelta", dependencies=[Depends(requiere_api_key)])
