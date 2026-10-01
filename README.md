@@ -1001,6 +1001,32 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.610.0 — Fan-out: en Temu «a la venta» es 2/8, no 4/7 — lo dicen los pedidos (solo lectura)
+
+Eduardo, 1-oct: *"Sí, corrige las etiquetas de Temu"*.
+
+**El error.** La página del fan-out tomaba como «a la venta» en Temu el estado `4/7` y llamaba
+«incompleta» a todo lo demás. Medido el 1-oct con el estado de cada publicación AL MOMENTO de cada pedido
+(reconstruido con el historial del censo): en 30 días entraron 344 pedidos con la publicación en `2/8`
+(26 SKUs), 17 en `3/3`, 4 en `3/1`, 1 en `3/2` y ninguno en `4/7` (78 publicaciones, 70 con stock). La
+barra «78 de 78 a la venta coinciden con Woo» contaba publicaciones que no venden, y lo que sí vende salía
+como «incompleta». Los cambios de estado del mes cuadran: las nuevas entran en `4/10` y de ahí pasan a `4/7`
+o a `2/8`; `2/8` y `3/3` se alternan seguido.
+
+**El arreglo** (`fanout_vivo._TEMU_A_LA_VENTA = "2/8"`): en las barras, en las celdas de la matriz y en la
+trazabilidad, «a la venta» en Temu es `2/8`; los borradores (`5/…`) siguen como «borrador», y el resto se
+muestra con su código («estado 3/2», «estado 4/7»…), porque su significado no está confirmado. Con la
+etiqueta corregida se ve lo que de verdad está a la venta: el 1-oct, 39 de las 42 publicaciones en `2/8`
+coincidían con Woo y 3 ofrecían de más, todas con la causa «cambió el canal».
+
+**Qué NO cambia.** El fan-out sigue escribiendo a todo Temu salvo los borradores (política del 19-ago).
+`services/temu.py` (`ESTADOS`, con `2/8` = «Incompleto», y `VENDIBLES = {"4/7"}`) queda igual: lo usan la
+pantalla de Publicaciones y el panel de Temu, y corregirlo ahí es otra decisión.
+
+**Verificado.** En el sandbox: la barra de Temu cuenta las 42 en `2/8`; las celdas dicen «a la venta»,
+«borrador» o «estado X/Y» (las que no están a la venta van punteadas); la trazabilidad muestra «a la venta
+(2/8) → 3/3».
+
 ### v0.609.0 — Fan-out: la línea de trazabilidad de cada SKU, la matriz con TODOS los SKUs y el resaltado que ya no se queda pegado (solo lectura)
 
 Eduardo, 1-oct: *"Hay que hacer una línea de trazabilidad acerca de los cambios que ha tenido al dar clic

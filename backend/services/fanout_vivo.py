@@ -330,6 +330,13 @@ def _estado_canales(rep: list[str], hoy: str) -> list[dict]:
     return salida
 
 
+# Temu: el estado que VENDE es «2/8». Medido el 1-oct-2026 con el estado de la publicación AL
+# MOMENTO de cada pedido (historial del censo): en 30 días, 344 pedidos entraron en 2/8 (26 SKUs),
+# 17 en 3/3, 4 en 3/1, 1 en 3/2 y NINGUNO en 4/7 (78 publicaciones, 70 con stock). `temu.ESTADOS`
+# llama «Incompleto» a 2/8 y «Activo o inactivo» a 4/7 —lectura de las pestañas del Seller Center—;
+# los pedidos dicen otra cosa. Los demás estados se muestran crudos: su significado no está confirmado.
+_TEMU_A_LA_VENTA = "2/8"
+
 # Publicaciones A LA VENTA en el reparto (sin FULL), con su valor más reciente:
 # lo usan las barras de coincidencia y la lista completa de la matriz.
 _SQL_VIVAS = """
@@ -352,7 +359,7 @@ _SQL_VIVAS = """
              and coalesce(l.logistic_type, '') <> 'fulfillment'
              and l.stock_own is not null and p.stock_woo is not null
              and ((l.canal = 'tiktok' and l.status = 'ACTIVATE')
-               or (l.canal = 'temu' and l.status = '4/7')
+               or (l.canal = 'temu' and l.status = '2/8')   -- = _TEMU_A_LA_VENTA
                or (l.canal = 'mercado_libre' and l.situacion = 'active')))"""
 
 
@@ -638,14 +645,15 @@ def _vendible(l: dict) -> bool:
     if l["canal"] == "tiktok":
         return l.get("status") == "ACTIVATE"
     if l["canal"] == "temu":
-        return l.get("status") == "4/7"
+        return l.get("status") == _TEMU_A_LA_VENTA
     return l.get("situacion") == "active"
 
 
 def _estado_listing(l: dict) -> str:
     if l["canal"] == "temu":
         s = l.get("status") or ""
-        return "a la venta" if s == "4/7" else ("borrador" if s.startswith("5/") else "incompleta")
+        return ("a la venta" if s == _TEMU_A_LA_VENTA else "borrador" if s.startswith("5/")
+                else f"estado {s or '—'}")
     clave = l.get("status") if l["canal"] == "tiktok" else l.get("situacion")
     return _ESTADO_TXT.get(l["canal"], {}).get(clave or "", (clave or "sin estado").lower())
 
@@ -1070,7 +1078,9 @@ def _estado_traza(canal: str, valor: str | None) -> str:
     if valor in (None, ""):
         return "sin estado"
     if canal == "temu":
-        return str(valor)      # crudo: la decodificación de los estados de Temu no está confirmada
+        v = str(valor)
+        return ("a la venta (2/8)" if v == _TEMU_A_LA_VENTA else f"borrador ({v})" if v.startswith("5/")
+                else v)        # el resto, crudo: su significado no está confirmado
     return _ESTADO_TXT.get(canal, {}).get(str(valor), str(valor).lower())
 
 
