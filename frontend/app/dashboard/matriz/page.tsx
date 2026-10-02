@@ -225,7 +225,15 @@ export default function MatrizCoincidencia() {
                             className="cursor-help px-2 text-[11px] leading-[14px] text-slate-600">−{f.sin_orden.piezas} sin orden</span>
                         )}
                       </span>
-                      <span className="justify-self-start px-2 py-1 text-[13px] font-bold text-slate-900">{f.woo}</span>
+                      <span className="flex flex-col items-start px-2">
+                        <span className="py-1 text-[13px] font-bold text-slate-900">{f.woo}</span>
+                        {f.woo_de && (
+                          <span title={f.woo_de.startsWith("leído")
+                            ? "Lo leyó el fan-out en vivo al repartir el último cambio: es más reciente que la foto de stock_watch."
+                            : "Foto de stock_watch (cada 20 min)."}
+                            className="cursor-help text-[11px] leading-[14px] text-slate-600">{f.woo_de}</span>
+                        )}
+                      </span>
                       {m.columnas.map((col) => {
                         const c = f.celdas[col.id];
                         if (!c) return <span key={col.id} />;

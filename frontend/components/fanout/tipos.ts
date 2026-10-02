@@ -159,6 +159,7 @@ export interface FilaMatriz {
   odoo: string;
   woo: string;
   dif: boolean; // Odoo≠Woo que las ventas sin orden NO explican
+  woo_de?: string; // de dónde sale el Woo: «foto hoy 21:53» (stock_watch) o «leído hoy 21:57» (fan-out)
   sin_orden?: SinOrden | null;
   celdas: Record<string, CeldaMatriz>;
   tags: string[];
@@ -255,6 +256,7 @@ export interface Historia {
   existe: boolean;
   odoo: string;
   woo: string;
+  woo_de?: string;
   sin_orden?: SinOrden | null;
   columnas: Columna[];
   celdas: Record<string, CeldaMatriz>;

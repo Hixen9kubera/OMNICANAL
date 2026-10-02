@@ -1001,6 +1001,28 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.613.0 — Fan-out: la matriz compara contra el Woo más reciente, no siempre contra la foto de stock_watch (solo lectura)
+
+Eduardo, 1-oct: con ACC-0574-LIL a la vista (*"¿cómo sería corregir la comparación?"*).
+
+**El defecto.** La columna Woo de la matriz y de la trazabilidad salía SIEMPRE de la foto de stock_watch, que
+se toma cada 20 min. Justo después de una venta, el fan-out ya leyó Woo en vivo y escribió el número nuevo en
+los canales, pero la foto todavía no se entera: los canales ya escritos parecían «ofrece menos» con la causa
+«cambió el canal». Caso del 1-oct: Temu vendió 43 piezas de ACC-0574-LIL a las 21:57, el fan-out leyó Woo en
+0 y escribió 0 en TikTok y Temu; la foto era de las 21:53 (Woo 43) y la fila decía «0 −43 · cambió el canal»
+en los dos canales, además de «Odoo 48 y Woo 43» sin explicar.
+
+**El arreglo** (`fanout_vivo._woo_leido` + `_woo_vigente`). Woo es el dato MÁS RECIENTE entre la foto de
+stock_watch y lo último que el fan-out leyó de Woo (`stock_drop` de su bitácora, últimos 3 días). Debajo del
+número se dice de dónde salió: «foto hoy 21:53» o «leído hoy 21:57». Se aplica igual en las barras de
+coincidencia (el CTE `r` de `_SQL_VIVAS`), en las filas de la matriz y en el encabezado y las celdas de la
+trazabilidad. Odoo sigue saliendo de la foto (solo stock_watch consulta Odoo) y los conteos de la página
+principal siguen siendo de la foto.
+
+**Verificado.** En el sandbox con datos de producción traídos una vez: ACC-0574-LIL sale con Woo 0
+«leído hoy 21:57», TikTok y Temu iguales, y «48 vendidas sin orden en Odoo» como toda la diferencia con Odoo;
+el resto de las filas siguen con «foto». `npm run build` limpio y las pruebas del recuperador en verde.
+
 ### v0.612.0 — Fan-out: Odoo≠Woo que son ventas sin orden en Odoo ya no se marcan como desfase (solo lectura)
 
 Eduardo, 1-oct: *"¿por qué difiere Odoo y Woo aquí?"* (JUGU-0089-PLA: Odoo 65, Woo 9).

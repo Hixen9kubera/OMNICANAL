@@ -345,15 +345,27 @@ _SQL_VIVAS = """
             from ops.fanout_log
            where accion = 'escribir' and resultado ilike 'ok%%' and ts > now() - interval '3 days'
            order by sku, canal, ts desc, id desc),
+        r as (
+          -- Lo último que el fan-out leyó de Woo (en vivo, en cada venta o cambio).
+          select distinct on (sku) sku::text as sku, ts, stock_drop
+            from ops.fanout_log
+           where stock_drop is not null and coalesce(canal, '') <> 'woocommerce'
+             and ts > now() - interval '3 days'
+           order by sku, ts desc, id desc),
         v as (
           select l.canal, l.sku::text as sku, a.label as cuenta, a.legacy_code as cuenta_codigo,
-                 l.status, l.situacion, p.stock_woo,
+                 l.status, l.situacion,
+                 -- Woo vigente: la foto de stock_watch (cada 20 min) o, si es más nueva, la
+                 -- lectura del fan-out (= `_woo_vigente`).
+                 case when r.ts is not null and r.ts > p.actualizado then r.stock_drop
+                      else p.stock_woo end as stock_woo,
                  case when w.ts is not null and w.ts > l.updated_at then w.objetivo
                       else l.stock_own end as valor
             from channel.listings l
             join ops.stock_watch_photo p on p.sku = l.sku
             left join core.accounts a on a.id = l.account_id
             left join w on w.sku = l.sku::text and w.canal = l.canal
+            left join r on r.sku = l.sku::text
            where l.canal = any(%(c)s)
              and coalesce(l.is_fulfillment, false) = false
              and coalesce(l.logistic_type, '') <> 'fulfillment'
@@ -442,6 +454,31 @@ def _explicado(odoo: Any, woo: Any, so: dict | None) -> bool:
         return False
     from services import stock_watch
     return stock_watch.resta_pendientes() and int(woo) == max(0, int(odoo) - int(so["piezas"]))
+
+
+def _woo_leido(skus: list[str]) -> dict[str, dict[str, Any]]:
+    """Por SKU: lo último que el fan-out leyó de Woo (en vivo, en cada venta o cambio;
+    `stock_drop` en la bitácora), de los últimos 3 días. Solo lee."""
+    if not skus:
+        return {}
+    return {f["sku"]: f for f in sdb.fetch_all(
+        """select distinct on (sku) sku::text as sku, ts, stock_drop as valor,
+                  to_char(ts at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as hora
+             from ops.fanout_log
+            where sku::text = any(%(s)s) and stock_drop is not null
+              and coalesce(canal, '') <> 'woocommerce' and ts > now() - interval '3 days'
+            order by sku, ts desc, id desc""", {"z": _ZONA, "s": list(skus)})}
+
+
+def _woo_vigente(ft: dict, leido: dict | None, hoy: str) -> tuple[Any, str]:
+    """El Woo contra el que se compara: el más reciente entre la foto de stock_watch
+    (cada 20 min) y lo último que leyó el fan-out. Justo después de una venta la foto
+    todavía no se entera y el canal, ya escrito, parecería «cambió el canal».
+    Devuelve (valor, de dónde salió)."""
+    foto_ts = ft.get("actualizado")
+    if leido and leido.get("valor") is not None and (foto_ts is None or leido["ts"] > foto_ts):
+        return int(leido["valor"]), f"leído {_fecha(leido['hora'], hoy)}"
+    return ft.get("stock_woo"), (f"foto {_fecha(ft['foto_hora'], hoy)}" if ft.get("foto_hora") else "foto")
 
 
 def _foto() -> dict[str, Any]:
@@ -961,8 +998,11 @@ def matriz() -> dict[str, Any]:
         return {"ahora": _fecha(ahora, hoy), "columnas": cols, "barras": barras, "filas": []}
 
     foto = {f["sku"]: f for f in sdb.fetch_all(
-        "select sku::text as sku, stock_odoo, stock_woo from ops.stock_watch_photo where sku::text = any(%(s)s)",
-        {"s": skus})}
+        """select sku::text as sku, stock_odoo, stock_woo, actualizado,
+                  to_char(actualizado at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as foto_hora
+             from ops.stock_watch_photo where sku::text = any(%(s)s)""",
+        {"s": skus, "z": _ZONA})}
+    leidos = _woo_leido(skus)
     sin_orden = _sin_orden(skus)
     lst = sdb.fetch_all(
         """select l.sku::text as sku, l.canal, a.legacy_code as cuenta, l.status, l.situacion,
@@ -984,7 +1024,7 @@ def matriz() -> dict[str, Any]:
     celdas_por_sku: dict[str, dict[str, dict]] = {}
     pendientes: list[dict] = []
     for s in skus:
-        woo = (foto.get(s) or {}).get("stock_woo")
+        woo, _ = _woo_vigente(foto.get(s) or {}, leidos.get(s), hoy)
         celdas = {}
         for col in cols:
             clave = (s, col["canal"], col["cuenta"])
@@ -1001,7 +1041,8 @@ def matriz() -> dict[str, Any]:
     filas = []
     for s in skus:
         ft = foto.get(s) or {}
-        odoo, woo = ft.get("stock_odoo"), ft.get("stock_woo")
+        odoo = ft.get("stock_odoo")
+        woo, woo_de = _woo_vigente(ft, leidos.get(s), hoy)
         celdas, tags, peso = celdas_por_sku[s], set(), 0.0
         resumen = None
         for col in cols:
@@ -1047,7 +1088,7 @@ def matriz() -> dict[str, Any]:
             otra = next((col["nombre"] for col in cols if celdas[col["id"]]["k"] in ("mas", "menos")), None)
             resumen = (f"{otra} no coincide con Woo, pero no está a la venta" if otra
                        else "Igual a Woo donde está a la venta")
-        filas.append({"sku": s, "que": resumen, "odoo": _n(odoo), "woo": _n(woo),
+        filas.append({"sku": s, "que": resumen, "odoo": _n(odoo), "woo": _n(woo), "woo_de": woo_de,
                       "dif": dif_ow, "sin_orden": ({**sx, "explica": explicado} if sx else None),
                       "celdas": celdas, "tags": sorted(tags), "peso": peso})
     filas.sort(key=lambda f: -f["peso"])
@@ -1178,12 +1219,14 @@ def historia(sku: str, dias: int = 14, limite: int = 400) -> dict[str, Any]:
     ahora = _ahora_local().get("ahora") or ""
     hoy = ahora[:10]
     foto = sdb.fetch_one(
-        "select stock_odoo, stock_woo from ops.stock_watch_photo where sku = %(s)s", {"s": sku}) or {}
+        """select stock_odoo, stock_woo, actualizado,
+                  to_char(actualizado at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as foto_hora
+             from ops.stock_watch_photo where sku = %(s)s""", {"s": sku, "z": _ZONA}) or {}
     log = sdb.fetch_all(
         """select id, ts, to_char(ts at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as hora,
                   coalesce(motivo, '') as motivo, coalesce(canal, '') as canal,
                   upper(coalesce(cuenta, '')) as cuenta, accion, left(coalesce(resultado, ''), 300) as resultado,
-                  stock_canal, objetivo, (ts > now() - interval '3 days') as reciente
+                  stock_canal, objetivo, stock_drop, (ts > now() - interval '3 days') as reciente
              from ops.fanout_log
             where sku = %(s)s and ts > now() - make_interval(days => %(d)s)
             order by ts desc, id desc limit 3000""", {"z": _ZONA, "s": sku, "d": dias})
@@ -1205,7 +1248,9 @@ def historia(sku: str, dias: int = 14, limite: int = 400) -> dict[str, Any]:
 
     # Hoy en cada canal: la misma celda (y la misma causa) que la matriz.
     cols = [c for c in COLUMNAS if c["canal"] in rep]
-    woo = foto.get("stock_woo")
+    leido = next(({"ts": f["ts"], "valor": f["stock_drop"], "hora": f["hora"]} for f in log
+                  if f.get("stock_drop") is not None and f["canal"] not in ("", "woocommerce")), None)
+    woo, woo_de = _woo_vigente(foto, leido, hoy)
     L = {(f["canal"], (f.get("cuenta") or "").upper()): f for f in lst}
     W: dict[tuple[str, str], dict] = {}
     for f in log:
@@ -1304,7 +1349,7 @@ def historia(sku: str, dias: int = 14, limite: int = 400) -> dict[str, Any]:
         x.pop("_t", None)
     sx = _sin_orden([sku]).get(sku) if sku else None
     return {"ok": True, "sku": sku, "dias": dias, "hoy": hoy, "ahora": _fecha(ahora, hoy),
-            "existe": bool(foto or lst or log or hist), "odoo": _n(foto.get("stock_odoo")), "woo": _n(woo),
+            "existe": bool(foto or lst or log or hist), "odoo": _n(foto.get("stock_odoo")), "woo": _n(woo), "woo_de": woo_de,
             "sin_orden": ({**sx, "explica": _explicado(foto.get("stock_odoo"), woo, sx)} if sx else None),
             "columnas": cols, "celdas": celdas, "resumen": resumen,
             "items": items[:limite], "total": total, "truncado": total > limite}

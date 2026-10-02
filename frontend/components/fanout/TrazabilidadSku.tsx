@@ -188,7 +188,12 @@ export default function TrazabilidadSku({ sku, onCerrar, onRastro }: {
             <div className="font-mono text-[11px] uppercase tracking-[0.2em] text-slate-500">Trazabilidad del SKU</div>
             <div className="mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-1">
               <span className="break-all font-mono text-base font-bold text-slate-900">{sku}</span>
-              {h && <span className="text-sm text-slate-700">Odoo {h.odoo} · Woo <span className="font-bold">{h.woo}</span></span>}
+              {h && (
+                <span className="text-sm text-slate-700">
+                  Odoo {h.odoo} · Woo <span className="font-bold">{h.woo}</span>
+                  {h.woo_de && <span className="text-[12px] text-slate-500"> ({h.woo_de})</span>}
+                </span>
+              )}
             </div>
             {h?.sin_orden && (
               <div className="mt-0.5 text-[13px] leading-5 text-slate-600">
