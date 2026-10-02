@@ -1038,6 +1038,21 @@ class Precio(unittest.TestCase):
         self.assertEqual(f["precio"], 412.0)
 
 
+class PublicacionDeOtroSku(unittest.TestCase):
+    def test_la_fila_vieja_no_cuenta_el_stock_de_la_publicacion(self):
+        # HERR-0035 (fila vieja: 187) y HERR-0035-AMA apuntan a MLM3097569251; ML declara la AMA (79).
+        pub = {"listing_id": "MLM3097569251", "stock": 187, "declarada": "HERR-0035-AMA", "categoria": "MLM1"}
+        vivo = {"logistica": "fulfillment", "stock": 79, "estado": "active", "categoria": "MLM1"}
+        f = ff._fila("meli:Kubera", "HERR-0035", None, pub, vivo, None, None, None, None, "Herramienta", None)
+        self.assertEqual(f["stock"], 0, "el stock en vivo es del SKU que declara la publicación")
+        self.assertIn("publicacion_de_otro_sku", f["alertas"])
+        self.assertEqual(f["sku_publicacion"], "HERR-0035-AMA")
+        propia = ff._fila("meli:Kubera", "HERR-0035-AMA", None, {**pub, "declarada": None}, vivo,
+                          None, None, None, None, "Herramienta", None)
+        self.assertEqual(propia["stock"], 79, "la declarada usa lo que dice ML en vivo")
+        self.assertNotIn("publicacion_de_otro_sku", propia["alertas"])
+
+
 class Analisis(unittest.TestCase):
     """Lo que se mudó a Análisis: órdenes sin completar y títulos contra Odoo."""
 

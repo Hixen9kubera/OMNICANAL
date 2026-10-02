@@ -1001,6 +1001,54 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.615.0 — Fulfillment: una orden que sigue en bodega ya no le roba llegadas a la anterior, y FULL cuenta una fila por publicación (solo lectura)
+
+Eduardo, 2-oct: *"Revisa lo de envío, por lo que entiendo es en un estado donde ya se reserva, revisa bien cómo
+funciona ese flujo y también corrige lo de FULL en Fulfillment y Crear FULL"*.
+
+**El flujo en Odoo** (TEXCO, medido con S38849 y S39639; ahora es la regla 7 de `fulfillment_envios`):
+cotización → CONFIRMADA (nacen PICK, PACK y OUT; el PICK RESERVA el stock, y por eso bajan `free_qty` y Woo) →
+PICK hecho (recolectar) → PACK hecho (la mercancía queda en Salida y el OUT pasa de «waiting» a «assigned») → OUT
+validado (`date_done`). S39639 (San Corpe) se cotizó el 25-sep, se confirmó el 30 y a hoy sólo tiene el PICK
+reservado (622 de 622): no ha salido nada. Medido además: en 3 de 22 salidas bodega validó PICK, PACK y OUT juntos
+DESPUÉS de que ML recibió; el empaque en Odoo tampoco es la hora del camión.
+
+**El defecto de la ventana de llegada** (`fulfillment_etapas`). La ventana de una salida terminaba en la
+siguiente orden del mismo SKU, y una orden ABIERTA empezaba en la creación de su COTIZACIÓN. S39639 compartía
+TEC-1138-VER, ORG-0585-VER y TEC-0595-PLA con TEXCO/OUT/06483 (S38849, validada el 29-sep), así que desde el 25-sep
+se quedaba con sus 43 piezas recibidas: 06483 decía 1,015 de 1,095 y al cerrar (9-oct) las habría dado por
+rechazadas; S39639 decía «llegando» sin haber salido.
+
+**El arreglo.** Sólo CORTA la ventana de la anterior una orden cuya mercancía ya pudo salir: validada (como antes:
+desde 4 días antes de validar) o empacada (OUT «assigned»: desde que terminó de empacarse). Una orden que sigue en
+bodega no le quita llegadas a nadie y sólo toma las que no caen en la ventana de otra (así una salida que bodega
+valida tarde sigue enseñando lo que ya llegó). `fulfillment_envios` lee además los PICK/PACK hechos de cada orden y
+manda `fase` (en_bodega · sin_existencias · empacada · validada), `confirmada` y `empacada`; la pestaña Envíos dice
+debajo de «abierta» «en bodega · aún no sale» o «empacada · lista para salir». Con Odoo y kubera reales (solo
+lectura) cambian sólo dos salidas: 06483 → 1,058 de 1,095 (faltan 37: ACC-0441-PLA-21PZ 25, TEC-0107-RO-NE-4CE 9 y
+3 sueltas) y S39639 → 0.
+
+**FULL: una fila por publicación** (`services/full_publicaciones.py`, nuevo). No eran variantes: verificado contra
+la API de ML, 83 publicaciones FULL viven en DOS filas de `channel.listings` —su SKU y el padre que quedó de antes o
+un hermano mal escrito (HERR-0035 = 187 contra HERR-0035-AMA = 79; SIL-0008-NEG contra SIL-008-NEG)— y ninguna tiene
+variantes en ML. Sólo la fila del SKU que la publicación DECLARA trae el número de verdad: 1,620 pzs, lo mismo que ML;
+sumando las dos filas, 4,107. La regla para elegirla (no el padre → aviso de FULL más reciente → cambio de stock más
+reciente → la más reciente) acertó 83 de 83. La usan:
+- **Fulfillment y «Crear FULL»** (`fulfillment_etapas.stock_actual`): «En FULL hoy» pasa de 17,620 a 15,127
+  (Kubera 10,124 · San Corpe 5,003) y trae `filas_duplicadas` / `piezas_duplicadas`.
+- **La propuesta de Crear FULL** (`fulfillment_full._fila`): un SKU cuya publicación la declara otro va con stock 0 y
+  la alerta «su publicación la declara ML como X» (antes heredaba el stock en vivo del otro). Hoy ninguno de esos 83
+  tiene ventas: no cambia ninguna propuesta actual.
+- **La pestaña FULL** (`fanout_full`): corrige la regla de v0.614.0 (sólo quitaba al padre y se le escapaban 4
+  hermanos); la salud dice «83 publicaciones guardadas en dos filas · 2,487 pzs fuera del total».
+- **La trazabilidad**: «FULL Kubera: es de HERR-0035-AMA» en vez del número viejo.
+
+**Verificado.** En el sandbox con la parte de Odoo armada por el código nuevo contra Odoo y kubera reales (solo
+lectura): 06483 en 1,058/1,095, S39639 «en bodega · aún no sale», «En FULL hoy 15,127» y la trazabilidad de
+HERR-0035. 6 pruebas nuevas (orden en bodega, orden empacada, lo que nadie reclama, fase y empaque en `armar`,
+publicación de otro SKU) y las 1,524 del backend en verde; `tsc` y `npm run build` limpios. Sin banderas y sin
+escrituras.
+
 ### v0.614.0 — Fan-out: pestaña FULL — las bodegas de Mercado Libre aviso por aviso, con su cuadre diario (solo lectura)
 
 Eduardo, 2-oct: *"También hay que incluir una sección para visualizar la sincronización del inventario de full"*.

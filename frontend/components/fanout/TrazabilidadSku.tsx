@@ -242,11 +242,13 @@ export default function TrazabilidadSku({ sku, onCerrar, onRastro, carrilInicial
                 <span className="text-sm text-slate-700">
                   Odoo {h.odoo} · Woo <span className="font-bold">{h.woo}</span>
                   {h.woo_de && <span className="text-[12px] text-slate-500"> ({h.woo_de})</span>}
-                  {h.full?.cuentas.map((c) => (
+                  {h.full?.cuentas.map((c) => (c.de_otro ? (
+                    <span key={c.cuenta}> · FULL {c.nombre}: <span className="text-[12px] text-amber-800">es de {c.de_otro.sku}</span></span>
+                  ) : (
                     <span key={c.cuenta}> · FULL {c.nombre} <span className="font-bold">{n(c.stock)}</span>
                       {c.situacion && c.situacion !== "a la venta" ? <span className="text-[12px] text-slate-500"> ({c.situacion})</span> : null}
                     </span>
-                  ))}
+                  )))}
                 </span>
               )}
             </div>
@@ -320,13 +322,18 @@ export default function TrazabilidadSku({ sku, onCerrar, onRastro, carrilInicial
                       return `${GRUPO_FULL[g].texto} ${g === "vendido" ? n(Math.abs(v?.piezas ?? 0)) : conSigno(v?.piezas ?? 0)}`;
                     }).join(" · ") || "Sin avisos de la bodega en el periodo."}
                   </span>
-                  {h.full.cuentas.map((c) => (
+                  {h.full.cuentas.map((c) => (c.de_otro ? (
+                    <span key={c.cuenta} className="text-xs leading-[18px] text-amber-900">
+                      <span className="font-semibold">{c.nombre}:</span> su publicación {c.de_otro.listing} la declara Mercado Libre
+                      como {c.de_otro.sku} ({n(c.de_otro.stock)} en FULL); la fila de este SKU quedó con un número viejo y no cuenta.
+                    </span>
+                  ) : (
                     <span key={c.cuenta} className="text-xs leading-[18px] text-slate-700">
                       <span className="font-semibold">{c.nombre}:</span> {n(c.stock)} en FULL
                       {c.cobertura != null ? ` · le alcanza ${c.cobertura.toLocaleString("es-MX")} días (${n(c.vendidas_14d)} vendidas en 14 días)`
                         : " · sin ventas FULL en 14 días"}
                     </span>
-                  ))}
+                  )))}
                   {h.full.grupos.ajuste && h.full.grupos.vendido && (
                     <span className="text-xs leading-[18px] text-slate-600">
                       Los ajustes de ML siguen a las ventas: no mueven lo vendible (lo muestra el libro diario de la pestaña FULL).

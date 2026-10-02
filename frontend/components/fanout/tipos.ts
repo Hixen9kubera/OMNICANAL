@@ -252,7 +252,9 @@ export type ItemTraza =
 /** El carril FULL de un SKU en su trazabilidad. */
 export interface FullSku {
   cuentas: { cuenta: string; nombre: string; stock: number; situacion: string | null; cambio: string | null;
-             vendidas_14d: number; cobertura: number | null }[];
+             vendidas_14d: number; cobertura: number | null;
+             /** La publicación FULL de esta fila la declara OTRO SKU: el número de aquí es viejo. */
+             de_otro?: { sku: string; stock: number; listing: string } | null }[];
   grupos: Partial<Record<GrupoFull, { avisos: number; piezas: number }>>;
 }
 
@@ -340,7 +342,8 @@ export interface ResumenFull {
     sin_sku_hoy: number;
     sin_sku_7d: number;
     ayer: { cuenta: string; nombre: string; dif: number; estado: EstadoCuadre }[];
-    padres: { dobles: number; pzs_dobles: number; aclarar: number; pzs_aclarar: number };
+    /** Publicaciones guardadas en dos filas y las piezas de la fila vieja que no cuenta. */
+    dobles: { publicaciones: number; piezas: number };
     tipos_nuevos: { tipo: string; n: number }[];
   };
 }

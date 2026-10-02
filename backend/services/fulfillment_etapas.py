@@ -31,7 +31,16 @@ LAS REGLAS QUE NO SE AFLOJAN
      lo de 4 a 28 días antes era de OTRO envío (arrancar al crear la orden le
      colgaba a S37015 las últimas tandas del envío anterior del mismo SKU).
   2. Termina en la siguiente orden del mismo SKU en la misma cuenta (lo que
-     llegue después es de ésa) o a los 30 días.
+     llegue después es de ésa) o a los 30 días — pero sólo CORTA una orden cuya
+     mercancía ya pudo salir: validada, o empacada en Odoo (OUT «assigned»; su
+     ventana empieza al terminar de empacarse). Una orden que sigue en bodega
+     (OUT «waiting»: reservada, sin PICK/PACK; ver la regla 7 de
+     `fulfillment_envios`) no le quita llegadas a nadie y sólo toma las que no
+     caen en la ventana de otra. Antes cortaba en la creación de la COTIZACIÓN:
+     S39639 (San Corpe) se cotizó el 25-sep, se confirmó el 30, a la fecha ni se
+     empacaba, y se quedaba con las 43 piezas de TEC-1138-VER, ORG-0585-VER y
+     TEC-0595-PLA que ML recibió de TEXCO/OUT/06483 (S38849): esa salida decía
+     «faltan» y al cerrar las habría dado por rechazadas.
   3. RECHAZO = lo enviado que no llegó cuando el envío ya CERRÓ (10 días después
      de la salida). Antes de eso es "en proceso": las tandas tardan días.
   4. Cada operación de ML cuenta UNA vez: ML reenvía avisos y la bitácora los
@@ -58,6 +67,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from services import full_publicaciones
 from services import supabase_db as sdb
 
 log = logging.getLogger("omnicanal.fulfillment_etapas")
@@ -142,20 +152,21 @@ _SQL_VENTAS = """
      group by 1, 2
 """
 
-# El stock que HOY tienen las publicaciones FULL de cada cuenta. Cuadra con ML:
-# medido el 18-sep, 1,010 publicaciones FULL de Kubera contra 996 que da su API
-# y 867 de San Corpe contra 866.
-_SQL_STOCK_FULL = """
-    select a.legacy_code cuenta,
-           count(*) publicaciones,
-           count(*) filter (where coalesce(l.stock_full, 0) = 0) en_cero,
-           count(*) filter (where coalesce(l.stock_full, 0) > 0) con_stock,
-           coalesce(sum(l.stock_full), 0)::int piezas,
-           max(l.updated_at) al
-      from channel.listings l join core.accounts a on a.id = l.account_id
-     where a.legacy_code in ('BEKURA', 'SANCORFASHION')
-       and l.canal = 'mercado_libre' and l.is_fulfillment
-     group by 1
+# El stock que HOY tienen las publicaciones FULL de cada cuenta: UNA fila por
+# publicación (`full_publicaciones`: la del SKU que la publicación declara). Antes
+# sumaba todas las filas y una publicación guardada en dos —su SKU y el padre o un
+# hermano mal escrito— contaba dos veces: 17,620 pzs el 2-oct contra 15,133 de
+# verdad (83 publicaciones, 2,487 pzs de filas viejas).
+_SQL_STOCK_FULL = full_publicaciones.CTE + """
+    select cuenta,
+           count(*) filter (where cuenta_fila) publicaciones,
+           count(*) filter (where cuenta_fila and st = 0) en_cero,
+           count(*) filter (where cuenta_fila and st > 0) con_stock,
+           coalesce(sum(st) filter (where cuenta_fila), 0)::int piezas,
+           count(*) filter (where not cuenta_fila) filas_duplicadas,
+           coalesce(sum(st) filter (where not cuenta_fila), 0)::int piezas_duplicadas,
+           max(updated_at) al
+      from h group by cuenta
 """
 
 # FBA: sólo lo DISPONIBLE (lo reservado y lo que va en camino no se guarda).
@@ -209,12 +220,27 @@ def _ts(etapa: dict | None) -> datetime | None:
     return datetime.fromisoformat(etapa["ts"]) if etapa and etapa.get("ts") else None
 
 
+def _corta(e: dict[str, Any]) -> bool:
+    """¿La mercancía de esta orden ya pudo salir? Validada o empacada (regla 2):
+    desde su inicio, lo que llega del SKU es suyo y no de la orden anterior."""
+    return e.get("estado_odoo") in ("done", "assigned")
+
+
+def _iso_dt(valor: str | None) -> datetime | None:
+    return datetime.fromisoformat(valor) if valor else None
+
+
 def _inicio(e: dict[str, Any]) -> datetime | None:
-    """Desde cuándo una llegada puede ser de este envío (regla 1 del encabezado)."""
+    """Desde cuándo una llegada puede ser de este envío (reglas 1 y 2 del encabezado)."""
     creada, salida = _ts(e["etapas"][0]), _ts(e["etapas"][1])
     if salida:
         tope = salida - timedelta(days=DIAS_ADELANTO)
         return max(creada, tope) if creada else tope
+    if e.get("estado_odoo") == "assigned":
+        # Empacada y sin validar: puede ir en camino desde que terminó de empacarse.
+        lista = _iso_dt(e.get("empacada")) or _iso_dt(e.get("confirmada"))
+        if lista:
+            return max(creada, lista) if creada else lista
     return creada
 
 
@@ -243,11 +269,16 @@ def _aplicar_meli(envios: list[dict[str, Any]], datos: dict[str, Any], ahora: da
     for e in envios:
         codigo = _codigo(e["canal"], e.get("cuenta"))
         ini = _inicio(e)
-        if e["canal"] == "meli" and codigo and ini:
+        if e["canal"] == "meli" and codigo and ini and _corta(e):
             for r in e["lineas"]:
                 inicios[(codigo, r["sku"])].append(ini)
     for v in inicios.values():
         v.sort()
+    # Las ventanas de las órdenes que ya pudieron salir, por (cuenta, SKU): lo que
+    # cae en una es de ella, y una orden que sigue en bodega no lo toma (regla 2).
+    ventanas: dict[tuple[str, str], list[tuple[datetime, datetime]]] = {
+        k: [(x, min([y for y in v if y > x] + [x + timedelta(days=DIAS_LLEGADA)])) for x in v]
+        for k, v in inicios.items()}
 
     sin_sku = {c: datos["avisos"].get(("?", c), ([], [])) for c in ("BEKURA", "SANCORFASHION")}
 
@@ -264,18 +295,27 @@ def _aplicar_meli(envios: list[dict[str, Any]], datos: dict[str, Any], ahora: da
 
         primeras: list[datetime] = []
         vendio: list[Any] = []
+        corta = _corta(e)
         for r in e["lineas"]:
-            sig = [x for x in inicios[(codigo, r["sku"])] if x > ini]
+            k = (codigo, r["sku"])
+            sig = [x for x in inicios[k] if x > ini] if corta else []
             fin = min(sig + [ini + timedelta(days=DIAS_LLEGADA)])
             fechas, piezas = datos["avisos"].get((r["sku"], codigo), ([], []))
             i0, i1 = bisect.bisect_left(fechas, ini), bisect.bisect_left(fechas, fin)
-            llegadas = int(sum(piezas[i0:i1]))
+            if corta:
+                fs, ps = fechas[i0:i1], piezas[i0:i1]
+            else:
+                # Sigue en bodega: sólo lo que no es de una orden que ya pudo salir.
+                ajenas = ventanas.get(k, [])
+                sel = [j for j in range(i0, i1) if not any(a <= fechas[j] < b for a, b in ajenas)]
+                fs, ps = [fechas[j] for j in sel], [piezas[j] for j in sel]
+            llegadas = int(sum(ps))
             r["llegadas"] = llegadas
-            if i1 > i0:
-                r["llegada"] = fechas[i0].isoformat()
-                r["llegada_ultima"] = fechas[i1 - 1].isoformat()
-                primeras.append(fechas[i0])
-                d = _venta_desde(datos["ventas"].get((r["sku"], codigo), []), fechas[i0])
+            if fs:
+                r["llegada"] = fs[0].isoformat()
+                r["llegada_ultima"] = fs[-1].isoformat()
+                primeras.append(fs[0])
+                d = _venta_desde(datos["ventas"].get((r["sku"], codigo), []), fs[0])
                 if d:
                     vendio.append(d)
                     r["primera_venta"] = d.isoformat()
@@ -285,7 +325,7 @@ def _aplicar_meli(envios: list[dict[str, Any]], datos: dict[str, Any], ahora: da
                 # en FULL, una venta pudo salir de ésas.
                 dias_v, unid_v = datos.get("ventas_unidades", {}).get((r["sku"], codigo), ([], []))
                 hasta_v = min(sig + [ahora]).astimezone(_CDMX).date()
-                j0 = bisect.bisect_left(dias_v, fechas[i0].astimezone(_CDMX).date())
+                j0 = bisect.bisect_left(dias_v, fs[0].astimezone(_CDMX).date())
                 j1 = bisect.bisect_left(dias_v, hasta_v)
                 tope = min(llegadas, int((r.get("enviadas") if hecha else r["pedidas"]) or llegadas))
                 r["vendidas"] = min(int(sum(unid_v[j0:j1])), tope)
@@ -295,7 +335,7 @@ def _aplicar_meli(envios: list[dict[str, Any]], datos: dict[str, Any], ahora: da
             # (La última tanda no sirve: los «+N» de ML llegan días después.)
             if hecha and enviadas and llegadas >= enviadas:
                 acumulado = 0
-                for t, n in zip(fechas[i0:i1], piezas[i0:i1]):
+                for t, n in zip(fs, ps):
                     acumulado += n
                     if acumulado >= enviadas:
                         r["completo_en"] = t.isoformat()

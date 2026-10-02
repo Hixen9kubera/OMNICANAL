@@ -27,7 +27,7 @@ import threading
 import time
 from typing import Any
 
-from services import fanout_full
+from services import fanout_full, full_publicaciones
 from services import supabase_db as sdb
 
 log = logging.getLogger("omnicanal.fanout_vivo")
@@ -1246,7 +1246,7 @@ def historia(sku: str, dias: int = 14, limite: int = 400) -> dict[str, Any]:
         {"z": _ZONA, "s": sku, "c": rep, "f": _CAMPOS_TRAZA + ["stock_full"], "d": dias})
     lst = sdb.fetch_all(
         """select l.sku::text as sku, l.canal, a.legacy_code as cuenta, l.status, l.situacion,
-                  l.stock_own, l.stock_full, l.is_fulfillment, l.logistic_type, l.updated_at,
+                  l.stock_own, l.stock_full, l.is_fulfillment, l.logistic_type, l.updated_at, l.listing_id,
                   to_char(l.updated_at at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as act
              from channel.listings l left join core.accounts a on a.id = l.account_id
             where l.sku = %(s)s and l.canal = any(%(c)s)""", {"z": _ZONA, "s": sku, "c": rep})
@@ -1397,14 +1397,29 @@ def _full_de(sku: str, filas: list[dict], avisos: list[dict]) -> dict[str, Any] 
         """select upper(cuenta) as cuenta, sum(units_sold) as u from channel.sales_daily_completa
             where sku = %(s)s and is_full and date >= (now() at time zone %(z)s)::date - 14
             group by 1""", {"s": sku, "z": _ZONA})}
+    # La fila que cuenta de cada publicación (`full_publicaciones`): si la de este SKU
+    # no es, la publicación declara OTRO SKU y este número es viejo.
+    lids = sorted({str(f["listing_id"]) for f in filas if f.get("listing_id")})
+    duenas = {(r["cuenta"], r["listing_id"]): r for r in sdb.fetch_all(
+        full_publicaciones.CTE + """
+        select cuenta, listing_id, sku, st from h where cuenta_fila and listing_id = any(%(l)s)""",
+        {"l": lids})} if lids else {}
     cuentas = []
     for c, nombre in fanout_full.CUENTAS.items():
         fl = [f for f in filas if (f.get("cuenta") or "").upper() == c]
         if not fl and not ventas.get(c) and not any(a["cuenta"] == c for a in avisos):
             continue
-        stock = sum(int(f.get("stock_full") or 0) for f in fl)
+        de_otro = None
+        propias = []
+        for f in fl:
+            d = duenas.get((c, str(f.get("listing_id") or "")))
+            if d and str(d["sku"]).upper() != sku.upper():
+                de_otro = {"sku": d["sku"], "stock": int(d["st"] or 0), "listing": f["listing_id"]}
+            else:
+                propias.append(f)
+        stock = sum(int(f.get("stock_full") or 0) for f in propias)
         u = ventas.get(c, 0)
-        cuentas.append({"cuenta": c, "nombre": nombre, "stock": stock,
+        cuentas.append({"cuenta": c, "nombre": nombre, "stock": stock, "de_otro": de_otro,
                         "situacion": _estado_traza("mercado_libre", fl[0]["situacion"]) if fl else None,
                         "cambio": fl[0]["act"] if fl else None, "vendidas_14d": u,
                         "cobertura": round(stock / (u / 14), 1) if u else None})

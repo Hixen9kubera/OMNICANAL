@@ -1004,6 +1004,7 @@ function alertasDe(renglones: Renglon[], datos: PropuestaFull | null) {
     reciclado: (r) => `el título del marketplace («${(r.titulo_mkt ?? "").slice(0, 60)}») no se parece al de Odoo («${(r.nombre_odoo ?? r.nombre ?? "").slice(0, 60)}»)`,
     medidas: () => "caja master sospechosa: peso ≤ 0.5 kg con medidas ~60×41×41",
     cerrada_en_ml: () => "la publicación está cerrada o inactiva en Mercado Libre",
+    publicacion_de_otro_sku: (r) => `su publicación ${r.listing_id ?? ""} la declara Mercado Libre como ${r.sku_publicacion ?? "otro SKU"}: el stock FULL se cuenta allá y aquí va en 0`,
   };
   const salida: { tienda: string; tienda_llave: Tienda; sku: string; tipo: string; detalle: string }[] =
     renglones.flatMap((r) => r.alertas.map((a) => ({

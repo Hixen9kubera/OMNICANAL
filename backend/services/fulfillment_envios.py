@@ -51,6 +51,22 @@ docs/FULLFILMENT_EVIDENCIA_ORDENES.md.
    es lo que bodega no tuvo (Odoo cancela el renglón al validar sin pendiente y
    la orden queda con Entregado = 0). En una salida abierta, un cancelado es un
    renglón que la KAM quitó y no se pide.
+
+7. EL FLUJO EN ODOO (TEXCO, 3 pasos; medido el 2-oct-2026 con S38849 y S39639):
+     cotización (la KAM la captura; `create_date` de la orden — S39639 el 25-sep)
+       → CONFIRMADA (`date_order`, 30-sep): Odoo crea PICK, PACK y OUT y el PICK
+         RESERVA el stock (por eso baja `free_qty` y, con él, Woo)
+       → PICK hecho (recolectar) → PACK hecho (empacar, la mercancía queda en Salida;
+         el OUT pasa de «waiting» a «assigned»)
+       → OUT validado (`date_done`).
+   Una salida «waiting» todavía no sale: espera su PICK/PACK. Una «assigned» ya está
+   empacada y puede ir en el camión aunque bodega no la valide (S38849 se empacó el
+   24-sep, ML recibió desde el 26 y el OUT se validó el 29). Por eso cada salida
+   lleva `fase`, `confirmada` (la creación del OUT = la confirmación) y `empacada`
+   (el último PICK/PACK hecho de su orden): `fulfillment_etapas` decide con eso
+   desde cuándo una llegada puede ser suya. Ojo: en 3 de 22 salidas medidas bodega
+   validó PICK, PACK y OUT juntos DESPUÉS de que ML recibió; el empaque en Odoo no
+   es la hora del camión, igual que la validación (regla 4).
 """
 from __future__ import annotations
 
@@ -194,8 +210,13 @@ def _estado(canal: str, hecha: bool, numero: str | None) -> str:
     return "salio"
 
 
-def _leer_odoo() -> tuple[list[dict], dict[int, dict], list[dict]]:
-    """Las tres lecturas. BLOQUEANTE (XML-RPC): llamar con asyncio.to_thread."""
+# El estado del OUT en Odoo → en qué va la salida (regla 7).
+FASES = {"draft": "borrador", "waiting": "en_bodega", "confirmed": "sin_existencias",
+         "assigned": "empacada", "done": "validada"}
+
+
+def _leer_odoo() -> tuple[list[dict], dict[int, dict], list[dict], list[dict]]:
+    """Las cuatro lecturas. BLOQUEANTE (XML-RPC): llamar con asyncio.to_thread."""
     uid = odoo._uid()
     if not uid:
         raise RuntimeError("Odoo no autenticó")
@@ -231,12 +252,24 @@ def _leer_odoo() -> tuple[list[dict], dict[int, dict], list[dict]]:
         [["picking_id", "in", [p["id"] for p in pickings]]],
         ["picking_id", "product_id", "product_qty", "quantity", "state"],
     ) if pickings else []
-    return pickings, ordenes, movs
+    # Los PICK/PACK ya hechos de las mismas órdenes: cuándo quedó empacada cada una.
+    internos = sr(
+        "stock.picking",
+        [["sale_id", "in", so_ids], ["picking_type_id.code", "=", "internal"], ["state", "=", "done"]],
+        ["sale_id", "date_done"],
+    ) if so_ids else []
+    return pickings, ordenes, movs, internos
 
 
-def armar(pickings: list[dict], ordenes: dict[int, dict], movs: list[dict]) -> dict[str, Any]:
+def armar(pickings: list[dict], ordenes: dict[int, dict], movs: list[dict],
+          internos: list[dict] | None = None) -> dict[str, Any]:
     """Clasifica y arma la respuesta. Función pura: se prueba sin Odoo."""
     hechas = {p["id"] for p in pickings if p["state"] == "done"}
+    empacada: dict[int, str] = {}
+    for p in internos or []:
+        so, hecho = _id(p.get("sale_id")), p.get("date_done")
+        if so and hecho and hecho > empacada.get(so, ""):
+            empacada[so] = hecho
     lineas: dict[int, dict[str, dict[str, Any]]] = {}
     for mv in movs:
         pid = _id(mv["picking_id"])
@@ -282,6 +315,11 @@ def armar(pickings: list[dict], ordenes: dict[int, dict], movs: list[dict]) -> d
             "salida": p["name"],
             "almacen": _nombre(p["picking_type_id"]).split(":")[0] or None,
             "estado_odoo": p["state"],
+            # Regla 7: en qué va la salida, cuándo se confirmó (nace el OUT) y
+            # cuándo terminó de empacarse su orden (último PICK/PACK hecho).
+            "fase": FASES.get(p["state"], p["state"]),
+            "confirmada": _iso(p.get("create_date")),
+            "empacada": _iso(empacada.get(_id(p["sale_id"]))) if _id(p["sale_id"]) else None,
             "canal": canal,
             "cuenta": cuenta,
             "cuenta_regla": regla,
@@ -379,8 +417,8 @@ def resumir(envios: list[dict[str, Any]]) -> dict[str, Any]:
 
 def leer() -> dict[str, Any]:
     """BLOQUEANTE. El router la corre en un hilo."""
-    pickings, ordenes, movs = _leer_odoo()
-    datos = armar(pickings, ordenes, movs)
+    pickings, ordenes, movs, internos = _leer_odoo()
+    datos = armar(pickings, ordenes, movs, internos)
     # Las tres etapas que kubera sí puede llenar (recibido observado, activo y
     # 1ª venta). Si kubera no contesta, quedan en `null` y la pestaña lo dice.
     datos["etapas_kubera"] = fulfillment_etapas.enriquecer(datos["envios"])

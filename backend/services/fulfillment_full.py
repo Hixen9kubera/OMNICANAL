@@ -84,6 +84,7 @@ import httpx
 from config import settings
 from services import fulfillment_envios as fenv
 from services import fulfillment_semana as fsem
+from services import full_publicaciones
 from services import odoo_ventas
 from services import supabase_db as sdb
 
@@ -313,11 +314,19 @@ def _publicaciones() -> dict[str, dict[str, dict[str, Any]]]:
     """{tienda: {sku: publicación}}. Walmart viene de su API EN VIVO."""
     salida: dict[str, dict[str, dict[str, Any]]] = {t: {} for t in TIENDAS}
     tienda_de = {d["codigo"]: t for t, d in TIENDAS.items()}
+    # Las filas FULL que NO cuentan: la publicación la declara otro SKU y el número
+    # de esta fila es viejo (`full_publicaciones`). Sin kubera para medirlo, ninguna.
+    try:
+        ajenas = {(f["cuenta"], f["sku"]): f["declarada"] for f in sdb.fetch_all(full_publicaciones.SQL_DUPLICADAS)}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("planeación: no se pudieron medir las filas duplicadas de FULL (%s)", exc)
+        ajenas = {}
     for f in sdb.fetch_all(_SQL_PUBLICACIONES):
         t = tienda_de.get(f["codigo"])
         if not t:
             continue
         f["stock"] = f["stock_fba"] if t == "amazon" else f["stock_full"]
+        f["declarada"] = ajenas.get((f["codigo"], f["sku"]))
         f["categoria"] = f.get("category_id") or f.get("product_type")
         f["precio"] = _precio(f.get("price"))
         # Una publicación por SKU y cuenta (medido); si hubiera dos, gana la que
@@ -658,7 +667,12 @@ def _fila(tienda: str, sku: str, venta: dict | None, pub: dict | None, vivo: dic
           nombre: str | None, medidas: dict | None) -> dict[str, Any]:
     """Un renglón de la planeación: los INSUMOS. La cantidad la decide proponer.ts."""
     stock = pub.get("stock") if pub else None
-    if vivo and vivo.get("logistica") == "fulfillment" and vivo.get("stock") is not None:
+    # La publicación de esta fila la declara OTRO SKU: su stock FULL (el del sync o
+    # el que ML diga en vivo) es de ese SKU, no de éste. Contarlo aquí lo duplicaba.
+    ajena = (pub or {}).get("declarada")
+    if ajena:
+        stock = 0
+    elif vivo and vivo.get("logistica") == "fulfillment" and vivo.get("stock") is not None:
         # ML en vivo manda sobre la copia del sync: el `available_quantity` de una
         # publicación FULL es lo que hay en FULL ahora. De una que NO es FULL es el
         # stock propio del vendedor, así que ahí se queda lo del sync (0 en FULL).
@@ -679,10 +693,13 @@ def _fila(tienda: str, sku: str, venta: dict | None, pub: dict | None, vivo: dic
     estado_vivo = (vivo or {}).get("estado")
     if estado_vivo in ("closed", "inactive"):
         alertas.append("cerrada_en_ml")
+    if ajena:
+        alertas.append("publicacion_de_otro_sku")
     return {
         "tienda": tienda, "sku": sku, "nombre": nombre or (producto or {}).get("name"),
         "product_id": (producto or {}).get("id"),
         "publicada": pub is not None, "listing_id": (pub or {}).get("listing_id"), "url": (pub or {}).get("url"),
+        "sku_publicacion": ajena,
         "situacion": estado_vivo or (pub or {}).get("situacion"),
         "en_almacen": bool((vivo or {}).get("logistica") == "fulfillment") if vivo else (pub or {}).get("en_almacen"),
         "verificada": vivo is not None, "titulo_mkt": titulo, "nombre_odoo": nombre_odoo,

@@ -32,6 +32,12 @@ import type { Envio, EnvioConLineas, LineaOdoo } from "./tipos";
 
 const POR_PAGINA = 40;
 
+/** En qué va una salida abierta en Odoo (el estado de su OUT). */
+const FASE_TXT: Record<string, string> = {
+  borrador: "borrador", en_bodega: "en bodega · aún no sale", sin_existencias: "esperando existencias",
+  empacada: "empacada · lista para salir", validada: "validada",
+};
+
 /** El estado de un envío como lo pregunta quien lo sigue: ¿ya salió? ¿llegó? ¿llegó todo? */
 export type EstadoSeguimiento = "por_validar" | "llegando" | "completo" | "no_recibio" | "sin_medir";
 
@@ -152,6 +158,12 @@ export function TablaEnvios({
                     <div className="font-mono text-sm font-extrabold tabular-nums text-slate-900">
                       {e.piezas === null ? <span className="text-amber-700">abierta</span> : num(e.piezas)}
                     </div>
+                    {e.piezas === null && e.fase && FASE_TXT[e.fase] && (
+                      <div className="text-[11px] font-semibold text-amber-700"
+                           title="El estado de la salida (OUT) en Odoo: en bodega = espera su recolección y empaque; empacada = lista en Salida, puede ir en el camión aunque bodega no la valide.">
+                        {FASE_TXT[e.fase]}
+                      </div>
+                    )}
                     <div className="text-[11px] text-slate-400">
                       de {num(e.pedidas)} pedidas{e.n_skus ? ` · ${e.n_skus} SKUs` : ""}
                     </div>
@@ -403,7 +415,7 @@ export function DetalleEnvioModal({ envio: base, onCerrar }: { envio: Envio; onC
       <div className="rounded-b-2xl border-t border-slate-100 bg-slate-50/60 px-6 py-3">
         <dl className="grid gap-x-6 gap-y-1 text-[11.5px] sm:grid-cols-2 lg:grid-cols-3">
           <Dato t="Orden de venta" v={`${e.orden ?? "—"} · ${e.kam ?? "—"} · ${fecha(e.etapas[0])}`} />
-          <Dato t="Salida" v={`${e.salida ?? "—"} · ${e.estado_odoo ?? "—"}${hecha ? ` · ${fecha(e.etapas[1])}` : ""}`} />
+          <Dato t="Salida" v={`${e.salida ?? "—"} · ${(e.fase && FASE_TXT[e.fase]) || e.estado_odoo || "—"}${hecha ? ` · ${fecha(e.etapas[1])}` : ""}${!hecha && e.empacada ? ` · empacada ${fecha({ ts: e.empacada })}` : ""}`} />
           <Dato t="Socio" v={`«${e.socio ?? "—"}»`} />
           <Dato t="Referencia en Odoo" v={e.referencia ? `«${e.referencia}»` : "vacía"} />
           <Dato t="Número de envío" v={e.envio ? `${e.envio} (de ${e.envio_origen === "socio" ? "el socio" : "la referencia"})` : "no hay"} />
@@ -411,8 +423,9 @@ export function DetalleEnvioModal({ envio: base, onCerrar }: { envio: Envio; onC
         </dl>
         <p className="mt-2 text-[10.5px] text-slate-400">
           {avisos
-            ? <>Llegaron = avisos de FULL de Mercado Libre (webhook fbm_stock_operations) de esta cuenta, por SKU, desde que
-                se creó la orden hasta la siguiente orden del mismo SKU. Diez días después de la salida, lo que falta se
+            ? <>Llegaron = avisos de FULL de Mercado Libre (webhook fbm_stock_operations) de esta cuenta, por SKU, desde 4 días
+                antes de que bodega valide la salida (o desde que se empacó, si sigue abierta) hasta la siguiente salida del mismo
+                SKU que ya pudo salir. Una salida que sigue en bodega no le quita llegadas a la anterior. Diez días después de la salida, lo que falta se
                 cuenta como no recibido por ML; lo que llega de más (+N) es ML moviendo piezas entre sus bodegas. Lo
                 declarado y los motivos de rechazo sólo viven en su panel.</>
             : <>Llegó, activo y 1ª venta son observados por nuestro sync (~ = hora en que se vio): {porQue}.</>}

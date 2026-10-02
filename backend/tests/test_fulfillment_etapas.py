@@ -40,9 +40,11 @@ CERRADO = SALIDA + timedelta(days=fe.DIAS_CIERRE + 1)
 ABIERTO = SALIDA + timedelta(days=2)
 
 
-def _envio(skus=("A", "B"), enviadas=10, orden=ORDEN, validada=SALIDA, cuenta="Kubera", canal="meli"):
+def _envio(skus=("A", "B"), enviadas=10, orden=ORDEN, validada=SALIDA, cuenta="Kubera", canal="meli",
+           estado=None, empacada=None):
     return {
-        "canal": canal, "cuenta": cuenta, "estado_odoo": "done" if validada else "waiting",
+        "canal": canal, "cuenta": cuenta, "estado_odoo": estado or ("done" if validada else "waiting"),
+        "empacada": empacada.isoformat() if empacada else None,
         "etapas": [{"ts": orden.isoformat()},
                    {"ts": validada.isoformat()} if validada else None, None, None, None],
         "lineas": [{"sku": s, "nombre": s, "pedidas": 10,
@@ -131,6 +133,35 @@ class LlegadaPorAvisos(unittest.TestCase):
         fe.aplicar([e1, e2], _datos(avisos=avisos), ahora=orden2 + timedelta(days=20))
         self.assertEqual(e1["lineas"][0]["llegadas"], 10, "lo del día 12 es de la segunda orden")
         self.assertEqual(e2["lineas"][0]["llegadas"], 10)
+
+    def test_una_orden_en_bodega_no_le_quita_llegadas_a_la_anterior(self):
+        # S39639 (cotizada antes, todavía en bodega) contra TEXCO/OUT/06483 (S38849): lo que ML
+        # recibió de la salida validada es suyo aunque la otra orden ya existiera.
+        e1 = _envio(skus=("A",))
+        e2 = _envio(skus=("A",), orden=SALIDA - timedelta(days=1), validada=None)        # «waiting»
+        avisos = {("A", "BEKURA"): _aviso((SALIDA + timedelta(days=1), 6), (SALIDA + timedelta(days=3), 4))}
+        fe.aplicar([e1, e2], _datos(avisos=avisos), ahora=CERRADO)
+        self.assertEqual((e1["lineas"][0]["llegadas"], e1["lineas"][0]["estado_llegada"]), (10, "completo"))
+        self.assertEqual(e2["lineas"][0]["llegadas"], 0, "en bodega: su mercancía no ha salido")
+
+    def test_una_orden_empacada_corta_desde_que_se_empaco(self):
+        e1 = _envio(skus=("A",), enviadas=20)
+        empaque = SALIDA + timedelta(days=2)
+        e2 = _envio(skus=("A",), orden=SALIDA - timedelta(days=1), validada=None, estado="assigned", empacada=empaque)
+        avisos = {("A", "BEKURA"): _aviso((SALIDA + timedelta(days=1), 6), (empaque + timedelta(days=1), 4))}
+        fe.aplicar([e1, e2], _datos(avisos=avisos), ahora=CERRADO)
+        self.assertEqual(e1["lineas"][0]["llegadas"], 6, "lo de antes del empaque es de la anterior")
+        self.assertEqual((e2["lineas"][0]["llegadas"], e2["lineas"][0]["estado_llegada"]), (4, "llegando"))
+
+    def test_en_bodega_toma_lo_que_nadie_reclama(self):
+        e1 = _envio(skus=("A",))
+        e2 = _envio(skus=("A", "B"), orden=SALIDA, validada=None)
+        avisos = {("A", "BEKURA"): _aviso((SALIDA + timedelta(days=1), 10)),
+                  ("B", "BEKURA"): _aviso((SALIDA + timedelta(days=1), 3))}
+        fe.aplicar([e1, e2], _datos(avisos=avisos), ahora=CERRADO)
+        a, b = e2["lineas"]
+        self.assertEqual((a["llegadas"], b["llegadas"]), (0, 3), "A es de la salida validada; B no la reclama nadie")
+        self.assertEqual(b["estado_llegada"], "llegando")
 
     def test_llegar_de_mas_se_topa_a_lo_enviado(self):
         e = _envio(skus=("A",))

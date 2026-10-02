@@ -114,6 +114,34 @@ class Numero(unittest.TestCase):
         self.assertIsNone(fe.numero_envio("amazon", None, "AMAZON")[0])
 
 
+class FaseYEmpaque(unittest.TestCase):
+    """Regla 7: en qué va cada salida y cuándo terminó de empacarse su orden."""
+
+    def test_fase_confirmada_y_empacada(self):
+        pickings = [_picking(1, "FULL", 39639, estado="waiting"), _picking(2, "FULL", 38849),
+                    _picking(3, "FULL", 39846, estado="assigned")]
+        ordenes = {o["id"]: o for o in [_orden(39639, 152, "Thalia", ""),
+                                         _orden(38849, 152, "Thalia", "Envío #70165348"),
+                                         _orden(39846, 152, "Thalia", "")]}
+        movs = [_mov(1, "TEC-1138-VER", 23, 0, estado="waiting"), _mov(2, "TEC-1138-VER", 30, 30),
+                _mov(3, "ORG-1", 5, 0, estado="assigned")]
+        internos = [{"sale_id": [38849, "S38849"], "date_done": "2026-09-24 21:46:01"},
+                    {"sale_id": [38849, "S38849"], "date_done": "2026-09-24 22:02:10"},
+                    {"sale_id": [39846, "S39846"], "date_done": "2026-10-01 18:00:00"}]
+        por = {e["orden"]: e for e in fe.armar(pickings, ordenes, movs, internos)["envios"]}
+        self.assertEqual(por["S39639"]["fase"], "en_bodega")
+        self.assertIsNone(por["S39639"]["empacada"], "sin PICK/PACK hecho: no se ha empacado")
+        self.assertEqual(por["S38849"]["fase"], "validada")
+        self.assertEqual(por["S38849"]["empacada"], "2026-09-24T22:02:10+00:00", "el último PICK/PACK hecho")
+        self.assertEqual(por["S39846"]["fase"], "empacada")
+        self.assertEqual(por["S39846"]["confirmada"], "2026-06-18T06:27:58+00:00", "el OUT nace al confirmar")
+
+    def test_sin_internos_no_rompe(self):
+        d = fe.armar([_picking(1, "FULL", 1, estado="waiting")], {1: _orden(1, 153, "Cinthya", "")},
+                     [_mov(1, "A", 1, 0, estado="waiting")])
+        self.assertIsNone(d["envios"][0]["empacada"])
+
+
 class Armar(unittest.TestCase):
     def setUp(self):
         self.pickings = [

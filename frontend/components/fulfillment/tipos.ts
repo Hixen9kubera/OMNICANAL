@@ -83,6 +83,11 @@ export interface Envio {
   salida?: string;
   almacen?: string | null;
   estado_odoo?: string;
+  /** En qué va la salida en Odoo: el OUT espera su PICK/PACK («en_bodega»), ya está empacada, o se validó. */
+  fase?: "borrador" | "en_bodega" | "sin_existencias" | "empacada" | "validada" | string;
+  /** Cuándo nació el OUT (= cuándo se confirmó la orden) y cuándo terminó de empacarse su orden. */
+  confirmada?: string | null;
+  empacada?: string | null;
   /** Número del envío en el marketplace, ya normalizado (sin «Envío #»). */
   envio: string | null;
   /** De dónde salió el número: lo tecleó la KAM en la referencia o está en el socio. */
@@ -242,7 +247,7 @@ export interface RespuestaEnvios {
 export type Tienda = "meli:Kubera" | "meli:San Corpe" | "amazon" | "walmart";
 export const TIENDAS: Tienda[] = ["meli:Kubera", "meli:San Corpe", "amazon", "walmart"];
 
-export type AlertaFila = "sin_categoria" | "reciclado" | "medidas" | "cerrada_en_ml";
+export type AlertaFila = "sin_categoria" | "reciclado" | "medidas" | "cerrada_en_ml" | "publicacion_de_otro_sku";
 
 /** Un SKU publicado en una tienda: los INSUMOS; la cantidad la calcula `proponer.ts`. */
 export interface FilaPlan {
@@ -254,6 +259,8 @@ export interface FilaPlan {
   publicada: boolean;
   listing_id: string | null;
   url: string | null;
+  /** La publicación de esta fila la declara OTRO SKU (su stock FULL se cuenta allá; aquí va en 0). */
+  sku_publicacion?: string | null;
   situacion: string | null;
   /** La publicación ya es FULL/FBA. null = no se sabe. */
   en_almacen: boolean | null;

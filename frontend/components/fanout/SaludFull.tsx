@@ -104,9 +104,9 @@ export default function SaludFull({ d, camino }: { d: ResumenFull; camino: Camin
         {camino && !camino.ok && (
           <Renglon punto="ojo" titulo="Sin lectura de Odoo" texto={camino.motivo ?? "No contestó; se reintenta en 5 minutos."} />
         )}
-        {s.padres.dobles + s.padres.aclarar > 0 && (
-          <Renglon punto="ojo" titulo="Filas padre fuera del total"
-            texto={`${n(s.padres.pzs_dobles)} pzs se contaban dos veces (${n(s.padres.dobles)} publicaciones con variantes); en otras ${n(s.padres.aclarar)} el padre no cuadra con sus hijas (${n(s.padres.pzs_aclarar)} pzs por aclarar).`} />
+        {s.dobles.publicaciones > 0 && (
+          <Renglon punto="ojo" titulo={`${n(s.dobles.publicaciones)} publicaciones guardadas en dos filas`}
+            texto={`Su SKU y el padre o un hermano mal escrito. Cuenta sólo la del SKU que declara Mercado Libre; la otra trae un número viejo (${n(s.dobles.piezas)} pzs fuera del total).`} />
         )}
         {s.tipos_nuevos.map((t) => (
           <Renglon key={t.tipo} punto="mal" titulo={`Tipo de aviso nuevo: ${t.tipo}`}

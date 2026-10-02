@@ -13,10 +13,10 @@ SOLO LEE. Fuentes:
     resolvió `services/stock_full.py`, con tipo y piezas al inicio de `resultado`
     («SALE_CONFIRMATION x-1: …»). ML reenvía avisos: cada operación (su id va en
     `item_id`) cuenta UNA vez.
-  · `channel.listings`: el stock FULL que lee el sync (`stock_full`). Una
-    publicación con variantes trae la fila del PADRE además de las hijas y el
-    padre repite la suma: se excluye (2-oct: 795 pzs contadas dos veces en 49
-    publicaciones; en otras 30 el padre no cuadra con sus hijas y se reporta).
+  · `channel.listings`: el stock FULL que lee el sync (`stock_full`), UNA fila por
+    publicación (`full_publicaciones`): 83 publicaciones viven en dos filas —su SKU
+    y el padre o un hermano mal escrito— y sólo la del SKU que declara ML trae el
+    número de verdad (verificado contra la API el 2-oct: 2,487 pzs de filas viejas).
   · `channel.listing_history` (campo `stock_full`): la FOTO del sync, día por día.
   · Las salidas de Odoo a FULL salen del caché de `/api/fulfillment/envios`
     (`fulfillment_envios.leer`, XML-RPC) y se piden APARTE (`camino`): Odoo tarda
@@ -40,6 +40,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from services import full_publicaciones
 from services import supabase_db as sdb
 
 log = logging.getLogger("omnicanal.fanout_full")
@@ -219,46 +220,24 @@ _SQL_AVISOS = r"""
      order by coalesce(item_id, id::text), ts
 """
 
-# Las filas FULL y cuáles son el PADRE de una publicación con variantes: el que
-# tiene, en la misma publicación, una hija cuyo SKU empieza con el suyo y un guion.
-# Va con un JOIN por (cuenta, publicación) y no con un EXISTS correlacionado: así
-# tarda décimas y no segundos.
-_CTE_FULL = r"""
-    with f as (select upper(a.legacy_code) as cuenta, l.listing_id, l.sku::text as sku, l.situacion,
-                      coalesce(l.stock_full, 0) as st, l.updated_at, l.account_id
-                 from channel.listings l join core.accounts a on a.id = l.account_id
-                where l.canal = 'mercado_libre' and l.is_fulfillment
-                  and a.legacy_code in ('BEKURA', 'SANCORFASHION')),
-         pad as (select distinct p.cuenta, p.account_id, p.listing_id, p.sku
-                   from f p join f c on c.cuenta = p.cuenta and c.listing_id = p.listing_id
-                  where c.sku <> p.sku and c.sku like p.sku || '-%%'),
-         h as (select f.*, (pad.sku is not null) as es_padre
-                 from f left join pad on pad.cuenta = f.cuenta and pad.listing_id = f.listing_id
-                                     and pad.sku = f.sku)
-"""
+# Las filas FULL y cuál cuenta de cada publicación (`full_publicaciones`: la del
+# SKU que la publicación declara; las otras son el padre o un hermano con un número viejo).
+_CTE_FULL = full_publicaciones.CTE
 
 _SQL_STOCK = _CTE_FULL + r"""
     select cuenta,
-           coalesce(sum(st) filter (where not es_padre and situacion = 'active'), 0)::int as piezas,
-           count(distinct listing_id) filter (where not es_padre and situacion = 'active' and st > 0) as publicaciones,
-           count(*) filter (where not es_padre and situacion = 'active' and st > 0) as skus,
-           coalesce(sum(st) filter (where not es_padre and situacion <> 'active'), 0)::int as piezas_no_activas,
+           coalesce(sum(st) filter (where cuenta_fila and situacion = 'active'), 0)::int as piezas,
+           count(distinct listing_id) filter (where cuenta_fila and situacion = 'active' and st > 0) as publicaciones,
+           count(*) filter (where cuenta_fila and situacion = 'active' and st > 0) as skus,
+           coalesce(sum(st) filter (where cuenta_fila and situacion <> 'active'), 0)::int as piezas_no_activas,
+           -- Las publicaciones en dos filas y las piezas de la fila que no cuenta.
+           count(distinct listing_id) filter (where not cuenta_fila) as dobles_pub,
+           coalesce(sum(st) filter (where not cuenta_fila), 0)::int as dobles_pzs,
            max(updated_at) as al
       from h group by cuenta
 """
 
-_SQL_PADRES = _CTE_FULL + r"""
-    , p as (select pad.cuenta, pad.listing_id, max(pf.st) as st, coalesce(sum(c.st), 0) as hijos
-              from pad join f pf on pf.cuenta = pad.cuenta and pf.listing_id = pad.listing_id and pf.sku = pad.sku
-              join f c on c.cuenta = pad.cuenta and c.listing_id = pad.listing_id and c.sku like pad.sku || '-%%'
-             group by pad.cuenta, pad.listing_id, pad.sku)
-    select count(*) filter (where st = hijos) as dobles, coalesce(sum(st) filter (where st = hijos), 0)::int as pzs_dobles,
-           count(*) filter (where st <> hijos) as aclarar,
-           coalesce(sum(greatest(st - hijos, 0)) filter (where st <> hijos), 0)::int as pzs_aclarar
-      from p
-"""
-
-# La foto: cuánto movió el sync el stock FULL cada día, sin las filas padre.
+# La foto: cuánto movió el sync el stock FULL cada día, sólo en las filas que cuentan.
 _SQL_FOTO = _CTE_FULL + r"""
     select (hi.changed_at at time zone %(z)s)::date::text as dia, upper(a.legacy_code) as cuenta,
            count(*) as cambios,
@@ -268,7 +247,7 @@ _SQL_FOTO = _CTE_FULL + r"""
        and hi.changed_at > ((now() at time zone %(z)s)::date - %(d)s)::timestamp at time zone %(z)s
        and hi.valor_nuevo ~ '^-?[0-9]+$' and hi.valor_anterior ~ '^-?[0-9]+$'
        and a.legacy_code in ('BEKURA', 'SANCORFASHION')
-       and not exists (select 1 from pad where pad.sku = hi.sku and pad.account_id = hi.account_id)
+       and not exists (select 1 from h where not h.cuenta_fila and h.sku = hi.sku and h.account_id = hi.account_id)
      group by 1, 2
 """
 
@@ -293,7 +272,6 @@ def _resumen(dias: int = 9) -> dict[str, Any]:
     avisos.sort(key=lambda a: a["hora"], reverse=True)
     foto = {(f["dia"], f["cuenta"]): f for f in sdb.fetch_all(_SQL_FOTO, {"z": ZONA, "d": dias - 1})}
     stock = {f["cuenta"]: f for f in sdb.fetch_all(_SQL_STOCK)}
-    padres = sdb.fetch_one(_SQL_PADRES) or {}
 
     h = hoy.isoformat()
     de_hoy = [a for a in avisos if a["dia"] == h]
@@ -339,7 +317,8 @@ def _resumen(dias: int = 9) -> dict[str, Any]:
             "sin_sku_7d": sum(1 for a in avisos if a["sku"] is None and a["dia"] > siete),
             "ayer": [{"cuenta": f["cuenta"], "nombre": f["nombre"], "dif": f["dif_vendible"],
                       "estado": f["estado_vendible"]} for f in filas_libro if f["dia"] == ayer],
-            "padres": {k: int(padres.get(k) or 0) for k in ("dobles", "pzs_dobles", "aclarar", "pzs_aclarar")},
+            "dobles": {"publicaciones": sum(int(s.get("dobles_pub") or 0) for s in stock.values()),
+                       "piezas": sum(int(s.get("dobles_pzs") or 0) for s in stock.values())},
             "tipos_nuevos": [{"tipo": t, "n": n} for t, n in sorted(nuevos.items(), key=lambda kv: -kv[1])],
         },
     }
