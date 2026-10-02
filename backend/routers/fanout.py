@@ -9,6 +9,8 @@ fanout.py — Monitoreo y simulación del fan-out de stock DROP.
   GET  /api/fanout/matriz           → SKUs × canales contra Woo.
   GET  /api/fanout/rastro?sku=&fin= → un cambio salto por salto.
   GET  /api/fanout/historia?sku=&dias= → la línea de trazabilidad de un SKU.
+  GET  /api/fanout/full             → la pestaña FULL (stock, avisos, cuadre, salud).
+  GET  /api/fanout/full/camino      → las salidas de Odoo a FULL (caché de envíos).
   GET  /api/fanout/simular?sku=     → QUÉ haría con ese SKU ahora mismo, sin
                                       encolar ni escribir (seguro siempre).
   POST /api/fanout/encolar?sku=     → lo mete a la cola real (respeta dry-run).
@@ -101,6 +103,39 @@ def simular(sku: str = Query(..., description="SKU a simular")):
     NO escribe ni encola: es seguro aunque el fan-out esté encendido.
     """
     return fanout_stock.plan(sku)
+
+
+@router.get("/full")
+def full_resumen():
+    """La pestaña FULL: stock vendible por cuenta (sin las filas padre de las
+    publicaciones con variantes), lo de hoy por tipo de aviso, los avisos de las
+    últimas 24 h, el cuadre diario de 9 días contra la foto del sync y la salud.
+    Todo de kubera, con caché de 20 s; las salidas de Odoo van en `/full/camino`.
+    Solo lee."""
+    from services import fanout_full
+    return fanout_full.resumen()
+
+
+@router.get("/full/camino")
+async def full_camino():
+    """Las salidas de Odoo a FULL por cuenta: abiertas, en camino y sin número de
+    envío. Usa el MISMO caché que `/api/fulfillment/envios` (Odoo tarda ~15 s; el
+    caché dura 120 s). Si Odoo no contesta, la pestaña sigue y este pedazo dice
+    por qué falta. Solo lee."""
+    import asyncio
+
+    from services import cache_lectura, fanout_full, fulfillment_envios
+
+    async def _producir():
+        # XML-RPC bloquea: en un hilo (regla 11).
+        return await asyncio.to_thread(fulfillment_envios.leer)
+
+    try:
+        datos, edad = await cache_lectura.con_cache("fulfillment_envios", {}, _producir)
+    except Exception as exc:  # noqa: BLE001 — Odoo caído no tumba la pestaña
+        return {"ok": False, "motivo": f"Odoo no contestó ({str(exc)[:160]})"}
+    return {"ok": True, **fanout_full.camino(datos.get("envios") or []),
+            "generado": datos.get("generado"), "edad_s": edad}
 
 
 @router.get("/full/observacion")

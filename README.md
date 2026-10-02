@@ -1001,6 +1001,58 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.614.0 — Fan-out: pestaña FULL — las bodegas de Mercado Libre aviso por aviso, con su cuadre diario (solo lectura)
+
+Eduardo, 2-oct: *"También hay que incluir una sección para visualizar la sincronización del inventario de full"*.
+Antes, propuestas A–E en /design con datos reales; eligió A (pestaña con la cadena) + E (carril FULL en la
+trazabilidad) con el cuadre de B (libro diario) adentro.
+
+**Qué es.** Tercera pestaña de Operaciones › Fan-out (`/dashboard/full`; solo admin, como todo `/api/fanout`).
+FULL NO TOCA WOO —es inventario de ML: la venta FULL nace con su stock ya descontado y Woo sigue copiando a
+Odoo—, así que la página solo MIRA:
+- **La cadena por cuenta** (Ambas / Kubera / San Corpe): salidas de Odoo a FULL abiertas → en camino (enviado,
+  aún no vendible) → FULL vendible → vendido hoy; abajo los ajustes, retiros, traslados internos y cuarentena
+  del día.
+- **Horario de FULL**: los avisos `fbm_stock_operations` de las últimas 24 h, uno por operación (ML reenvía; la
+  operación va en `item_id`), filtrables por tipo. Tocar un SKU abre su trazabilidad en el carril FULL.
+- **Avisos por hora y Salud de la sincronización**: de cuándo es la foto del sync, el último aviso, el cuadre
+  de ayer, las salidas sin número de envío, los envíos que no terminan de llegar, las filas padre que quedan
+  fuera del total y cualquier tipo de aviso que la tabla no conozca.
+- **Libro diario** (9 días por cuenta): lo que avisó ML contra lo que movió la foto del sync
+  (`channel.listing_history`, campo `stock_full`), con el interruptor «Contar ajustes y retiros».
+- **Carril FULL en la trazabilidad** (`TrazabilidadSku`, en todas las páginas): cada aviso de la bodega y cada
+  lectura del sync, marcados en cuadro; arriba, el FULL de cada cuenta y para cuántos días le alcanza (ventas
+  FULL de 14 días). Selector de carril: Todo · Bodega y Woo · Canales · FULL.
+
+**Lo que se midió para armarla** (producción, 2-oct, solo lectura):
+- El total de FULL que daba el panel (17.7 mil en Fulfillment y «Crear FULL») contaba dos veces las
+  publicaciones con variantes: la fila del PADRE repite la suma de sus hijas (795 pzs en 49 publicaciones; en
+  otras 30 el padre no cuadra con sus hijas: 881 pzs por aclarar). La pestaña deja fuera al padre: 15.3 mil
+  netas. `fulfillment_etapas.stock_actual` sigue igual (va aparte).
+- Los AJUSTES de ML (~600 avisos por semana, que `stock_full` anota como «AVISO: revisar») no mueven lo
+  vendible: en los SKUs más ajustados van uno a uno con las ventas (VAR-0670-NEG: 22 y 22 en 8 días). Los
+  RETIROS salen de piezas ya apartadas (San Corpe retiró 1,063 pzs el 24 y 25-sep y la foto se movió −104).
+  Sin esos dos grupos, lo que avisa ML explica la foto a ±20 pzs en 15 de 18 días-cuenta; contándolos, en 6.
+  Es la regla del cuadre (`fanout_full.VENDIBLE`); hasta 20 pzs cuadra, hasta 60 se revisa.
+
+**Backend.** `services/fanout_full.py` (nuevo, solo lee). `GET /api/fanout/full`: todo de kubera, caché de
+20 s, ~0.9 s de consultas en producción (el padre se detecta con un JOIN por cuenta y publicación; con un
+EXISTS correlacionado tardaba 2–3 s). `GET /api/fanout/full/camino`: las salidas de Odoo desde el MISMO caché
+que `/api/fulfillment/envios` (120 s); si Odoo no contesta, la pestaña sigue y lo dice. `fanout_vivo.historia`
+suma el carril FULL (avisos `full_*` deduplicados por operación + cambios de `stock_full`) y el bloque `full`
+(stock por cuenta, cobertura y avisos por grupo). Sin banderas nuevas y sin escrituras.
+
+**Frontend.** `app/dashboard/full/page.tsx` con `CadenaFull`, `HorarioFull`, `SaludFull` (+ `PorHoraFull`) y
+`CuadreFull`; `FanoutPestanas` suma «FULL»; `TrazabilidadSku` gana el selector de carril y abre en FULL
+cuando se llama desde la pestaña.
+
+**Verificado.** En el sandbox con datos de producción traídos una vez (bitácora, publicaciones, historial y
+pedidos de 16 días; las salidas de Odoo, de una foto de producción porque el sandbox no tiene Odoo): las mismas
+cifras que producción (4,866 avisos únicos en 9 días, ventas FULL de 14 días y 7,606 cambios de foto), el
+selector de cuenta, el interruptor del libro (15/18 ↔ 6/18) y la trazabilidad de MUE-0163-TEL en el carril
+FULL (101 ventas y 94 pzs de ajustes en 14 días). 9 pruebas nuevas (`tests/test_fanout_full.py`) y las 1,518
+del backend en verde; `tsc` y `npm run build` limpios; En vivo y Coincidencia sin cambios.
+
 ### v0.613.0 — Fan-out: la matriz compara contra el Woo más reciente, no siempre contra la foto de stock_watch (solo lectura)
 
 Eduardo, 1-oct: con ACC-0574-LIL a la vista (*"¿cómo sería corregir la comparación?"*).

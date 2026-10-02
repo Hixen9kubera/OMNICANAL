@@ -245,7 +245,16 @@ export type ItemTraza =
   | { tipo: "canal"; ts: string; hora: string; canal: string; nombre: string; campo: string; via: string;
       relacion: "coincide" | "su_cuenta" | "sin_escritura" | "estado";
       de?: number | null; a?: number | null; ref?: { valor: number | null; hora: string } | null;
-      de_txt?: string; a_txt?: string };
+      de_txt?: string; a_txt?: string }
+  | { tipo: "full"; ts: string; hora: string; cuenta: string; nombre: string; ml_tipo: string; texto: string;
+      grupo: GrupoFull | "foto"; sig: string; x?: number; de?: number | null; a?: number | null };
+
+/** El carril FULL de un SKU en su trazabilidad. */
+export interface FullSku {
+  cuentas: { cuenta: string; nombre: string; stock: number; situacion: string | null; cambio: string | null;
+             vendidas_14d: number; cobertura: number | null }[];
+  grupos: Partial<Record<GrupoFull, { avisos: number; piezas: number }>>;
+}
 
 export interface Historia {
   ok: boolean;
@@ -260,8 +269,126 @@ export interface Historia {
   sin_orden?: SinOrden | null;
   columnas: Columna[];
   celdas: Record<string, CeldaMatriz>;
-  resumen: { cambios_woo: number; repartos: number; con_rechazo: number; su_cuenta: number };
+  resumen: { cambios_woo: number; repartos: number; con_rechazo: number; su_cuenta: number; full?: number };
+  full?: FullSku | null;
   items: ItemTraza[];
   total: number;
   truncado: boolean;
 }
+
+// ── La pestaña FULL (`backend/services/fanout_full.py`) ─────────────────────
+
+export type GrupoFull = "llego" | "vendido" | "cancelado" | "traslado" | "cuarentena" | "ajuste" | "retiro" | "otro";
+export type EstadoCuadre = "cuadra" | "revisar" | "no_cuadra";
+export type CuentaSel = "ambas" | "BEKURA" | "SANCORFASHION";
+
+export interface AvisoFull {
+  hora: string;
+  dia: string;
+  cuenta: string;
+  nombre: string;
+  sku: string | null;
+  tipo: string;
+  texto: string;
+  grupo: GrupoFull;
+  x: number;
+  sig: string;
+}
+
+export interface CuentaFull {
+  cuenta: string;
+  nombre: string;
+  piezas: number;
+  publicaciones: number;
+  skus: number;
+  piezas_no_activas: number;
+  hoy: Record<GrupoFull, { avisos: number; piezas: number }>;
+  avisos_hoy: number;
+}
+
+export interface DiaLibro {
+  dia: string;
+  cuenta: string;
+  nombre: string;
+  parcial: boolean;
+  grupos: Record<GrupoFull, number>;
+  avisos: number;
+  vendible: number;
+  todo: number;
+  foto: number;
+  cambios_foto: number;
+  dif_vendible: number;
+  dif_todo: number;
+  estado_vendible: EstadoCuadre;
+  estado_todo: EstadoCuadre;
+}
+
+export interface ResumenFull {
+  ok: boolean;
+  hoy: string;
+  hora: string;
+  cuentas: CuentaFull[];
+  avisos_hoy: number;
+  por_hora: { h: string; n: number }[];
+  avisos: AvisoFull[];
+  avisos_24h: number;
+  libro: DiaLibro[];
+  umbral: { cuadra: number; revisar: number };
+  salud: {
+    foto_al: string | null;
+    ultimo_aviso: string | null;
+    sin_sku_hoy: number;
+    sin_sku_7d: number;
+    ayer: { cuenta: string; nombre: string; dif: number; estado: EstadoCuadre }[];
+    padres: { dobles: number; pzs_dobles: number; aclarar: number; pzs_aclarar: number };
+    tipos_nuevos: { tipo: string; n: number }[];
+  };
+}
+
+export interface CaminoCuenta {
+  abiertas: number;
+  pzs_abiertas: number;
+  en_proceso: number;
+  enviadas: number;
+  llegadas: number;
+  en_camino: number;
+  sin_numero: number;
+}
+
+export interface CaminoFull {
+  ok: boolean;
+  motivo?: string;
+  cuentas?: Record<string, CaminoCuenta>;
+  faltan?: { salida: string; cuenta: string; nombre: string; enviadas: number; llegadas: number; falta: number;
+             dias: number | null }[];
+  generado?: string;
+  edad_s?: number;
+}
+
+/** Cada grupo de aviso: cómo se dice en plural y su color (el punto del horario y del carril). */
+export const GRUPO_FULL: Record<GrupoFull | "foto", { texto: string; color: string }> = {
+  llego: { texto: "Llegadas", color: "#0284c7" },
+  vendido: { texto: "Ventas", color: "#4f46e5" },
+  cancelado: { texto: "Cancelaciones", color: "#38bdf8" },
+  traslado: { texto: "Traslados", color: "#94a3b8" },
+  cuarentena: { texto: "Cuarentena", color: "#94a3b8" },
+  ajuste: { texto: "Ajustes de ML", color: "#d97706" },
+  retiro: { texto: "Retiros", color: "#c2410c" },
+  otro: { texto: "Tipo nuevo", color: "#e11d48" },
+  foto: { texto: "Lectura del sync", color: "#64748b" },
+};
+
+export const CUADRE_CLS: Record<EstadoCuadre, { texto: string; chip: string; dif: string; fila: string }> = {
+  cuadra: { texto: "Cuadra", chip: "bg-indigo-100 text-indigo-800", dif: "text-indigo-800", fila: "" },
+  revisar: { texto: "Revisar", chip: "bg-amber-100 text-amber-900", dif: "text-amber-800", fila: "bg-amber-50/60" },
+  no_cuadra: { texto: "No cuadra", chip: "bg-orange-100 text-orange-900", dif: "text-orange-800", fila: "bg-orange-50/70" },
+};
+
+export const CUENTA_CHIP: Record<string, string> = {
+  BEKURA: "bg-indigo-50 text-indigo-800",
+  SANCORFASHION: "bg-orange-50 text-orange-800",
+};
+
+/** +5 · −61 · 0, con separador de miles y el signo menos tipográfico. */
+export const conSigno = (n: number) =>
+  n > 0 ? `+${n.toLocaleString("es-MX")}` : n < 0 ? `−${Math.abs(n).toLocaleString("es-MX")}` : "0";

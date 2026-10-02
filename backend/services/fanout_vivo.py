@@ -27,6 +27,7 @@ import threading
 import time
 from typing import Any
 
+from services import fanout_full
 from services import supabase_db as sdb
 
 log = logging.getLogger("omnicanal.fanout_vivo")
@@ -1208,7 +1209,10 @@ def historia(sku: str, dias: int = 14, limite: int = 400) -> dict[str, Any]:
       · el resto de `ops.fanout_log`: cada reparto del fan-out y lo que contestó
         cada destino;
       · `channel.listing_history`: lo que cada canal del reparto REPORTÓ después
-        (censo de TikTok y Temu, lectura de ML): stock, estado y situación.
+        (censo de TikTok y Temu, lectura de ML): stock, estado y situación;
+      · el carril FULL: cada aviso de la bodega de ML (`full_*` en la bitácora,
+        uno por operación) y la foto del stock FULL que lee el sync. FULL no toca
+        Woo: va aparte para no confundirse con el reparto.
     Cada lectura de stock se compara con lo último que el fan-out le dejó a ese
     canal (escrito, o ya igual): si coincide fue nuestro; si no, cambió en el
     canal —una venta ahí, una cancelación, alguien en el Seller Center o un dato
@@ -1226,7 +1230,8 @@ def historia(sku: str, dias: int = 14, limite: int = 400) -> dict[str, Any]:
         """select id, ts, to_char(ts at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as hora,
                   coalesce(motivo, '') as motivo, coalesce(canal, '') as canal,
                   upper(coalesce(cuenta, '')) as cuenta, accion, left(coalesce(resultado, ''), 300) as resultado,
-                  stock_canal, objetivo, stock_drop, (ts > now() - interval '3 days') as reciente
+                  stock_canal, objetivo, stock_drop, (ts > now() - interval '3 days') as reciente,
+                  coalesce(item_id, '') as item_id
              from ops.fanout_log
             where sku = %(s)s and ts > now() - make_interval(days => %(d)s)
             order by ts desc, id desc limit 3000""", {"z": _ZONA, "s": sku, "d": dias})
@@ -1238,10 +1243,10 @@ def historia(sku: str, dias: int = 14, limite: int = 400) -> dict[str, Any]:
             where h.sku = %(s)s and h.canal = any(%(c)s) and h.campo = any(%(f)s)
               and h.changed_at > now() - make_interval(days => %(d)s)
             order by h.changed_at desc limit 2000""",
-        {"z": _ZONA, "s": sku, "c": rep, "f": _CAMPOS_TRAZA, "d": dias})
+        {"z": _ZONA, "s": sku, "c": rep, "f": _CAMPOS_TRAZA + ["stock_full"], "d": dias})
     lst = sdb.fetch_all(
         """select l.sku::text as sku, l.canal, a.legacy_code as cuenta, l.status, l.situacion,
-                  l.stock_own, l.is_fulfillment, l.logistic_type, l.updated_at,
+                  l.stock_own, l.stock_full, l.is_fulfillment, l.logistic_type, l.updated_at,
                   to_char(l.updated_at at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as act
              from channel.listings l left join core.accounts a on a.id = l.account_id
             where l.sku = %(s)s and l.canal = any(%(c)s)""", {"z": _ZONA, "s": sku, "c": rep})
@@ -1319,6 +1324,14 @@ def historia(sku: str, dias: int = 14, limite: int = 400) -> dict[str, Any]:
         if ok or f["accion"] == "sin_cambio":
             dejado.setdefault(_clave_destino(f["canal"], f["cuenta"]), []).append((f["ts"], f["objetivo"], f["hora"]))
     for h in hist:
+        if h["campo"] == "stock_full":
+            if h["canal"] == "mercado_libre":
+                items.append({"tipo": "full", "_t": h["ts"], "ts": h["ts"].isoformat(), "hora": h["hora"],
+                              "cuenta": h["cuenta"], "nombre": f"FULL {fanout_full.CUENTAS.get(h['cuenta'], h['cuenta'])}",
+                              "ml_tipo": "FOTO", "texto": "Lectura del sync", "grupo": "foto",
+                              "de": _entero(h["valor_anterior"]), "a": _entero(h["valor_nuevo"]),
+                              "sig": _VIA_TXT.get(h["via"], h["via"] or "lectura")})
+            continue
         clave = _clave_destino(h["canal"], h["cuenta"])
         it = {"tipo": "canal", "_t": h["ts"], "ts": h["ts"].isoformat(), "hora": h["hora"], "canal": h["canal"],
               "nombre": _nombre_destino(h["canal"], h["cuenta"]), "campo": h["campo"],
@@ -1337,12 +1350,31 @@ def historia(sku: str, dias: int = 14, limite: int = 400) -> dict[str, Any]:
                        "a_txt": _estado_traza(h["canal"], h["valor_nuevo"])})
         items.append(it)
 
+    # 4) FULL: cada aviso de la bodega de ML (uno por operación: ML reenvía, y el
+    #    primero que llegó gana) y, arriba, lo que tiene hoy cada cuenta.
+    full_items: list[dict] = []
+    vistas: set[str] = set()
+    for f in reversed(log):
+        if not str(f["accion"]).startswith("full_"):
+            continue
+        op = f["item_id"] or f"id{f['id']}"
+        if op in vistas:
+            continue
+        vistas.add(op)
+        a = fanout_full.aviso({**f, "sku": sku})
+        full_items.append({"tipo": "full", "_t": f["ts"], "ts": f["ts"].isoformat(), "hora": f["hora"],
+                           "cuenta": a["cuenta"], "nombre": f"FULL {a['nombre']}", "ml_tipo": a["tipo"],
+                           "texto": a["texto"], "grupo": a["grupo"], "x": a["x"], "sig": a["sig"]})
+    items.extend(full_items)
+    full = _full_de(sku, [f for f in lst if f["canal"] == "mercado_libre" and f.get("is_fulfillment")], full_items)
+
     items.sort(key=lambda x: x["_t"], reverse=True)
     resumen = {
         "cambios_woo": sum(1 for x in items if x["tipo"] == "woo"),
         "repartos": sum(1 for x in items if x["tipo"] == "reparto"),
         "con_rechazo": sum(1 for x in items if x["tipo"] == "reparto" and x["tono"] == "mal"),
         "su_cuenta": sum(1 for x in items if x.get("relacion") == "su_cuenta"),
+        "full": len(full_items),
     }
     total = len(items)
     for x in items:
@@ -1351,5 +1383,34 @@ def historia(sku: str, dias: int = 14, limite: int = 400) -> dict[str, Any]:
     return {"ok": True, "sku": sku, "dias": dias, "hoy": hoy, "ahora": _fecha(ahora, hoy),
             "existe": bool(foto or lst or log or hist), "odoo": _n(foto.get("stock_odoo")), "woo": _n(woo), "woo_de": woo_de,
             "sin_orden": ({**sx, "explica": _explicado(foto.get("stock_odoo"), woo, sx)} if sx else None),
-            "columnas": cols, "celdas": celdas, "resumen": resumen,
+            "columnas": cols, "celdas": celdas, "resumen": resumen, "full": full,
             "items": items[:limite], "total": total, "truncado": total > limite}
+
+
+def _full_de(sku: str, filas: list[dict], avisos: list[dict]) -> dict[str, Any] | None:
+    """El carril FULL de un SKU: cuánto tiene hoy cada cuenta, cuánto vendió por
+    FULL en 14 días (le alcanza para N días) y la suma de sus avisos por grupo.
+    None si el SKU no tiene publicación FULL ni avisos de FULL."""
+    if not filas and not avisos:
+        return None
+    ventas = {r["cuenta"]: int(r["u"] or 0) for r in sdb.fetch_all(
+        """select upper(cuenta) as cuenta, sum(units_sold) as u from channel.sales_daily_completa
+            where sku = %(s)s and is_full and date >= (now() at time zone %(z)s)::date - 14
+            group by 1""", {"s": sku, "z": _ZONA})}
+    cuentas = []
+    for c, nombre in fanout_full.CUENTAS.items():
+        fl = [f for f in filas if (f.get("cuenta") or "").upper() == c]
+        if not fl and not ventas.get(c) and not any(a["cuenta"] == c for a in avisos):
+            continue
+        stock = sum(int(f.get("stock_full") or 0) for f in fl)
+        u = ventas.get(c, 0)
+        cuentas.append({"cuenta": c, "nombre": nombre, "stock": stock,
+                        "situacion": _estado_traza("mercado_libre", fl[0]["situacion"]) if fl else None,
+                        "cambio": fl[0]["act"] if fl else None, "vendidas_14d": u,
+                        "cobertura": round(stock / (u / 14), 1) if u else None})
+    grupos: dict[str, dict[str, int]] = {}
+    for a in avisos:
+        g = grupos.setdefault(a["grupo"], {"avisos": 0, "piezas": 0})
+        g["avisos"] += 1
+        g["piezas"] += a["x"]
+    return {"cuentas": cuentas, "grupos": grupos}

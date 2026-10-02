@@ -5,13 +5,32 @@
  * cambio de stock en Woo (vino de Odoo o lo detectó stock_watch en Woo), cada
  * reparto del fan-out con lo que contestó cada canal, y lo que cada canal
  * reportó después. Una lectura del canal que no es lo último que el fan-out le
- * dejó se marca «cambió en el canal». La arma `GET /api/fanout/historia` (solo lee).
+ * dejó se marca «cambió en el canal». Si el SKU vive en FULL, un carril aparte
+ * trae cada aviso de la bodega de ML y la foto de su stock FULL (marcados en
+ * cuadro, no en círculo: FULL no toca Woo). La arma `GET /api/fanout/historia` (solo lee).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { API_BASE, fetchSesion } from "@/lib/api";
-import type { Historia, ItemTraza } from "./tipos";
-import { CAUSA_CLS, CELDA_CLS, CELDA_MATRIZ_PUNTEADO, CELDA_MATRIZ_SOLIDO, TONO_COLOR } from "./tipos";
+import type { GrupoFull, Historia, ItemTraza } from "./tipos";
+import { CAUSA_CLS, CELDA_CLS, CELDA_MATRIZ_PUNTEADO, CELDA_MATRIZ_SOLIDO, GRUPO_FULL, TONO_COLOR, conSigno } from "./tipos";
+
+/** Qué parte de la línea se ve: todo, la bodega y Woo, los canales del reparto o la bodega FULL de ML. */
+export type Carril = "todo" | "bodega" | "canales" | "full";
+const CARRILES: { id: Carril; texto: string }[] = [
+  { id: "todo", texto: "Todo" },
+  { id: "bodega", texto: "Bodega y Woo" },
+  { id: "canales", texto: "Canales" },
+  { id: "full", texto: "FULL" },
+];
+const ORDEN_FULL: GrupoFull[] = ["vendido", "ajuste", "cancelado", "llego", "retiro", "traslado", "cuarentena", "otro"];
+
+function enCarril(it: ItemTraza, c: Carril): boolean {
+  if (c === "todo") return true;
+  if (c === "full") return it.tipo === "full";
+  if (c === "bodega") return it.tipo === "woo";
+  return it.tipo === "reparto" || it.tipo === "canal";
+}
 
 const PERIODOS = [7, 14, 30, 60];
 const MESES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
@@ -46,6 +65,7 @@ function cuando(hora: string, delDia: string): string {
 }
 
 function color(it: ItemTraza): string {
+  if (it.tipo === "full") return GRUPO_FULL[it.grupo].color;
   if (it.tipo === "woo") return it.fallo ? TONO_COLOR.mal : COLOR.woo;
   if (it.tipo === "reparto") return TONO_COLOR[it.tono];
   return COLOR[it.relacion];
@@ -70,6 +90,30 @@ function Renglon({ it, dia, onRastro, sku }: {
         <div className="text-xs leading-[18px] text-slate-600">
           {it.fallo ? <span className="font-semibold text-rose-700">La escritura en Woo falló. </span> : null}
           {it.origen === "odoo" ? "stock_watch copió lo que dice Odoo." : "stock_watch lo vio en Woo: una venta, una cancelación o una edición."}
+        </div>
+      </>
+    );
+  }
+  if (it.tipo === "full") {
+    if (it.grupo === "foto") {
+      return (
+        <>
+          <div className="text-[13px] font-semibold leading-5 text-slate-900">
+            {it.nombre}: el sync leyó {n(it.a)}{it.de != null ? <span className="font-normal text-slate-600"> (antes {n(it.de)})</span> : null}
+          </div>
+          <div className="text-xs leading-[18px] text-slate-600">Foto del stock FULL · {it.sig}</div>
+        </>
+      );
+    }
+    const x = it.x ?? 0;
+    return (
+      <>
+        <div className="flex flex-wrap items-baseline gap-x-2 text-[13px] leading-5">
+          <span className="font-semibold text-slate-900">{it.nombre} · {it.texto}</span>
+          <span className={`font-bold tabular-nums ${x > 0 ? "text-sky-800" : x < 0 ? "text-orange-800" : "text-slate-500"}`}>{conSigno(x)}</span>
+        </div>
+        <div className="text-xs leading-[18px] text-slate-600">
+          {it.sig} · <span className="font-mono text-[11px] text-slate-500">{it.ml_tipo}</span>
         </div>
       </>
     );
@@ -133,12 +177,15 @@ function Renglon({ it, dia, onRastro, sku }: {
   );
 }
 
-export default function TrazabilidadSku({ sku, onCerrar, onRastro }: {
+export default function TrazabilidadSku({ sku, onCerrar, onRastro, carrilInicial = "todo" }: {
   sku: string | null;
   onCerrar: () => void;
   onRastro?: (sku: string, fin: string) => void;
+  /** Con qué carril abre (la pestaña FULL abre en «FULL»). */
+  carrilInicial?: Carril;
 }) {
   const [dias, setDias] = useState(14);
+  const [carril, setCarril] = useState<Carril>(carrilInicial);
   const [h, setH] = useState<Historia | null>(null);
   const [error, setError] = useState<string | null>(null);
   const cerrarRef = useRef<HTMLButtonElement>(null);
@@ -162,18 +209,21 @@ export default function TrazabilidadSku({ sku, onCerrar, onRastro }: {
 
   useEffect(() => {
     if (sku) cerrarRef.current?.focus();
-  }, [sku]);
+    setCarril(carrilInicial);
+  }, [sku, carrilInicial]);
 
+  const tieneFull = !!h?.full || (h?.resumen.full ?? 0) > 0;
+  const carrilVisto: Carril = tieneFull ? carril : "todo";
   const porDia = useMemo(() => {
     const grupos: [string, ItemTraza[]][] = [];
-    for (const it of h?.items ?? []) {
+    for (const it of (h?.items ?? []).filter((x) => enCarril(x, carrilVisto))) {
       const dia = it.hora.slice(0, 10);
       const ultimo = grupos[grupos.length - 1];
       if (ultimo && ultimo[0] === dia) ultimo[1].push(it);
       else grupos.push([dia, [it]]);
     }
     return grupos;
-  }, [h]);
+  }, [h, carrilVisto]);
 
   if (!sku) return null;
   const causas = h ? h.columnas.map((c) => ({ c, causa: h.celdas[c.id]?.causa })).filter((x) => x.causa) : [];
@@ -192,6 +242,11 @@ export default function TrazabilidadSku({ sku, onCerrar, onRastro }: {
                 <span className="text-sm text-slate-700">
                   Odoo {h.odoo} · Woo <span className="font-bold">{h.woo}</span>
                   {h.woo_de && <span className="text-[12px] text-slate-500"> ({h.woo_de})</span>}
+                  {h.full?.cuentas.map((c) => (
+                    <span key={c.cuenta}> · FULL {c.nombre} <span className="font-bold">{n(c.stock)}</span>
+                      {c.situacion && c.situacion !== "a la venta" ? <span className="text-[12px] text-slate-500"> ({c.situacion})</span> : null}
+                    </span>
+                  ))}
                 </span>
               )}
             </div>
@@ -245,6 +300,41 @@ export default function TrazabilidadSku({ sku, onCerrar, onRastro }: {
                 ))}
               </section>
 
+              {tieneFull && (
+                <div className="flex w-fit gap-1 rounded-xl bg-slate-100 p-1" role="group" aria-label="Carril">
+                  {CARRILES.map((c) => (
+                    <button key={c.id} type="button" aria-pressed={carril === c.id} onClick={() => setCarril(c.id)}
+                      className={`h-8 rounded-lg px-3 text-xs font-semibold ${carril === c.id ? "bg-indigo-600 text-white shadow-sm" : "text-slate-600 hover:bg-white"}`}>
+                      {c.texto}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {carrilVisto === "full" && h.full && (
+                <section aria-label="FULL en el periodo" className="flex flex-col gap-1 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                  <span className="text-[13px] font-bold text-slate-900">En FULL, últimos {h.dias} días</span>
+                  <span className="text-xs leading-[18px] text-slate-700">
+                    {ORDEN_FULL.filter((g) => h.full?.grupos[g]).map((g) => {
+                      const v = h.full?.grupos[g];
+                      return `${GRUPO_FULL[g].texto} ${g === "vendido" ? n(Math.abs(v?.piezas ?? 0)) : conSigno(v?.piezas ?? 0)}`;
+                    }).join(" · ") || "Sin avisos de la bodega en el periodo."}
+                  </span>
+                  {h.full.cuentas.map((c) => (
+                    <span key={c.cuenta} className="text-xs leading-[18px] text-slate-700">
+                      <span className="font-semibold">{c.nombre}:</span> {n(c.stock)} en FULL
+                      {c.cobertura != null ? ` · le alcanza ${c.cobertura.toLocaleString("es-MX")} días (${n(c.vendidas_14d)} vendidas en 14 días)`
+                        : " · sin ventas FULL en 14 días"}
+                    </span>
+                  ))}
+                  {h.full.grupos.ajuste && h.full.grupos.vendido && (
+                    <span className="text-xs leading-[18px] text-slate-600">
+                      Los ajustes de ML siguen a las ventas: no mueven lo vendible (lo muestra el libro diario de la pestaña FULL).
+                    </span>
+                  )}
+                </section>
+              )}
+
               <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-4">
                 <div className="flex items-center gap-1.5" role="group" aria-label="Periodo">
                   {PERIODOS.map((p) => (
@@ -259,12 +349,13 @@ export default function TrazabilidadSku({ sku, onCerrar, onRastro }: {
                   {pl(h.resumen.cambios_woo, "cambio", "cambios")} en Woo · {pl(h.resumen.repartos, "reparto", "repartos")}
                   {h.resumen.con_rechazo ? ` (${h.resumen.con_rechazo} con rechazo)` : ""}
                   {" · "}{pl(h.resumen.su_cuenta, "vez", "veces")} el canal reportó algo que no le escribimos
+                  {h.resumen.full ? ` · ${pl(h.resumen.full, "aviso", "avisos")} de FULL` : ""}
                 </p>
               </div>
 
               {h.items.length === 0 ? (
                 <div className="rounded-lg bg-slate-50 px-4 py-3 text-sm text-slate-700">
-                  Sin movimientos en los últimos {h.dias} días.
+                  Sin movimientos{carrilVisto !== "todo" ? " en este carril" : ""} en los últimos {h.dias} días.
                   {h.dias < 60 && (
                     <button type="button" onClick={() => setDias(60)}
                       className="ml-2 font-semibold text-indigo-700 underline-offset-2 hover:underline">Ver 60 días</button>
@@ -281,7 +372,7 @@ export default function TrazabilidadSku({ sku, onCerrar, onRastro }: {
                             <time dateTime={it.ts} className="pt-[3px] text-right text-xs tabular-nums text-slate-500">{it.hora.slice(11, 16)}</time>
                             <span className="relative flex justify-center">
                               {i < its.length - 1 && <span className="absolute bottom-0 top-3 w-0.5 bg-slate-200" aria-hidden />}
-                              <span className={`relative mt-[5px] h-3 w-3 rounded-full ${it.tipo === "canal" && it.relacion === "estado" ? "border-2 bg-white" : ""}`}
+                              <span className={`relative mt-[5px] h-3 w-3 ${it.tipo === "full" ? "rounded-[3px]" : "rounded-full"} ${it.tipo === "canal" && it.relacion === "estado" ? "border-2 bg-white" : ""}`}
                                 style={it.tipo === "canal" && it.relacion === "estado" ? { borderColor: color(it) } : { background: color(it) }} aria-hidden />
                             </span>
                             <div className="min-w-0 pb-3">
@@ -306,6 +397,11 @@ export default function TrazabilidadSku({ sku, onCerrar, onRastro }: {
                 <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full" style={{ background: COLOR.coincide }} />el canal reporta lo que le escribimos</span>
                 <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full" style={{ background: COLOR.su_cuenta }} />cambió en el canal</span>
                 <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full border-2 bg-white" style={{ borderColor: COLOR.estado }} />cambio de estado</span>
+                {tieneFull && (["vendido", "llego", "ajuste", "retiro", "foto"] as const).map((g) => (
+                  <span key={g} className="flex items-center gap-1.5">
+                    <span className="h-2.5 w-2.5 rounded-[3px]" style={{ background: GRUPO_FULL[g].color }} />FULL: {GRUPO_FULL[g].texto.toLowerCase()}
+                  </span>
+                ))}
               </div>
             </>
           )}
