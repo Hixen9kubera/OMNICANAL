@@ -1001,6 +1001,36 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.616.0 — Temu: «a la venta» es 2/8, no 4/7 — las etiquetas salen de los pedidos (solo lectura)
+
+Eduardo, 2-oct: *"Corrige también las etiquetas de Temu en Publicaciones"* (vista previa en el sandbox antes de subir).
+
+**El defecto.** `temu.ESTADOS` venía de leer las pestañas del Seller Center (14 y 20-ago): llamaba «Incompleto» a
+2/8, 3/3, 3/2, 2/4 y 3/1, y «Activo o inactivo» a 4/7, y `temu.VENDIBLES = {"4/7"}` hacía que Publicaciones marcara
+esas 78 como «Puede estar activa» y las demás como «Pausada». Los pedidos dicen otra cosa. Con el estado de la
+publicación AL MOMENTO de cada pedido (historial del censo de Temu), de 388 pedidos de 30 días: 363 en 2/8, 19 en
+3/3, 5 en 3/1, 1 en 3/2 y NINGUNO en 4/7. Ejemplo: CAM-0030-QUE, 137 pzs en 2/8 y vendiendo, salía «Incompleto ·
+Pausada».
+
+**El arreglo** (`services/temu.py`):
+- `VENDIBLES = {"2/8"}` y en Publicaciones 2/8 es `activa` (antes `puede_estar_activa` para 4/7).
+- Etiquetas sólo donde hay evidencia: 2/8 «A la venta»; 3/1 «Agotada» (las 6 de hoy tienen 0 y en 30 días hubo
+  13 pasos 2/8 → 3/1 y 6 de regreso al reponer); 5/None sigue «Borrador» — `fanout_stock` y `fanout_vivo` deciden
+  con ESA etiqueta saltarse los borradores, así que el reparto de stock a Temu no cambia.
+- Los códigos sin nombre verificado (`temu.OTROS`: 3/3, 3/2, 2/4, 4/7, 6/None) se enseñan crudos («Temu 3/3») y
+  cuentan como `pausada`; un código nuevo cae en `desconocido`. 3/3 va y viene con 2/8 (39 y 34 pasos en 30 días)
+  y tuvo 19 pedidos: por eso no se le pone nombre.
+- `NOTA_CANAL["temu"]` lo explica con los números; `fanout_vivo._TEMU_A_LA_VENTA` (literal dentro de un SQL) queda
+  amarrado a `temu.VENDIBLES` con una prueba.
+
+**Efecto.** Temu «activas hoy» en Omnicanal/Publicaciones pasa de 78 a 44; el filtro «Solo activas», el censo de
+`inventario_flujo` y el universo comprable del censo de margen (`alertas.censo_margen`) usan la misma regla. Temu no
+tiene costo propio del canal, así que no genera alertas de margen ni antes ni ahora: sólo cambia el conteo.
+
+**Verificado.** En el sandbox con datos de producción: CAM-0030-QUE pasa de «Incompleto · Pausada» a «A la venta ·
+Activa» y el canal de 78 a 44 activas. 5 pruebas nuevas (`tests/test_temu_estados.py`) y las 1,529 del backend en
+verde. Sin banderas, sin escrituras y sin tocar el reparto.
+
 ### v0.615.0 — Fulfillment: una orden que sigue en bodega ya no le roba llegadas a la anterior, y FULL cuenta una fila por publicación (solo lectura)
 
 Eduardo, 2-oct: *"Revisa lo de envío, por lo que entiendo es en un estado donde ya se reserva, revisa bien cómo

@@ -333,9 +333,9 @@ def _estado_canales(rep: list[str], hoy: str) -> list[dict]:
 
 # Temu: el estado que VENDE es «2/8». Medido el 1-oct-2026 con el estado de la publicación AL
 # MOMENTO de cada pedido (historial del censo): en 30 días, 344 pedidos entraron en 2/8 (26 SKUs),
-# 17 en 3/3, 4 en 3/1, 1 en 3/2 y NINGUNO en 4/7 (78 publicaciones, 70 con stock). `temu.ESTADOS`
-# llama «Incompleto» a 2/8 y «Activo o inactivo» a 4/7 —lectura de las pestañas del Seller Center—;
-# los pedidos dicen otra cosa. Los demás estados se muestran crudos: su significado no está confirmado.
+# 17 en 3/3, 4 en 3/1, 1 en 3/2 y NINGUNO en 4/7 (78 publicaciones, 70 con stock). Desde el 2-oct
+# `temu.VENDIBLES` dice lo mismo (antes llamaba «Incompleto» a 2/8): esta constante va en el SQL de
+# `_SQL_VIVAS` como literal y una prueba exige que coincida. Los demás estados se muestran crudos.
 _TEMU_A_LA_VENTA = "2/8"
 
 # Publicaciones A LA VENTA en el reparto (sin FULL), con su valor más reciente:

@@ -100,11 +100,9 @@ def listar(page: int = 1, per_page: int = 40, search: str | None = None,
     """
     Publicaciones de Temu con los filtros de la pantalla. (items, total).
 
-    `solo_activas` es el único filtro de estado que este canal admite, y NO
-    afirma que vendan: se queda con la cubeta `VENDIBLES` (`4/7`, 59 de 461),
-    que en el propio Seller Center se llama literalmente "Activo o inactivo".
-    Por eso `publicaciones_panel` las marca `puede_estar_activa` y el censo
-    viaja con su `NOTA_CANAL`: el filtro acota, no promete.
+    `solo_activas` es el único filtro de estado que este canal admite: se queda
+    con `temu.VENDIBLES` (`2/8`, las que venden: 363 de 388 pedidos de 30 días
+    al 2-oct-2026; antes era `4/7`, que no tuvo ninguno).
 
     `estricto`: con una lista resuelta por el sistema, un `[], 0` diría
     «ninguna» cuando lo cierto es «kubera no contestó». Ahí se lanza.

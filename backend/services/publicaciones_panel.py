@@ -60,11 +60,13 @@ Las tres trampas, cada una medida:
     publicaciones que nadie puede comprar — la misma trampa que DISCOVERABLE.
     La constante vive en `tiktok_panel.ESTADO_VIVO`, no se re-declara aquí.
 
-  · **Temu no distingue activo de inactivo.** Contesta con números
-    (`status4VO`/`subStatus4VO`) y su cubeta `4/7` es literalmente
-    "Activo o inactivo" en su propio Seller Center. Por eso sus 59 filas salen
-    como `puede_estar_activa` y NUNCA como `activa`: afirmar que venden sería
-    inventar. La lista canónica es `temu.VENDIBLES`.
+  · **En Temu vende `2/8`, no `4/7`.** Contesta con números
+    (`status4VO`/`subStatus4VO`). Hasta el 2-oct-2026 aquí salía `4/7` como
+    `puede_estar_activa` (su pestaña del Seller Center se llama "Activo o
+    inactivo"); los pedidos dicen otra cosa: de 388 pedidos de 30 días, 363 se
+    hicieron con la publicación en `2/8` y NINGUNO en `4/7`. Ahora `2/8` es
+    `activa` y el resto `pausada` (o `borrador`). La lista canónica es
+    `temu.VENDIBLES`.
 
 Y la regla que pidió Eduardo, explícita: **un canal sin estado utilizable NO
 devuelve 0 en silencio.** Devuelve `sin_estado` con el motivo escrito, porque un
@@ -376,14 +378,13 @@ def _mapa(canal: str) -> dict[str, str]:
         from services.tiktok_panel import ESTADO_VIVO   # "ACTIVATE"
         return {ESTADO_VIVO: ACTIVA, **_MAPA_TIKTOK_RESTO}
     if canal == "temu":
-        from services.temu import ESTADOS, VENDIBLES
-        # Mismo orden de precedencia que tenía el `if` de antes: `VENDIBLES`
-        # gana, `5/None` es borrador, y el resto de las cubetas ("Incompleto")
-        # existe y no vende.
-        return {c: (PUEDE_ESTAR_ACTIVA if c in VENDIBLES
+        from services.temu import ESTADOS, OTROS, VENDIBLES
+        # `VENDIBLES` (2/8) vende —medido con los pedidos—, `5/None` es borrador,
+        # y el resto (agotada y los códigos sin nombre) existe y no vende.
+        return {c: (ACTIVA if c in VENDIBLES
                     else BORRADOR if c == "5/None"
                     else PAUSADA)
-                for c in {*ESTADOS, *VENDIBLES}}
+                for c in {*ESTADOS, *OTROS, *VENDIBLES}}
     if canal == "walmart":
         from services.walmart_panel import ESTADO_VIVO   # "PUBLISHED"
         return {ESTADO_VIVO: ACTIVA, **_MAPA_WALMART_RESTO}
@@ -397,9 +398,10 @@ def _plegar(crudo: str | None, pliegue: str | None) -> str:
 # Por qué un canal puede no reportar estado. Viaja en el censo para que el
 # frontend NUNCA tenga que pintar un 0 sin explicación.
 NOTA_CANAL = {
-    "temu": "Temu contesta con códigos numéricos y su cubeta 4/7 es literalmente "
-            "'Activo o inactivo': no distingue una cosa de la otra ni por API ni "
-            "en su Seller Center. Por eso se dice 'puede estar activa'.",
+    "temu": "Temu contesta con códigos numéricos. A la venta = 2/8: de 388 pedidos "
+            "de 30 días, 363 se hicieron en 2/8 y ninguno en 4/7. 3/1 = agotada (sin "
+            "stock; vuelve a 2/8 al reponer). Los demás códigos no tienen nombre "
+            "verificado y se enseñan tal cual.",
     "tiktok": "En TikTok la venta la manda `status` (ACTIVATE), no `situacion`. "
               "Las 283 marcadas APPROVED pasaron la auditoría pero están "
               "SELLER_DEACTIVATED: existen y no se pueden comprar.",
