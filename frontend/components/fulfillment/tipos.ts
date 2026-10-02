@@ -163,6 +163,33 @@ export interface EnvioConLineas extends Envio {
   lineas: LineaOdoo[];
 }
 
+/** Lo que dice Mercado Libre (en vivo) de un renglón al que le faltan piezas. */
+export interface VeredictoMl {
+  veredicto: "en_retiro" | "no_vendible" | "llego_sin_aviso" | "no_aparece" | "sin_publicacion" | "sin_dato";
+  texto: string;
+  faltan: number;
+  disponible?: number;
+  retiro?: number;
+  otros?: number;
+  /** Lo no vendible por motivo de ML (withdrawal, damaged, lost…). */
+  detalle?: Record<string, number>;
+  /** Ventas FULL desde la llegada y el stock FULL que ya había antes del envío. */
+  vendidas?: number;
+  antes?: number | null;
+  no_aparecen?: number;
+  /** Aproximado: no se supo el stock de antes, o salió otra orden del mismo SKU después. */
+  aprox?: boolean;
+  publicacion?: string;
+}
+
+export interface MlFaltantes {
+  ok: boolean;
+  motivo?: string;
+  lineas?: Record<string, VeredictoMl>;
+  consultado?: string;
+  fuente?: string;
+}
+
 export interface Mediana { n: number; mediana: number | null; p90: number | null }
 
 /**

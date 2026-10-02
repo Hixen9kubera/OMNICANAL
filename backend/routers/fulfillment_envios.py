@@ -7,6 +7,7 @@ services/fulfillment_envios.py.
                                      con canal, cuenta (y de dónde salió), orden
                                      de venta, salida y piezas; + el resumen.
   GET /api/fulfillment/envios/{id}   una salida con sus renglones por SKU.
+  GET /api/fulfillment/envios/{id}/ml   lo que dice ML (en vivo) de lo que le falta.
 
 La lista va SIN renglones: con ellos pesaba ~450 KB y la tabla no los usa. Los
 dos endpoints comparten la misma lectura de Odoo en caché, así que abrir un
@@ -60,4 +61,18 @@ async def envio(salida_id: int) -> dict[str, Any]:
         if e["id"] == salida_id:
             return {**e, "generado": datos.get("generado"),
                     "_cache": {"edad_s": edad, "ttl_s": cache_lectura.TTL_S}}
+    raise HTTPException(404, f"la salida {salida_id} no es un envío a FULL, FBA ni WFS")
+
+
+@router.get("/{salida_id}/ml")
+async def envio_ml(salida_id: int) -> dict[str, Any]:
+    """Qué dice Mercado Libre de lo que le falta a un envío a FULL: para cada SKU con
+    menos llegadas que enviadas, su inventario FULL EN VIVO (vendible, en retiro o no
+    vendible) cruzado con lo vendido desde la llegada. Sólo lee (GET a ML)."""
+    from services import fulfillment_ml_inventario
+    datos, _ = await _lectura(False)
+    for e in datos["envios"]:
+        if e["id"] == salida_id:
+            # httpx síncrono y kubera: en un hilo (regla 11).
+            return await asyncio.to_thread(fulfillment_ml_inventario.explicar, e, datos["envios"])
     raise HTTPException(404, f"la salida {salida_id} no es un envío a FULL, FBA ni WFS")

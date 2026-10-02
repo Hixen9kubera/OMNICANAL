@@ -1001,6 +1001,41 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.617.0 — Envíos a FULL: lo que «falta» se le pregunta a Mercado Libre en vivo — en retiro, llegó sin aviso o no aparece (solo lectura)
+
+Eduardo, 2-oct: *"arma lo del problema del panel, muéstrame el cambio antes de subirlo"* (vista previa en el sandbox con
+TEXCO/OUT/06483) y *"Sí, súbela después de la próxima pasada"*.
+
+**El hueco.** La llegada de un envío a FULL se mide con los avisos de FULL por SKU (TRANSFER_DELIVERY /
+INBOUND_RECEPTION, `fulfillment_etapas`). A TEXCO/OUT/06483 (S38849, San Corpe) le «faltaban» 37 pzs, y el inventario
+de ML cuenta otra historia:
+- 26 SÍ están en la bodega de ML, pero en RETIRO (ACC-0441-PLA-21PZ 25, TEC-0796-NEG 1; la solicitud de retiro es del
+  29-sep 20:59): ML las recibió y nunca las puso a la venta. Regresan a bodega y entran por Odoo con una recepción.
+- 10 SÍ llegaron (TEC-0107-RO-NE-4CE 9, TEC-1375-MET 1): parte de la recepción vino en avisos de AJUSTE, que no cuentan
+  como llegada.
+- 1 no aparece (TEC-0383-MET: 30 enviadas, 29 llegadas y 29 vendidas, 0 en FULL): ésa sí es para reclamar.
+
+**Qué hace** (`services/fulfillment_ml_inventario.py`, nuevo; `GET /api/fulfillment/envios/{id}/ml`):
+- Sólo para un envío a FULL ya validado con renglones donde enviadas > llegadas. Por SKU toma su publicación FULL (la
+  fila que cuenta, `full_publicaciones`) y lee EN VIVO, sólo GET: `/items?attributes=id,inventory_id` →
+  `/inventories/{id}/stock/fulfillment` (vendible, no vendible y su motivo: withdrawal, damaged, lost…).
+- Lo cruza con lo vendido por FULL desde la llegada —el MAYOR entre `sales_daily_completa` y los avisos de venta menos
+  cancelaciones de `fanout_log`, porque las ventas por día dejaban fuera alguna (TEC-0383-MET: 28 contra 29)— y con el
+  stock FULL que ya había antes del envío (`listing_history`).
+- Un veredicto por renglón: `en_retiro` · `no_vendible` · `llego_sin_aviso` (FULL + vendido − lo de antes ≥ enviado) ·
+  `no_aparece` (con cuántas) · `sin_publicacion` · `sin_dato` (ML no contestó). Va `aprox` si no se sabe el stock de
+  antes, o si salió después otra orden del mismo SKU a la misma cuenta (el número de ML ya mezcla las dos).
+- 10 min de memoria por publicación; una falla de ML no se recuerda (se reintenta). Nada se guarda. httpx y kubera
+  corren en un hilo (regla 11). El token es el del backend (`meli._access_token`; al 401, `refrescar_token`).
+
+**En el panel** (Fulfillment › Envíos, detalle de un envío con faltantes): una nota «Lo que falta, según Mercado Libre
+en vivo…» y, debajo del estado de cada renglón, lo que dice ML — «ML: 25 en retiro · regresan a bodega», «ML: llegaron
+· 48 a la venta + 5 vendidas», «ML: no tiene 1 · para reclamar»—; el detalle (lo que había antes, por qué es
+aproximado) va en el tooltip. La consulta sale sola al abrir el envío.
+
+Sin banderas y sin escrituras. 9 pruebas nuevas (`tests/test_fulfillment_ml_inventario.py`); el backend completo en
+verde; tsc y npm run build limpios.
+
 ### v0.616.0 — Temu: «a la venta» es 2/8, no 4/7 — las etiquetas salen de los pedidos (solo lectura)
 
 Eduardo, 2-oct: *"Corrige también las etiquetas de Temu en Publicaciones"* (vista previa en el sandbox antes de subir).

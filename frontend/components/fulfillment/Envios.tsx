@@ -28,7 +28,7 @@ import {
   BotonCerrar, Ceja, ChipCanal, ChipFuente, FONDO_RAYADO, Rail, RailLinea, Tarjeta, Ventana, fecha, num, pasosDe, tasaDe,
 } from "./ui";
 import type { Semana } from "./semana";
-import type { Envio, EnvioConLineas, LineaOdoo } from "./tipos";
+import type { Envio, EnvioConLineas, LineaOdoo, MlFaltantes, VeredictoMl } from "./tipos";
 
 const POR_PAGINA = 40;
 
@@ -253,6 +253,8 @@ export function DetalleEnvioModal({ envio: base, onCerrar }: { envio: Envio; onC
   const [detalle, setDetalle] = useState<EnvioConLineas | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sku, setSku] = useState<string | null>(null);
+  const [ml, setMl] = useState<MlFaltantes | null>(null);
+  const [mlLeyendo, setMlLeyendo] = useState(false);
 
   useEffect(() => {
     if (base.id === undefined) return;
@@ -268,6 +270,23 @@ export function DetalleEnvioModal({ envio: base, onCerrar }: { envio: Envio; onC
       .catch((e: unknown) => { if (vivo) setError(e instanceof Error ? e.message : String(e)); });
     return () => { vivo = false; };
   }, [base.id]);
+
+  // Un envío validado a FULL con renglones a los que les falta algo: se le pregunta a
+  // Mercado Libre, en vivo, qué pasó con cada uno (en retiro, llegó sin aviso, no está).
+  const conFaltantes = !!detalle && detalle.canal === "meli" && detalle.estado_odoo === "done" && !!detalle.cuenta
+    && detalle.lineas.some((l) => (l.enviadas ?? 0) > (l.llegadas ?? 0));
+  useEffect(() => {
+    if (!conFaltantes || base.id === undefined) return;
+    let vivo = true;
+    setMl(null);
+    setMlLeyendo(true);
+    fetchSesion(`${API_BASE}/api/fulfillment/envios/${base.id}/ml`, { cache: "no-store" })
+      .then(async (r) => (r.ok ? (r.json() as Promise<MlFaltantes>) : { ok: false, motivo: `HTTP ${r.status}` }))
+      .then((d) => { if (vivo) setMl(d); })
+      .catch((e: unknown) => { if (vivo) setMl({ ok: false, motivo: e instanceof Error ? e.message : String(e) }); })
+      .finally(() => { if (vivo) setMlLeyendo(false); });
+    return () => { vivo = false; };
+  }, [conFaltantes, base.id]);
 
   const e = detalle ?? base;
   const lineas = detalle?.lineas ?? [];
@@ -343,6 +362,14 @@ export function DetalleEnvioModal({ envio: base, onCerrar }: { envio: Envio; onC
 
       {/* ── los SKUs ───────────────────────────────────────────── */}
       <div className="border-t border-slate-100 px-6 py-4">
+        {conFaltantes && (
+          <p className="mb-3 rounded-lg border border-indigo-100 bg-indigo-50/60 px-3 py-2 text-[11.5px] text-indigo-900">
+            {mlLeyendo ? "Preguntándole a Mercado Libre por las piezas que faltan…"
+              : ml?.ok ? <>Lo que falta, según Mercado Libre <b>en vivo</b> (inventario FULL de cada SKU, consultado
+                  {" "}{ml.consultado ? fecha({ ts: ml.consultado }) : "ahora"}): debajo de «Qué pasó».</>
+                : `No se pudo preguntar a Mercado Libre${ml?.motivo ? ` (${ml.motivo})` : ""}.`}
+          </p>
+        )}
         {error ? (
           <p className="text-[12.5px] text-rose-700">No se pudieron leer los renglones: <code className="font-mono">{error}</code></p>
         ) : (
@@ -387,7 +414,10 @@ export function DetalleEnvioModal({ envio: base, onCerrar }: { envio: Envio; onC
                         ? (l.llegadas ? num(l.llegadas) : (l.pedidas > 0 || l.enviadas ? <span className="font-normal text-slate-300">0</span> : null))
                         : (l.piezas_llegadas ? num(l.piezas_llegadas) : sinDato("—"))}
                     </td>
-                    <td className="py-2 pl-4 text-[11.5px]"><EstadoLinea l={l} /></td>
+                    <td className="py-2 pl-4 text-[11.5px]">
+                      <EstadoLinea l={l} />
+                      {ml?.lineas?.[l.sku] && <LineaMl v={ml.lineas[l.sku]} />}
+                    </td>
                     <td className="py-2 text-right font-mono text-[11.5px] text-emerald-700"
                         title={l.llegada_ultima && l.llegada_ultima !== l.llegada ? `última tanda: ${fecha({ ts: l.llegada_ultima })}` : undefined}>
                       {l.llegada ? fecha({ ts: l.llegada, aprox: !avisos }) : sinDato(`Sin llegada a ${almacen}.`)}
@@ -480,6 +510,33 @@ function EstadoLinea({ l }: { l: LineaOdoo }) {
     default:
       return <span className="text-slate-300">—</span>;
   }
+}
+
+const MOTIVO_ML: Record<string, string> = {
+  withdrawal: "en retiro", damaged: "dañadas", lost: "perdidas", quarantine: "en cuarentena",
+  transfer: "en traslado", noFiscalCoverage: "sin cobertura fiscal", internal_process: "en proceso interno",
+  not_supported: "no admitidas",
+};
+
+/** Lo que dice Mercado Libre de un renglón con faltantes, debajo de su estado. */
+function LineaMl({ v }: { v: VeredictoMl }) {
+  const motivos = Object.entries(v.detalle ?? {}).map(([k, n]) => `${num(n)} ${MOTIVO_ML[k] ?? k}`).join(", ");
+  const [cls, texto] = ({
+    en_retiro: ["text-orange-700", `ML: ${num(v.retiro)} en retiro · regresan a bodega`],
+    no_vendible: ["text-amber-700", `ML: no vendibles (${motivos})`],
+    llego_sin_aviso: ["text-emerald-700",
+      `ML: llegaron · ${num(v.disponible)} a la venta${v.vendidas ? ` + ${num(v.vendidas)} vendidas` : ""}`],
+    no_aparece: ["text-rose-700", `ML: no tiene ${num(v.no_aparecen ?? v.faltan)} · para reclamar`],
+    sin_publicacion: ["text-slate-500", "sin publicación FULL en la cuenta"],
+    sin_dato: ["text-slate-400", "ML no contestó"],
+  } as Record<VeredictoMl["veredicto"], [string, string]>)[v.veredicto];
+  const ayuda = `${v.texto}.${v.antes != null ? ` Había ${v.antes} en FULL antes del envío.` : ""}`
+    + (v.aprox ? " Aproximado: no se sabe cuánto había antes, o salió otra orden del mismo SKU después." : "");
+  return (
+    <div className={`mt-0.5 cursor-help text-[11px] font-semibold ${cls}`} title={ayuda}>
+      {texto}{v.aprox ? " ~" : ""}
+    </div>
+  );
 }
 
 function Dato({ t, v }: { t: string; v: string }) {
