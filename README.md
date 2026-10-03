@@ -1001,6 +1001,52 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.618.0 — Fan-out: lo que TikTok o Temu ofrecen de MÁS se baja al número de Woo tras cada censo; nunca se sube nada
+
+Eduardo, 2-oct: *"¿No puede ser esto peligroso en caso de que se haga sobreventa?"* → *"Sí, ármalo en sandbox"* →
+*"Sí, súbelo después de la próxima pasada y enciéndelo"*.
+
+**El hueco.** El fan-out sólo escribe cuando cambia Woo. Pero TikTok y Temu también mueven su número solos: un pedido sin
+pagar aparta piezas y, si se cancela, el canal las devuelve encima de lo que el fan-out ya había escrito. Nada lo
+corregía hasta el siguiente movimiento del SKU. Medido en producción (14 días):
+- Temu quedó por encima de Woo 51 veces (353 pzs de más, 37 h en promedio hasta corregirse), 8 de ellas con Woo en 0;
+  TikTok, 4 veces (19 pzs).
+- DEC-0078-PLA: Woo en 0 desde el 19-sep; Temu subió solo a 33 y a 39 (21 y 22-sep) y el 24-sep alguien compró 39. Se
+  surtió hasta que llegó mercancía (PICK el 28-sep, salida el 1-oct).
+- MASC-0057-ROJ: Temu volvió a «a la venta» con 1 y Woo en 0; se vendió el 29-sep.
+- DEC-0015-ROJ (2-oct): el fan-out le dejó 1,226 a las 14:18 y a las 15:06 Temu marcaba 1,233: un pedido de 7 apartado
+  y cancelado sin pagar (las tres ventas del SKU en espera de guía siguen vivas: lo confirmó el vigilante de
+  cancelaciones en simulación).
+Los censos sí lo veían («cambió el canal» en la matriz), pero sólo lo anotaban.
+
+**El arreglo** (`services/fanout_excedentes.py`, nuevo):
+- Al terminar cada censo de TikTok o Temu, las publicaciones de ese canal cuyo stock recién leído supera la foto de Woo
+  de stock_watch —las de poco stock primero; tope `FANOUT_EXCEDENTES_TOPE` = 100— pasan por `fanout_stock.bajar`: el
+  mismo plan del fan-out con Woo EN VIVO y, si el canal sigue arriba del objetivo, se le escribe el objetivo SÓLO a ese
+  canal.
+- **Sólo baja.** Un canal por debajo de Woo suele ser un pedido sin pagar apartado: subirlo liberaría esa pieza.
+  `_escribir_temu` y `_escribir_tiktok` reciben `solo_bajar`: releen el canal en vivo, no escriben si ya tiene lo mismo o
+  menos, y Temu se detiene si tras bajar la relectura queda por debajo (una venta en medio).
+- Mismas reglas que el fan-out (destinos, borradores de Temu, `FANOUT_CANALES`, `FANOUT_TIKTOK`/`FANOUT_TEMU`,
+  `FANOUT_RESERVA`, `FANOUT_DRY_RUN`) y la misma bitácora: `ops.fanout_log` con motivo `excedente:<canal>`. En la
+  trazabilidad del SKU se ve «Bajada: el canal ofrecía de más»; en la página en vivo, «Temu ofrecía de más».
+- `GET /api/fanout/excedentes` (configuración, última vuelta y qué está arriba ahora; solo lee) y
+  `POST /api/fanout/excedentes?canal=` (una vuelta ya; respeta las banderas).
+- Bandera `FANOUT_EXCEDENTES_ENABLED` (nace apagada). Qué tan seguido se mira lo da el censo de cada canal
+  (`TEMU_CENSO_MIN`, `TIKTOK_CENSO_MIN`).
+
+**En el sandbox** (datos de producción del 2-oct a las 17:58, en simulación y con los escritores bloqueados): Temu tenía
+15 publicaciones arriba de Woo → bajaría las 3 que están a la venta (DEC-0015-ROJ 1,233→1,226, CAM-0030-QUE 138→137,
+COM-0081-ROS 172→171); las otras 12 son borradores, que Temu no deja editar (algunos con números viejos y Woo en 0:
+TEC-0864-NEG 42, JAR-0031-NEG 40) y se corrigen en el primer censo después de publicarlos. TikTok: 1 (COM-0081-ROS
+172→171).
+
+**Para encenderla** (Eduardo pidió encenderla al publicar): `FANOUT_EXCEDENTES_ENABLED=true`, `TEMU_CENSO_MIN` 240 → 60 y
+`TIKTOK_CENSO_MIN` 120 → 60 — cada censo cuesta unas 8 llamadas en Temu y unas 13 en TikTok —, así una sobreoferta dura
+a lo más una hora. Reversa: `FANOUT_EXCEDENTES_ENABLED=false`, sin deploy.
+
+19 pruebas nuevas (`tests/test_fanout_excedentes.py`); suite del backend en verde; tsc y npm run build limpios.
+
 ### v0.617.0 — Envíos a FULL: lo que «falta» se le pregunta a Mercado Libre en vivo — en retiro, llegó sin aviso o no aparece (solo lectura)
 
 Eduardo, 2-oct: *"arma lo del problema del panel, muéstrame el cambio antes de subirlo"* (vista previa en el sandbox con

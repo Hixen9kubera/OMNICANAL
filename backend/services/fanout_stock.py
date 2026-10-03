@@ -366,6 +366,10 @@ def _destinos(sku: str) -> list[dict[str, Any]]:
 
 # ── Escritores por canal (solo se usan FUERA de dry-run) ─────────────────────
 
+# Lo que contestan los escritores con `solo_bajar` (excedentes) cuando el canal YA
+# tiene lo mismo o menos que el objetivo: no escribieron nada, a propósito.
+NO_BAJA = "no se baja"
+
 def _escribir_ml(cuenta: str, item_id: str, cantidad: int) -> tuple[bool, str]:
     """
     PUT del stock a una publicación de Mercado Libre.
@@ -501,7 +505,8 @@ def _en_hilo(corutina_factory, etiqueta: str, timeout: int = 60):
         return ex.submit(lambda: asyncio.run(corutina_factory())).result(timeout=timeout)
 
 
-def _escribir_tiktok(cuenta: str, item_id: str, cantidad: int) -> tuple[bool, str]:
+def _escribir_tiktok(cuenta: str, item_id: str, cantidad: int,
+                     solo_bajar: bool = False) -> tuple[bool, str]:
     """
     Actualiza el stock de UN producto en TikTok Shop.
 
@@ -515,6 +520,9 @@ def _escribir_tiktok(cuenta: str, item_id: str, cantidad: int) -> tuple[bool, st
        correcta: si TikTok recreó la variante, el id nuevo se toma solo.
     2. **El `warehouse_id` de VENTAS.** Hay dos almacenes y el otro es el de
        devoluciones; escribirle stock a ese no da error y no vende nada.
+
+    Con `solo_bajar` (excedentes) se relee ese almacén en vivo y no se escribe si
+    TikTok ya tiene lo mismo o menos: subir liberaría lo que el canal apartó.
     """
     from services import tiktok as tk
 
@@ -534,6 +542,13 @@ def _escribir_tiktok(cuenta: str, item_id: str, cantidad: int) -> tuple[bool, st
         sku_id = str(skus[0].get("id") or "")
         if not sku_id:
             return False, "la variante de TikTok no trae id"
+        if solo_bajar:
+            vivo = next((i.get("quantity") for i in (skus[0].get("inventory") or [])
+                         if str(i.get("warehouse_id") or "") == _ALMACEN_VENTAS_TIKTOK), None)
+            if vivo is None:
+                return False, "stock vivo de TikTok ilegible (no se baja a ciegas)"
+            if int(vivo) <= int(cantidad):
+                return True, f"{NO_BAJA}: TikTok tiene {int(vivo)} en vivo (objetivo {int(cantidad)})"
         cuerpo = {"skus": [{"id": sku_id,
                             "inventory": [{"warehouse_id": _ALMACEN_VENTAS_TIKTOK,
                                            "quantity": int(cantidad)}]}]}
@@ -579,7 +594,8 @@ _TEMU_VENTANA_RANCIA_S = 90.0
 _temu_escrito_en: dict[int, float] = {}   # goodsId → epoch de nuestra última escritura
 
 
-def _escribir_temu(cuenta: str, item_id: str, cantidad: int) -> tuple[bool, str]:
+def _escribir_temu(cuenta: str, item_id: str, cantidad: int,
+                   solo_bajar: bool = False) -> tuple[bool, str]:
     """
     Stock a UN producto de Temu (canal DROP-only, decisión 18-ago).
 
@@ -604,6 +620,8 @@ def _escribir_temu(cuenta: str, item_id: str, cantidad: int) -> tuple[bool, str]
        más caro que unos segundos.
     4. La carrera venta-entre-lectura-y-escritura se autocorrige: esa venta
        regresa por pedidos (M2E) y dispara otra pasada con el Woo ya nuevo.
+    5. Con `solo_bajar` (excedentes) nunca sube: si en vivo ya tiene lo mismo o
+       menos no escribe, y si tras bajar la relectura queda por debajo, se detiene.
     """
     import time as _t
 
@@ -643,6 +661,8 @@ def _escribir_temu(cuenta: str, item_id: str, cantidad: int) -> tuple[bool, str]
             # definido (hoy 151/152 del catálogo tienen 1 sola). Falla cerrada.
             return False, f"{len(ids)} variantes — repartir stock no está definido"
         sku_id, inicial, escrituras = int(ids[0]), int(actual), 0
+        if solo_bajar and int(actual) <= objetivo:
+            return True, f"{NO_BAJA}: Temu tiene {int(actual)} en vivo (objetivo {objetivo})"
 
         # Atajo seguro: si NOSOTROS no tocamos este goods hace poco, la lectura
         # es de fiar y un objetivo ya cumplido no necesita verificación.
@@ -652,6 +672,9 @@ def _escribir_temu(cuenta: str, item_id: str, cantidad: int) -> tuple[bool, str]
 
         for intento in range(_TEMU_INTENTOS):
             diff = objetivo - int(actual)
+            if solo_bajar and diff > 0:
+                # Quedó por DEBAJO (una venta, o la relectura rancia): este modo no sube.
+                return True, f"ok ({inicial}→{int(actual)}; no se sube a {objetivo})"
             if diff != 0:
                 r = _en_hilo(
                     lambda d=diff: tm.llamar("bg.local.goods.stock.edit", {
@@ -874,6 +897,71 @@ def _aplicar(sku: str, motivo: str) -> None:
     log.info("fan-out %s%s: stock=%s objetivo=%s → %d destino(s) a escribir",
              sku, " [DRY-RUN]" if simulacion else "", p.get("stock_drop"),
              p.get("objetivo"), escrituras)
+
+
+_ESCRITORES_SOLO_BAJAR = {"tiktok": _escribir_tiktok, "temu": _escribir_temu}
+
+
+def bajar(sku: str, canal: str, motivo: str) -> dict[str, Any]:
+    """
+    Le escribe el objetivo SÓLO a las publicaciones de `canal` que tienen MÁS que él
+    (`fanout_excedentes`: el canal subió su número por su cuenta). Nunca sube nada:
+    lo que está por debajo suele ser un pedido sin pagar que el canal apartó, y
+    escribirle el número de Woo liberaría esa pieza. Mismo plan, candados y bitácora
+    que `_aplicar`; el escritor relee el canal en vivo y se niega a subir.
+
+    `resultado`: bajado · simulado (dry-run) · sin_excedente · sin_cambio (en vivo ya
+    no estaba arriba) · omitido (el plan no le escribe a ese destino) · error.
+    """
+    canal = (canal or "").lower()
+    escritor = _ESCRITORES_SOLO_BAJAR.get(canal)
+    if escritor is None:
+        return {"sku": sku, "resultado": "omitido", "detalle": f"'{canal}' no baja excedentes"}
+    inicio = time.time()
+    p = plan(sku)
+    if not p.get("ok"):
+        return {"sku": sku, "resultado": "omitido", "detalle": p.get("motivo")}
+    arriba = [a for a in p["acciones"] if (a.get("canal") or "").lower() == canal
+              and a.get("stock_actual_canal") is not None and a["stock_actual_canal"] > a["objetivo"]]
+    if not arriba:
+        return {"sku": sku, "resultado": "sin_excedente", "objetivo": p.get("objetivo")}
+    simulacion = dry_run()
+    resultados: list[dict[str, Any]] = []
+    salida = "omitido"
+    for a in arriba:
+        if a["accion"] != "escribir":
+            resultados.append(a)
+            continue
+        if simulacion:
+            _contadores["simuladas"] += 1
+            resultados.append({**a, "resultado": "DRY-RUN (no se escribió)"})
+            salida = "simulado"
+            continue
+        ok, det = escritor(a["cuenta"], a["item_id"], a["objetivo"], solo_bajar=True)
+        if ok and det.startswith(NO_BAJA):
+            _contadores["sin_cambio"] += 1
+            resultados.append({**a, "accion": "sin_cambio", "omitido_por": det})
+            if salida == "omitido":
+                salida = "sin_cambio"
+        else:
+            _contadores["escrituras" if ok else "errores"] += 1
+            resultados.append({**a, "resultado": "ok" if ok else f"ERROR: {det}"})
+            salida = "bajado" if ok else "error"
+    if salida in ("bajado", "simulado", "error"):
+        ahora = datetime.now(timezone.utc)
+        evento = {
+            "ts": ahora.isoformat(timespec="seconds"), "ts_dt": ahora.replace(tzinfo=None),
+            "sku": sku, "motivo": motivo, "dry_run": simulacion,
+            "stock_drop": p.get("stock_drop"), "objetivo": p.get("objetivo"),
+            "ok": True, "detalle": None, "acciones": resultados,
+            "ms": round((time.time() - inicio) * 1000, 1),
+        }
+        _eventos.appendleft({k: v for k, v in evento.items() if k != "ts_dt"})
+        _persistir(evento)
+        log.info("fan-out %s: %s ofrecía %s, objetivo %s → %s", sku, canal,
+                 arriba[0]["stock_actual_canal"], p.get("objetivo"), salida)
+    return {"sku": sku, "resultado": salida, "antes": arriba[0]["stock_actual_canal"],
+            "objetivo": p.get("objetivo"), "acciones": resultados}
 
 
 # ── Cola con debounce ────────────────────────────────────────────────────────

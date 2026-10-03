@@ -190,6 +190,13 @@ async def censar() -> dict[str, Any]:
     salida = {"ok": True, "productos": len(productos), "escritas": escritas,
               "activate": activate, "ilegibles": ilegibles, "paginas": paginas,
               "huerfanos": len(huerfanos), "huerfanos_skus": huerfanos[:20]}
+    # Lo que el canal ofrece de MÁS (subió solo: un pedido sin pagar que se canceló)
+    # se baja al número de Woo ya, no hasta el siguiente movimiento del SKU.
+    try:
+        from services import fanout_excedentes
+        salida["excedentes"] = await asyncio.to_thread(fanout_excedentes.revisar, CANAL)
+    except Exception as exc:  # noqa: BLE001 — el censo ya quedó escrito
+        log.warning("censo %s: excedentes: %s", CANAL, exc)
     log.info("censo tiktok: %s", salida)
     if huerfanos:
         log.warning("censo tiktok: %d SKU(s) publicados SIN producto en el "

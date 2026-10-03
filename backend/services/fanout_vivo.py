@@ -173,6 +173,9 @@ def _origen(motivo: str, woo: dict | None) -> tuple[str, str, int | None, int | 
     if mot.startswith("cambio de stock en Woo"):
         txt = f"Woo {antes} → {despues}" if antes is not None else "cambio en Woo"
         return "woo", txt, antes, despues
+    if mot.startswith("excedente:"):
+        canal = {"tiktok": "TikTok", "temu": "Temu"}.get(mot.split(":", 1)[1], mot.split(":", 1)[1])
+        return "otro", f"{canal} ofrecía de más", None, None
     if mot.lower().startswith("venta"):
         partes = mot.split()
         cuenta = partes[1] if len(partes) > 1 else ""
@@ -1310,7 +1313,8 @@ def historia(sku: str, dias: int = 14, limite: int = 400) -> dict[str, Any]:
         motivo = filas[0]["motivo"]
         bajo = motivo.lower()
         origen = ("venta" if bajo.startswith("venta") else "recuperado" if bajo.startswith("recuperado")
-                  else "reenvio" if "reenv" in bajo else "cambio")
+                  else "excedente" if bajo.startswith("excedente") else "reenvio" if "reenv" in bajo
+                  else "cambio")
         items.append({"tipo": "reparto", "_t": ts, "ts": ts.isoformat(), "fin": ts.isoformat(),
                       "hora": filas[0]["hora"], "motivo": motivo[:140], "origen": origen, "tono": tono,
                       "destinos": destinos, "sin_destinos": any(f["accion"] == "sin_destinos" for f in filas)})

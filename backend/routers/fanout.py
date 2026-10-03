@@ -5,6 +5,9 @@ fanout.py — Monitoreo y simulación del fan-out de stock DROP.
   GET  /api/fanout/recuperar        → el recuperador: configuración, última vuelta y
                                       qué reencolaría ahora mismo (solo lee).
   POST /api/fanout/recuperar        → corre una vuelta ya (respeta sus banderas).
+  GET  /api/fanout/excedentes       → TikTok/Temu por ENCIMA de Woo: configuración,
+                                      última vuelta y qué bajaría ahora (solo lee).
+  POST /api/fanout/excedentes?canal= → corre una vuelta ya (respeta sus banderas).
   GET  /api/fanout/vivo?desde_id=   → la página en vivo: veredicto, cadena y cambios.
   GET  /api/fanout/matriz           → SKUs × canales contra Woo.
   GET  /api/fanout/rastro?sku=&fin= → un cambio salto por salto.
@@ -55,6 +58,31 @@ def recuperar():
     FANOUT_ENABLED: con cualquiera apagada, contesta por qué no hizo nada."""
     from services import fanout_recuperar
     return fanout_recuperar.revisar()
+
+
+@router.get("/excedentes")
+def excedentes_estado():
+    """
+    Los excedentes de TikTok y Temu (services/fanout_excedentes.py): su
+    configuración, su última vuelta y qué publicaciones están AHORA por encima de
+    la foto de Woo. Solo lee: sirve para ver el hueco antes de encender la bandera.
+    """
+    from services import fanout_excedentes as fe
+    est = fe.estado()
+    try:
+        est["ahora"] = {c: [{"sku": f["sku"], "canal": f["canal_stock"], "woo": f["stock_woo"]}
+                            for f in fe.candidatos(c, fe._tope())] for c in fe.CANALES}
+    except Exception as exc:  # noqa: BLE001 — la consulta es informativa
+        est["ahora"] = {"error": str(exc)[:200]}
+    return est
+
+
+@router.post("/excedentes")
+def excedentes(canal: str = Query(..., description="tiktok | temu")):
+    """Corre una vuelta YA para un canal. Respeta FANOUT_EXCEDENTES_ENABLED,
+    FANOUT_ENABLED y FANOUT_DRY_RUN: con cualquiera apagada, dice por qué no hizo nada."""
+    from services import fanout_excedentes
+    return fanout_excedentes.revisar(canal)
 
 
 @router.get("/vivo")

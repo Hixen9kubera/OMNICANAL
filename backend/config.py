@@ -1271,6 +1271,14 @@ class Settings(BaseSettings):
     fanout_recuperar_horas: int = 6         # hasta qué antigüedad recupera
     fanout_recuperar_gracia_min: int = 15   # lo más nuevo puede seguir en la cola
     fanout_recuperar_tope: int = 300        # SKUs por vuelta
+    # Excedentes de TikTok/Temu (services/fanout_excedentes.py). Esos canales suben
+    # su número SOLOS cuando se cancela un pedido sin pagar, y el fan-out no se
+    # entera hasta el siguiente movimiento del SKU (Temu: 37 h en promedio;
+    # DEC-0078-PLA vendió 39 con Woo en 0 el 24-sep). Al terminar cada censo, lo que
+    # esté POR ENCIMA de Woo se baja al número de Woo; nunca se sube nada. Nace
+    # APAGADO: escribe stock en los canales (regla 3 de CLAUDE.md — dale de Brandon).
+    fanout_excedentes_enabled: bool = False
+    fanout_excedentes_tope: int = 100       # publicaciones por censo
 
     # ── Movimientos de bodega FULL / FBA → Woo ────────────────────
     # Cuando se manda mercancía a FULL, esas piezas SALEN del almacén propio y

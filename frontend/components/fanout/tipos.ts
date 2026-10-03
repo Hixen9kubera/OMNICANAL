@@ -241,7 +241,7 @@ export type ItemTraza =
   | { tipo: "woo"; ts: string; hora: string; origen: "odoo" | "woo"; de: number | null; a: number | null;
       fallo: boolean; motivo: string }
   | { tipo: "reparto"; ts: string; fin: string; hora: string; motivo: string;
-      origen: "venta" | "recuperado" | "reenvio" | "cambio"; tono: Tono; destinos: Destino[]; sin_destinos: boolean }
+      origen: "venta" | "recuperado" | "excedente" | "reenvio" | "cambio"; tono: Tono; destinos: Destino[]; sin_destinos: boolean }
   | { tipo: "canal"; ts: string; hora: string; canal: string; nombre: string; campo: string; via: string;
       relacion: "coincide" | "su_cuenta" | "sin_escritura" | "estado";
       de?: number | null; a?: number | null; ref?: { valor: number | null; hora: string } | null;
