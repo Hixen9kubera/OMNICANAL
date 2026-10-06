@@ -27,6 +27,7 @@ from routers import (alertas as r_alertas, auth, automatizacion, canales, checkl
                      costos_publicados, flujo, monitoreo,
                      crear, fanout,
                      fba, fulfillment, fulfillment_envios, fulfillment_full, ia, imagenes, inventario, investigacion, metricas, migracion,
+                     ordenes_venta,
                      productos, publicaciones, publicar, radar_precios, resolver, sync, ventas,
                      tiktok, webhooks)
 from services import db, odoo, scheduler, woocommerce
@@ -176,6 +177,37 @@ async def lifespan(app: FastAPI):
              settings.odoo_ventas_confirmar,
              sorted(_ov_canales) or "ninguno",
              settings.odoo_ventas_canales)
+    # Las órdenes de venta PROPIAS (Inventario → Órdenes de venta). Por la misma
+    # razón que las de arriba se imprime el estado REAL, no la variable: lo que
+    # manda es la FILA `ordenes_venta` de `ops.automatizacion_flags` (la enciende
+    # un acta); `ORDENES_VENTA_ENABLED` es sólo su respaldo, vale `false`, y se
+    # lee únicamente cuando la fila no existe. De esa bandera depende que
+    # confirmar APARTE stock, que se pueda entregar y que el barrido de
+    # cancelaciones del canal haga algo (el job corre siempre y la pregunta en
+    # cada pasada). `ov_generacion_auto` es otra fila: la dice la propia pestaña.
+    #
+    # Va en una tarea aparte y no con `await`: lee Postgres, y con kubera caída
+    # serían otros 10 s de arranque sólo para escribir una línea de log.
+    async def _decir_ordenes_venta() -> None:
+        from services import ordenes_venta as _ovp
+        b = await asyncio.to_thread(_ovp.estado_bandera, _ovp.BANDERA_MODULO, True)  # nunca lanza
+        if b["persistido"]:
+            origen = f"fila de ops.automatizacion_flags, por {b['actualizado_por'] or '?'}"
+        elif b["encendido"]:
+            # Sin fila y encendida: la encendió la VARIABLE, que debe valer false
+            # (la fila la crea el acta). Se dice tal cual, para que se vea.
+            origen = "SIN FILA: la enciende el respaldo ORDENES_VENTA_ENABLED=true, que debe ser false"
+        else:
+            origen = ("sin fila, o no se pudo leer; respaldo ORDENES_VENTA_ENABLED="
+                      f"{str(settings.ordenes_venta_enabled).lower()}")
+        log.info("Órdenes de venta propias · bandera «ordenes_venta»: %s (%s)",
+                 "ENCENDIDA · confirmar aparta, entregar y el barrido de cancelaciones del canal"
+                 if b["encendido"]
+                 else "apagada · MODO PRUEBA: sólo borradores, sin apartar ni barrido", origen)
+    if settings.supabase_db_url:
+        app.state.ordenes_venta_estado = asyncio.create_task(_decir_ordenes_venta())
+    else:
+        log.info("Órdenes de venta propias: sin kubera configurada (SUPABASE_DB_URL); apagadas.")
     yield
     scheduler.detener()
 
@@ -188,7 +220,7 @@ app = FastAPI(
         "Temu, Shein)."
     ),
 
-    version="0.618.0",
+    version="0.619.0",
     lifespan=lifespan,
     # /docs, /redoc y /openapi.json publican el mapa COMPLETO de los 84
     # endpoints: rutas, parámetros y esquemas. Con la API abierta eso es un
@@ -286,6 +318,11 @@ app.include_router(investigacion.router)
 # y el piso por clase. SOLO LECTURA y sólo admin con sesión — ver la
 # cabecera de routers/radar_precios.py.
 app.include_router(radar_precios.router)
+# Inventario · Órdenes de venta PROPIAS (folio OV-00001…): el documento que
+# hasta hoy sólo vivía en Odoo. Sólo escribe en `ops.ov_*`; no toca Odoo, Woo
+# ni ningún marketplace. Confirmar/reservar/entregar, detrás de
+# ORDENES_VENTA_ENABLED — ver docs/ORDENES_VENTA.md.
+app.include_router(ordenes_venta.router)
 
 
 @app.get("/", tags=["meta"])
@@ -293,7 +330,7 @@ def raiz():
     return {
         "app": "OMNICANAL Â· Kubera",
 
-        "version": "0.618.0",
+        "version": "0.619.0",
         "docs": "/docs",
         "canales": [c["id"] for c in lista_canales()],
     }

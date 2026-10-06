@@ -28,6 +28,7 @@ import {
   Truck,
   Warehouse,
   ClipboardCheck,
+  ClipboardList,
   Radar,
 } from "lucide-react";
 import NotificationBell from "./NotificationBell";
@@ -124,7 +125,11 @@ const ITEMS: NavItem[] = [
   // pura, así que la ve todo el equipo (en rbac.py su GET es de `lectura`).
   // El CHECKLIST (24-sep, Brandon) es la segunda entrada: la validación de
   // almacén —atributos que exige ML, medidas, cajas y piezas— por lote semanal.
-  // Mismo molde de submenú que Análisis; las dos rutas son páginas autónomas.
+  // ÓRDENES DE VENTA (2-oct, Brandon) es la tercera: la orden PROPIA del panel
+  // —borrador, confirmar y reservar, entregar, cancelar—, que antes sólo vivía
+  // en Odoo. SIN soloAdmin: la captura un KAM y la entrega almacén; qué puede
+  // cada quien con cada orden lo decide el backend, no esta barra.
+  // Mismo molde de submenú que Análisis; las tres rutas son páginas autónomas.
   {
     id: "inventario", label: "Inventario", icon: Warehouse, href: "/inventario",
     submenu: [
@@ -132,6 +137,8 @@ const ITEMS: NavItem[] = [
         descripcion: "Existencias, empaque y trazabilidad por SKU" },
       { label: "Checklist", href: "/inventario/checklist", icon: ClipboardCheck,
         descripcion: "Validación de almacén: atributos de ML, medidas, cajas y piezas" },
+      { label: "Órdenes de venta", href: "/inventario/ordenes", icon: ClipboardList,
+        descripcion: "Borrador, reserva de stock, entrega y cancelación" },
     ],
   },
   { id: "crear", label: "Crear Productos", icon: PackagePlus, href: "/crear" },

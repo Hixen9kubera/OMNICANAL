@@ -1001,6 +1001,53 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.619.0 — Inventario → Órdenes de venta: la orden de venta PROPIA sobre el inventario de kubera (aparta todo o nada, entrega por renglón, «¿salió?» cuando el canal cancela en camino) — nace APAGADA
+
+Brandon, 2-oct (ClickUp «Generación de ordenes de venta PROPIA no de odoo en OMNICANAL»): *"generar un nuevo
+apartado dentro de inventario para gestionar todas las órdenes de venta… crear borrador, confirmar y reservar
+stock (el stock que se reserva es de nuestro Supabase, no de Odoo)"*. El 6-oct remitió a
+`docs/MIGRACION_0064_0065_GUIA_AGENTE.md`: el esquema lo rediseñó Eduardo (0064 revisada + 0065, plan v3) y el
+módulo se **reescribió contra ese contrato**. El diseño del 2-oct (reserva parcial contra la foto de Odoo,
+`ops.ov_stock`, «regresar a borrador») ya no existe.
+
+**Qué es.** El documento que le dice a Bodega qué surtir —hasta hoy sólo existía en Odoo— vive en kubera con
+folio `OV-00001…`: BORRADOR → CONFIRMADA (aparta stock en `ops.stock_almacen`, **todo o nada**, con la bodega
+**por renglón**) → DELIVERED (Bodega dice cuántas piezas salieron de cada renglón; cada salida queda en el libro
+`ops.stock_mov`). Si el canal cancela: CANCELADO y se suelta lo apartado; si ya había salido, **DELIVERED but
+CANCELLED** con la devolución pendiente; y si el canal canceló con el paquete en camino, la orden se marca y se
+le pregunta a Bodega **«¿salió?»**. Fuera de borrador el contenido es inmutable (trigger de la base): un error
+se resuelve cancelando, o un admin la borra y queda quién y por qué. Diseño: `docs/ORDENES_VENTA.md`.
+
+**Piezas.**
+- `services/ordenes_venta.py` — **único escritor de `ops.ov_*`**. Cada transición es UNA sentencia (constantes
+  `SQL_*`, 18) con `set local` de tiempos y `ops.exigir`, en el orden de candados de la guía §4.3; candado
+  optimista `rev` para las personas y compare-and-set por estado para el canal; errores clasificados por
+  `pgcode`/`constraint_name` (nunca por el texto) y traducidos a español. Si no alcanza el stock no aparta nada
+  y dice cuál: *«ACC-0250-NEG pide 4 y hay 2 libres en ENSAYO»*. No escribe en Odoo, Woo ni marketplaces.
+- `services/ov_auto.py` (job cada 3 min; decide por pasada con la bandera): sólo LEE `channel.orders` y la
+  bitácora de Automatización y aplica la cancelación del canal con `ordenes_venta.canal_cancelo`. Conservador:
+  si el canal vio la venta enviada, entregada o devuelta, no suelta el apartado: pregunta.
+- `routers/ordenes_venta.py` (`/api/ordenes-venta`, 20 rutas, todo en `to_thread`) + `services/ov_bus.py`: el
+  chat por orden es un long-poll asíncrono (la corrutina espera en memoria, sin hilo ni conexión).
+- Frontend `app/inventario/ordenes` + `components/ordenes/*`: tercera pestaña de Inventario; crear y ver son la
+  misma interfaz; bodega y `libre` por renglón; diálogo de entrega por renglón; aviso «¿Salió?»; chat y
+  bitácora; traza animada en UN Web Worker con `OffscreenCanvas` (se detiene sola; respaldo SVG).
+- Quién: `creado_por` + `creado_via` (`panel` / `api` / `claude` / `automatico`). Las sesiones de Claude mandan
+  `X-Origen: claude`.
+
+**El interruptor.** La bandera es la fila `ordenes_venta` de `ops.automatizacion_flags`; la única variable de
+entorno nueva, `ORDENES_VENTA_ENABLED` (false), es su RESPALDO. Apagada = modo prueba: sólo borradores, sin
+confirmar ni entregar, y el barrido no hace nada. Si la fila no se puede leer, vale apagada. Encenderla es flujo
+vivo: acta + regla 3.
+
+**Lo que NO hace todavía** (con dueño en `docs/ORDENES_VENTA.md` §9): las migraciones 0064/0065 **no están en
+producción** (van por acta y ANTES que este código; sin ellas la pestaña dice «faltan las migraciones» y nada
+truena); `inventario_libro` (sin él no hay cómo meter stock a una bodega de kubera desde la pantalla); el
+bucket de los PDF; las devoluciones (la orden sólo muestra `devolucion_estado`); el planeador que llamará a
+`crear_auto`; `stock_watch` leyendo kubera; las órdenes tipo `full`.
+
+**Verificado.** 1,862 pruebas del backend en verde (305 del módulo: unitarias, API con TestClient e integración contra un Postgres 16 local desechable con la 0064 y la 0065 aplicadas: ciclo completo, concurrencia, idempotencia, el canal y sus repeticiones, invariantes de la base tras cada prueba); 84 pruebas de frontend, `tsc` limpio y `next build` en verde; recorrido de punta a punta en Edge contra backend y base locales (crear → confirmar y apartar → chat → entrega por renglón → DELIVERED; «no alcanzó»; «¿salió?»). Revisión adversarial de tres lentes con verificador: 22 hallazgos confirmados (ninguno alto), 17 corregidos con su prueba; los 5 restantes están anotados como pendientes. No se probó contra el sandbox ni contra producción.
+
 ### v0.618.0 — Fan-out: lo que TikTok o Temu ofrecen de MÁS se baja al número de Woo tras cada censo; nunca se sube nada
 
 Eduardo, 2-oct: *"¿No puede ser esto peligroso en caso de que se haga sobreventa?"* → *"Sí, ármalo en sandbox"* →

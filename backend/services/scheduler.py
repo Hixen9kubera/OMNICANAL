@@ -857,6 +857,70 @@ def iniciar() -> None:
     else:
         log.info("Flujo del SKU APAGADO (INVENTARIO_FLUJO_ENABLED=%s, ODOO_URL=%s).",
                  settings.inventario_flujo_enabled, bool(settings.odoo_url))
+    # ÓRDENES DE VENTA PROPIAS · el barrido de cancelaciones del canal
+    # (services/ov_auto.py). Cruza cada orden viva ligada a una venta de
+    # marketplace con lo que el canal dice de esa venta y, si la canceló, se lo
+    # avisa al servicio: suelta el apartado, o deja la marca «¿salió?» si el
+    # paquete ya iba en camino, o abre la devolución si ya se había entregado.
+    #
+    # SÓLO LEE las tablas de ventas (channel.orders y la bitácora
+    # ops.odoo_sale_orders) y SÓLO ESCRIBE por `ordenes_venta.*` (ops.ov_* y el
+    # saldo de las bodegas de kubera): no toca Odoo, Woo, ningún marketplace ni
+    # pedidos_ml.
+    #
+    # EL JOB SE REGISTRA SIEMPRE Y DECIDE EN CADA PASADA. La bandera
+    # `ordenes_venta` es una FILA de ops.automatizacion_flags (la variable de
+    # entorno es sólo su respaldo): si el job se registrara según la variable
+    # al arrancar, apagar la fila no lo detendría hasta el siguiente reinicio
+    # —y encenderla no lo arrancaría—, que es justo lo que la fila vino a evitar
+    # (regla 12). Apagada no hace nada y NO escribe una línea por pasada: lo
+    # que cuesta es una lectura con caché de 30 s.
+    #
+    # Al terminar avisa al bus EN MEMORIA de cada orden que movió, para que el
+    # chat de quien la tenga abierta se entere sin esperar a que venza su
+    # petición. El aviso va aquí, en el loop, y no dentro del hilo.
+    #
+    # Todo el bloque va en su `try`: ahora corre SIEMPRE (antes sólo con la
+    # variable encendida, o sea nunca en producción), y es el último antes de
+    # `_scheduler.start()`. Si algo de este módulo fallara al registrarse, lo que
+    # no puede pasar es que se lleve con él a los jobs de arriba —ventas, stock,
+    # guías—: se dice y el scheduler arranca igual.
+    try:
+        from services import ordenes_venta as _ov_propias, ov_auto, ov_bus
+
+        async def _ov_auto() -> None:
+            try:
+                # Sin kubera configurada no hay ni bandera que leer: se calla, en
+                # vez de dejar un aviso de «no se pudo leer» cada 3 minutos.
+                if not settings.supabase_db_url:
+                    return
+                # Regla 11: las dos leen (y la segunda escribe) la base → a un hilo.
+                if not await asyncio.to_thread(_ov_propias.habilitado):
+                    return
+                r = await asyncio.to_thread(ov_auto.revisar)
+                for o in [*(r.get("canceladas") or []), *(r.get("marcadas") or [])]:
+                    ov_bus.avisar(o["id"])
+            except Exception as exc:  # noqa: BLE001 — nunca tumba al scheduler
+                # Sólo la clase: ninguna de las dos lanza por contrato, así que lo
+                # que llegue aquí es inesperado y su texto puede traer de todo.
+                log.warning("Barrido de órdenes de venta falló: %s", type(exc).__name__)
+
+        _scheduler.add_job(
+            _ov_auto,
+            "interval",
+            minutes=3,
+            id="ov_auto",
+            # Con zona (ver inventario_flujo) y a los 2 min del boot, detrás de
+            # los golpes del arranque.
+            next_run_time=datetime.now(timezone.utc) + timedelta(minutes=2),
+            max_instances=1,
+            coalesce=True,
+        )
+        log.info("Órdenes de venta propias: barrido de cancelaciones del canal cada 3 min; "
+                 "en cada pasada pregunta la bandera «ordenes_venta» (apagada no hace nada).")
+    except Exception:  # noqa: BLE001 — este módulo no detiene a los demás
+        log.exception("Órdenes de venta propias: NO se pudo registrar el barrido de "
+                      "cancelaciones; el resto del scheduler arranca igual.")
     _scheduler.start()
     if settings.sync_enabled:
         log.info("Sync programado cada %s min.", settings.sync_interval_min)

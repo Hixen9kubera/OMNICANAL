@@ -330,6 +330,29 @@ class Settings(BaseSettings):
     # la llave `fulfillment_crear_full`; esta variable es sólo el valor por
     # omisión cuando la fila no existe.
     fulfillment_crear_full: bool = False
+    # ── ÓRDENES DE VENTA PROPIAS (Inventario → Órdenes de venta) ──────────────
+    # La orden de venta de las bodegas de KUBERA (`ops.ov_*` y `ops.stock_*`,
+    # migraciones 0064 y 0065; contrato en docs/MIGRACION_0064_0065_GUIA_AGENTE.md).
+    #
+    # ⚠️ ESTA VARIABLE YA NO ES EL INTERRUPTOR: ES SU RESPALDO. El interruptor es
+    # la FILA `ordenes_venta` de `ops.automatizacion_flags` (revisión SEG-05),
+    # porque cambiar una variable en Railway reinicia el contenedor (regla 12) y
+    # una fila se apaga sin reinicio. La fila NO se siembra: la crea el acta que
+    # enciende el módulo, con su motivo. Esta variable sólo se lee cuando la fila
+    # NO EXISTE, y por eso tiene que valer `false`: ponerla en `true` encendería
+    # el módulo en cualquier ambiente sin acta. Y si la fila no se puede LEER
+    # (tabla ausente, kubera caída), el módulo se toma APAGADO, diga lo que diga
+    # esta variable: `services/ordenes_venta.py::habilitado`.
+    #
+    # APAGADO = MODO PRUEBA: se pueden crear, guardar y cancelar BORRADORES y
+    # chatear, pero NO confirmar (apartar stock en `ops.stock_almacen`) ni
+    # entregar. Cancelar, borrar y contestar «¿salió?» NO dependen del
+    # interruptor: sueltan stock o anotan lo que ya pasó, y poder hacerlo con el
+    # módulo apagado es justo lo que lo hace seguro de apagar. El barrido de
+    # cancelaciones del canal (`ov_auto.revisar`) pregunta el interruptor en cada
+    # pasada. La generación automática (`crear_auto`) es OTRA fila de la misma
+    # tabla, `ov_generacion_auto`, sin variable de respaldo: sin fila, apagada.
+    ordenes_venta_enabled: bool = False
     # LA VENTANA DE LA ESPERA, Y ES LA ÚNICA. Más allá de estos días la guía ya
     # no va a aparecer: la venta se marca `espera_caducada` —en rojo en el
     # panel, no desaparece— y deja de esconder stock.

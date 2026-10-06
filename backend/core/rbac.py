@@ -266,6 +266,25 @@ REGLAS: tuple[tuple[str, str, str], ...] = (
     ("GET", "/api/checklist", "lectura"),
     ("POST", "/api/checklist", "operador"),
     ("PUT", "/api/checklist", "operador"),
+    # Inventario · ÓRDENES DE VENTA propias (2-oct; contrato de la 0064/0065 el
+    # 6-oct): el documento que le dice a almacén qué surtir. Mirar la lista, el
+    # detalle y el chat no trae costo ni margen (trae el precio de la venta, que
+    # ya se ve en Ventas) → `lectura`. Crear y guardar un borrador, confirmar,
+    # entregar, contestar el «¿salió?», chatear y adjuntar un PDF es el trabajo
+    # de quien opera → `operador`. BORRAR (la orden o un PDF) → `admin`.
+    #
+    # Esto es SÓLO EL PISO POR VERBO. Los permisos finos dependen del ESTADO de
+    # la orden —un operador cancela su borrador pero no una confirmada; «salió
+    # tarde» (POST /salio-tarde) es un `POST` y es de admin— y esta tabla, que
+    # mira prefijos, no puede verlo: se deciden DENTRO del servicio
+    # (`services/ordenes_venta.permisos`), que contesta el 403 con su porqué.
+    # Ojo con el GET: BAJAR UN PDF también es GET, pero el servicio lo sube a
+    # `operador` (y a `admin` si la orden está borrada).
+    # Los cuatro verbos listados, porque la regla es por (método, prefijo).
+    ("GET", "/api/ordenes-venta", "lectura"),
+    ("POST", "/api/ordenes-venta", "operador"),
+    ("PUT", "/api/ordenes-venta", "operador"),
+    ("DELETE", "/api/ordenes-venta", "admin"),
 )
 
 # Índice ordenado por prefijo más largo: la regla específica gana.
