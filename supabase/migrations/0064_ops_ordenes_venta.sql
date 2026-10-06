@@ -5,8 +5,10 @@
 --        Plan v3 (5-oct-2026) con las correcciones de la revisión técnica.
 -- ═══════════════════════════════════════════════════════════════════════════
 --
--- Estado: SIN APLICAR (6-oct-2026). Probada en el SANDBOX solo dentro de una
--- transacción que termina en ROLLBACK:
+-- Estado: APLICADA en el SANDBOX (yvootpbz) el 6-oct-2026 09:08 UTC; SIN
+-- APLICAR en producción. Sobre lo aplicado: 54 pruebas OK y las 2 de
+-- concurrencia OK con --concurrencia-con-commit. Antes de aplicarla se probó
+-- dentro de una transacción que termina en ROLLBACK:
 --     backend/scripts/verificar_0064_0065.py --en-transaccion
 -- (55 pruebas OK, 0 fallas, con la 0065 y aplicadas dos veces, tras la
 -- segunda revisión de tres lentes; las 2 pruebas de concurrencia necesitan las
