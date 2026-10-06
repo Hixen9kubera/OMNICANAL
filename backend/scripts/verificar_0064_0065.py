@@ -1012,10 +1012,16 @@ def _(c: Ctx):
         ("TEXCO", "TEXCO", "odoo", 135, 1, True, False, True),
     ]
     c.afirma([tuple(f) for f in filas] == esperado, f"semilla distinta: {filas}")
-    c.afirma(c.uno("select id, ultimo from ops.ov_folio") == (1, 0), "ov_folio no es (1, 0)")
+    # Recién aplicada: (1, 0). Tras --concurrencia-con-commit quedan OV confirmadas
+    # (canceladas), así que la regla es la de fondo: el contador va en el folio
+    # más alto que existe, sin huecos ni adelantos.
+    folio = c.uno("select f.id, f.ultimo, coalesce((select max(substr(o.folio, 4)::int) from ops.ov_ordenes o), 0) "
+                  "from ops.ov_folio f")
+    c.afirma(folio[0] == 1 and folio[1] == folio[2], f"ov_folio (id, ultimo, folio más alto) = {folio}")
     altas = c.valor("select count(*) from ops.almacenes_hist where antes is null")
     c.afirma(altas == 6, f"almacenes_hist tiene {altas} altas (esperado 6: la semilla no se repite)")
-    return "6 bodegas, TEX3 apagada (surte/woo/admite = false), ov_folio (1, 0), 6 altas en la historia"
+    return (f"6 bodegas, TEX3 apagada (surte/woo/admite = false), ov_folio en {folio[1]} = folio más alto, "
+            "6 altas en la historia")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2067,10 +2073,16 @@ def _(c: Ctx):
         o2, f2, _ = ca.ov([(sku, 5, "ENSAYO")], clave=f"conc:{sku}:2")
         a.commit()
         res: dict[str, str] = {}
+        pids: dict[str, int] = {}
 
         def confirma(cn, oid, nombre):
             cc = Ctx(cn, {}, c.dsn, False, True)
             try:
+                # Supavisor (6543) reescribe application_name: se identifica la
+                # espera por el pid de servidor, fijo mientras dure la transacción.
+                c0 = cn.cursor()
+                c0.execute("select pg_backend_pid()")
+                pids[nombre] = c0.fetchone()[0]
                 s, p = cc.confirmar(oid)
                 cc.q(s, p)
                 res[nombre] = "gana"
@@ -2084,9 +2096,11 @@ def _(c: Ctx):
         espera = False
         for _ in range(50):                           # B tiene que quedarse esperando el candado de A
             time.sleep(0.1)
+            if "B" not in pids:
+                continue
             cm = mira.cursor()
-            cm.execute("select count(*) from pg_stat_activity where application_name = 'verificar_0064_0065' "
-                       "and wait_event_type = 'Lock'")
+            cm.execute("select count(*) from pg_stat_activity where pid = %s and wait_event_type = 'Lock'",
+                       (pids["B"],))
             espera = cm.fetchone()[0] >= 1
             mira.rollback()
             if espera:
@@ -2135,10 +2149,13 @@ def _(c: Ctx):
         s, p = ca.confirmar(o1)
         ca.q(s, p)                                    # T1 confirmó y NO ha hecho COMMIT
         res: dict[str, str] = {}
+        pids: dict[str, int] = {}
 
         def inserta():
             cb = b.cursor()
             try:
+                cb.execute("select pg_backend_pid()")     # ver la nota del pid en la prueba anterior
+                pids["B"] = cb.fetchone()[0]
                 cb.execute("insert into ops.ov_lineas (orden_id, linea, sku, cantidad) values (%s, 2, %s, 1)",
                            (o1, f"{sku}-B"))
                 res["B"] = "paso"
@@ -2152,9 +2169,11 @@ def _(c: Ctx):
         espera = False
         for _ in range(50):
             time.sleep(0.1)
+            if "B" not in pids:
+                continue
             cm = mira.cursor()
-            cm.execute("select count(*) from pg_stat_activity where application_name = 'verificar_0064_0065' "
-                       "and wait_event_type = 'Lock'")
+            cm.execute("select count(*) from pg_stat_activity where pid = %s and wait_event_type = 'Lock'",
+                       (pids["B"],))
             espera = cm.fetchone()[0] >= 1
             mira.rollback()
             if espera:
