@@ -29,7 +29,9 @@ chat va a volver a hacer desde cero.
 
 | Capacidad | Estado | Dónde |
 |---|---|---|
-| **Qué tenemos, cuánto tenemos, COSTO TOTAL y PRECIO TOTAL del inventario: todo el catálogo de Odoo (`free_qty`) leído en vivo, con precio de venta, categoría, costo de producto y packing list, por categoría y en una página web** | **PUEDE** (solo lectura) | [CATALOGO_VIVO/scripts/](CATALOGO_VIVO/scripts/) |
+| **Qué tenemos, cuánto tenemos, COSTO TOTAL, COSTO TOTAL PRORRATEADO y PRECIO TOTAL del inventario: todo el catálogo de Odoo leído en vivo (solo `free_qty` de productos activos — reservados y archivados no cuentan), con precio de venta, categoría, costo de producto, costo prorrateado y packing list, por categoría y en una página web** | **PUEDE** (solo lectura) | [CATALOGO_VIVO/scripts/](CATALOGO_VIVO/scripts/) |
+| Costo prorrateado por producto (el contenedor repartido por volumen) y qué mandar a revisión cuando el volumen por pieza está mal capturado | **PUEDE** | `f_costos.py` y `pagina.py` en [CATALOGO_VIVO/scripts/](CATALOGO_VIVO/scripts/) |
+| Explicar por qué dos reportes de inventario no dan el mismo número de SKUs «con stock» (libre contra físico, archivados, por bodega) | SE SABE CÓMO | [CATALOGO_VIVO/CONOCIMIENTO.md](CATALOGO_VIVO/CONOCIMIENTO.md), sección 2c |
 | Ponerle precio de venta a un SKU: el más bajo a la venta → en pausa → catálogo de WooCommerce; qué descartar (el `1.00` de borrador, el «Sales Price» de Odoo) y qué mandar a revisión (paquete contra pieza, precio sin proporción con el costo) | **PUEDE** | `pagina.py` en [CATALOGO_VIVO/scripts/](CATALOGO_VIVO/scripts/) |
 | Darle a cada producto su categoría de mercado (árbol de ML, 31 raíces) desde su publicación o desde WooCommerce | **PUEDE** | etapas `woo` y `categorias` de [CATALOGO_VIVO/scripts/](CATALOGO_VIVO/scripts/) |
 | Leer WooCommerce completo por REST, variaciones incluidas (`/products?sku=a,b,c`), sin que el hosting bloquee | **PUEDE** | `f_woo.py` en [CATALOGO_VIVO/scripts/](CATALOGO_VIVO/scripts/) |

@@ -6,10 +6,16 @@
 > producción (`origin/main` v0.618.0) y del laboratorio de precios (`sandbox/precios-optimos`).
 
 Le preguntas a cada sistema qué tiene **ahora**, y te deja una página web que
-contesta tres cosas: **qué tenemos, cuánto tenemos y cuánto vale en el mercado**.
-Una fila por producto de Odoo: foto, título, categoría, stock libre, precio de
-venta, valor de venta, costo de producto y packing list. Arriba, el total y el
-desglose por categoría; aparte, la lista de lo que hay que limpiar.
+contesta: **qué tenemos, cuánto tenemos, cuánto costó, cuánto costaría prorrateado
+y en cuánto se vende**. Una fila por producto de Odoo: foto, título, categoría,
+stock libre, costo, costo prorrateado, precio de venta y packing list. Arriba, tres
+totales con el mismo peso —**costo total del inventario**, **costo total
+prorrateado** y **precio total del inventario**— y el desglose por categoría;
+aparte, la lista de lo que hay que limpiar.
+
+> **El stock es `free_qty` de productos activos, y nada más.** Lo reservado para
+> pedidos y lo que quedó en productos archivados está prohibido: no se cuenta, no
+> se suma y no se muestra (regla de Brandon, 6-oct-2026).
 
 > **Cambio de enfoque (6-oct-2026, por la tarde).** La primera versión giraba
 > alrededor de los canales (en cuál está publicado cada producto, con qué
@@ -88,6 +94,14 @@ NOT_IN_IP_WHITE_LIST`). Camino para leerla:
 
 ## Lo que hay que saber antes de fiarse de un número
 
+- **Qué se cuenta como «tener».** Productos ACTIVOS de Odoo con referencia interna
+  y `free_qty` mayor a cero. Otro reporte que cuente la existencia física
+  (`qty_available`), que sume por SKU las piezas de productos archivados, o que
+  cuente una fila por SKU y bodega, da MÁS SKUs y más piezas con los mismos datos.
+  No es que uno esté mal: es otro criterio. El de esta página es el que se pidió,
+  y `pagina.py` ya ni siquiera manda el físico a la página. Si dos reportes no
+  cuadran, se cruzan SKU por SKU (ver `CONOCIMIENTO.md`, sección 2c) — no se
+  cambia el criterio.
 - **El precio de venta se busca en orden, y cada fila dice cuál se usó:** el más
   bajo al que hoy se vende en un marketplace → el más bajo de sus publicaciones
   pausadas → el precio de catálogo de WooCommerce → sin precio. Lo que no tiene
@@ -102,8 +116,18 @@ NOT_IN_IP_WHITE_LIST`). Camino para leerla:
 - **El costo oficial es `costo_producto` de la base**, no el de la ficha de Odoo.
   Solo los productos con renglón propio entran a ese total; lo heredado y lo
   extrapolado se suman aparte.
-- **El prorrateo de 525k va al final.** Está calculado y se ve en el detalle de
-  cada fila, pero no entra a ninguna cifra de la página.
+- **El costo prorrateado es un TERCER total, no un ajuste al costo.** Es un
+  estimado: el costo del contenedor repartido entre sus piezas por volumen. Tiene
+  su propia columna por producto (unitario y total) y su propio bloque arriba; no
+  se suma al costo de producto. Solo suma el que sale del volumen del propio
+  producto: lo heredado de una variante y lo extrapolado con la mediana del
+  contenedor se muestran aparte.
+- **El prorrateo es tan bueno como el volumen por pieza de la base, y ese dato
+  falla** (el cartón capturado como si fuera la pieza). Como el reparto es por
+  volumen, unos pocos errores se llevan buena parte de la cuenta. Por eso va **a
+  revisión** —se ve tachado y no suma— cuando la pieza mide más de 1.5 m³, cuando
+  el prorrateo pasa del precio al que se vende, o cuando pasa de 10 veces su costo
+  de producto.
 - **Una variante puede estar publicada con el SKU de su padre.** Mercado Libre
   publica sin variaciones; a la variante le sirve el precio de esa publicación.
 - **El valor de venta es a precio de lista**: antes de comisiones, envíos e

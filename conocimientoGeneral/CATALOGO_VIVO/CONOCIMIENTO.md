@@ -152,6 +152,62 @@ cualquier limpieza.
 
 ---
 
+## 2c · Contar el stock y prorratear: lo que se midió al comparar contra otro reporte
+
+El mismo día apareció otra página de inventario con un par de puntos porcentuales
+más de SKUs «con stock» que esta. Las dos leían Odoo y ninguna estaba mal. Lo que
+hubo que averiguar para explicarlo:
+
+**«Con stock» son al menos cinco números distintos**, con los mismos datos:
+
+| Cómo se cuenta | Contra `free_qty` de activos |
+|---|---|
+| `free_qty` > 0, productos activos con referencia interna | la base: **lo que se pidió** |
+| `qty_available` > 0 (físico, aunque esté reservado) | más: suma los que tienen todo reservado |
+| lo anterior, sumando por SKU las piezas de productos archivados | más todavía |
+| una fila por SKU y bodega | más: un SKU en dos bodegas cuenta dos veces |
+| SKUs distintos en vez de productos | un poco menos: hay referencias repetidas |
+
+**La regla de la casa (Brandon, 6-oct-2026): solo `free_qty` de productos
+activos. Reservados y archivados, prohibidos** — no se cuentan, no se suman y no
+se muestran. Lo de abajo sirve para EXPLICAR una diferencia, no para traerla.
+
+**Archivar un producto en Odoo no le quita sus piezas.** `search_read` no ve los
+archivados (el `active_test` del contexto los esconde), pero sus existencias siguen
+ahí, con `free_qty` positivo, en un producto que nadie puede vender. Un reporte que
+lea `stock.quant` o que pase `active_test: False` las encuentra y las suma al SKU.
+Casi todos los archivados con piezas eran GEMELOS de un producto activo con la
+misma referencia, creados el mismo día en una carga masiva y con cantidades casi
+iguales a las del activo: huele a la misma mercancía capturada dos veces, pero eso
+solo lo decide un conteo en bodega.
+
+**Un SKU puede tener existencia en una bodega y cero en total.** Negativo en una
+(se surtió de donde el sistema decía que no había) y positivo en otra por la misma
+cantidad. Contado por bodega «tiene»; contado por producto, no.
+
+**La hora casi no explica nada.** Entre dos lecturas con tres horas de diferencia
+cambió la existencia física de un puñado de SKUs. Si dos reportes del mismo día
+difieren por cientos de SKUs, es el criterio, no el reloj.
+
+**Cómo se concilia.** No comparando totales: bajando las dos listas y cruzándolas
+SKU por SKU. Todo lo que uno tiene y el otro no cae en una de estas cajas: todo
+reservado · solo en un archivado · neto en cero · sin referencia interna · se movió
+entre lecturas. Si sobra algo fuera de esas cajas, ahí sí hay un error que buscar.
+Y el árbitro es el contador del propio Odoo (`search_count` con el mismo dominio).
+
+**El prorrateo se rompe por el volumen, no por la fórmula.** El volumen por pieza
+de la base se reconstruye del flete (`costo_cbm / 7500`), y ese dato falla seguido:
+el cartón capturado como si fuera la pieza. Como el contenedor se reparte POR
+VOLUMEN, un puñado de esos errores —poco más del uno por ciento de las piezas— se
+llevaba más de un tercio de todo el prorrateo. Tres pruebas baratas los separan:
+más de 1.5 m³ por pieza; prorrateo mayor al precio al que se vende; prorrateo de
+más de diez veces su costo de producto (ahí solo queda el 2% más alto, y conviven
+errores con mercancía voluminosa y barata de verdad: por eso es «revisar»). Lo que
+cae ahí se muestra y no suma. Un prorrateo inverosímil tampoco se hereda a las
+variantes ni entra a la mediana del contenedor.
+
+---
+
 ## 3 · Tres cosas que NO se hacen, aunque el código lo permitiría
 
 1. **Renovar tokens.** El de ML se rota al usarse. Un script que lo renueve deja a

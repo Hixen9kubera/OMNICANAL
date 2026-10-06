@@ -1,15 +1,16 @@
 <title>Catálogo Vivo Kubera</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
 <style>
-/* Libro mayor de inventario. Arriba, qué y cuánto tenemos; luego las DOS cifras que no se
-   deben confundir, lado a lado: COSTO total (azul) y PRECIO total (oro). Esos dos colores
-   significan lo mismo en toda la página: tablas, barras y detalle. */
+/* Libro mayor de inventario. Arriba, qué y cuánto tenemos; luego las TRES cifras que no se
+   deben confundir, lado a lado: COSTO total (azul), COSTO PRORRATEADO (verde azulado) y PRECIO
+   total (oro). Cada color significa lo mismo en toda la página: tablas, barras y detalle. */
 :root{
   --fondo:#f3f4f7; --papel:#ffffff; --papel2:#f8f9fb; --tinta:#14171c; --tenue:#5a6272;
   --linea:#dbe0e8; --linea2:#eaedf2;
   --oro:#7f5200; --oro-fondo:#fdf2d2; --oro-borde:#e2b54d; --oro-solido:#f3c64e; --oro-tinta:#3b2600;
   --accion:#1d49b6; --accion-fondo:#e7edfc;
   --costo:#1c459f; --costo-fondo:#e6edfb; --costo-borde:#9cb3ea; --costo-solido:#3f6fd8;
+  --pror:#0a6470; --pror-fondo:#def3f5; --pror-borde:#8ccfd6; --pror-solido:#1d9aa8;
   --bien:#0f6b3c; --bien-fondo:#e1f3e9; --ojo:#8f4c00; --ojo-fondo:#fdead1; --mal:#ad241c; --mal-fondo:#fbe5e3;
   --sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
   --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
@@ -21,6 +22,7 @@
     --oro:#f2c95f; --oro-fondo:#2a220a; --oro-borde:#7d6423; --oro-solido:#e9bb45; --oro-tinta:#2a1b00;
     --accion:#93adff; --accion-fondo:#1a2440;
     --costo:#9db6ff; --costo-fondo:#141d36; --costo-borde:#3b4f8f; --costo-solido:#6f8fe6;
+    --pror:#7fdbe6; --pror-fondo:#0b272b; --pror-borde:#2a6972; --pror-solido:#3fb4c1;
     --bien:#62d59c; --bien-fondo:#10281d; --ojo:#f2b266; --ojo-fondo:#2c1f0c; --mal:#ff8d84; --mal-fondo:#2f1513;
     color-scheme:dark;
   }
@@ -31,6 +33,7 @@
   --oro:#f2c95f; --oro-fondo:#2a220a; --oro-borde:#7d6423; --oro-solido:#e9bb45; --oro-tinta:#2a1b00;
   --accion:#93adff; --accion-fondo:#1a2440;
   --costo:#9db6ff; --costo-fondo:#141d36; --costo-borde:#3b4f8f; --costo-solido:#6f8fe6;
+  --pror:#7fdbe6; --pror-fondo:#0b272b; --pror-borde:#2a6972; --pror-solido:#3fb4c1;
   --bien:#62d59c; --bien-fondo:#10281d; --ojo:#f2b266; --ojo-fondo:#2c1f0c; --mal:#ff8d84; --mal-fondo:#2f1513;
   color-scheme:dark;
 }
@@ -60,11 +63,11 @@ code{font-family:var(--mono);font-size:12px;background:var(--papel2);border:1px 
 /* Qué y cuánto tenemos */
 .tres{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
 /* COSTO total y PRECIO total: misma anatomía, distinto color */
-.dos{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.dos{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
 .gran{border-radius:14px;padding:18px 20px;display:flex;flex-direction:column;gap:10px;min-width:0;border:2px solid}
 .gran .tit{font-size:13px;font-weight:700;letter-spacing:.09em;text-transform:uppercase}
 .gran .que{font-size:13px;margin-top:-6px}
-.gran .cifra{font-family:var(--mono);font-size:clamp(30px,4.2vw,48px);font-weight:600;letter-spacing:-.02em;line-height:1.05;overflow-wrap:anywhere}
+.gran .cifra{font-family:var(--mono);font-size:clamp(26px,2.9vw,40px);font-weight:600;letter-spacing:-.02em;line-height:1.05;overflow-wrap:anywhere}
 .gran .pie{font-size:13px;max-width:62ch}
 .gran .mas{font-size:13px;border-top:1px solid;padding-top:8px;display:flex;flex-direction:column;gap:3px}
 .gran .mas b{font-family:var(--mono)}
@@ -72,6 +75,14 @@ code{font-family:var(--mono);font-size:12px;background:var(--papel2);border:1px 
 .gran.costo .tit,.gran.costo .cifra{color:var(--costo)}
 .gran.costo .mas{border-color:var(--costo-borde)}
 .gran.costo .barra,.gran.costo .ley i{border-color:var(--costo-borde)}
+.gran.pror{background:var(--pror-fondo);border-color:var(--pror-borde)}
+.gran.pror .tit,.gran.pror .cifra{color:var(--pror)}
+.gran.pror .mas{border-color:var(--pror-borde)}
+.gran.pror .barra,.gran.pror .ley i{border-color:var(--pror-borde)}
+.r-p{background:var(--pror-solido)}
+.r-t{background:repeating-linear-gradient(90deg,var(--pror-solido) 0 2px,var(--pror-fondo) 2px 5px)}
+.r-h{background:repeating-linear-gradient(135deg,var(--pror-solido) 0 4px,var(--pror-fondo) 4px 8px)}
+.r-x{background:repeating-linear-gradient(135deg,var(--pror-borde) 0 2px,var(--pror-fondo) 2px 6px)}
 .gran.precio{background:var(--oro-fondo);border-color:var(--oro-borde)}
 .gran.precio .tit,.gran.precio .cifra{color:var(--oro)}
 .gran.precio .mas{border-color:var(--oro-borde)}
@@ -80,7 +91,7 @@ code{font-family:var(--mono);font-size:12px;background:var(--papel2);border:1px 
 .k-x{background:repeating-linear-gradient(135deg,var(--costo-borde) 0 2px,var(--costo-fondo) 2px 6px)}
 .comp{background:var(--papel);border:1px solid var(--linea);border-radius:12px;padding:12px 16px;font-size:13.5px;display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline}
 .comp b{font-family:var(--mono)}
-.comp .c{color:var(--costo)} .comp .p{color:var(--oro)}
+.comp .c{color:var(--costo)} .comp .p{color:var(--oro)} .comp .r{color:var(--pror)}
 .resp{background:var(--papel);border:1px solid var(--linea);border-radius:12px;padding:16px 18px;
       display:flex;flex-direction:column;gap:8px;min-width:0}
 .resp .cifra{font-family:var(--mono);font-size:clamp(26px,3.4vw,38px);font-weight:600;letter-spacing:-.02em;
@@ -110,7 +121,7 @@ td.d,th.d{text-align:right}
 .rollo{background:var(--papel);border:1px solid var(--linea);border-radius:12px;overflow-x:auto}
 
 /* Por categoría */
-.cats{width:100%;min-width:880px}
+.cats{width:100%;min-width:1000px}
 .cats td{border-top:1px solid var(--linea2);vertical-align:middle}
 .cats tr.sub td{background:var(--papel2);font-size:13px}
 .cats tr.sub td:first-child{padding-left:34px}
@@ -143,8 +154,9 @@ td.d,th.d{text-align:right}
 .total b{font-family:var(--mono);font-weight:600}
 .total .of b{color:var(--oro)}
 .total .co b{color:var(--costo)}
+.total .pr b{color:var(--pror)}
 
-.libro{width:100%;min-width:1180px}
+.libro{width:100%;min-width:1400px}
 .libro th button{all:unset;cursor:pointer;display:inline-flex;gap:4px;align-items:center}
 .libro th button:hover{color:var(--tinta)}
 .libro tbody tr.f>td{border-top:1px solid var(--linea2)}
@@ -170,6 +182,11 @@ tr.f:hover>td.azul,tr.f.ab>td.azul{background:var(--costo-fondo)}
 td.azul .num{color:var(--costo);font-weight:600}
 th.t-p{border-top:3px solid var(--oro-solido);color:var(--oro)}
 th.t-c{border-top:3px solid var(--costo-solido);color:var(--costo)}
+th.t-r{border-top:3px solid var(--pror-solido);color:var(--pror)}
+td.verde{background:var(--pror-fondo)}
+tr.f:hover>td.verde,tr.f.ab>td.verde{background:var(--pror-fondo)}
+td.verde .num{color:var(--pror);font-weight:600}
+.blo.pr{border-color:var(--pror-borde);background:var(--pror-fondo)}
 .blo.co{border-color:var(--costo-borde);background:var(--costo-fondo)}
 .pl{font-family:var(--mono);font-size:12px;overflow-wrap:anywhere;max-width:22ch}
 .grande{font-family:var(--mono);font-size:15px;font-weight:600}
@@ -194,8 +211,10 @@ th.t-c{border-top:3px solid var(--costo-solido);color:var(--costo)}
 .metodo .blo p{font-size:13px;margin-top:6px;max-width:68ch}
 .vacio{padding:36px;text-align:center;color:var(--tenue)}
 #copia{width:100%;height:120px;font-family:var(--mono);font-size:11px}
-@media (max-width:1040px){
+@media (max-width:1180px){
   .dos{grid-template-columns:minmax(0,1fr)}
+}
+@media (max-width:1040px){
   .det{grid-template-columns:minmax(0,1fr)}
   .cab .cuando{text-align:left}
 }
@@ -206,14 +225,14 @@ th.t-c{border-top:3px solid var(--costo-solido);color:var(--costo)}
   <header class="cab">
     <div>
       <h1>Catálogo vivo · Kubera</h1>
-      <p class="sub">Qué tenemos, cuánto tenemos, cuánto nos costó y en cuánto se vende: el inventario libre de Odoo, por categoría.</p>
+      <p class="sub">Qué tenemos, cuánto tenemos, cuánto nos costó, cuánto costaría prorrateado y en cuánto se vende: el inventario libre de Odoo, por categoría.</p>
     </div>
     <div class="cuando" id="cuando">Cargando el catálogo…</div>
   </header>
   <div class="fuentes" id="fuentes"></div>
 
   <section class="tres" id="tres" aria-label="Qué tenemos y cuánto tenemos"></section>
-  <section class="dos" id="dos" aria-label="Costo total y precio total del inventario"></section>
+  <section class="dos" id="dos" aria-label="Costo total, costo prorrateado y precio total del inventario"></section>
   <div class="comp" id="comp"></div>
   <section class="menor" id="menor" aria-label="Lo que falta"></section>
 
@@ -294,6 +313,8 @@ function preparar(){
     r._vv=r.pv!=null?pz(r)*r.pv:null;          /* piezas × precio, se cuente o no */
     r._vt=(r.pv!=null&&!r.rv)?r._vv:null;      /* lo que SÍ entra al valor de venta */
     r._vc=r.cp!=null?pz(r)*r.cp:null;
+    r._vp=r.pr!=null?pz(r)*r.pr:null;          /* piezas × prorrateo, sume o no */
+    r._vpt=(r.pr!=null&&!r.pi&&!r.pq)?r._vp:null; /* lo que SÍ entra al costo prorrateado */
   }
 }
 
@@ -313,6 +334,7 @@ function pasa(r){
 }
 var CLAVE={valor:function(r){return r._vt},stock:function(r){return r.q},sku:function(r){return r.s},
   precio:function(r){return r.pv},costo:function(r){return r.cp},vcosto:function(r){return r._vc},
+  pror:function(r){return r.pr},vpror:function(r){return r._vp},
   cat:function(r){return c1(r)+" "+c2(r)}};
 function ordenar(){
   var k=CLAVE[E.orden]||CLAVE.valor,d=E.dir;
@@ -328,7 +350,9 @@ function filtrar(){VISTA=FILAS.filter(pasa);ordenar();E.pag=0;pintar()}
 function sumar(lista){
   var t={n:lista.length,con:0,pz:0,vta:0,v:0,p:0,c:0,pzv:0,pzp:0,pzc:0,pzsin:0,nsin:0,
          rev:0,pzrev:0,nrev:0,est:0,pzest:0,nest:0,pznada:0,nnada:0,
-         cb:0,pzcb:0,ch:0,pzch:0,cx:0,pzcx:0,pzsc:0,vta2:0,cos2:0,pz2:0};
+         cb:0,pzcb:0,ch:0,pzch:0,cx:0,pzcx:0,pzsc:0,vta2:0,cos2:0,pz2:0,
+         pr:0,pzpr:0,npr:0,prp:0,pzprp:0,prt:0,pzprt:0,prh:0,pzprh:0,prx:0,pzprx:0,
+         prrev:0,pzprrev:0,nprrev:0,pzsv:0,c3:0,r3:0,p3:0,pz3:0};
   for(var i=0;i<lista.length;i++){
     var r=lista[i],q=pz(r); if(!q)continue;
     t.pz+=q; t.con++;
@@ -338,6 +362,13 @@ function sumar(lista){
     if(r._vt==null){if(r.ex!=null){t.est+=q*r.ex;t.pzest+=q;t.nest++}else{t.pznada+=q;t.nnada++}}
     if(r.co==="b"){t.cb+=q*r.cp;t.pzcb+=q; if(r._vt!=null){t.vta2+=q*r.pv;t.cos2+=q*r.cp;t.pz2+=q}}
     else if(r.co==="h"){t.ch+=q*r.cp;t.pzch+=q} else if(r.co==="x"){t.cx+=q*r.cp;t.pzcx+=q} else t.pzsc+=q;
+    /* costo prorrateado: suma solo el del volumen propio y que no esté en revisión */
+    if(r.pr==null)t.pzsv+=q;
+    else if(r.pi){t.prrev+=q*r.pr;t.pzprrev+=q;t.nprrev++}
+    else if(r.pq==="h"){t.prh+=q*r.pr;t.pzprh+=q}
+    else if(r.pq==="x"){t.prx+=q*r.pr;t.pzprx+=q}
+    else{t.pr+=q*r.pr;t.pzpr+=q;t.npr++;if(r.pt==="p"){t.prp+=q*r.pr;t.pzprp+=q}else{t.prt+=q*r.pr;t.pzprt+=q}}
+    if(r.co==="b"&&r._vpt!=null&&r._vt!=null){t.c3+=q*r.cp;t.r3+=q*r.pr;t.p3+=q*r.pv;t.pz3+=q}
   }
   return t;
 }
@@ -354,6 +385,11 @@ function estimado(r,total){
 function etCosto(r){
   if(!r.co)return '<span class="et s">Sin costo</span>';
   return '<span class="et" title="'+esc(r.cd||"Renglón propio en costing.costos_validados")+'">'+ORIGEN_C[r.co]+"</span>"+(r.cv?' <span class="et ok" title="Costo validado contra el packing list">✓</span>':"");
+}
+function etPror(r){
+  if(r.pr==null)return '<span class="et s" title="La base no tiene su volumen ni de dónde estimarlo">Sin volumen</span>';
+  var t=r.pq==="h"?["Heredado",r.pqd||""]:r.pq==="x"?["Extrapolado",r.pqd||""]:r.pt==="p"?["525k","525,000 × m³ de la pieza ÷ m³ de su contenedor"]:["7,500/m³","Contenedor incompleto en la base: m³ de la pieza × 7,500"];
+  return '<span class="et" title="'+esc(t[1])+'">'+t[0]+"</span>"+(r.pi?' <span class="et av" title="'+esc("No suma: "+(r.pim||"en revisión"))+'">en revisión</span>':"");
 }
 function etCat(r){
   if(r.k==null)return '<span class="et s">Sin categoría</span>';
@@ -383,13 +419,15 @@ function fila(r){
     '<td><button class="sku" type="button" data-i="'+r._i+'" aria-expanded="'+ab+'">'+esc(r.s)+"</button>"+
       '<div class="nom2">'+esc(r.n)+"</div>"+(r.g?'<span class="et">'+esc(r.g)+"</span>":"")+porLimpiar(r)+"</td>"+
     "<td>"+etCat(r)+"</td>"+
-    '<td class="d"><div class="grande'+(r.q<0?" neg":"")+'">'+nf(r.q)+"</div>"+(r.f!=null?'<div class="tenue" style="font-size:11.5px">físico '+nf(r.f)+"</div>":"")+almacenes(r)+"</td>"+
+    '<td class="d"><div class="grande'+(r.q<0?" neg":"")+'">'+nf(r.q)+"</div>"+almacenes(r)+"</td>"+
     '<td class="d"><div class="num">'+fm(r.cp)+"</div>"+etCosto(r)+"</td>"+
     '<td class="d'+(r.co==="b"?" azul":"")+'"><div class="num">'+(r._vc!=null?fm0(r._vc):"—")+"</div>"+(r._vc!=null&&r.co!=="b"?'<div class="tenue" style="font-size:11.5px">estimado, no suma</div>':"")+"</td>"+
+    '<td class="d"><div class="num'+(r.pi?" tenue":"")+'">'+(r.pr!=null?(r.pi?"<s>"+fm(r.pr)+"</s>":fm(r.pr)):"—")+"</div>"+etPror(r)+"</td>"+
+    '<td class="d'+(r._vpt!=null?" verde":"")+'"><div class="num'+(r.pi?" tenue":"")+'">'+(r._vp!=null?(r.pi?"<s>"+fm0(r._vp)+"</s>":fm0(r._vp)):"—")+"</div>"+(r._vp!=null&&r._vpt==null&&!r.pi?'<div class="tenue" style="font-size:11.5px">estimado, no suma</div>':"")+"</td>"+
     '<td class="d"><div class="num'+(r.rv?" tenue":"")+'">'+(r.rv?"<s>"+fm(r.pv)+"</s>":fm(r.pv))+"</div>"+etPrecio(r)+estimado(r,0)+"</td>"+
     '<td class="d'+(r._vt!=null?" oro":"")+'"><div class="num'+(r.rv?" tenue":"")+'">'+(r._vv!=null?(r.rv?"<s>"+fm0(r._vv)+"</s>":fm0(r._vv)):"—")+"</div>"+estimado(r,1)+"</td>"+
     "<td>"+packing(r)+"</td></tr>";
-  if(ab)h+='<tr><td colspan="9" style="padding:0;border-top:1px solid var(--linea2);background:var(--papel2)">'+detalle(r)+"</td></tr>";
+  if(ab)h+='<tr><td colspan="11" style="padding:0;border-top:1px solid var(--linea2);background:var(--papel2)">'+detalle(r)+"</td></tr>";
   return h;
 }
 
@@ -397,8 +435,6 @@ function detalle(r){
   var q=pz(r),k;
   var odoo='<div class="blo"><h3>Odoo · inventario</h3><dl class="kv">'+
     '<dt>Stock libre (free_qty)</dt><dd class="num"><b>'+nf(r.q)+"</b></dd>"+
-    '<dt>Físico (a la mano)</dt><dd class="num">'+nf(r.f!=null?r.f:r.q)+"</dd>"+
-    (r.qs?'<dt>Saliente (reservado)</dt><dd class="num">'+nf(r.qs)+"</dd>":"")+
     (r.qe?'<dt>Entrante</dt><dd class="num">'+nf(r.qe)+"</dd>":"");
   if(r.a)for(k in r.a)odoo+="<dt>Libre en "+esc(k)+'</dt><dd class="num">'+nf(r.a[k])+"</dd>";
   odoo+='</dl><h3 style="margin-top:12px">Categoría</h3>';
@@ -434,28 +470,32 @@ function detalle(r){
     (r.cv?"<dt>Validado</dt><dd>sí</dd>":"")+
     '<dt>Costo total del stock libre</dt><dd class="num"><b>'+(r._vc!=null?fm(r._vc):"—")+"</b>"+(r._vc!=null&&r.co!=="b"?" (estimado, no suma)":"")+"</dd>"+
     (r.pv!=null&&r.cp!=null?'<dt>Precio ÷ costo</dt><dd class="num '+(r.pv<r.cp?"neg":"")+'">'+(r.pv/r.cp).toFixed(1)+" veces</dd>":"")+"</dl></div>";
-  var fin='<div class="blo"><h3>Para el final · prorrateo del contenedor</h3><dl class="kv">'+
-    '<dt>Costo por prorrateo</dt><dd class="num">'+(r.pr!=null?fm(r.pr):"—")+"</dd>"+
-    (r.pr!=null?"<dt>Método</dt><dd>"+(r.pi?"volumen inverosímil: no se usa":r.pt==="p"?"525,000 × m³ pieza ÷ m³ contenedor":"m³ pieza × 7,500")+"</dd>":"")+
-    (r.m3?'<dt>m³ del contenedor</dt><dd class="num">'+r.m3.toFixed(1)+"</dd>":"")+
-    '<dt>Flete en la base</dt><dd class="num">'+fm(r.cf)+"</dd>"+
-    '<dt>Costo total en la base</dt><dd class="num">'+fm(r.ct)+"</dd></dl></div>";
+  var fin='<div class="blo pr"><h3 style="color:var(--pror)">Costo prorrateado · lo que costaría</h3><dl class="kv">'+
+    '<dt>Prorrateado unitario</dt><dd class="num"><b>'+(r.pr!=null?fm(r.pr):"—")+"</b></dd>"+
+    "<dt>De dónde sale</dt><dd>"+(r.pr==null?"La base no tiene su volumen":r.pq==="h"?esc(r.pqd||"heredado"):r.pq==="x"?esc(r.pqd||"extrapolado"):r.pt==="p"?"525,000 × m³ de la pieza ÷ m³ de su contenedor":"m³ de la pieza × 7,500 (contenedor incompleto en la base)")+"</dd>"+
+    (r.vp?'<dt>Volumen por pieza</dt><dd class="num">'+r.vp.toFixed(5)+" m³</dd>":"")+
+    (r.m3?'<dt>m³ de su contenedor</dt><dd class="num">'+r.m3.toFixed(1)+"</dd>":"")+
+    (r.cm3?'<dt>Costo por m³</dt><dd class="num">'+fm0(r.cm3)+"</dd>":"")+
+    '<dt>Prorrateado total del stock libre</dt><dd class="num"><b>'+(r._vp!=null?fm(r._vp):"—")+"</b>"+(r._vp!=null&&r._vpt==null?(r.pi?" (en revisión, no suma)":" (estimado, no suma)"):"")+"</dd>"+
+    (r.pr!=null&&r.pv!=null&&!r.rv?'<dt>Precio ÷ prorrateado</dt><dd class="num '+(r.pv<r.pr?"neg":"")+'">'+(r.pv/r.pr).toFixed(1)+" veces</dd>":"")+"</dl>"+
+    (r.pi?'<p style="font-size:12.5px;margin-top:8px"><b>En revisión: no entra al costo prorrateado.</b> '+esc((r.pim||"").charAt(0).toUpperCase()+(r.pim||"").slice(1))+". Casi siempre es el volumen por pieza mal capturado.</p>":"")+
+    '<p class="tenue" style="font-size:12px;margin-top:8px">En la base, además: flete '+fm(r.cf)+" · costo total "+fm(r.ct)+".</p></div>";
   var lim="";
   if(r.x)lim='<div class="blo"><h3>Por limpiar</h3><ul class="lista">'+r.x.map(function(k2){var h=HAL[k2]||{r:k2,e:""};return"<li><b>"+esc(h.r)+".</b> "+esc(h.e)+"</li>"}).join("")+"</ul></div>";
-  return '<div class="det"><div class="col"><div style="display:flex;gap:12px;align-items:flex-start">'+foto(r.i,96)+'<div style="min-width:0"><div class="num" style="font-weight:600;overflow-wrap:anywhere">'+esc(r.s)+'</div><div style="font-size:13px;overflow-wrap:anywhere">'+esc(r.n)+"</div></div></div>"+odoo+'</div><div class="col">'+c+p+'</div><div class="col">'+lim+fin+"</div></div>";
+  return '<div class="det"><div class="col"><div style="display:flex;gap:12px;align-items:flex-start">'+foto(r.i,96)+'<div style="min-width:0"><div class="num" style="font-weight:600;overflow-wrap:anywhere">'+esc(r.s)+'</div><div style="font-size:13px;overflow-wrap:anywhere">'+esc(r.n)+"</div></div></div>"+odoo+'</div><div class="col">'+c+fin+'</div><div class="col">'+p+lim+"</div></div>";
 }
 
 function cabecera(){
   function th(k,t,d,c){var act=E.orden===k;return '<th class="'+(d?"d":"")+(c?" "+c:"")+'" aria-sort="'+(act?(E.dir<0?"descending":"ascending"):"none")+'"><button type="button" data-o="'+k+'">'+t+(act?(E.dir<0?" ↓":" ↑"):"")+"</button></th>"}
-  return "<thead><tr><th>Foto</th>"+th("sku","Producto")+th("cat","Categoría")+th("stock","Stock libre",1)+th("costo","Costo unitario",1,"t-c")+th("vcosto","Costo total",1,"t-c")+th("precio","Precio unitario",1,"t-p")+th("valor","Precio total",1,"t-p")+"<th>Packing list</th></tr></thead>";
+  return "<thead><tr><th>Foto</th>"+th("sku","Producto")+th("cat","Categoría")+th("stock","Stock libre",1)+th("costo","Costo unitario",1,"t-c")+th("vcosto","Costo total",1,"t-c")+th("pror","Prorrateado unitario",1,"t-r")+th("vpror","Prorrateado total",1,"t-r")+th("precio","Precio unitario",1,"t-p")+th("valor","Precio total",1,"t-p")+"<th>Packing list</th></tr></thead>";
 }
 function pintar(){
   var ini=E.pag*E.por,pag=VISTA.slice(ini,ini+E.por),h=cabecera()+"<tbody>";
-  if(!pag.length)h+='<tr><td colspan="9"><div class="vacio">Ningún producto coincide con estos filtros.</div></td></tr>';
+  if(!pag.length)h+='<tr><td colspan="11"><div class="vacio">Ningún producto coincide con estos filtros.</div></td></tr>';
   for(var i=0;i<pag.length;i++)h+=fila(pag[i]);
   $("libro").innerHTML=h+"</tbody>";
   var t=sumar(VISTA),tot=Math.max(1,Math.ceil(VISTA.length/E.por));
-  $("total").innerHTML="<span>"+nf(t.n)+" productos · <b>"+nf(t.pz)+'</b> piezas libres</span><span class="co">Costo total <b>'+fm0(t.cb)+'</b></span><span class="of">Precio total <b>'+fm0(t.vta)+"</b></span>"+
+  $("total").innerHTML="<span>"+nf(t.n)+" productos · <b>"+nf(t.pz)+'</b> piezas libres</span><span class="co">Costo total <b>'+fm0(t.cb)+'</b></span><span class="pr">Costo prorrateado <b>'+fm0(t.pr)+'</b></span><span class="of">Precio total <b>'+fm0(t.vta)+"</b></span>"+
     (t.pzrev?"<span>Precio en revisión <b>"+fm0(t.rev)+"</b> ("+nf(t.pzrev)+" pzas, no suma)</span>":"")+
     (t.pzsin?'<span class="neg">'+nf(t.pzsin)+" piezas sin precio</span>":"")+
     (t.pzsc?'<span class="neg">'+nf(t.pzsc)+" piezas sin costo</span>":"");
@@ -468,8 +508,8 @@ function respuestas(){
   function w(x){return(100*x/P).toFixed(2)+"%"}
   var porAlm=(D.almacenes||[]).map(function(a){return esc(a.nombre)+" "+nf(alm[a.codigo]||0)}).join(" · ");
   $("tres").innerHTML=
-    '<div class="resp"><span class="rot">Qué tenemos</span><div class="cifra">'+nf(t.con)+'</div><p class="pie"><b>SKUs con stock libre</b> en Odoo, en '+Object.keys(raices).length+" categorías. Hay "+nf(FILAS.length)+" dados de alta; el resto está en cero.</p></div>"+
-    '<div class="resp"><span class="rot">Cuánto tenemos</span><div class="cifra">'+nf(t.pz)+'</div><p class="pie"><b>piezas libres</b> (<code>free_qty</code>: lo físico menos lo ya reservado).<br>'+porAlm+"</p></div>";
+    '<div class="resp"><span class="rot">Qué tenemos</span><div class="cifra">'+nf(t.con)+'</div><p class="pie"><b>SKUs con stock libre</b> en Odoo (<code>free_qty</code> mayor a cero), en '+Object.keys(raices).length+" categorías. Hay "+nf(FILAS.length)+" dados de alta; el resto está en cero. <b>No cuenta lo reservado ni lo archivado.</b></p></div>"+
+    '<div class="resp"><span class="rot">Cuánto tenemos</span><div class="cifra">'+nf(t.pz)+'</div><p class="pie"><b>piezas libres</b> (<code>free_qty</code>). Lo reservado para pedidos y lo archivado quedan fuera.<br>'+porAlm+"</p></div>";
   var pzPrecio=t.pzv+t.pzp+t.pzc,pzCostoTodo=t.pzcb+t.pzch+t.pzcx;
   $("dos").innerHTML=
     '<div class="gran costo"><span class="tit">Costo total del inventario</span><span class="que">Lo que nos costó la mercancía que hay en bodega.</span><div class="cifra">'+fm0(t.cb)+"</div>"+
@@ -477,16 +517,22 @@ function respuestas(){
       '<div class="barra" role="img" aria-label="Piezas libres según de dónde sale su costo"><i class="k-b" style="width:'+w(t.pzcb)+'"></i><i class="k-h" style="width:'+w(t.pzch)+'"></i><i class="k-x" style="width:'+w(t.pzcx)+'"></i><i class="b-s" style="width:'+w(t.pzsc)+'"></i></div>'+
       '<div class="ley"><span><i class="k-b"></i>Costo en la base '+nf(t.pzcb)+" pzas · "+fm0(t.cb)+'</span><span><i class="k-h"></i>Heredado de una variante '+nf(t.pzch)+" pzas · "+fm0(t.ch)+'</span><span><i class="k-x"></i>Extrapolado del contenedor '+nf(t.pzcx)+" pzas · "+fm0(t.cx)+'</span><span><i class="b-s"></i>Sin costo '+nf(t.pzsc)+" pzas</span></div>"+
       '<div class="mas"><span>Sumando heredado y extrapolado: <b>'+fm0(t.cb+t.ch+t.cx)+"</b> ("+w(pzCostoTodo)+" de las piezas).</span></div></div>"+
+    '<div class="gran pror"><span class="tit">Costo total prorrateado</span><span class="que">Estimado: lo que costaría si a cada pieza le toca su parte del contenedor.</span><div class="cifra">'+fm0(t.pr)+"</div>"+
+      '<p class="pie">Piezas libres × <b>costo prorrateado</b>: los '+fm0((D.parametros||{}).costo_contenedor)+" de cada contenedor repartidos por volumen. Cubre "+nf(t.pzpr)+" piezas ("+w(t.pzpr)+" del inventario). No se suma al costo de producto: es otra forma de estimarlo.</p>"+
+      '<div class="barra" role="img" aria-label="Piezas libres según de dónde sale su costo prorrateado"><i class="r-p" style="width:'+w(t.pzprp)+'"></i><i class="r-t" style="width:'+w(t.pzprt)+'"></i><i class="r-h" style="width:'+w(t.pzprh)+'"></i><i class="r-x" style="width:'+w(t.pzprx)+'"></i><i class="b-r" style="width:'+w(t.pzprrev)+'"></i><i class="b-s" style="width:'+w(t.pzsv)+'"></i></div>'+
+      '<div class="ley"><span><i class="r-p"></i>Contenedor completo '+nf(t.pzprp)+" pzas · "+fm0(t.prp)+'</span><span><i class="r-t"></i>A 7,500 por m³ '+nf(t.pzprt)+" pzas · "+fm0(t.prt)+'</span><span><i class="r-h"></i>Heredado de una variante '+nf(t.pzprh)+" pzas · "+fm0(t.prh)+'</span><span><i class="r-x"></i>Extrapolado del contenedor '+nf(t.pzprx)+" pzas · "+fm0(t.prx)+'</span><span><i class="b-r"></i>En revisión '+nf(t.pzprrev)+' pzas</span><span><i class="b-s"></i>Sin volumen '+nf(t.pzsv)+" pzas</span></div>"+
+      '<div class="mas"><span>Sumando heredado y extrapolado: <b>'+fm0(t.pr+t.prh+t.prx)+"</b> ("+w(t.pzpr+t.pzprh+t.pzprx)+" de las piezas).</span></div></div>"+
     '<div class="gran precio"><span class="tit">Precio total del inventario</span><span class="que">En cuánto se vende esa misma mercancía, a precio de lista.</span><div class="cifra">'+fm0(t.vta)+"</div>"+
       '<p class="pie">Piezas libres × <b>precio de venta</b>. Cubre '+nf(pzPrecio)+" piezas ("+w(pzPrecio)+" del inventario).</p>"+
       '<div class="barra" role="img" aria-label="Piezas libres según de dónde sale su precio"><i class="b-v" style="width:'+w(t.pzv)+'"></i><i class="b-p" style="width:'+w(t.pzp)+'"></i><i class="b-c" style="width:'+w(t.pzc)+'"></i><i class="b-r" style="width:'+w(t.pzrev)+'"></i><i class="b-s" style="width:'+w(t.pzsin)+'"></i></div>'+
       '<div class="ley"><span><i class="b-v"></i>En venta hoy '+nf(t.pzv)+" pzas · "+fm0(t.v)+'</span><span><i class="b-p"></i>Publicación en pausa '+nf(t.pzp)+" pzas · "+fm0(t.p)+'</span><span><i class="b-c"></i>Precio de catálogo '+nf(t.pzc)+" pzas · "+fm0(t.c)+'</span><span><i class="b-r"></i>En revisión '+nf(t.pzrev)+' pzas</span><span><i class="b-s"></i>Sin precio '+nf(t.pzsin)+" pzas</span></div>"+
       '<div class="mas"><span>Sumando el estimado de lo que no tiene precio: <b>'+fm0(t.vta+t.est)+"</b> ("+w(pzPrecio+t.pzest)+" de las piezas).</span></div></div>";
-  $("comp").innerHTML='<span><b>Para compararlos parejo:</b> en las '+nf(t.pz2)+' piezas que tienen costo y precio a la vez,</span><span class="c">cuestan <b>'+fm0(t.cos2)+'</b></span><span class="p">se venden en <b>'+fm0(t.vta2)+"</b></span><span>El precio es <b>"+(t.cos2?(t.vta2/t.cos2).toFixed(1):"—")+" veces</b> el costo, antes de comisiones, envíos e impuestos.</span>";
+  $("comp").innerHTML='<span><b>Para compararlos parejo:</b> en las '+nf(t.pz3)+' piezas que tienen los tres datos,</span><span class="c">costo <b>'+fm0(t.c3)+'</b></span><span class="r">costo prorrateado <b>'+fm0(t.r3)+'</b></span><span class="p">precio <b>'+fm0(t.p3)+"</b></span><span>El precio es <b>"+(t.c3?(t.p3/t.c3).toFixed(1):"—")+" veces</b> el costo y <b>"+(t.r3?(t.p3/t.r3).toFixed(1):"—")+" veces</b> el prorrateado, antes de comisiones, envíos e impuestos.</span>";
   $("menor").innerHTML=
     '<div class="caja"><span class="rot">Precio en revisión</span><span class="v">'+fm0(t.rev)+'</span><span class="n">'+nf(t.pzrev)+" piezas en "+nf(t.nrev)+" productos cuyo precio no es el de una pieza: paquetes, o desproporcionado contra su costo. No está sumado en el precio total.</span></div>"+
     '<div class="caja"><span class="rot">Sin precio de venta</span><span class="v">'+nf(t.pzsin)+' piezas</span><span class="n">en '+nf(t.nsin)+" productos. No suman al precio total hasta que tengan precio.</span></div>"+
     '<div class="caja"><span class="rot">Sin costo</span><span class="v">'+nf(t.pzsc)+' piezas</span><span class="n">No tienen renglón en la base de costos ni de dónde estimarlo. No suman al costo total.</span></div>'+
+    '<div class="caja"><span class="rot">Prorrateado en revisión</span><span class="v">'+fm0(t.prrev)+'</span><span class="n">'+nf(t.pzprrev)+" piezas en "+nf(t.nprrev)+" productos cuyo prorrateo pasa de su precio de venta o de "+((D.veces||{}).tope_prorrateo||10)+" veces su costo: casi siempre es el volumen mal capturado. No está sumado. Aparte, "+nf(t.pzsv)+" piezas no tienen volumen.</span></div>"+
     '<div class="caja"><span class="rot">Cómo se estima lo que falta</span><span class="v">'+fm0(t.est)+'</span><span class="n">'+nf(t.pzest)+" piezas sin precio contable, valuadas a su costo × el múltiplo al que hoy se vende lo de su categoría ("+((D.veces||{}).global||"—")+" veces en la mediana). No es un precio. Quedan "+nf(t.pznada)+" piezas sin precio ni costo.</span></div>";
 }
 
@@ -494,25 +540,25 @@ function categorias(){
   var g={},orden=[],tv=0,conStock=FILAS.filter(function(r){return r.q>0});
   conStock.forEach(function(r){
     var a=c1(r),b=c2(r)||"(sin subcategoría)",q=pz(r);
-    if(!g[a]){g[a]={n:0,pz:0,v:0,sin:0,rev:0,cb:0,est:0,sub:{}};orden.push(a)}
-    var x=g[a],y=x.sub[b]||(x.sub[b]={n:0,pz:0,v:0,sin:0,rev:0,cb:0});
-    [x,y].forEach(function(z){z.n++;z.pz+=q;if(r.pv==null)z.sin+=q;else if(r.rv)z.rev+=q*r.pv;else z.v+=q*r.pv;if(r.co==="b")z.cb+=q*r.cp});
+    if(!g[a]){g[a]={n:0,pz:0,v:0,sin:0,rev:0,cb:0,pr:0,est:0,sub:{}};orden.push(a)}
+    var x=g[a],y=x.sub[b]||(x.sub[b]={n:0,pz:0,v:0,sin:0,rev:0,cb:0,pr:0});
+    [x,y].forEach(function(z){z.n++;z.pz+=q;if(r.pv==null)z.sin+=q;else if(r.rv)z.rev+=q*r.pv;else z.v+=q*r.pv;if(r.co==="b")z.cb+=q*r.cp;if(r._vpt!=null)z.pr+=r._vpt});
     if(r.kq==="p")x.est++;
     if(r._vt!=null)tv+=r._vt;
   });
   orden.sort(function(a,b){return g[b].v-g[a].v||g[b].pz-g[a].pz});
   var max=orden.length?g[orden[0]].v:1;
-  var h='<thead><tr><th>Categoría</th><th class="d">Productos</th><th class="d">Piezas</th><th class="d t-c">Costo total</th><th class="d t-p">Precio total</th><th class="t-p" style="width:15%">Parte del precio</th><th class="d">Precio en revisión</th><th class="d">Piezas sin precio</th><th></th></tr></thead><tbody>';
+  var h='<thead><tr><th>Categoría</th><th class="d">Productos</th><th class="d">Piezas</th><th class="d t-c">Costo total</th><th class="d t-r">Costo prorrateado</th><th class="d t-p">Precio total</th><th class="t-p" style="width:15%">Parte del precio</th><th class="d">Precio en revisión</th><th class="d">Piezas sin precio</th><th></th></tr></thead><tbody>';
   orden.forEach(function(a,i){
     var x=g[a],ab=!!E.exp[a];
     h+='<tr><td><button class="nom" type="button" data-exp="'+i+'" aria-expanded="'+ab+'"><span class="fl">'+(ab?"▾":"▸")+"</span>"+esc(a)+"</button>"+(x.est?' <span class="et av" title="Productos cuya categoría sale del prefijo del SKU">'+nf(x.est)+" estimados</span>":"")+"</td>"+
-      '<td class="d num">'+nf(x.n)+'</td><td class="d num">'+nf(x.pz)+'</td><td class="d num" style="color:var(--costo)"><b>'+fm0(x.cb)+'</b></td><td class="d num" style="color:var(--oro)"><b>'+fm0(x.v)+"</b></td>"+
+      '<td class="d num">'+nf(x.n)+'</td><td class="d num">'+nf(x.pz)+'</td><td class="d num" style="color:var(--costo)"><b>'+fm0(x.cb)+'</b></td><td class="d num" style="color:var(--pror)"><b>'+fm0(x.pr)+'</b></td><td class="d num" style="color:var(--oro)"><b>'+fm0(x.v)+"</b></td>"+
       '<td><div style="display:flex;gap:8px;align-items:center"><div class="pista" style="flex:1"><i style="width:'+(100*x.v/(max||1)).toFixed(1)+'%"></i></div><span class="num tenue" style="font-size:12px;min-width:44px;text-align:right">'+(tv?pc(x.v/tv):"—")+"</span></div></td>"+
       '<td class="d num tenue">'+(x.rev?fm0(x.rev):"—")+'</td><td class="d num'+(x.sin?" neg":"")+'">'+nf(x.sin)+'</td><td><button class="ver" type="button" data-cat="'+i+'">Ver productos</button></td></tr>';
     if(ab){
       Object.keys(x.sub).sort(function(p,q2){return x.sub[q2].v-x.sub[p].v||x.sub[q2].pz-x.sub[p].pz}).forEach(function(b,j){
         var y=x.sub[b];
-        h+='<tr class="sub"><td>'+esc(b)+'</td><td class="d num">'+nf(y.n)+'</td><td class="d num">'+nf(y.pz)+'</td><td class="d num" style="color:var(--costo)">'+fm0(y.cb)+'</td><td class="d num" style="color:var(--oro)">'+fm0(y.v)+"</td><td></td>"+
+        h+='<tr class="sub"><td>'+esc(b)+'</td><td class="d num">'+nf(y.n)+'</td><td class="d num">'+nf(y.pz)+'</td><td class="d num" style="color:var(--costo)">'+fm0(y.cb)+'</td><td class="d num" style="color:var(--pror)">'+fm0(y.pr)+'</td><td class="d num" style="color:var(--oro)">'+fm0(y.v)+"</td><td></td>"+
           '<td class="d num tenue">'+(y.rev?fm0(y.rev):"—")+'</td><td class="d num'+(y.sin?" neg":"")+'">'+nf(y.sin)+'</td><td>'+(b.charAt(0)==="("?"":'<button class="ver" type="button" data-cat="'+i+'" data-sub="'+esc(b)+'">Ver productos</button>')+"</td></tr>";
       });
     }
@@ -544,8 +590,8 @@ function fuentes(){
 function metodo(){
   var pa=D.parametros||{},cb=D.contenedores_base||{};
   var b=[
-   ["Qué tenemos y cuánto","Una fila por producto de Odoo con referencia interna. El stock es <code>free_qty</code>, leído en vivo: lo físico menos lo ya reservado. Las piezas negativas cuentan como cero."],
-   ["Costo y precio no son lo mismo","<b style=\"color:var(--costo)\">Costo total del inventario</b> (azul) es lo que nos costó la mercancía. <b style=\"color:var(--oro)\">Precio total del inventario</b> (oro) es en cuánto se vende. Cada uno cubre las piezas que tienen ese dato, que no son las mismas: por eso hay un renglón que los compara solo donde existen los dos."],
+   ["Qué tenemos y cuánto","Una fila por producto activo de Odoo con referencia interna. El stock es <code>free_qty</code>, leído en vivo, y nada más: lo que ya está reservado para pedidos y lo que quedó en productos archivados no se cuenta ni se muestra. Por eso un reporte que cuente la existencia física da un número más alto de SKUs y de piezas. Las piezas negativas cuentan como cero."],
+   ["Tres cifras que no son lo mismo","<b style=\"color:var(--costo)\">Costo total del inventario</b> (azul) es lo que nos costó la mercancía, según la base. <b style=\"color:var(--pror)\">Costo total prorrateado</b> (verde azulado) es un estimado: lo que costaría si a cada pieza le toca su parte del contenedor. <b style=\"color:var(--oro)\">Precio total del inventario</b> (oro) es en cuánto se vende. Cada una cubre las piezas que tienen ese dato, que no son las mismas: por eso hay un renglón que las compara solo donde existen las tres."],
    ["Precio total del inventario","Piezas libres × precio de venta. El precio se busca en este orden y cada fila dice cuál se usó: el más bajo al que hoy se vende en un marketplace; si no se vende, el más bajo de sus publicaciones pausadas; si no tiene, el precio de catálogo de WooCommerce. Sin ninguno, el producto queda sin precio y no suma."],
    ["Lo que parece precio y no lo es","Se descartan dos cosas, vengan de donde vengan: el <code>1.00</code> que deja un borrador sin trabajar, y el «Sales Price» de Odoo copiado tal cual (en el catálogo propio es el costo en dólares o un 1). Quedan anotados en el detalle de la fila."],
    ["Precio en revisión","Un precio existe pero no se suma cuando casi seguro no es el de una pieza de ese producto: la publicación vende un paquete («100 piezas») y Odoo cuenta piezas sueltas, o el precio pasa de "+((D.veces||{}).tope_costo||25)+" veces su costo de producto (en lo que hoy se vende, la mediana es "+((D.veces||{}).global||"—")+" veces), o —cuando no hay costo— de "+((D.veces||{}).tope_categoria||20)+" veces la mediana de su categoría. Se ve tachado, con su importe, y en «Limpieza de datos» está la lista."],
@@ -553,17 +599,19 @@ function metodo(){
    ["Costo total del inventario","Piezas libres × costo de producto: <code>costing.costos_validados.costo_producto</code> de la base kubera. Solo suma lo que tiene renglón propio. Sin renglón, el costo se hereda de una variante o del SKU padre, o se extrapola con la mediana de su contenedor; esos importes se muestran aparte. La ficha de Odoo no se usa."],
    ["Estimado de lo que falta","Para las piezas sin precio contable se calcula cuánto valdrían a su costo × el múltiplo al que hoy se vende lo de su categoría (la mediana de precio ÷ costo, medida solo en lo que está a la venta), o a precio del paquete ÷ piezas cuando el paquete se conoce. Es una estimación para dimensionar; nunca se mezcla con el precio total."],
    ["Packing list","El campo «Contenedor #» de Odoo. Si viene vacío se muestra el contenedor de la base de costos, y la fila lo dice. El archivo se ubica por código en la carpeta de Drive."],
-   ["Para el final: prorrateo","Cada contenedor cuesta "+fm0(pa.costo_contenedor)+" y se reparte por volumen entre sus piezas ("+nf(cb.en_rango)+" de "+nf(cb.total)+" contenedores reconstruidos caen entre "+((pa.rango_m3||[])[0])+" y "+((pa.rango_m3||[])[1])+" m³). Ya está calculado y se ve en el detalle de cada fila; no entra a ninguna cifra de arriba."],
+   ["Costo total prorrateado","Piezas libres × costo prorrateado. Cada contenedor cuesta "+fm0(pa.costo_contenedor)+" y se reparte entre sus piezas por volumen: "+fm0(pa.costo_contenedor)+" × m³ de la pieza ÷ m³ del contenedor. Eso aplica cuando el contenedor está completo en la base (entre "+((pa.rango_m3||[])[0])+" y "+((pa.rango_m3||[])[1])+" m³: "+nf(cb.en_rango)+" de "+nf(cb.total)+" contenedores); si no, se usa m³ de la pieza × "+fm0(pa.tarifa_m3)+". Solo suma lo que sale del volumen del propio producto; lo heredado de una variante y lo extrapolado por contenedor se muestran aparte. Es un estimado y no se suma al costo de producto: son dos formas de contestar cuánto costó."],
+   ["Prorrateado en revisión","El prorrateo depende del volumen por pieza que guarda la base, y ese dato falla seguido (el cartón capturado como si fuera la pieza). Se muestra tachado y no suma cuando pasa del precio al que se vende, o de "+((D.veces||{}).tope_prorrateo||10)+" veces su costo de producto. Ahí conviven errores de captura y mercancía voluminosa de verdad: por eso es «revisar»."],
    ["Lo que NO es esta página","No escribe en ningún sistema. Es una foto: cada fuente dice a qué hora se leyó. El precio total es a precio de lista, antes de comisiones, envíos e impuestos: no es lo que se cobraría neto."]
   ];
   $("metodo").innerHTML=b.map(function(x){return '<div class="blo"><h2>'+x[0]+"</h2><p>"+x[1]+"</p></div>"}).join("");
 }
 
 function tsv(){
-  var cab=["SKU","Título","Categoría","Subcategoría","Hoja","Stock libre","Precio unitario","Origen del precio","Precio total","Costo unitario","Origen del costo","Costo total","Packing list","Por limpiar"];
+  var cab=["SKU","Título","Categoría","Subcategoría","Hoja","Stock libre","Precio unitario","Origen del precio","Precio total","Costo unitario","Origen del costo","Costo total","Prorrateado unitario","Origen del prorrateado","Prorrateado total","Packing list","Por limpiar"];
   var out=[cab.join("\t")];
   VISTA.forEach(function(r){
-    var f=[r.s,r.n,c1(r),c2(r),c3(r),r.q,r.pv!=null?r.pv:"",r.po?ORIGEN_P[r.po]+(r.rv?" (en revisión, no suma)":""):"Sin precio",r._vt!=null?r._vt.toFixed(2):"",r.cp!=null?r.cp:"",r.co?ORIGEN_C[r.co]:"Sin costo",r._vc!=null?r._vc.toFixed(2):"",r.c||"",(r.x||[]).map(function(c){return HAL[c]?HAL[c].r:c}).join("; ")];
+    var f=[r.s,r.n,c1(r),c2(r),c3(r),r.q,r.pv!=null?r.pv:"",r.po?ORIGEN_P[r.po]+(r.rv?" (en revisión, no suma)":""):"Sin precio",r._vt!=null?r._vt.toFixed(2):"",r.cp!=null?r.cp:"",r.co?ORIGEN_C[r.co]:"Sin costo",r._vc!=null?r._vc.toFixed(2):"",
+      r.pr!=null?r.pr:"",r.pr==null?"Sin volumen":(r.pq==="h"?"Heredado":r.pq==="x"?"Extrapolado":r.pt==="p"?"Contenedor completo":"7,500 por m3")+(r.pi?" (en revisión, no suma)":""),r._vpt!=null?r._vpt.toFixed(2):"",r.c||"",(r.x||[]).map(function(c){return HAL[c]?HAL[c].r:c}).join("; ")];
     out.push(f.map(function(x){return String(x).replace(/[\t\r\n]+/g," ")}).join("\t"));
   });
   return out.join("\n");

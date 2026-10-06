@@ -50,8 +50,23 @@ La de Mercado Libre, que es el árbol que el mercado ya usa (31 raíces):
 
 `costing.costos_validados.costo_producto`: `b` renglón propio (el oficial), `h`
 heredado de una variante o del padre, `x` extrapolado (mediana de su contenedor). La
-ficha de Odoo no se usa. El prorrateo de 525k viaja en la fila, pero la página lo
-deja para el final, en el detalle.
+ficha de Odoo no se usa.
+
+═══ EL COSTO PRORRATEADO (pedido el 6-oct-2026, al final: «muéstramelo igual de
+explícito y visible») ═══
+
+OTRA forma de estimar el costo: lo que le toca a cada pieza de los 525,000 que cuesta
+su contenedor, repartidos por volumen (`f_costos.py`). No se suma al costo de
+producto: son dos respuestas a la misma pregunta. Cada fila dice de dónde salió:
+
+    (propio)   del volumen de su propio renglón en la base        ← lo que suma
+                 `pt`: p = 525,000 × m³ pieza ÷ m³ contenedor (contenedor completo)
+                       t = m³ pieza × 7,500 (contenedor incompleto en la base)
+    h          heredado de una variante o del padre
+    x          extrapolado: mediana del prorrateo de su contenedor
+    —          sin volumen: no se puede prorratear
+
+Una pieza de más de 1.5 m³ es el cartón guardado como pieza: se muestra y no suma.
 """
 from __future__ import annotations
 
@@ -109,6 +124,8 @@ PRECIO_TOPE = 50_000.0
 # corte es 20 y no menos.
 VECES_CATEGORIA = 20
 MIN_PARA_MEDIANA = 8
+# El prorrateado contra el costo de producto: arriba de esto, a revisión (ver abajo).
+VECES_PRORRATEO = 10
 
 # Lo que hay que limpiar. clave → (rótulo, explicación). El orden es el de la página.
 HALLAZGOS: list[tuple[str, str, str]] = [
@@ -123,6 +140,10 @@ HALLAZGOS: list[tuple[str, str, str]] = [
     ("ke", "Categoría estimada por el SKU", "La categoría sale del prefijo del SKU, que se asignó a ojo: hay que confirmarla."),
     ("sc", "Con stock y sin costo", "No tiene renglón en la base de costos ni de dónde heredarlo."),
     ("ce", "Costo estimado", "El costo es heredado de otra variante o la mediana de su contenedor."),
+    ("sv", "Sin volumen para prorratear", "La base no tiene su volumen ni el de una variante o su contenedor: no se le puede calcular el costo prorrateado."),
+    ("vi", "Volumen inverosímil", "Una sola pieza de más de 1.5 m³: es el cartón guardado como pieza. Su prorrateo se muestra pero no suma."),
+    ("pp", "Prorrateo mayor al precio de venta", "Le tocaría más del contenedor de lo que vale en venta: casi siempre el volumen está mal capturado. No entra al costo prorrateado hasta aclararlo."),
+    ("pz", "Prorrateo desproporcionado contra su costo", "El prorrateo pasa de 10 veces su costo de producto: o el volumen por pieza está mal, o es mercancía muy voluminosa. No entra al costo prorrateado hasta aclararlo."),
     ("sg", "Stock muy grande en un solo SKU", "10,000 piezas o más: conviene confirmar el conteo antes de valuarlo."),
     ("sn", "Stock negativo", "Odoo tiene menos de cero piezas libres."),
     ("du", "SKU repetido en Odoo", "Dos productos distintos comparten la misma referencia interna."),
@@ -242,39 +263,69 @@ def construir(salida: Path) -> dict[str, Any]:
         partes = k.split("-")
         for n in range(1, len(partes)):
             hijos["-".join(partes[:n])].append(k)
-    cont_por_ordinal: dict[int, list[float]] = defaultdict(list)
-    cont_por_codigo: dict[str, list[float]] = defaultdict(list)
-    for v in base.values():
-        if v.get("contenedor") and v.get("producto"):
-            o = ordinal(v["contenedor"])
+    # Los dos costos se heredan y se extrapolan IGUAL, cada uno por su lado: el de
+    # producto (`producto`) y el prorrateado (`prorrateo`). Un SKU puede tener el
+    # primero y no el segundo, y al revés.
+    CAMPOS_COSTO = ("producto", "prorrateo")
+
+    def _vale(s: str, campo: str) -> bool:
+        fila_base = base.get(s) or {}
+        if not fila_base.get(campo):
+            return False
+        # un volumen inverosímil no se le hereda a nadie
+        return not (campo == "prorrateo" and fila_base.get("inverosimil"))
+
+    cont_por_ordinal: dict[str, dict[int, list[float]]] = {c: defaultdict(list) for c in CAMPOS_COSTO}
+    cont_por_codigo: dict[str, dict[str, list[float]]] = {c: defaultdict(list) for c in CAMPOS_COSTO}
+    for s, v in base.items():
+        if not v.get("contenedor"):
+            continue
+        o, cods = ordinal(v["contenedor"]), codigos(v["contenedor"])
+        for campo in CAMPOS_COSTO:
+            if not _vale(s, campo):
+                continue
             if o is not None:
-                cont_por_ordinal[o].append(v["producto"])
-            for c in codigos(v["contenedor"]):
-                cont_por_codigo[c].append(v["producto"])
+                cont_por_ordinal[campo][o].append(v[campo])
+            for c in cods:
+                cont_por_codigo[campo][c].append(v[campo])
 
-    def _con_producto(skus: list[str]) -> list[str]:
-        return [s for s in skus if (base.get(s) or {}).get("producto")]
+    def _con(skus: list[str], campo: str) -> list[str]:
+        return [s for s in skus if _vale(s, campo)]
 
-    def _elige(candidatas: list[str]) -> str:
-        objetivo = _moda([base[s]["producto"] for s in candidatas])
-        return min(candidatas, key=lambda s: (abs(base[s]["producto"] - objetivo), s))
+    def _elige(candidatas: list[str], campo: str) -> str:
+        objetivo = _moda([base[s][campo] for s in candidatas])
+        return min(candidatas, key=lambda s: (abs(base[s][campo] - objetivo), s))
 
-    def _heredar(sku: str, plantilla: Any) -> tuple[str, str] | None:
-        hermanas = _con_producto([s for s in por_plantilla.get(plantilla, []) if s != sku])
+    def _heredar(sku: str, plantilla: Any, campo: str = "producto") -> tuple[str, str] | None:
+        hermanas = _con([s for s in por_plantilla.get(plantilla, []) if s != sku], campo)
         partes = sku.split("-")
         if hermanas:
-            return _elige(hermanas), "variante hermana (misma plantilla de Odoo)"
+            return _elige(hermanas, campo), "variante hermana (misma plantilla de Odoo)"
         for n in range(len(partes) - 1, 0, -1):
             padre = "-".join(partes[:n])
-            if (base.get(padre) or {}).get("producto"):
+            if _vale(padre, campo):
                 return padre, "SKU padre"
-        hijas = _con_producto(hijos.get(sku, []))
+        hijas = _con(hijos.get(sku, []), campo)
         if hijas:
-            return _elige(hijas), "variantes hijas"
+            return _elige(hijas, campo), "variantes hijas"
         if len(partes) > 2:
-            primas = _con_producto([s for s in hijos.get("-".join(partes[:-1]), []) if s != sku])
+            primas = _con([s for s in hijos.get("-".join(partes[:-1]), []) if s != sku], campo)
             if primas:
-                return _elige(primas), "variante del mismo modelo"
+                return _elige(primas, campo), "variante del mismo modelo"
+        return None
+
+    def _del_contenedor(cont: str | None, campo: str) -> tuple[float, str] | None:
+        """Extrapolado: la mediana de ese costo entre los SKUs de su contenedor en la base."""
+        o = ordinal(cont)
+        grupo = cont_por_ordinal[campo].get(o) if o is not None else None
+        rotulo = f"contenedor {o}" if grupo else None
+        if not grupo:
+            for c in codigos(cont):
+                if cont_por_codigo[campo].get(c):
+                    grupo, rotulo = cont_por_codigo[campo][c], f"contenedor {c}"
+                    break
+        if grupo and len(grupo) >= 5:
+            return round(statistics.median(grupo), 2), f"mediana de {len(grupo)} SKUs del {rotulo} en la base"
         return None
 
     def _pubs_de(sku: str) -> list[dict[str, Any]]:
@@ -387,12 +438,11 @@ def construir(salida: Path) -> dict[str, Any]:
         q = f["libre"]
         fila: dict[str, Any] = {"s": f["sku"], "n": f["nombre"], "q": q}
         hallazgos: list[str] = []
-        if f["fisico"] != q:
-            fila["f"] = f["fisico"]
+        # SOLO `free_qty`. Lo físico (que incluye lo ya reservado para pedidos) y lo
+        # que quedó en productos archivados NO viajan a la página, ni como dato de
+        # apoyo: regla de Brandon del 6-oct-2026 («reservados y archivados, prohibidos»).
         if f.get("entrante"):
             fila["qe"] = f["entrante"]
-        if f.get("saliente"):
-            fila["qs"] = f["saliente"]
         if f.get("por_almacen"):
             fila["a"] = f["por_almacen"]
         if f.get("categoria") and f["categoria"] != "All":
@@ -479,43 +529,49 @@ def construir(salida: Path) -> dict[str, Any]:
         if b and b.get("producto"):
             fila["cp"], fila["co"] = round(b["producto"], 2), "b"
         else:
-            her = _heredar(sku, f.get("plantilla"))
+            her = _heredar(sku, f.get("plantilla"), "producto")
             if her:
                 origen_c = base[her[0]]
                 fila["cp"], fila["co"] = round(origen_c["producto"], 2), "h"
                 fila["cd"] = f"{her[1]}: {her[0]}"
             else:
-                o = ordinal(cont)
-                grupo = cont_por_ordinal.get(o) if o is not None else None
-                rotulo = f"contenedor {o}" if grupo else None
-                if not grupo:
-                    for c in codigos(cont):
-                        if cont_por_codigo.get(c):
-                            grupo, rotulo = cont_por_codigo[c], f"contenedor {c}"
-                            break
-                if grupo and len(grupo) >= 5:
-                    fila["cp"], fila["co"] = round(statistics.median(grupo), 2), "x"
-                    fila["cd"] = f"mediana de {len(grupo)} SKUs del {rotulo} en la base"
+                ext = _del_contenedor(cont, "producto")
+                if ext:
+                    fila["cp"], fila["co"], fila["cd"] = ext[0], "x", ext[1]
         if origen_c:
             if origen_c.get("flete") is not None:
                 fila["cf"] = round(origen_c["flete"], 2)
             if origen_c.get("total") is not None:
                 fila["ct"] = round(origen_c["total"], 2)
-            if origen_c.get("prorrateo") is not None:
-                fila["pr"] = round(origen_c["prorrateo"], 2)
-                fila["pt"] = "p" if origen_c.get("prorrateo_fuente") == "prorrateo_525k" else "t"
-                if origen_c.get("inverosimil"):
-                    fila["pi"] = 1
             if origen_c.get("contenedor") and origen_c["contenedor"] != fila.get("c"):
                 fila["cb"] = origen_c["contenedor"]
-            if origen_c.get("m3_contenedor"):
-                fila["m3"] = origen_c["m3_contenedor"]
-            if origen_c.get("costo_m3"):
-                fila["cm3"] = origen_c["costo_m3"]
-            if origen_c.get("cbm_pieza"):
-                fila["vp"] = origen_c["cbm_pieza"]
             if b is origen_c and b.get("validado"):
                 fila["cv"] = 1
+
+        # Costo PRORRATEADO, con su origen. Es OTRA forma de estimar el costo (lo que
+        # le toca a la pieza de los 525,000 de su contenedor, por volumen): no se suma
+        # al costo de producto. `pq` dice de dónde salió — ausente = renglón propio.
+        fuente_p = b if (b and b.get("prorrateo") is not None) else None
+        if fuente_p is None:
+            her = _heredar(sku, f.get("plantilla"), "prorrateo")
+            if her:
+                fuente_p = base[her[0]]
+                fila["pq"], fila["pqd"] = "h", f"{her[1]}: {her[0]}"
+        if fuente_p is not None:
+            fila["pr"] = round(fuente_p["prorrateo"], 2)
+            fila["pt"] = "p" if fuente_p.get("prorrateo_fuente") == "prorrateo_525k" else "t"
+            if fuente_p.get("inverosimil"):
+                fila["pi"] = 1
+            if fuente_p.get("m3_contenedor"):
+                fila["m3"] = fuente_p["m3_contenedor"]
+            if fuente_p.get("costo_m3"):
+                fila["cm3"] = fuente_p["costo_m3"]
+            if fuente_p.get("cbm_pieza"):
+                fila["vp"] = fuente_p["cbm_pieza"]
+        else:
+            ext = _del_contenedor(cont, "prorrateo")
+            if ext:
+                fila["pr"], fila["pq"], fila["pqd"] = ext[0], "x", ext[1]
 
         # Lo que hay que limpiar
         pv, cp = fila.get("pv"), fila.get("cp")
@@ -545,6 +601,10 @@ def construir(salida: Path) -> dict[str, Any]:
             hallazgos.append("sc")
         if fila.get("co") in ("h", "x"):
             hallazgos.append("ce")
+        if q > 0 and "pr" not in fila:
+            hallazgos.append("sv")
+        if fila.get("pi"):
+            hallazgos.append("vi")
         if q >= 10000:
             hallazgos.append("sg")
         if q < 0:
@@ -580,6 +640,25 @@ def construir(salida: Path) -> dict[str, Any]:
             if m and f["pv"] > VECES_CATEGORIA * m:
                 f.setdefault("x", []).insert(0, "pg")
                 f["rv"], f["pgm"] = 1, round(m, 2)
+    # PRORRATEO EN REVISIÓN. El prorrateo sale del VOLUMEN por pieza que guarda la base,
+    # y ese volumen falla seguido (el cartón capturado como pieza: un vaso de 0.44 m³).
+    # Como el reparto es por volumen, unos cuantos de esos se llevan media cuenta. Se
+    # marcan `pi` —se muestran, no suman— cuando el prorrateo:
+    #   · pasa del precio al que se vende, o
+    #   · pasa de 10 veces su costo de producto (medido el 6-oct-2026: es el 2% más
+    #     alto; ahí conviven errores de captura y mercancía voluminosa y barata de
+    #     verdad, y por eso es «revisar» y no «descartar»).
+    for f in productos:
+        if "pr" not in f or f.get("pi"):
+            if f.get("pi"):
+                f["pim"] = "volumen inverosímil: más de 1.5 m³ por pieza"
+            continue
+        if "pv" in f and not f.get("rv") and f["pr"] > f["pv"]:
+            f.setdefault("x", []).append("pp")
+            f["pi"], f["pim"] = 1, "mayor al precio al que se vende"
+        elif f.get("co") in ("b", "h") and f["cp"] >= COSTO_MIN_PARA_VECES and f["pr"] > VECES_PRORRATEO * f["cp"]:
+            f.setdefault("x", []).append("pz")
+            f["pi"], f["pim"] = 1, f"más de {VECES_PRORRATEO} veces su costo de producto"
 
     # ESTIMADO de lo que no tiene un precio contable (sin precio o en revisión). No es
     # un precio: es «si se vendiera al múltiplo sobre costo al que HOY SE VENDE lo de su
@@ -636,6 +715,29 @@ def construir(salida: Path) -> dict[str, Any]:
         tot[f"costo_{nombre}"] = round(sum(_pz(f) * f["cp"] for f in sel), 2)
         tot[f"piezas_costo_{nombre}"] = sum(_pz(f) for f in sel)
     tot["piezas_sin_costo"] = sum(_pz(f) for f in con if "cp" not in f)
+
+    # Costo PRORRATEADO: lo que suma es lo que sale del volumen del propio producto.
+    def _suma_pr(sel: list[dict[str, Any]]) -> tuple[float, float, int]:
+        return round(sum(_pz(f) * f["pr"] for f in sel), 2), sum(_pz(f) for f in sel), len(sel)
+
+    con_pr = [f for f in con if "pr" in f and not f.get("pi")]
+    propios = [f for f in con_pr if "pq" not in f]
+    (tot["prorrateo_propio"], tot["piezas_prorrateo_propio"],
+     tot["productos_prorrateo_propio"]) = _suma_pr(propios)
+    tot["prorrateo_525k"], tot["piezas_prorrateo_525k"], _ = _suma_pr([f for f in propios if f.get("pt") == "p"])
+    tot["prorrateo_tarifa"], tot["piezas_prorrateo_tarifa"], _ = _suma_pr([f for f in propios if f.get("pt") == "t"])
+    tot["prorrateo_heredado"], tot["piezas_prorrateo_heredado"], _ = _suma_pr([f for f in con_pr if f.get("pq") == "h"])
+    tot["prorrateo_extrapolado"], tot["piezas_prorrateo_extrapolado"], _ = _suma_pr([f for f in con_pr if f.get("pq") == "x"])
+    tot["piezas_sin_prorrateo"] = sum(_pz(f) for f in con if "pr" not in f)
+    (tot["prorrateo_en_revision"], tot["piezas_prorrateo_en_revision"],
+     tot["productos_prorrateo_en_revision"]) = _suma_pr([f for f in con if "pr" in f and f.get("pi")])
+    ids_propios = {id(f) for f in propios}
+    los_tres = [f for f in con if f.get("co") == "b" and id(f) in ids_propios
+                and "pv" in f and not f.get("rv")]
+    tot["tres_piezas"] = sum(_pz(f) for f in los_tres)
+    tot["tres_costo"] = round(sum(_pz(f) * f["cp"] for f in los_tres), 2)
+    tot["tres_prorrateo"] = round(sum(_pz(f) * f["pr"] for f in los_tres), 2)
+    tot["tres_precio"] = round(sum(_pz(f) * f["pv"] for f in los_tres), 2)
     ambos = [f for f in con if "pv" in f and f.get("co") == "b" and not f.get("rv")]
     tot["venta_con_costo_base"] = round(sum(_pz(f) * f["pv"] for f in ambos), 2)
     tot["costo_de_esas"] = round(sum(_pz(f) * f["cp"] for f in ambos), 2)
@@ -677,7 +779,8 @@ def construir(salida: Path) -> dict[str, Any]:
         "sprite": {k: imagenes.get(k) for k in ("lado", "cols", "por_hoja", "hojas")},
         "veces": {"global": round(veces_global, 2) if veces_global else None,
                   "categorias": {k: round(v, 2) for k, v in sorted(veces_cat.items())},
-                  "tope_costo": VECES_MAX, "tope_categoria": VECES_CATEGORIA},
+                  "tope_costo": VECES_MAX, "tope_categoria": VECES_CATEGORIA,
+                  "tope_prorrateo": VECES_PRORRATEO},
         "drive": lista_drive, "K": lista_rutas,
         "X": [[c, r, e] for c, r, e in HALLAZGOS],
         "totales": tot, "P": productos,
@@ -698,4 +801,8 @@ def construir(salida: Path) -> dict[str, Any]:
     aviso(f"   valor de venta: ${tot['valor_venta']:,.0f}  (en venta ${tot['venta_en_venta']:,.0f} · "
           f"en pausa ${tot['venta_en_pausa']:,.0f} · catálogo ${tot['venta_catalogo']:,.0f}) · "
           f"en revisión ${tot['venta_en_revision']:,.0f} · sin precio {tot['piezas_sin_precio']:,.0f} piezas")
+    aviso(f"   costo: base ${tot['costo_base']:,.0f} · PRORRATEADO ${tot['prorrateo_propio']:,.0f} "
+          f"({tot['piezas_prorrateo_propio']:,.0f} pzas; +heredado ${tot['prorrateo_heredado']:,.0f} "
+          f"+extrapolado ${tot['prorrateo_extrapolado']:,.0f}; sin prorrateo "
+          f"{tot['piezas_sin_prorrateo']:,.0f} pzas)")
     return tot
