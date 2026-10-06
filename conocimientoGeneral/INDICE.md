@@ -25,6 +25,14 @@ chat va a volver a hacer desde cero.
 | **Generar contenido + atributos de una lista de SKUs** | **PUEDE** | [ML_PUBLICACIONES_IA/scripts/](ML_PUBLICACIONES_IA/scripts/) |
 | **Precio óptimo ML FULL (elasticidad precio → visitas → conversión) y costo por prorrateo de 525k por contenedor, con 100 SKUs ubicados en su packing list** | **PUEDE** (solo lectura: propone, no aplica) | Rama `sandbox/precios-optimos`: `backend/sandbox_precios/DISENO.md` y `laboratorio/README.md`. En vivo desde el 28-sep-2026: servicio Railway `laboratorio-precios` |
 
+## Catálogo e inventario
+
+| Capacidad | Estado | Dónde |
+|---|---|---|
+| **Todo el catálogo de Odoo (`free_qty`) cruzado EN VIVO contra ML ×2, Amazon, TikTok, Temu y Walmart: qué está publicado, a qué precio, con qué comisión, costo de producto de la base, prorrateo de 525k y packing list — en una página web** | **PUEDE** (solo lectura; Temu necesita la IP de producción) | [CATALOGO_VIVO/scripts/](CATALOGO_VIVO/scripts/) |
+| Cómo se censa cada canal desde su API, y lo que se midió al hacerlo | SE SABE CÓMO | [CATALOGO_VIVO/CONOCIMIENTO.md](CATALOGO_VIVO/CONOCIMIENTO.md) |
+| Valuar el inventario a costo (qué columna, qué se hereda, qué queda fuera) | **PUEDE** | etapa `pagina` de [CATALOGO_VIVO/scripts/](CATALOGO_VIVO/scripts/) |
+
 ## Imágenes
 
 | Capacidad | Estado | Dónde |
