@@ -8,7 +8,10 @@
 -- ═══════════════════════════════════════════════════════════════════════════
 --
 -- Estado: SIN APLICAR (6-oct-2026). Probada en el SANDBOX solo dentro de una
--- transacción que termina en ROLLBACK (verificar_0064_0065.py --en-transaccion).
+-- transacción que termina en ROLLBACK (verificar_0064_0065.py --en-transaccion:
+-- 55 pruebas OK, 0 fallas; las 2 de concurrencia quedan OMITIDAS porque
+-- necesitan las tablas confirmadas y se corren después de aplicar, con su
+-- permiso).
 -- DEPENDE de la 0064 (ops.almacenes, ops.ov_lineas, ops.exigir): el paso 0
 -- truena si no está. Va a producción en la MISMA acta que la 0064 y ANTES de
 -- fusionar el código que la lee (SEG-01; ver el encabezado de la 0064).
@@ -43,13 +46,28 @@
 --     (codigo, fuente) con fuente = 'kubera' fija (H03). Un saldo en TEXCO no
 --     se puede ni escribir (23503).
 --   · El libro y los eventos de formato: SOLO SE AGREGAN (UPDATE, DELETE y
---     TRUNCATE rechazados por trigger).
+--     TRUNCATE rechazados por trigger). stock_almacen, stock_formato(_linea) y
+--     devoluciones no se vacían (TRUNCATE no dispara los triggers diferidos).
 --   · Formato: nace por_confirmar; por_confirmar → confirmado | descartado; los
---     dos son TERMINALES (congelados). Un renglón con la puerta abierta queda
---     congelado; uno de un formato confirmado solo puede BAJAR su cantidad (con
---     nota) mientras espera, y recibir la lectura de Odoo y la puerta.
---   · Claves de idempotencia con FORMA por motivo (stock_mov_clave_chk) y una
---     sola salida por renglón de OV (stock_mov_salida_ov_uq).
+--     dos son TERMINALES (congelados). La puerta solo se abre en un formato
+--     confirmado. Un renglón con la puerta abierta queda congelado; uno de un
+--     formato confirmado solo puede BAJAR su cantidad (con nota y subiendo su
+--     `rev` en uno: candado optimista) mientras espera, y recibir la lectura
+--     de Odoo y la puerta. «Dividir» (plan v3 §3): el formato hijo lleva
+--     dividido_de = padre y el MISMO archivo (hash y bodega, por trigger); el
+--     único de archivo_hash es solo entre padres vivos.
+--   · Devoluciones: no se borran; resuelta = terminal; origen, renglón, SKU,
+--     recepción, clave y partida_de fijos; la venta copiada es la del mp_* de
+--     su OV; paquete_ids se normaliza (ordenado, sin repetidos). El mismo
+--     paquete no se recibe dos veces para el mismo renglón (o el mismo retiro
+--     de FULL): devoluciones_recepcion_uq / devoluciones_retiro_uq, salvo las
+--     filas que nacen al partir el paquete por dictamen (partida_de).
+--   · LO DEVUELTO ≤ LO ENTREGADO por renglón, al COMMIT (constraint trigger
+--     diferido stock_mov_devolucion_cuadra): dos recepciones simultáneas del
+--     mismo renglón se forman en la fila (sku, REVISION) y la segunda lo ve.
+--   · Claves de idempotencia con FORMA por motivo (stock_mov_clave_chk), una
+--     sola salida por renglón de OV (stock_mov_salida_ov_uq) y la liga con el
+--     renglón solo (y siempre) en salida_ov y devolucion (stock_mov_ov_chk).
 --
 -- DECISIONES TOMADAS POR OMISIÓN (Eduardo puede cambiarlas)
 --   1. D14: la PUERTA. Sus columnas (salida_odoo_*, odoo_tex2_al_abrir) van
@@ -63,22 +81,61 @@
 --   5. La cantidad del formato es > 0 (como el plan): un renglón que espera
 --      puede bajar, no llegar a 0. Si Bodega toma TODO el lote, se decide
 --      después si se admite 0 (la puerta tendría que excluirlo).
---   6. Formatos de clave del libro (comment de stock_mov.clave). La de
---      devoluciones sale del id de su fila (DEVOLUCIONES §4d, el documento
---      posterior). La recaptura del mismo paquete la frena la sentencia de
---      recibir (Σ devuelto + n ≤ entregado), no un UNIQUE: partir un paquete por
---      dictamen es legítimo y repite (paquete, sku, renglón).
+--   6. Idempotencia de las devoluciones, DEL HECHO (§6.1 punto 6, §3.11, H10):
+--      la llave de negocio vive en ops.devoluciones — (ov_linea_id, sku,
+--      paquete_ids) para las de venta y (canal, cuenta, sku, paquete_ids) para
+--      los retiros de FULL, ambas sin las filas partidas (partida_de) —, y un
+--      23505 de devoluciones_recepcion_uq / devoluciones_retiro_uq significa
+--      «ya recibida». Las claves del LIBRO de devoluciones siguen saliendo del
+--      id de esa fila (dev:<id>:recibe|sale|entra|merma, DEVOLUCIONES §4d): la
+--      fila ya es única por el hecho, así que la clave derivada también.
+--      `devoluciones.clave` (el uuid de la pantalla) queda como anti doble
+--      clic. Lo que ya NO se afirma: que Σ devuelto + n ≤ entregado en la
+--      sentencia frene la recaptura (en una devolución parcial no la frena, y
+--      la suma no se reevalúa con concurrencia). El tope lo pone el constraint
+--      trigger diferido stock_mov_devolucion_cuadra; la guarda de la
+--      sentencia queda solo para dar KB001 con nombre. Límite: si dos turnos
+--      capturan la misma caja con ids DISTINTOS (guía en uno, paquete en otro)
+--      el único no la ve; el tope de lo entregado y el cruce diario sí.
 --   7. odoo_* son numeric(14,3): Odoo da float (H06). La cantidad de Bodega
 --      sigue siendo entera.
 --   8. NO se crean aquí: el bucket `inventario-kubera` (privado, 10 MB, xlsx/csv
 --      y fotos jpeg/webp, rutas por hash, retención por decidir), la tabla del
---      vigilante de D4 (sin definir) ni cambios a ops.odoo_sale_orders.
+--      vigilante de D4 (sin definir) ni cambios a ops.odoo_sale_orders (su
+--      catálogo de `accion` con NOT VALID y el CAS van con la regularización
+--      de las 0034–0036).
+--   9. D8: el formato se deduplica por archivo_hash (el mismo archivo no
+--      entra dos veces mientras su formato siga vivo). La deduplicación por
+--      lote o por contenido, con su salida `repite_de` para lotes idénticos
+--      legítimos (H05), espera a que Bodega diga qué referencia trae el lote.
+--  10. TEX3 no surte: el planeador no le asigna ventas mientras
+--      surte_ventas = false (0064). crear_auto vuelve a comprobar
+--      a.surte_ventas dentro del candado (C11); es código, la prueba lo usa.
+--  11. «Dividir» un formato (plan v3 §3, paso 4 de §10.1): columna
+--      dividido_de. El hijo hereda archivo_hash y bodega del padre (trigger,
+--      stock_formato_dividido_hash_chk) y queda fuera del único de hash; no
+--      puede ser a la vez reemplazo (stock_formato_dividido_chk). Limitación:
+--      con el padre DESCARTADO y un hijo vivo, el mismo archivo puede volver a
+--      cargarse como padre nuevo (D8 dedupe solo entre padres vivos).
+--  12. Bajar la cantidad de un renglón de un formato confirmado lleva candado
+--      optimista: stock_formato_linea.rev, que sube en uno con cada baja
+--      (stock_formato_linea_rev_chk). La sentencia hace
+--      `where id = … and rev = <vista> and salida_odoo_at is null`.
 --
--- DERIVA ANOTADA (no se toca aquí): en el sandbox y en producción,
--- ops.odoo_sale_orders tiene `cuenta` y PK (canal, cuenta, external_order_id),
--- y sus renglones stock_libre/medido_at, más ops.fn_touch_actualizado_at y su
--- trigger. Nada de eso está en las migraciones de main (0034–0036 fuera de
--- main). La sentencia de kubera de stock_watch depende de `cuenta`.
+-- DEPENDENCIAS FUERA DE ops (trampa C6 de la 0049): la vista
+-- ops.devoluciones_vs_canal_v lee channel.return_items (canal, cuenta,
+-- external_return_id, sku, cantidad). La reversa de la 0049 y cualquier ALTER
+-- de esas columnas exigen quitar ANTES esa vista (truena con 2BP01 o 0A000).
+-- Por eso va aparte de la vigía principal (ops.stock_apartado_descuadre_v),
+-- que no depende de channel.*.
+--
+-- DERIVA ANOTADA (no se toca aquí): ops.odoo_sale_orders tiene `cuenta` y PK
+-- (canal, cuenta, external_order_id); sus renglones, cuenta, stock_libre y
+-- medido_at; y el trigger trg_touch_odoo_sale_orders con
+-- ops.fn_touch_actualizado_at (medido en el sandbox el 6-oct; en producción
+-- según la revisión, H13). Nada de eso está en las migraciones de main
+-- (0034–0036 fuera de main). La sentencia de kubera de stock_watch depende de
+-- `cuenta`: un sandbox armado solo desde main no la tendría.
 --
 -- QUIÉN ESCRIBE
 --   stock_almacen y stock_mov → services/ordenes_venta.py (apartar, entregar,
@@ -96,9 +153,10 @@
 -- columna: aplicarla justo después de una pasada de stock_watch.
 --
 -- VERIFICACIÓN ESPERADA
---   · verificar_rls.py (estático): +6 tablas con RLS y +1 vista con
---     security_invoker (con la 0064: 64 migraciones · 82 tablas · 18 vistas).
---   · select * from ops.stock_apartado_descuadre_v → 0 filas.
+--   · verificar_rls.py (estático): +6 tablas con RLS y +2 vistas con
+--     security_invoker (con la 0064: 64 migraciones · 82 tablas · 19 vistas).
+--   · select * from ops.stock_apartado_descuadre_v → 0 filas; lo mismo
+--     ops.devoluciones_vs_canal_v.
 --   · backend/scripts/verificar_0064_0065.py: todas las pruebas OK.
 --
 -- REVERSA. Estructural solo si no hay datos reales; se niega con movimientos
@@ -106,10 +164,14 @@
 --   do $$ begin if exists (select 1 from ops.stock_mov where almacen not in
 --   ('ENSAYO', 'REVISION')) then raise exception 'TEX3 tiene movimientos
 --   reales: la reversa es operativa (banderas), no DROP'; end if; end $$;
--- y después: quitar la vista, devoluciones, stock_mov, stock_formato_evento,
+-- y después: quitar las dos vistas, devoluciones, stock_mov, stock_formato_evento,
 -- stock_formato_linea, stock_formato, stock_almacen, las funciones de esta
--- migración, los triggers *_apartado_cuadra de ov_lineas/ov_ordenes, y la
--- columna stock_watch_photo.stock_kubera. Después de la fase B el libro es el
+-- migración (verificar_libro, verificar_apartado, tg_libro_cuadra,
+-- tg_apartado_cuadra, tg_stock_almacen_guarda, tg_stock_formato_guarda,
+-- tg_stock_formato_linea_guarda, tg_devoluciones_guarda,
+-- tg_devolucion_de_mas), los triggers
+-- *_apartado_cuadra de ov_lineas/ov_ordenes, y la columna
+-- stock_watch_photo.stock_kubera. Después de la fase B el libro es el
 -- ÚNICO registro de TEX3 (RPO de un día sin PITR): la reversa es OPERATIVA.
 -- ═══════════════════════════════════════════════════════════════════════════
 
@@ -141,6 +203,7 @@ declare
     'stock_formato.confirmado_at timestamptz', 'stock_formato.confirmo_bodega text',
     'stock_formato.descartado_por text', 'stock_formato.descartado_at timestamptz',
     'stock_formato.descartado_motivo text', 'stock_formato.rev integer',
+    'stock_formato.dividido_de bigint', 'stock_formato_linea.rev integer',
     'stock_formato_linea.id bigint', 'stock_formato_linea.formato_id bigint',
     'stock_formato_linea.fila integer', 'stock_formato_linea.sku citext',
     'stock_formato_linea.sku_archivo text', 'stock_formato_linea.cantidad integer',
@@ -169,11 +232,12 @@ declare
     'devoluciones.recibido_nombre text', 'devoluciones.recibido_at timestamptz',
     'devoluciones.dictamen_por text', 'devoluciones.dictamen_nombre text',
     'devoluciones.dictamen_at timestamptz', 'devoluciones.resuelta_at timestamptz',
-    'devoluciones.clave text', 'devoluciones.rev integer'];
+    'devoluciones.clave text', 'devoluciones.rev integer', 'devoluciones.partida_de bigint'];
   prohibidas constant text[] := array['stock_almacen.otorgado'];
   restricciones constant text[] := array[
     'stock_almacen|stock_almacen_almacen_fk|(almacen, fuente)',
     'stock_formato|stock_formato_conf_chk|btrim',
+    'stock_formato|stock_formato_dividido_chk|reemplaza_a',
     'stock_formato|stock_formato_desc_q_chk|descartado_por',
     'stock_formato|stock_formato_hash_chk|0-9a-f',
     'stock_formato_linea|stock_formato_linea_salida_chk|movimiento',
@@ -181,22 +245,41 @@ declare
     'stock_mov|stock_mov_almacen_fk|(almacen, fuente)',
     'stock_mov|stock_mov_signo_chk|traspaso_entrada',
     'stock_mov|stock_mov_clave_chk|conteo',
+    'stock_mov|stock_mov_ov_chk|devolucion',
     'devoluciones|devoluciones_resuelta_chk|COALESCE',
+    'devoluciones|devoluciones_partida_fk|REFERENCES ops.devoluciones(id)',
+    'stock_formato_linea|stock_formato_linea_rev_chk|rev >= 1',
     'devoluciones|devoluciones_paquete_ids_chk|array_position'];
   indices constant text[] := array[
-    'stock_formato|stock_formato_hash_uq|descartado',
-    'stock_mov|stock_mov_salida_ov_uq|salida_ov'];
+    'stock_formato|stock_formato_hash_uq|dividido_de IS NULL',
+    'stock_mov|stock_mov_salida_ov_uq|salida_ov',
+    'devoluciones|devoluciones_recepcion_uq|partida_de IS NULL',
+    'devoluciones|devoluciones_retiro_uq|partida_de IS NULL'];
 begin
+  -- La tabla del ALTER del final (0021) tiene que estar, y si la columna ya
+  -- existe, con su tipo: `solo si falta` no compara la forma (SEG-07).
+  if to_regclass('ops.stock_watch_photo') is null then
+    raise exception using errcode = 'KB000',
+      message = '0065 paso 0: falta ops.stock_watch_photo (0021)';
+  end if;
+  if exists (select 1 from pg_catalog.pg_attribute a
+              where a.attrelid = to_regclass('ops.stock_watch_photo') and a.attname = 'stock_kubera'
+                and a.attnum > 0 and not a.attisdropped and a.atttypid <> 'integer'::regtype) then
+    raise exception using errcode = 'KB000',
+      message = '0065 paso 0: ops.stock_watch_photo.stock_kubera ya existe con otro tipo (se esperaba integer)';
+  end if;
+
   if to_regclass('ops.almacenes') is null or to_regclass('ops.ov_lineas') is null
      or to_regprocedure('ops.exigir(boolean,text)') is null
      or to_regprocedure('ops.tg_solo_agregar()') is null
+     or to_regprocedure('ops.tg_sin_truncate()') is null
      or not exists (select 1 from pg_catalog.pg_attribute a
                      where a.attrelid = to_regclass('ops.almacenes') and a.attname = 'surte_ventas' and not a.attisdropped)
      or not exists (select 1 from pg_catalog.pg_constraint k
                      where k.conrelid = to_regclass('ops.almacenes') and k.conname = 'almacenes_codigo_fuente_uq') then
     raise exception using errcode = 'KB000',
       message = '0065 paso 0: falta la 0064 de esta versión (ops.almacenes con surte_ventas y (codigo, fuente), '
-                'ops.ov_lineas, ops.exigir). Aplicar primero la 0064.';
+                'ops.ov_lineas, ops.exigir, ops.tg_sin_truncate). Aplicar primero la 0064.';
   end if;
   if to_regclass('ops.stock_almacen_foto') is not null or to_regclass('ops.stock_almacen_foto_linea') is not null then
     raise exception using errcode = 'KB000',
@@ -217,7 +300,7 @@ begin
       raise exception using errcode = 'KB000',
         message = format('0065 paso 0: ops.%s ya existe pero sin la columna %s (otra versión de la 0065)', t, c);
     end if;
-    if v <> to_regtype(ty) then
+    if to_regtype(ty) is null or v is distinct from to_regtype(ty) then      -- falla CERRADO
       raise exception using errcode = 'KB000',
         message = format('0065 paso 0: ops.%s.%s es %s y se esperaba %s', t, c, v, ty);
     end if;
@@ -297,6 +380,7 @@ create table if not exists ops.stock_formato (
     archivo_hash      text        not null,                 -- sha256 del archivo (hex minúsculas)
     archivo_path      text,                                 -- bucket privado 'inventario-kubera'
     reemplaza_a       bigint,
+    dividido_de       bigint,                               -- «dividir»: el padre, del MISMO archivo (fija)
     cargado_por       text        not null,
     cargado_nombre    text,
     cargado_at        timestamptz not null default now(),
@@ -311,6 +395,8 @@ create table if not exists ops.stock_formato (
     constraint stock_formato_pkey          primary key (id),
     constraint stock_formato_almacen_fk    foreign key (almacen, fuente) references ops.almacenes (codigo, fuente),
     constraint stock_formato_reemplaza_fk  foreign key (reemplaza_a) references ops.stock_formato (id),
+    constraint stock_formato_dividido_fk   foreign key (dividido_de) references ops.stock_formato (id),
+    constraint stock_formato_dividido_chk  check (dividido_de is distinct from id and (dividido_de is null or reemplaza_a is null)),
     constraint stock_formato_fuente_chk    check (fuente = 'kubera'),
     constraint stock_formato_estado_chk    check (estado in ('por_confirmar', 'confirmado', 'descartado')),
     constraint stock_formato_nombre_chk    check (length(btrim(archivo_nombre)) > 0),
@@ -324,9 +410,12 @@ create table if not exists ops.stock_formato (
                                                   and (descartado_at is null) = (descartado_por is null)),
     constraint stock_formato_rev_chk       check (rev >= 1)
 );
--- El mismo archivo no entra dos veces mientras su formato siga vivo.
-create unique index if not exists stock_formato_hash_uq on ops.stock_formato (archivo_hash) where estado <> 'descartado';
+-- El mismo archivo no entra dos veces mientras su formato siga vivo. Los hijos
+-- de «dividir» comparten el hash del padre y quedan fuera.
+create unique index if not exists stock_formato_hash_uq on ops.stock_formato (archivo_hash)
+    where estado <> 'descartado' and dividido_de is null;
 create index if not exists stock_formato_reemplaza_ix on ops.stock_formato (reemplaza_a) where reemplaza_a is not null;
+create index if not exists stock_formato_dividido_ix on ops.stock_formato (dividido_de) where dividido_de is not null;
 
 -- ───────────────────────────────────────────────────────────────────────────
 -- 3) ops.stock_formato_linea — el renglón, con la PUERTA como dato
@@ -349,6 +438,7 @@ create table if not exists ops.stock_formato_linea (
     salida_odoo_ref        text,                          -- referencia del movimiento en Odoo, si la hubo
     odoo_tex2_al_abrir     numeric(14,3),                 -- registro: qty_available de TEX2 al abrir la puerta
     aviso                  text,                          -- 'archivado en Odoo', 'cantidad atípica', 'riesgo D', …
+    rev                    integer       not null default 1,   -- candado optimista de «bajar la cantidad»
     constraint stock_formato_linea_pkey        primary key (id),
     constraint stock_formato_linea_formato_fk  foreign key (formato_id) references ops.stock_formato (id),   -- sin cascade
     constraint stock_formato_linea_uq          unique nulls not distinct (formato_id, sku, ubicacion),
@@ -356,6 +446,7 @@ create table if not exists ops.stock_formato_linea (
     constraint stock_formato_linea_cantidad_chk check (cantidad > 0),
     constraint stock_formato_linea_cant_arch_chk check (cantidad_archivo > 0),
     constraint stock_formato_linea_sku_arch_chk check (length(btrim(sku_archivo)) > 0),
+    constraint stock_formato_linea_rev_chk     check (rev >= 1),
     constraint stock_formato_linea_via_chk     check (salida_odoo_via in ('tex2_bajo', 'tex2_cero', 'movimiento')),
     constraint stock_formato_linea_salida_chk  check ((salida_odoo_at is null) = (salida_odoo_via is null)
                                                       and (salida_odoo_via is distinct from 'movimiento' or salida_odoo_ref is not null))
@@ -420,7 +511,9 @@ create table if not exists ops.stock_mov (
     constraint stock_mov_nota_chk    check (motivo not in ('ajuste_conteo', 'merma', 'correccion')
                                             or length(coalesce(nota, '')) >= 5),
     constraint stock_mov_ref_chk     check (motivo <> 'entrada' or ref is not null),
-    constraint stock_mov_ov_chk      check (motivo <> 'salida_ov' or ov_linea_id is not null),
+    -- La liga con el renglón de la OV es de la salida y de la devolución, y de
+    -- nadie más (DEVOLUCIONES §4d): sin ella, devolucion_de_mas no ve lo devuelto.
+    constraint stock_mov_ov_chk      check ((motivo in ('salida_ov', 'devolucion')) = (ov_linea_id is not null)),
     -- La clave sale del HECHO de negocio y tiene una forma por motivo (§6.1 punto 6)
     constraint stock_mov_clave_chk   check (case motivo
         when 'entrada'          then clave ~ '^(fmt:[0-9]+:.+|dev:[0-9]+:recibe)$'
@@ -469,9 +562,12 @@ create table if not exists ops.devoluciones (
     resuelta_at        timestamptz,                       -- salió de REVISION (traspaso o merma)
     clave              text        not null,              -- anti doble clic de la pantalla (uuid al abrir)
     rev                integer     not null default 1,
+    partida_de         bigint,                            -- la fila original, si esta nació al partir el paquete por dictamen (§4b)
     constraint devoluciones_pkey          primary key (id),
     constraint devoluciones_clave_uq      unique (clave),
     constraint devoluciones_ov_linea_fk   foreign key (ov_linea_id) references ops.ov_lineas (id),
+    constraint devoluciones_partida_fk    foreign key (partida_de) references ops.devoluciones (id),
+    constraint devoluciones_partida_chk   check (partida_de is distinct from id),
     constraint devoluciones_origen_chk    check (origen in ('venta', 'retiro_full')),
     constraint devoluciones_cantidad_chk  check (cantidad > 0),
     constraint devoluciones_paquete_ref_chk check (length(btrim(paquete_ref)) >= 4),
@@ -494,16 +590,32 @@ create table if not exists ops.devoluciones (
 create index if not exists devoluciones_abiertas_ix on ops.devoluciones (recibido_at) where resuelta_at is null;
 create index if not exists devoluciones_paquete_ix  on ops.devoluciones using gin (paquete_ids);
 create index if not exists devoluciones_ov_linea_ix on ops.devoluciones (ov_linea_id) where ov_linea_id is not null;
+-- La llave de RECEPCIÓN, sacada del hecho (§3.11, H10): el mismo paquete no se
+-- recibe dos veces para el mismo renglón de OV ni para el mismo retiro de FULL.
+-- paquete_ids llega ordenado y sin repetidos (trigger). Las filas que nacen al
+-- partir el paquete por dictamen (partida_de) no tienen 'recibe' y quedan fuera.
+-- 23505 de cualquiera de las dos = «ya recibida»: releer.
+create unique index if not exists devoluciones_recepcion_uq on ops.devoluciones (ov_linea_id, sku, paquete_ids)
+    where partida_de is null and ov_linea_id is not null;
+create unique index if not exists devoluciones_retiro_uq on ops.devoluciones (canal, cuenta, sku, paquete_ids)
+    where origen = 'retiro_full' and partida_de is null;
+create index if not exists devoluciones_partida_ix on ops.devoluciones (partida_de) where partida_de is not null;
 
 -- ───────────────────────────────────────────────────────────────────────────
 -- 7) Triggers de fila: guardas y solo agregar
 -- ───────────────────────────────────────────────────────────────────────────
 
+-- search_path de las funciones que comparan `sku` (citext): con solo
+-- pg_catalog, `citext = citext` no encuentra su operador y cae EN SILENCIO al de
+-- text (distingue mayúsculas y no usa los índices). citext vive en `public`
+-- (0001); `extensions` va por si un proyecto lo tiene ahí. Ninguno de los dos
+-- admite CREATE de anon/authenticated.
+--
 -- El saldo: llave fija; subir el apartado no deja libre < 0 y solo en kubera
 -- con admite_ov (C8 + D11); actualizado_at por trigger.
 create or replace function ops.tg_stock_almacen_guarda() returns trigger
 language plpgsql
-set search_path = pg_catalog, public
+set search_path = pg_catalog, public, extensions
 as $$
 begin
   if tg_op = 'UPDATE' and (new.sku, new.almacen, new.fuente) is distinct from (old.sku, old.almacen, old.fuente) then
@@ -544,6 +656,16 @@ begin
       raise exception using errcode = '23514', constraint = 'stock_formato_transicion_chk',
         message = format('un formato nace por_confirmar, no %s', new.estado);
     end if;
+    -- «Dividir»: el hijo sale del MISMO archivo y de la misma bodega que el
+    -- padre. Así el hash del hijo no es inventado (y queda fuera del único).
+    if new.dividido_de is not null
+       and not exists (select 1 from ops.stock_formato p
+                        where p.id = new.dividido_de and p.archivo_hash = new.archivo_hash
+                          and p.almacen = new.almacen) then
+      raise exception using errcode = '23514', constraint = 'stock_formato_dividido_hash_chk',
+        message = format('formato dividido de %s: tiene que ser el mismo archivo (hash) y la misma bodega del padre',
+                         new.dividido_de);
+    end if;
     return new;
   end if;
   -- `folio` es generada: en un BEFORE todavía no tiene valor, se deja fuera.
@@ -554,10 +676,10 @@ begin
     end if;
     return new;
   end if;
-  if (new.id, new.archivo_hash, new.cargado_por, new.cargado_at)
-     is distinct from (old.id, old.archivo_hash, old.cargado_por, old.cargado_at) then
+  if (new.id, new.archivo_hash, new.cargado_por, new.cargado_at, new.dividido_de, new.almacen)
+     is distinct from (old.id, old.archivo_hash, old.cargado_por, old.cargado_at, old.dividido_de, old.almacen) then
     raise exception using errcode = '42501', constraint = 'stock_formato_inmutable',
-      message = format('formato %s: id, archivo y carga son fijos (otro archivo = reemplazar)', old.id);
+      message = format('formato %s: id, archivo, bodega, carga y dividido_de son fijos (otro archivo = reemplazar)', old.id);
   end if;
   return new;   -- por_confirmar → por_confirmar | confirmado | descartado (la CHECK de estado cierra el resto)
 end $$;
@@ -574,7 +696,7 @@ language plpgsql
 set search_path = pg_catalog
 as $$
 declare
-  permitidas constant text[] := array['cantidad', 'nota', 'odoo_tex2_al_confirmar',
+  permitidas constant text[] := array['cantidad', 'nota', 'rev', 'odoo_tex2_al_confirmar',
                                       'salida_odoo_at', 'salida_odoo_via', 'salida_odoo_ref', 'odoo_tex2_al_abrir'];
   v_estado text;
 begin
@@ -584,6 +706,11 @@ begin
     if v_estado is not null and v_estado <> 'por_confirmar' then
       raise exception using errcode = '42501', constraint = 'stock_formato_linea_inmutable',
         message = format('formato %s está %s: no se le agregan renglones', new.formato_id, v_estado);
+    end if;
+    -- Un renglón nace esperando: la puerta solo se abre en un formato confirmado.
+    if new.salida_odoo_at is not null then
+      raise exception using errcode = '23514', constraint = 'stock_formato_linea_puerta_chk',
+        message = format('renglón nuevo del formato %s: nace con la puerta cerrada (salida_odoo_at NULL)', new.formato_id);
     end if;
     return new;
   end if;
@@ -608,8 +735,17 @@ begin
     raise exception using errcode = '42501', constraint = 'stock_formato_linea_inmutable',
       message = format('renglón %s: formato, fila y lo que decía el archivo son fijos', old.id);
   end if;
+  -- `rev` solo sube, y de uno en uno (candado optimista).
+  if new.rev is distinct from old.rev and new.rev <> old.rev + 1 then
+    raise exception using errcode = '23514', constraint = 'stock_formato_linea_rev_chk',
+      message = format('renglón %s: rev sube de uno en uno (%s → %s)', old.id, old.rev, new.rev);
+  end if;
 
   if coalesce(v_estado, 'por_confirmar') = 'por_confirmar' then
+    if new.salida_odoo_at is not null then      -- la puerta es de lo que Bodega ya confirmó
+      raise exception using errcode = '23514', constraint = 'stock_formato_linea_puerta_chk',
+        message = format('renglón %s: la puerta solo se abre en un formato confirmado', old.id);
+    end if;
     return new;
   end if;
   if v_estado = 'descartado' then
@@ -629,6 +765,12 @@ begin
      and (length(btrim(coalesce(new.nota, ''))) < 5 or new.nota is not distinct from old.nota) then
     raise exception using errcode = '23514', constraint = 'stock_formato_linea_nota_chk',
       message = format('renglón %s: bajar la cantidad pide una nota nueva de 5 caracteres o más', old.id);
+  end if;
+  -- Dos pantallas que bajan el mismo renglón: la segunda, con la rev vieja, no
+  -- encuentra la fila (`where rev = <vista>`); una baja que no sube rev no pasa.
+  if new.cantidad < old.cantidad and new.rev <> old.rev + 1 then
+    raise exception using errcode = '23514', constraint = 'stock_formato_linea_rev_chk',
+      message = format('renglón %s de un formato confirmado: bajar la cantidad sube rev en uno (candado optimista)', old.id);
   end if;
   return new;
 end $$;
@@ -650,6 +792,89 @@ drop trigger if exists stock_formato_evento_sin_truncate on ops.stock_formato_ev
 create trigger stock_formato_evento_sin_truncate before truncate on ops.stock_formato_evento
   for each statement execute function ops.tg_solo_agregar();
 
+-- La devolución: no se borra; resuelta (salió de REVISION) es terminal; lo que
+-- la identifica y lo que ya movió el libro es fijo; y si copia la venta
+-- (canal, cuenta, external_order_id) es la MISMA del mp_* de su OV (revisión
+-- §3.11). `cantidad` y `dictamen` sí cambian antes de resolver: partir un
+-- paquete por dictamen baja la fila y agrega otra (DEVOLUCIONES §4b).
+create or replace function ops.tg_devoluciones_guarda() returns trigger
+language plpgsql
+set search_path = pg_catalog, public, extensions
+as $$
+declare
+  v record;
+begin
+  if tg_op = 'DELETE' then
+    raise exception using errcode = '42501', constraint = 'devoluciones_sin_borrado',
+      message = format('devolución %s: no se borra; se resuelve (resuelta_at) con su movimiento', old.id);
+  end if;
+  if tg_op = 'UPDATE' then
+    -- `folio` es generada: en un BEFORE todavía no tiene valor, se deja fuera.
+    if old.resuelta_at is not null
+       and (to_jsonb(new) - 'folio') is distinct from (to_jsonb(old) - 'folio') then
+      raise exception using errcode = '42501', constraint = 'devoluciones_inmutable',
+        message = format('devolución %s ya salió de REVISION: no cambia', old.id);
+    end if;
+    if (new.id, new.origen, new.ov_linea_id, new.sku, new.recibido_at, new.recibido_por, new.clave, new.partida_de)
+       is distinct from
+       (old.id, old.origen, old.ov_linea_id, old.sku, old.recibido_at, old.recibido_por, old.clave, old.partida_de) then
+      raise exception using errcode = '42501', constraint = 'devoluciones_inmutable',
+        message = format('devolución %s: origen, renglón, SKU, recepción, clave y partida_de son fijos (el libro ya los movió)', old.id);
+    end if;
+  end if;
+  -- paquete_ids normalizado: ordenado y sin repetidos, para que la llave de
+  -- recepción no dependa del orden en que se leyeron las etiquetas. Lo vacío
+  -- queda vacío y lo frena devoluciones_paquete_ids_chk.
+  new.paquete_ids := coalesce((select array_agg(distinct x order by x) from unnest(new.paquete_ids) as u(x)), '{}');
+  -- Una fila partida es del MISMO paquete, renglón (o retiro) y SKU que su original.
+  if tg_op = 'INSERT' and new.partida_de is not null
+     and not exists (select 1 from ops.devoluciones p
+                      where p.id = new.partida_de and p.partida_de is null
+                        and p.origen = new.origen and p.sku = new.sku
+                        and p.ov_linea_id is not distinct from new.ov_linea_id
+                        and p.canal is not distinct from new.canal and p.cuenta is not distinct from new.cuenta
+                        and p.paquete_ids = new.paquete_ids) then
+    raise exception using errcode = '23514', constraint = 'devoluciones_partida_igual_chk',
+      message = format('devolución partida de %s: tiene que ser del mismo paquete, renglón (o retiro), SKU y canal que la original',
+                       new.partida_de);
+  end if;
+  if new.ov_linea_id is not null
+     and (new.canal is not null or new.cuenta is not null or new.external_order_id is not null) then
+    select o.mp_canal, o.mp_cuenta, o.mp_orden into v
+      from ops.ov_lineas l
+      join ops.ov_ordenes o on o.id = l.orden_id
+     where l.id = new.ov_linea_id;
+    if v.mp_orden is null
+       or (new.canal, new.cuenta, new.external_order_id) is distinct from (v.mp_canal, v.mp_cuenta, v.mp_orden) then
+      raise exception using errcode = '23514', constraint = 'devoluciones_venta_ov_chk',
+        message = format('devolución del renglón %s: canal/cuenta/venta (%s/%s/%s) no son el mp_* de su OV (%s/%s/%s)',
+                         new.ov_linea_id, new.canal, new.cuenta, new.external_order_id,
+                         v.mp_canal, v.mp_cuenta, v.mp_orden);
+    end if;
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists devoluciones_guarda on ops.devoluciones;
+create trigger devoluciones_guarda before insert or update or delete on ops.devoluciones
+  for each row execute function ops.tg_devoluciones_guarda();
+
+-- No se vacían (la función es de la 0064): TRUNCATE no dispara los triggers de
+-- fila ni los diferidos. Sin esto, `truncate ops.stock_almacen` se saltaría
+-- saldo = libro sin que nada truene.
+drop trigger if exists stock_almacen_sin_truncate on ops.stock_almacen;
+create trigger stock_almacen_sin_truncate before truncate on ops.stock_almacen
+  for each statement execute function ops.tg_sin_truncate();
+drop trigger if exists stock_formato_sin_truncate on ops.stock_formato;
+create trigger stock_formato_sin_truncate before truncate on ops.stock_formato
+  for each statement execute function ops.tg_sin_truncate();
+drop trigger if exists stock_formato_linea_sin_truncate on ops.stock_formato_linea;
+create trigger stock_formato_linea_sin_truncate before truncate on ops.stock_formato_linea
+  for each statement execute function ops.tg_sin_truncate();
+drop trigger if exists devoluciones_sin_truncate on ops.devoluciones;
+create trigger devoluciones_sin_truncate before truncate on ops.devoluciones
+  for each statement execute function ops.tg_sin_truncate();
+
 -- ───────────────────────────────────────────────────────────────────────────
 -- 8) Invariantes entre tablas, al COMMIT (constraint triggers diferidos)
 -- ───────────────────────────────────────────────────────────────────────────
@@ -662,7 +887,7 @@ create trigger stock_formato_evento_sin_truncate before truncate on ops.stock_fo
 -- (a) SALDO = LIBRO. Una consulta: una sola foto.
 create or replace function ops.verificar_libro(p_sku citext, p_alm text) returns void
 language plpgsql
-set search_path = pg_catalog, public
+set search_path = pg_catalog, public, extensions
 as $$
 declare
   v record;
@@ -680,7 +905,7 @@ end $$;
 
 create or replace function ops.tg_libro_cuadra() returns trigger
 language plpgsql
-set search_path = pg_catalog, public
+set search_path = pg_catalog, public, extensions
 as $$
 declare
   v_prev integer;
@@ -716,7 +941,7 @@ create constraint trigger stock_almacen_cuadra after insert or update of fisico 
 -- el índice parcial.
 create or replace function ops.verificar_apartado(p_sku citext, p_alm text) returns void
 language plpgsql
-set search_path = pg_catalog, public
+set search_path = pg_catalog, public, extensions
 as $$
 declare
   v record;
@@ -742,7 +967,7 @@ end $$;
 
 create or replace function ops.tg_apartado_cuadra() returns trigger
 language plpgsql
-set search_path = pg_catalog, public
+set search_path = pg_catalog, public, extensions
 as $$
 declare
   r record;
@@ -778,6 +1003,37 @@ create constraint trigger ov_lineas_apartado_cuadra after insert or delete or up
 drop trigger if exists ov_ordenes_apartado_cuadra on ops.ov_ordenes;
 create constraint trigger ov_ordenes_apartado_cuadra after update of estado, borrada_at on ops.ov_ordenes
   deferrable initially deferred for each row execute function ops.tg_apartado_cuadra();
+
+-- (c) LO DEVUELTO ≤ LO ENTREGADO, por renglón de OV. La guarda de la sentencia
+-- de recibir (Σ devuelto + n ≤ entregado) suma con la foto del inicio de la
+-- sentencia, antes de tomar candados: dos recepciones simultáneas del mismo
+-- renglón pasarían las dos. Al COMMIT sí se ven: las dos bloquean la misma
+-- fila (sku, REVISION), así que la segunda llega a su COMMIT después de que la
+-- primera confirmó, y esta consulta (foto nueva) la cuenta.
+create or replace function ops.tg_devolucion_de_mas() returns trigger
+language plpgsql
+set search_path = pg_catalog, public, extensions
+as $$
+declare
+  v_dev integer;
+  v_ent integer;
+begin
+  select coalesce(sum(m.delta), 0) into v_dev
+    from ops.stock_mov m
+   where m.motivo = 'devolucion' and m.ov_linea_id = new.ov_linea_id;
+  select coalesce(l.entregado, 0) into v_ent from ops.ov_lineas l where l.id = new.ov_linea_id;
+  if v_dev > coalesce(v_ent, 0) then
+    raise exception using errcode = '23514', constraint = 'stock_devolucion_de_mas',
+      message = format('renglón %s: devuelto %s > entregado %s', new.ov_linea_id, v_dev, coalesce(v_ent, 0));
+  end if;
+  return null;
+end $$;
+
+drop trigger if exists stock_mov_devolucion_cuadra on ops.stock_mov;
+create constraint trigger stock_mov_devolucion_cuadra after insert on ops.stock_mov
+  deferrable initially deferred for each row
+  when (new.motivo = 'devolucion')
+  execute function ops.tg_devolucion_de_mas();
 
 -- ───────────────────────────────────────────────────────────────────────────
 -- 9) La vista vigía: solo devuelve filas cuando algo NO cuadra
@@ -819,14 +1075,6 @@ with r as (            -- lo que apartan los renglones, por (sku, bodega)
     full join (select y.sku, sum(y.cantidad)::int as n from ops.devoluciones y
                 where y.resuelta_at is null group by y.sku) d
       on d.sku = s.sku
-), rc as (             -- lo recibido por devolución del canal contra lo que el canal dice que vuelve
-  select d.canal, d.cuenta, d.external_return_id, d.sku, sum(d.cantidad)::int as recibido,
-         (select sum(ri.cantidad) from channel.return_items ri
-           where ri.canal = d.canal and ri.cuenta = d.cuenta
-             and ri.external_return_id = d.external_return_id and ri.sku = d.sku)::int as del_canal
-    from ops.devoluciones d
-   where d.external_return_id is not null
-   group by d.canal, d.cuenta, d.external_return_id, d.sku
 )
 select 'apartado_descuadrado'::text as problema, coalesce(sa.sku, r.sku) as sku,
        coalesce(sa.almacen, r.almacen) as almacen, null::text as ref,
@@ -860,16 +1108,33 @@ select 'formato_sin_cuadrar', null, fe.almacen, fe.folio, fe.abiertos, fe.entrar
 union all
 select 'revision_descuadrada', rv.sku, 'REVISION', null, rv.abiertas, rv.fisico, null
   from rv
- where rv.fisico <> rv.abiertas
-union all
-select 'devuelto_de_mas_vs_canal', rc.sku, 'REVISION', rc.canal || ':' || rc.cuenta || ':' || rc.external_return_id,
-       rc.del_canal, rc.recibido, null
-  from rc
- where rc.del_canal is not null and rc.recibido > rc.del_canal;
+ where rv.fisico <> rv.abiertas;
 
 -- `create view` con su invoker inline; lo repetimos por la regla de la casa
 -- (un replace futuro despoja la vista; CI lo vigila).
 alter view ops.stock_apartado_descuadre_v set (security_invoker = on);
+
+-- La parte que cruza con el CANAL, aparte: depende de channel.return_items
+-- (ver DEPENDENCIAS en el encabezado) y así la vigía principal no se rompe ni
+-- frena un ALTER de channel.*. Misma forma de filas que la vigía.
+drop view if exists ops.devoluciones_vs_canal_v;
+create view ops.devoluciones_vs_canal_v with (security_invoker = on) as
+with rc as (           -- lo recibido por devolución del canal contra lo que el canal dice que vuelve
+  select d.canal, d.cuenta, d.external_return_id, d.sku, sum(d.cantidad)::int as recibido,
+         (select sum(ri.cantidad) from channel.return_items ri
+           where ri.canal = d.canal and ri.cuenta = d.cuenta
+             and ri.external_return_id = d.external_return_id and ri.sku = d.sku)::int as del_canal
+    from ops.devoluciones d
+   where d.external_return_id is not null
+   group by d.canal, d.cuenta, d.external_return_id, d.sku
+)
+select 'devuelto_de_mas_vs_canal'::text as problema, rc.sku, 'REVISION'::text as almacen,
+       rc.canal || ':' || rc.cuenta || ':' || rc.external_return_id as ref,
+       rc.del_canal as esperado, rc.recibido as encontrado, null::jsonb as detalle
+  from rc
+ where rc.del_canal is not null and rc.recibido > rc.del_canal;
+
+alter view ops.devoluciones_vs_canal_v set (security_invoker = on);
 
 -- ───────────────────────────────────────────────────────────────────────────
 -- 10) Comentarios
@@ -890,12 +1155,19 @@ comment on table ops.stock_formato is
 comment on column ops.stock_formato.confirmo_bodega is
   'Quién de Bodega dijo «listo para usarse» (D9: texto no vacío). Pendiente SEG-12: permiso puntual y FK a core.usuarios.';
 comment on column ops.stock_formato.archivo_hash is
-  'sha256 del archivo en hex minúsculas. Único entre formatos no descartados (stock_formato_hash_uq). Limitación '
+  'sha256 del archivo en hex minúsculas. Único entre formatos no descartados que no son hijos de «dividir» '
+  '(stock_formato_hash_uq; el hijo hereda el hash del padre). Limitación '
   'conocida (H05): Excel puede volver a guardar el mismo lote con otro hash.';
+comment on column ops.stock_formato.dividido_de is
+  '«Dividir» (plan v3 §3): el formato padre del que salieron estos renglones no listos. Mismo archivo_hash y bodega '
+  'que el padre (stock_formato_dividido_hash_chk); fuera del único de hash; fijo; nunca junto con reemplaza_a.';
 comment on table ops.stock_formato_linea is
   'Renglón del formato. La PUERTA es dato: salida_odoo_at NULL = esperando la salida de TEX2 en Odoo. Las lecturas '
   'de Odoo (odoo_*) son solo registro. Con la puerta abierta el renglón se congela; en un formato confirmado solo '
-  'puede BAJAR su cantidad, con nota, mientras espera.';
+  'puede BAJAR su cantidad, con nota nueva y rev + 1, mientras espera.';
+comment on column ops.stock_formato_linea.rev is
+  'Candado optimista de «bajar la cantidad» en un formato confirmado: sube de uno en uno y toda baja lo sube '
+  '(stock_formato_linea_rev_chk). La sentencia: where id = … and rev = <vista> and salida_odoo_at is null.';
 comment on column ops.stock_formato_linea.salida_odoo_at is
   'PUERTA: cuándo se vio en Odoo (solo lectura) la salida de TEX2. NULL = esperando: no está en stock_almacen y se '
   'sigue vendiendo por Odoo, una sola vez. Va junto con salida_odoo_via (y _ref si es ''movimiento'').';
@@ -927,18 +1199,38 @@ comment on table ops.devoluciones is
   'FULL, el empaque, el dictamen, los plazos y las llaves para cruzar con Odoo y channel.returns. Cada evento (recibir, '
   'dictaminar, resolver) escribe esta fila, el saldo, el libro y el estado de la OV en una sentencia.';
 comment on column ops.devoluciones.clave is
-  'Anti doble clic: el uuid de la pantalla al abrir. Los movimientos del libro usan dev:<id>:recibe|sale|entra|merma. '
-  'La recaptura del mismo paquete la frena la sentencia de recibir (Σ devuelto + n ≤ entregado).';
+  'Anti doble clic: el uuid de la pantalla al abrir. La recaptura del mismo paquete la frena la llave de recepción '
+  '(devoluciones_recepcion_uq / devoluciones_retiro_uq: 23505 = ya recibida), y lo devuelto > entregado el constraint '
+  'trigger stock_mov_devolucion_cuadra al COMMIT. Los movimientos del libro usan dev:<id>:recibe|sale|entra|merma, '
+  'derivadas de esta fila, que ya es única por el hecho.';
 comment on column ops.devoluciones.paquete_ids is
-  'paquete_ref normalizado (mayúsculas, sin espacios ni guiones), un id por elemento: el cruce diario contra el folio '
-  'de iFull en Odoo. Solo ids, nunca nombre ni dirección.';
+  'paquete_ref normalizado (mayúsculas, sin espacios ni guiones), un id por elemento, ORDENADO y sin repetidos (lo '
+  'hace el trigger): la llave de recepción y el cruce diario contra el folio de iFull en Odoo. Solo ids, nunca '
+  'nombre ni dirección.';
+comment on column ops.devoluciones.partida_de is
+  'La fila original cuando esta nació al partir el paquete por dictamen (DEVOLUCIONES §4b): mismo paquete, renglón '
+  '(o retiro), SKU y canal (devoluciones_partida_igual_chk). No tiene movimiento ''recibe'' y queda fuera de la llave '
+  'de recepción. Fija.';
 comment on view ops.stock_apartado_descuadre_v is
   'Vigía: solo devuelve filas cuando algo no cuadra (apartado vs renglones, apartado en OV no confirmadas, libre < 0, '
   'apartado sin admite_ov, devolución de más, formato confirmado sin cuadrar con el libro, REVISION vs devoluciones '
-  'abiertas, recibido de más contra channel.return_items). Aviso cada 15 min si da ≥ 1 fila.';
+  'abiertas). No depende de channel.*. Aviso cada 15 min si da ≥ 1 fila (junto con ops.devoluciones_vs_canal_v).';
+comment on view ops.devoluciones_vs_canal_v is
+  'Vigía del cruce con el canal: lo recibido en REVISION de más contra channel.return_items. Misma forma de filas que '
+  'ops.stock_apartado_descuadre_v. DEPENDE de channel.return_items: la reversa de la 0049 o un ALTER de esas columnas '
+  'exigen quitar antes esta vista.';
+comment on function ops.tg_devolucion_de_mas() is
+  'Constraint trigger diferido de stock_mov (motivo devolucion): Σ delta devuelto del renglón ≤ entregado, al COMMIT '
+  '(también con dos recepciones simultáneas). SQLSTATE 23514, constraint stock_devolucion_de_mas.';
 comment on function ops.verificar_libro(citext, text) is
   'Saldo = libro para (sku, bodega), en una sola foto: fisico = Σ delta = saldo_despues del último. SQLSTATE 23514, '
   'constraint stock_libro_cuadra.';
+comment on function ops.tg_devoluciones_guarda() is
+  'Devoluciones: sin DELETE; resuelta_at = terminal; origen, ov_linea_id, sku, recibido_* y clave fijos; canal/cuenta/'
+  'external_order_id, si van, son el mp_* de la OV (devoluciones_venta_ov_chk, 23514).';
+comment on column ops.stock_mov.ov_linea_id is
+  'El renglón de la OV: obligatorio en salida_ov y devolucion, prohibido en el resto (stock_mov_ov_chk). Lo devuelto '
+  'de un renglón = Σ delta de sus devolucion (la vista vigía lo compara con entregado).';
 comment on function ops.verificar_apartado(citext, text) is
   'Apartado = Σ reservado de renglones sin entregar de OV confirmadas vivas, y nada apartado en OV no confirmadas, '
   'para (sku, bodega), en una sola foto. SQLSTATE 23514, constraint stock_apartado_cuadra.';
@@ -957,13 +1249,16 @@ grant all on ops.stock_almacen       to service_role;
 grant all on ops.stock_formato       to service_role;
 grant all on ops.stock_formato_linea to service_role;
 grant all on ops.devoluciones        to service_role;
--- Solo se agregan (defensa para PostgREST; al dueño lo frena el trigger, SEG-04).
-grant select, insert on ops.stock_mov            to service_role;
-grant select, insert on ops.stock_formato_evento to service_role;
-revoke update, delete, truncate on ops.stock_mov, ops.stock_formato_evento from service_role;
-grant select on ops.stock_apartado_descuadre_v to service_role;
+-- Solo se agregan: SELECT e INSERT y NADA más (defensa para PostgREST; al
+-- dueño lo frena el trigger, SEG-04). `revoke all` primero: el default ACL del
+-- esquema da todo al nacer (REFERENCES, TRIGGER y MAINTAIN incluidos; con
+-- TRIGGER, un trigger colgado del libro detendría cada entrega).
+revoke all on ops.stock_mov, ops.stock_formato_evento from service_role;
+grant select, insert on ops.stock_mov, ops.stock_formato_evento to service_role;
+grant select on ops.stock_apartado_descuadre_v, ops.devoluciones_vs_canal_v to service_role;
 revoke all on ops.stock_almacen, ops.stock_formato, ops.stock_formato_linea, ops.stock_formato_evento,
-              ops.stock_mov, ops.devoluciones, ops.stock_apartado_descuadre_v from anon, authenticated;
+              ops.stock_mov, ops.devoluciones, ops.stock_apartado_descuadre_v, ops.devoluciones_vs_canal_v
+         from anon, authenticated;
 
 revoke all on function ops.verificar_libro(citext, text)    from public, anon, authenticated;
 revoke all on function ops.verificar_apartado(citext, text) from public, anon, authenticated;

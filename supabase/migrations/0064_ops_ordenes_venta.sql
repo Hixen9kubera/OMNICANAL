@@ -8,6 +8,10 @@
 -- Estado: SIN APLICAR (6-oct-2026). Probada en el SANDBOX solo dentro de una
 -- transacción que termina en ROLLBACK:
 --     backend/scripts/verificar_0064_0065.py --en-transaccion
+-- (55 pruebas OK, 0 fallas, con la 0065 y aplicadas dos veces, tras la
+-- segunda revisión de tres lentes; las 2 pruebas de concurrencia necesitan las
+-- tablas CONFIRMADAS y quedan para después de aplicar en el sandbox:
+-- --concurrencia-con-commit).
 -- Va JUNTO con la 0065 (inventario de kubera). Llevarlas a producción es su
 -- propia acta, con las tres firmas.
 --
@@ -40,26 +44,48 @@
 --
 -- LO QUE GARANTIZA LA BASE (el backend entra como `postgres`, el dueño: RLS y
 -- grants NO lo frenan; triggers, CHECK y FK sí)
---   · ops.almacenes: `codigo` y `fuente` fijos; cambiar una bandera o un id
---     externo exige motivo nuevo (≥ 10) y quién (app.usuario o
---     actualizado_por); cada alta y cambio queda en ops.almacenes_hist. No se
---     borran filas (D13).
+--   · ops.almacenes: `codigo` y `fuente` fijos; dar de alta una bodega y
+--     cambiar una bandera o un id externo exigen motivo (≥ 10; nuevo en cada
+--     cambio) y quién (app.usuario o actualizado_por); cada alta y cambio
+--     queda en ops.almacenes_hist. No se borran filas (D13). Una bodega de
+--     kubera que surte ventas admite OV (almacenes_surte_ov_chk): si no,
+--     crear_auto no la encuentra y cada venta se atora en «no_alcanzo».
+--   · ov_folio: el contador no se borra ni baja (ov_folio_solo_sube).
 --   · ov_ordenes: transiciones válidas (borrador → confirmada | cancelada;
 --     confirmada → entregada | cancelada | entregada_cancelada; entregada →
---     entregada_cancelada); nace en borrador o confirmada (crear_auto); NO se
---     borra; confirmada = inmutable salvo la lista de lo PERMITIDO (estado,
---     rev, entrega, cancelación, borrado lógico, devolucion_estado y la marca
---     «¿salió?» canal_cancelo_*). Una columna nueva nace congelada.
+--     entregada_cancelada; cancelada → entregada_cancelada, el «¿salió?»
+--     tardío de la decisión 15); nace en borrador, o confirmada solo vía
+--     crear_auto (creado_via = 'automatico'); NO se borra; confirmada =
+--     inmutable salvo la lista de lo PERMITIDO (estado, rev, entrega,
+--     cancelación, borrado lógico, devolucion_estado y la marca «¿salió?»
+--     canal_cancelo_*). Una columna nueva nace congelada. Dentro de lo
+--     permitido, lo que ya se anotó no se reescribe: entregada_* y
+--     cancelada_* se ponen UNA vez, `rev` no baja y devolucion_estado no
+--     vuelve a NULL ni de recibida a pendiente.
 --   · ov_lineas: un renglón que aparta o ya salió solo cambia reservado y
 --     entregado*; no se borra; uno de una OV que ya no es borrador no se edita
---     (salvo el apartado de confirmar); no se agregan renglones a una OV que
---     ya no es borrador, salvo en la transacción que la creó (crear_auto).
+--     (salvo el apartado de confirmar, en la MISMA transacción que confirmó,
+--     y la salida tardía de la decisión 15); no se agregan renglones a una OV
+--     que ya no es borrador, salvo en la transacción que la creó (crear_auto).
+--     Los renglones de una OV borrada no cambian. La guarda BLOQUEA la fila de
+--     la OV (FOR NO KEY UPDATE) antes de leer su estado: un renglón nuevo
+--     espera a un confirmar en curso en vez de colarse sin apartar.
+--   · ov_archivos: no se borra; una fila solo cambia para marcar borrado_at y
+--     borrado_por, una vez.
 --   · Al COMMIT (constraint trigger diferido): una OV confirmada viva tiene al
 --     menos un renglón sin entregar y TODO renglón sin entregar apartado
 --     completo; una entregada tiene todo entregado; fuera de confirmada (o
---     borrada) no hay apartado. «Aparta todo o nada» queda en la base.
+--     borrada) no hay apartado; un borrador no tiene entregas y una cancelada
+--     no dejó salir piezas (si salieron, es entregada_cancelada). «Aparta
+--     todo o nada» queda en la base.
 --   · ov_mensajes, almacenes_hist y migraciones: SOLO SE AGREGAN (UPDATE,
 --     DELETE y TRUNCATE rechazados también para el dueño).
+--   · almacenes, ov_folio, ov_ordenes, ov_lineas y ov_archivos no se vacían
+--     (TRUNCATE rechazado): TRUNCATE no dispara los triggers de fila ni los
+--     diferidos.
+--   · Las tablas de solo agregar quedan para service_role en SELECT e INSERT y
+--     nada más (revoke all + grant): sin REFERENCES, TRIGGER ni MAINTAIN, que
+--     el default ACL del esquema daba al nacer.
 --   · El apartado = Σ reservado y el saldo = libro los agrega la 0065, donde
 --     nace ops.stock_almacen.
 --
@@ -73,7 +99,11 @@
 --          «ya_existia». El pool NO reintenta errores de integridad.
 --   23514  CHECK, transición inválida o invariante al COMMIT. Los triggers
 --          lanzan con CONSTRAINT = <nombre>, igual que un CHECK.
---   42501  solo agregar o inmutable (con CONSTRAINT = <nombre>).
+--   42501  solo agregar, inmutable o sin TRUNCATE (con CONSTRAINT = <nombre>:
+--          <tabla>_solo_agregar, *_inmutable, *_sin_borrado, <tabla>_sin_truncate,
+--          ov_folio_solo_sube).
+--   55006  TRUNCATE con eventos diferidos pendientes en la misma transacción:
+--          Postgres lo rechaza antes de llegar al trigger (igual queda vetado).
 --   23503  FK: bodega que no es de kubera (FK compuesta (almacen, fuente)).
 --
 -- DECISIONES TOMADAS POR OMISIÓN (Eduardo puede cambiarlas; cada una es un
@@ -87,7 +117,12 @@
 --        select set_config('app.usuario', '<correo>', true);
 --        update ops.almacenes set admite_ov = true, motivo = '<acta …>'
 --         where codigo = 'TEX3';
---      y en la fase B, en otra acta: surte_ventas y cuenta_para_woo.
+--      y en la fase B, en otra acta: surte_ventas y cuenta_para_woo. OJO: el
+--      UPDATE de la fase B que copia el plan v3 §10.1 (paso 12) solo pone
+--      surte_ventas y cuenta_para_woo; si admite_ov sigue en false truena con
+--      23514 (almacenes_surte_ov_chk). admite_ov = true va en ese mismo UPDATE
+--      o antes: una bodega de kubera que surte ventas tiene que admitir OV,
+--      porque crear_auto solo aparta en una bodega con admite_ov.
 --   3. D13: la fila TEX2 se queda y sigue surtiendo (surte_ventas = true)
 --      hasta que Odoo muestre TEX2 vacío; apagarla es un UPDATE con acta.
 --   4. D12: REVISION se siembra aquí (kubera, sin admite_ov, sin Woo);
@@ -105,6 +140,32 @@
 --  10. ov_mensajes.evento: catálogo cerrado (v2 §3.5 + DEVOLUCIONES +
 --      canal_cancelo). Un evento nuevo = ampliar el CHECK en otra migración.
 --  11. En las OV automáticas, cliente = mp_canal (SEG-06: nunca el comprador).
+--  12. Solo crear_auto hace nacer una OV ya confirmada (creado_via =
+--      'automatico'); Crear FULL, el panel y la API nacen en borrador (plan
+--      v3 §6). Y una OV de la que salió alguna pieza no queda «cancelada»:
+--      es entregada_cancelada (DEVOLUCIONES §4e), la que admite devolución.
+--  13. Las banderas ov_generacion_auto e inventario_libro NO se siembran en
+--      ops.automatizacion_flags (revisión §3.15): sin fila manda el valor
+--      por omisión del entorno, que debe ser false. Las crea el acta que las
+--      enciende, con su motivo.
+--  14. Sin el trigger «la venta existe en channel.orders» para las capturas
+--      manuales (H08, baja): pide resolver antes qué pasa cuando la venta
+--      llega a channel.orders después que la OV.
+--  15. «¿Salió?» TARDÍO (DEVOLUCIONES §4b punto 2 y §4e): si la caja de una
+--      OV ya CANCELADA vuelve (el canal canceló en un estado que no estaba en
+--      la lista de «ya salió», p. ej. AWAITING_SHIPMENT, y Bodega ya la había
+--      entregado a la paquetería), la pantalla primero registra la salida:
+--      cancelada → entregada_cancelada (solo si estuvo confirmada:
+--      ov_ordenes_conf_chk), los renglones sin entrega reciben entregado > 0
+--      con reservado = 0, y la salida_ov va en la MISMA sentencia con la clave
+--      de entregar. Después, la devolución normal a REVISION. Se eligió esto y
+--      no «cancelada es terminal y la caja vuelve al anaquel sin movimiento»
+--      porque así la pieza pasa por REVISION y el libro cuenta lo que pasó.
+--  16. devolucion_estado no regresa a NULL ni de 'recibida' a 'pendiente' (la
+--      llegada no se deshace). Sí puede reabrirse una 'cerrada' (→ pendiente o
+--      recibida): el cliente devuelve DESPUÉS otra pieza de la misma OV. La
+--      revisión pedía solo hacia adelante; eso dejaba sin camino esa segunda
+--      devolución.
 --
 -- QUIÉN ESCRIBE: solo services/ordenes_venta.py (crear_borrador, guardar,
 -- confirmar, entregar, cancelar, borrar, crear_auto, marcas de devolución y
@@ -125,11 +186,17 @@
 --   · backend/scripts/verificar_0064_0065.py: todas las pruebas OK.
 --
 -- REVERSA. Estructural SOLO mientras no haya datos reales (ninguna OV fuera de
--- ENSAYO). Con la 0065 aplicada, primero la reversa de la 0065. En orden:
--- quitar ov_archivos, ov_mensajes, ov_lineas, ov_ordenes, ov_folio,
--- almacenes_hist, almacenes y migraciones, y las funciones ops.exigir,
--- ops.tg_* y ops.verificar_ov. Con datos reales la reversa es OPERATIVA:
--- banderas apagadas, nunca DROP.
+-- ENSAYO); se niega sola si los hay:
+--   do $$ begin if exists (select 1 from ops.ov_lineas
+--   where coalesce(almacen, '') <> 'ENSAYO') then raise exception 'hay OV fuera
+--   de ENSAYO: la reversa es operativa (banderas), no DROP'; end if; end $$;
+-- Con la 0065 aplicada, primero la reversa de la 0065. En orden: quitar
+-- ov_archivos, ov_mensajes, ov_lineas, ov_ordenes, ov_folio, almacenes_hist y
+-- almacenes, y las funciones ops.exigir, ops.tg_* (incluidas tg_solo_agregar y
+-- tg_sin_truncate) y ops.verificar_ov. ops.migraciones SE QUEDA: es el
+-- registro de TODAS las migraciones desde la 0064 (la 0065 y las siguientes
+-- también escriben ahí). Los BEFORE TRUNCATE no frenan un DROP TABLE. Con
+-- datos reales la reversa es OPERATIVA: banderas apagadas, nunca DROP.
 -- ═══════════════════════════════════════════════════════════════════════════
 
 begin;
@@ -207,13 +274,17 @@ declare
     'almacenes|almacenes_codigo_fuente_uq|UNIQUE (codigo, fuente)',
     'almacenes|almacenes_woo_chk|cuenta_para_woo',
     'almacenes|almacenes_pref_uq|DEFERRABLE',
+    'almacenes|almacenes_surte_ov_chk|admite_ov',
     'ov_ordenes|ov_ordenes_cancelada_origen_chk|sistema',
     'ov_ordenes|ov_ordenes_canal_cancelo_chk|canal_cancelo_at',
     'ov_ordenes|ov_ordenes_auto_cliente_chk|automatico',
     'ov_ordenes|ov_ordenes_devol_chk|entregada',
-    'ov_lineas|ov_lineas_reservado_chk|ARRAY[0, cantidad]',
+    'ov_lineas|ov_lineas_reservado_chk|(reservado = cantidad)',
     'ov_lineas|ov_lineas_almacen_fk|(almacen, fuente)',
-    'ov_lineas|ov_lineas_sku_alm_uq|NULLS NOT DISTINCT',
+    -- Diferidas: inmediatas, el guardar (renumerar `linea` en un UPDATE, quitar
+    -- y volver a poner un SKU) truena a media sentencia.
+    'ov_lineas|ov_lineas_sku_alm_uq|NULLS NOT DISTINCT (orden_id, sku, almacen) DEFERRABLE INITIALLY DEFERRED',
+    'ov_lineas|ov_lineas_linea_uq|UNIQUE (orden_id, linea) DEFERRABLE INITIALLY DEFERRED',
     'ov_mensajes|ov_mensajes_evento_chk|canal_cancelo',
     'ov_archivos|ov_archivos_tipo_chk|envio_full',
     'ov_archivos|ov_archivos_borrado_chk|borrado_por'];
@@ -242,7 +313,9 @@ begin
       raise exception using errcode = 'KB000',
         message = format('0064 paso 0: ops.%s ya existe pero sin la columna %s (otra versión de la 0064)', t, c);
     end if;
-    if v <> to_regtype(ty) then
+    -- `is distinct from` y el NULL de to_regtype: falla CERRADO (un tipo que no
+    -- se resuelve, p. ej. citext fuera del search_path, no da «coincide»).
+    if to_regtype(ty) is null or v is distinct from to_regtype(ty) then
       raise exception using errcode = 'KB000',
         message = format('0064 paso 0: ops.%s.%s es %s y se esperaba %s', t, c, v, ty);
     end if;
@@ -318,6 +391,19 @@ begin
     hint = 'Lo registrado no se edita: se corrige con otro registro. Una corrección de emergencia es su propia acta.';
 end $$;
 
+-- Las tablas que «no se borran» (su trigger de fila rechaza el DELETE) tampoco
+-- se vacían: TRUNCATE no dispara los triggers de fila ni los diferidos, así que
+-- sin esto un `truncate ops.stock_almacen` se saltaría saldo = libro (0065).
+create or replace function ops.tg_sin_truncate() returns trigger
+language plpgsql
+set search_path = pg_catalog
+as $$
+begin
+  raise exception using errcode = '42501', constraint = tg_table_name || '_sin_truncate',
+    message = format('%s.%s no se vacía: TRUNCATE rechazado', tg_table_schema, tg_table_name),
+    hint = 'Sus filas no se borran (borrado lógico o banderas). Vaciarla es su propia acta, con respaldo.';
+end $$;
+
 -- ───────────────────────────────────────────────────────────────────────────
 -- 2) ops.almacenes — el catálogo de bodegas y su historia
 -- ───────────────────────────────────────────────────────────────────────────
@@ -357,11 +443,14 @@ create table if not exists ops.almacenes (
     constraint almacenes_pref_chk        check (preferencia is null or preferencia > 0),
     constraint almacenes_ov_chk          check (not admite_ov or fuente = 'kubera'),            -- R2
     constraint almacenes_surte_chk       check (not surte_ventas or preferencia is not null),
-    constraint almacenes_woo_chk         check (fuente = 'odoo' or not cuenta_para_woo or surte_ventas)
+    constraint almacenes_woo_chk         check (fuente = 'odoo' or not cuenta_para_woo or surte_ventas),
                                          -- lo que kubera ofrece en Woo, el planeador lo puede surtir
+    constraint almacenes_surte_ov_chk    check (fuente = 'odoo' or not surte_ventas or admite_ov)
+                                         -- y lo que surte, crear_auto lo puede apartar (exige admite_ov)
 );
 
--- Guarda: código y fuente fijos; banderas con motivo y quién; sin DELETE.
+-- Guarda: alta con acta; código y fuente fijos; banderas con motivo y quién;
+-- sin DELETE.
 create or replace function ops.tg_almacenes_guarda() returns trigger
 language plpgsql
 set search_path = pg_catalog
@@ -369,6 +458,21 @@ as $$
 declare
   v_quien text := nullif(current_setting('app.usuario', true), '');
 begin
+  if tg_op = 'INSERT' then
+    -- Dar de alta una bodega es el mismo interruptor de negocio que cambiar
+    -- sus banderas (SEG-03): con motivo y quién. La semilla trae los dos.
+    if length(btrim(coalesce(new.motivo, ''))) < 10 then
+      raise exception using errcode = '23514', constraint = 'almacenes_motivo_chk',
+        message = format('ops.almacenes: el alta de %s exige un motivo de 10 caracteres o más', new.codigo);
+    end if;
+    if coalesce(v_quien, new.actualizado_por) is null then
+      raise exception using errcode = '23514', constraint = 'almacenes_quien_chk',
+        message = format('ops.almacenes: el alta de %s exige quién: set_config(''app.usuario'', …, true) o actualizado_por', new.codigo);
+    end if;
+    new.actualizado_por := coalesce(v_quien, new.actualizado_por);
+    new.actualizado_at  := now();
+    return new;
+  end if;
   if tg_op = 'DELETE' then
     raise exception using errcode = '42501', constraint = 'almacenes_sin_borrado',
       message = format('ops.almacenes: la bodega %s no se borra; se apaga con sus banderas (D13)', old.codigo);
@@ -410,7 +514,7 @@ begin
 end $$;
 
 drop trigger if exists almacenes_guarda on ops.almacenes;
-create trigger almacenes_guarda before update or delete on ops.almacenes
+create trigger almacenes_guarda before insert or update or delete on ops.almacenes
   for each row execute function ops.tg_almacenes_guarda();
 drop trigger if exists almacenes_hist on ops.almacenes;
 create trigger almacenes_hist after insert or update on ops.almacenes
@@ -421,6 +525,9 @@ create trigger almacenes_hist_solo_agregar before update or delete on ops.almace
 drop trigger if exists almacenes_hist_sin_truncate on ops.almacenes_hist;
 create trigger almacenes_hist_sin_truncate before truncate on ops.almacenes_hist
   for each statement execute function ops.tg_solo_agregar();
+drop trigger if exists almacenes_sin_truncate on ops.almacenes;
+create trigger almacenes_sin_truncate before truncate on ops.almacenes
+  for each statement execute function ops.tg_sin_truncate();
 
 -- La semilla: SEIS filas, sin pisar lo que una persona ya cambió (SEG-07).
 -- Ninguna mueve Woo: las de kubera nacen sin saldo y apagadas.
@@ -468,6 +575,27 @@ create table if not exists ops.ov_folio (
     constraint ov_folio_ultimo_chk check (ultimo >= 0)
 );
 insert into ops.ov_folio (id, ultimo) values (1, 0) on conflict (id) do nothing;
+-- Vaciarla, borrar la fila o bajar `ultimo` regresaría el folio: el siguiente
+-- alta chocaría con ov_ordenes_folio_uq (que el contrato no traduce a
+-- «ya_existia») y TODAS las altas fallarían hasta reparar el contador a mano.
+-- Y sin la fila, re-correr esta migración la volvería a sembrar en 0.
+create or replace function ops.tg_ov_folio_guarda() returns trigger
+language plpgsql
+set search_path = pg_catalog
+as $$
+begin
+  if tg_op = 'DELETE' or new.id <> old.id or new.ultimo < old.ultimo then
+    raise exception using errcode = '42501', constraint = 'ov_folio_solo_sube',
+      message = 'ops.ov_folio: el contador no se borra ni baja';
+  end if;
+  return new;
+end $$;
+drop trigger if exists ov_folio_guarda on ops.ov_folio;
+create trigger ov_folio_guarda before update or delete on ops.ov_folio
+  for each row execute function ops.tg_ov_folio_guarda();
+drop trigger if exists ov_folio_sin_truncate on ops.ov_folio;
+create trigger ov_folio_sin_truncate before truncate on ops.ov_folio
+  for each statement execute function ops.tg_sin_truncate();
 
 -- ───────────────────────────────────────────────────────────────────────────
 -- 5) ops.ov_ordenes — el encabezado
@@ -694,6 +822,33 @@ create table if not exists ops.ov_archivos (
 create unique index if not exists ov_archivos_vivo_uq on ops.ov_archivos (orden_id, sha256) where borrado_at is null;
 create index if not exists ov_archivos_orden_ix on ops.ov_archivos (orden_id);
 
+-- Borrado LÓGICO y fila fija: sin DELETE ni TRUNCATE (el objeto en Storage
+-- quedaría huérfano sin rastro de su OV) y un UPDATE solo pasa borrado_at y
+-- borrado_por de NULL a valor, una vez (ni revivir un archivo cuyo objeto ya
+-- se borró, ni cambiar a qué apunta).
+create or replace function ops.tg_ov_archivos_guarda() returns trigger
+language plpgsql
+set search_path = pg_catalog
+as $$
+begin
+  if tg_op = 'DELETE' then
+    raise exception using errcode = '42501', constraint = 'ov_archivos_sin_borrado',
+      message = format('archivo %s: se marca borrado_at, no se borra', old.id);
+  end if;
+  if old.borrado_at is not null
+     or (to_jsonb(new) - array['borrado_at', 'borrado_por']) is distinct from (to_jsonb(old) - array['borrado_at', 'borrado_por']) then
+    raise exception using errcode = '42501', constraint = 'ov_archivos_inmutable',
+      message = format('archivo %s: solo se marca borrado (borrado_at y borrado_por), una vez', old.id);
+  end if;
+  return new;
+end $$;
+drop trigger if exists ov_archivos_guarda on ops.ov_archivos;
+create trigger ov_archivos_guarda before update or delete on ops.ov_archivos
+  for each row execute function ops.tg_ov_archivos_guarda();
+drop trigger if exists ov_archivos_sin_truncate on ops.ov_archivos;
+create trigger ov_archivos_sin_truncate before truncate on ops.ov_archivos
+  for each statement execute function ops.tg_sin_truncate();
+
 -- ───────────────────────────────────────────────────────────────────────────
 -- 9) D11 — la OV confirmada es inmutable y sus estados son una máquina
 -- ───────────────────────────────────────────────────────────────────────────
@@ -716,9 +871,13 @@ begin
   end if;
 
   if tg_op = 'INSERT' then
-    if new.estado not in ('borrador', 'confirmada') then
+    -- Nace en borrador. Solo crear_auto (creado_via = 'automatico') la crea ya
+    -- confirmada, con sus renglones apartados en la misma sentencia; una OV del
+    -- panel, la API o Crear FULL pasa por confirmar (aparta todo o nada).
+    if not (new.estado = 'borrador' or (new.estado = 'confirmada' and new.creado_via = 'automatico')) then
       raise exception using errcode = '23514', constraint = 'ov_ordenes_transicion_chk',
-        message = format('OV %s: nace en borrador o confirmada (crear_auto), no en %s', new.folio, new.estado);
+        message = format('OV %s: nace en borrador (o confirmada solo por crear_auto), no en %s vía %s',
+                         new.folio, new.estado, new.creado_via);
     end if;
     return new;
   end if;
@@ -737,10 +896,13 @@ begin
   end if;
 
   -- Transiciones (H04): la foto la validan los CHECK; la película, esto.
+  -- cancelada → entregada_cancelada: el «¿salió?» tardío (decisión 15); que
+  -- haya estado confirmada lo exige ov_ordenes_conf_chk.
   if new.estado is distinct from old.estado and not (
         (old.estado = 'borrador'   and new.estado in ('confirmada', 'cancelada'))
      or (old.estado = 'confirmada' and new.estado in ('entregada', 'cancelada', 'entregada_cancelada'))
-     or (old.estado = 'entregada'  and new.estado = 'entregada_cancelada')) then
+     or (old.estado = 'entregada'  and new.estado = 'entregada_cancelada')
+     or (old.estado = 'cancelada'  and new.estado = 'entregada_cancelada')) then
     raise exception using errcode = '23514', constraint = 'ov_ordenes_transicion_chk',
       message = format('OV %s: %s → %s no es una transición válida', old.folio, old.estado, new.estado);
   end if;
@@ -751,6 +913,35 @@ begin
      and (new.canal_cancelo_at, new.canal_cancelo_ref) is distinct from (old.canal_cancelo_at, old.canal_cancelo_ref) then
     raise exception using errcode = '42501', constraint = 'ov_ordenes_inmutable',
       message = format('OV %s: la cancelación del canal ya está anotada y no cambia', old.folio);
+  end if;
+
+  -- Lo ya anotado no se reescribe (§6.1 punto 8, H19). ov_ordenes no tiene
+  -- historia: quién entregó, quién canceló y por qué se ponen UNA vez
+  -- (entregada → entregada_cancelada conserva entregada_at, v2 §4.1).
+  if new.rev < old.rev then
+    raise exception using errcode = '42501', constraint = 'ov_ordenes_inmutable',
+      message = format('OV %s: rev no baja (%s → %s)', old.folio, old.rev, new.rev);
+  end if;
+  if old.entregada_at is not null
+     and (new.entregada_at, new.entregada_por, new.entregada_nombre)
+         is distinct from (old.entregada_at, old.entregada_por, old.entregada_nombre) then
+    raise exception using errcode = '42501', constraint = 'ov_ordenes_inmutable',
+      message = format('OV %s: la entrega ya está anotada y no cambia', old.folio);
+  end if;
+  if old.cancelada_at is not null
+     and (new.cancelada_at, new.cancelada_por, new.cancelada_nombre, new.cancelada_origen, new.cancelada_motivo)
+         is distinct from (old.cancelada_at, old.cancelada_por, old.cancelada_nombre, old.cancelada_origen, old.cancelada_motivo) then
+    raise exception using errcode = '42501', constraint = 'ov_ordenes_inmutable',
+      message = format('OV %s: la cancelación ya está anotada y no cambia', old.folio);
+  end if;
+  -- devolucion_estado: nunca vuelve a NULL ni de recibida a pendiente (la
+  -- llegada no se deshace); una cerrada sí se reabre (decisión 16).
+  if new.devolucion_estado is distinct from old.devolucion_estado and old.devolucion_estado is not null
+     and (new.devolucion_estado is null
+          or (old.devolucion_estado = 'recibida' and new.devolucion_estado = 'pendiente')) then
+    raise exception using errcode = '23514', constraint = 'ov_ordenes_transicion_chk',
+      message = format('OV %s: devolucion_estado %s → %s no es válido', old.folio,
+                       old.devolucion_estado, coalesce(new.devolucion_estado, 'NULL'));
   end if;
 
   if old.estado <> 'borrador'
@@ -766,24 +957,42 @@ end $$;
 drop trigger if exists ov_ordenes_guarda on ops.ov_ordenes;
 create trigger ov_ordenes_guarda before insert or update or delete on ops.ov_ordenes
   for each row execute function ops.tg_ov_ordenes_guarda();
+drop trigger if exists ov_ordenes_sin_truncate on ops.ov_ordenes;
+create trigger ov_ordenes_sin_truncate before truncate on ops.ov_ordenes
+  for each statement execute function ops.tg_sin_truncate();
 
 -- El renglón. La regla sale de la PROPIA fila mientras se pueda, para no
 -- depender de qué ve el trigger dentro del WITH de confirmar (las partes de un
--- WITH no tienen orden garantizado). Solo lee la OV cuando la fila no basta.
+-- WITH no tienen orden garantizado). Solo lee la OV cuando la fila no basta, y
+-- entonces BLOQUEA su fila (FOR NO KEY UPDATE): sin el candado, un renglón
+-- insertado mientras otra transacción confirma ve 'borrador', la FK no espera
+-- (FOR KEY SHARE es compatible) y los dos verificar_ov diferidos pueden pasar
+-- sin verse (write skew): una OV confirmada con un renglón sin apartar. Con
+-- él, o espera al confirmar y ve 'confirmada' (42501), o el confirmar espera y
+-- su verificar_ov ve el renglón (23514). FOR NO KEY UPDATE y no FOR SHARE: dos
+-- guardar del mismo borrador hacen fila en vez de caer en deadlock al subir rev.
 create or replace function ops.tg_ov_lineas_guarda() returns trigger
 language plpgsql
 set search_path = pg_catalog
 as $$
 declare
   permitidas constant text[] := array['reservado', 'entregado', 'entregado_at', 'entregado_por'];
-  v_estado text;
-  v_creado timestamptz;
+  v_estado  text;
+  v_creado  timestamptz;
+  v_borrada timestamptz;
+  v_conf    timestamptz;
 begin
   if tg_op = 'INSERT' then
     -- Agregar renglones: en borrador, o en la MISMA transacción que creó la OV
     -- (crear_auto inserta la OV confirmada y sus renglones apartados juntos).
     -- creado_at = now() es «nació en esta transacción»: now() es la hora de inicio de la transacción.
-    select o.estado, o.creado_at into v_estado, v_creado from ops.ov_ordenes o where o.id = new.orden_id;
+    select o.estado, o.creado_at, o.borrada_at into v_estado, v_creado, v_borrada
+      from ops.ov_ordenes o where o.id = new.orden_id
+       for no key update;
+    if v_borrada is not null then
+      raise exception using errcode = '42501', constraint = 'ov_lineas_inmutable',
+        message = format('OV %s está borrada: no se le agregan renglones', new.orden_id);
+    end if;
     if v_estado is not null and v_estado <> 'borrador' and v_creado is distinct from now() then
       raise exception using errcode = '42501', constraint = 'ov_lineas_inmutable',
         message = format('OV %s está %s: no se le agregan renglones', new.orden_id, v_estado);
@@ -813,15 +1022,34 @@ begin
     return new;
   end if;
 
-  -- Sin apartado ni entrega: depende de la OV.
-  select o.estado into v_estado from ops.ov_ordenes o where o.id = old.orden_id;
+  -- Sin apartado ni entrega: depende de la OV (con su fila bloqueada).
+  select o.estado, o.borrada_at, o.confirmada_at into v_estado, v_borrada, v_conf
+    from ops.ov_ordenes o where o.id = old.orden_id
+     for no key update;
+  if v_borrada is not null then
+    raise exception using errcode = '42501', constraint = 'ov_lineas_inmutable',
+      message = format('renglón %s de una OV borrada: no se edita ni se borra', old.id);
+  end if;
   if coalesce(v_estado, 'borrador') = 'borrador' then
     return coalesce(new, old);
   end if;
   -- Confirmar: el trigger puede ver la OV ya confirmada (otra parte del mismo
-  -- WITH). Solo se admite poner bodega y apartar el renglón completo.
-  if tg_op = 'UPDATE' and v_estado = 'confirmada' and new.reservado > 0
+  -- WITH). Solo se admite poner bodega y apartar el renglón completo, y solo
+  -- en la transacción que la confirmó (confirmada_at = now(), el mismo
+  -- criterio que creado_at): días después, soltar y volver a apartar en OTRA
+  -- bodega cambiaría un renglón confirmado sin rastro.
+  if tg_op = 'UPDATE' and v_estado = 'confirmada' and v_conf = now() and new.reservado > 0
      and (to_jsonb(new) - array['almacen', 'reservado']) is not distinct from (to_jsonb(old) - array['almacen', 'reservado']) then
+    return new;
+  end if;
+  -- «¿Salió?» tardío (decisión 15): la caja de una OV cancelada sí salió. Solo
+  -- se anota la entrega (entregado > 0, sin apartado) en un renglón que no la
+  -- tenía; la OV pasa a entregada_cancelada en la misma sentencia (si no,
+  -- verificar_ov rechaza la cancelada con piezas que salieron).
+  if tg_op = 'UPDATE' and v_estado in ('cancelada', 'entregada_cancelada')
+     and new.reservado = 0 and new.entregado > 0 and new.entregado_at is not null
+     and (to_jsonb(new) - array['entregado', 'entregado_at', 'entregado_por'])
+         is not distinct from (to_jsonb(old) - array['entregado', 'entregado_at', 'entregado_por']) then
     return new;
   end if;
   raise exception using errcode = '42501', constraint = 'ov_lineas_inmutable',
@@ -831,6 +1059,9 @@ end $$;
 drop trigger if exists ov_lineas_guarda on ops.ov_lineas;
 create trigger ov_lineas_guarda before insert or update or delete on ops.ov_lineas
   for each row execute function ops.tg_ov_lineas_guarda();
+drop trigger if exists ov_lineas_sin_truncate on ops.ov_lineas;
+create trigger ov_lineas_sin_truncate before truncate on ops.ov_lineas
+  for each statement execute function ops.tg_sin_truncate();
 
 -- Al COMMIT: la OV y sus renglones cuentan la misma historia. UNA consulta
 -- (una sola foto).
@@ -845,7 +1076,9 @@ begin
          count(l.id)                                                                    as renglones,
          count(l.id) filter (where l.entregado_at is null)                              as sin_entregar,
          count(l.id) filter (where l.entregado_at is null and l.reservado <> l.cantidad) as sin_apartar,
-         count(l.id) filter (where l.reservado > 0)                                     as con_apartado
+         count(l.id) filter (where l.reservado > 0)                                     as con_apartado,
+         count(l.id) filter (where l.entregado_at is not null)                          as con_entrega,
+         count(l.id) filter (where l.entregado > 0)                                     as con_salida
     into v
     from ops.ov_ordenes o
     left join ops.ov_lineas l on l.orden_id = o.id
@@ -868,6 +1101,18 @@ begin
   if v.estado = 'entregada' and v.sin_entregar > 0 then
     raise exception using errcode = '23514', constraint = 'ov_coherente',
       message = format('OV %s entregada con %s renglones sin entregar', v.folio, v.sin_entregar);
+  end if;
+  -- Un borrador no ha entregado nada; una cancelada no dejó salir piezas: si
+  -- algo salió, la cancelación es entregada_cancelada (DEVOLUCIONES §4e), que
+  -- es la única que admite devolucion_estado.
+  if v.estado = 'borrador' and v.con_entrega > 0 then
+    raise exception using errcode = '23514', constraint = 'ov_coherente',
+      message = format('OV %s en borrador con %s renglones entregados', v.folio, v.con_entrega);
+  end if;
+  if v.estado = 'cancelada' and v.con_salida > 0 then
+    raise exception using errcode = '23514', constraint = 'ov_coherente',
+      message = format('OV %s cancelada con %s renglones de los que salieron piezas: es entregada_cancelada',
+                       v.folio, v.con_salida);
   end if;
 end $$;
 
@@ -916,7 +1161,8 @@ comment on table ops.migraciones is
   'una re-ejecución deja otra fila.';
 comment on table ops.ov_folio is
   'Contador del folio de las OV propias (OV-00001…). Una sola fila. Se incrementa en la misma sentencia que '
-  'inserta la OV (services/ordenes_venta.py): sin huecos.';
+  'inserta la OV (services/ordenes_venta.py): sin huecos. No se borra, no se vacía y `ultimo` no baja '
+  '(ov_folio_solo_sube, 42501).';
 comment on table ops.ov_ordenes is
   'Órdenes de venta PROPIAS de nuestras bodegas (folio OV-00001…). Nunca tocan Odoo. borrador (editable, no aparta) '
   '→ confirmada (inmutable; aparta en ops.stock_almacen) → entregada; cancelada (con motivo si estaba confirmada) o '
@@ -958,13 +1204,21 @@ comment on table ops.ov_mensajes is
 comment on table ops.ov_archivos is
   'Índice de los PDF de cada OV (envío a FULL, comprobante, factura); el binario vive en el bucket privado '
   '`ordenes-venta`. Nunca etiquetas con la dirección del comprador (D5). Subir el objeto y luego la fila; marcar '
-  'borrado_at y luego borrar el objeto.';
+  'borrado_at y luego borrar el objeto. Sin DELETE ni TRUNCATE; una fila solo cambia para marcar borrado_at/por, '
+  'una vez (ov_archivos_inmutable, 42501).';
 comment on function ops.exigir(boolean, text) is
   'Errores de negocio con nombre: devuelve 1 si ok; si no (o si es NULL), lanza SQLSTATE KB001 con el motivo como '
   'mensaje. Va al final de cada sentencia de escritura en lugar del 1/0.';
 comment on function ops.verificar_ov(bigint) is
   'Invariante de la OV, revisada al COMMIT: confirmada viva ⇒ ≥1 renglón sin entregar y todo renglón sin entregar '
-  'apartado completo; entregada ⇒ todo entregado; cualquier otro estado (o borrada) ⇒ sin apartado.';
+  'apartado completo; entregada ⇒ todo entregado; cualquier otro estado (o borrada) ⇒ sin apartado; borrador ⇒ sin '
+  'entregas; cancelada ⇒ no salió ninguna pieza (si salió, es entregada_cancelada). SQLSTATE 23514, ov_coherente.';
+comment on function ops.tg_sin_truncate() is
+  'BEFORE TRUNCATE de las tablas cuyas filas no se borran: TRUNCATE no dispara los triggers de fila ni los diferidos. '
+  'SQLSTATE 42501, constraint <tabla>_sin_truncate.';
+comment on function ops.tg_solo_agregar() is
+  'BEFORE UPDATE/DELETE (por fila) y TRUNCATE (por sentencia) de las tablas de solo agregar: los grants no frenan al '
+  'dueño `postgres` con el que entra el backend; esto sí. SQLSTATE 42501, constraint <tabla>_solo_agregar.';
 
 -- ───────────────────────────────────────────────────────────────────────────
 -- 11) El candado, donde nace el objeto: RLS sin políticas, solo service_role
@@ -983,11 +1237,13 @@ grant all on ops.ov_folio    to service_role;
 grant all on ops.ov_ordenes  to service_role;
 grant all on ops.ov_lineas   to service_role;
 grant all on ops.ov_archivos to service_role;
--- Solo se agregan: SELECT e INSERT (defensa para PostgREST; al dueño lo frena el trigger).
-grant select, insert on ops.ov_mensajes    to service_role;
-grant select, insert on ops.almacenes_hist to service_role;
-grant select, insert on ops.migraciones    to service_role;
-revoke update, delete, truncate on ops.ov_mensajes, ops.almacenes_hist, ops.migraciones from service_role;
+-- Solo se agregan: SELECT e INSERT y NADA más (defensa para PostgREST; al
+-- dueño lo frena el trigger). `revoke all` primero: el default ACL del esquema
+-- da todo al nacer, y un revoke de update/delete/truncate dejaba REFERENCES,
+-- TRIGGER y MAINTAIN (con TRIGGER, una ruta de SQL dinámico podría colgarle un
+-- trigger al chat o al registro).
+revoke all on ops.ov_mensajes, ops.almacenes_hist, ops.migraciones from service_role;
+grant select, insert on ops.ov_mensajes, ops.almacenes_hist, ops.migraciones to service_role;
 revoke all on ops.almacenes, ops.almacenes_hist, ops.migraciones, ops.ov_folio, ops.ov_ordenes,
               ops.ov_lineas, ops.ov_mensajes, ops.ov_archivos from anon, authenticated;
 
