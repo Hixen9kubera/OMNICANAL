@@ -2,7 +2,8 @@
 catalogo_vivo.py — El catálogo de Odoo cruzado EN VIVO contra los marketplaces.
 
     python catalogo_vivo.py odoo            # catálogo, free_qty, contenedor y fotos
-    python catalogo_vivo.py amazon walmart  # uno o varios canales
+    python catalogo_vivo.py woo categorias  # precio de catálogo y categoría de mercado
+    python catalogo_vivo.py amazon walmart  # uno o varios canales (evidencia de precio)
     python catalogo_vivo.py todo            # todo lo que tenga credenciales
     python catalogo_vivo.py pagina          # arma index.html con lo ya extraído
 
@@ -24,7 +25,8 @@ from pathlib import Path
 
 from comun import SALIDAS, Cfg, ahora_iso, aviso, consola_utf8, escribir_json
 
-ETAPAS = ("odoo", "costos", "amazon", "walmart", "ml", "tiktok", "temu", "imagenes", "pagina")
+ETAPAS = ("odoo", "costos", "woo", "amazon", "walmart", "ml", "tiktok", "temu", "categorias",
+          "imagenes", "pagina")
 
 
 def _correr(nombre: str, cfg: Cfg, salida: Path, args: argparse.Namespace) -> dict:
@@ -34,6 +36,9 @@ def _correr(nombre: str, cfg: Cfg, salida: Path, args: argparse.Namespace) -> di
     if nombre == "costos":
         import f_costos
         return f_costos.extraer(cfg, salida)
+    if nombre == "woo":
+        import f_woo
+        return f_woo.extraer(cfg, salida)
     if nombre == "amazon":
         import f_amazon
         return f_amazon.extraer(cfg, salida)
@@ -49,6 +54,9 @@ def _correr(nombre: str, cfg: Cfg, salida: Path, args: argparse.Namespace) -> di
     if nombre == "temu":
         import f_temu
         return f_temu.extraer(cfg, salida)
+    if nombre == "categorias":
+        import f_categorias
+        return f_categorias.extraer(cfg, salida)
     if nombre == "imagenes":
         import imagenes
         return imagenes.construir(salida)

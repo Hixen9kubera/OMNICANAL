@@ -1,15 +1,16 @@
 <title>Catálogo Vivo Kubera</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
 <style>
-/* Libro mayor de inventario: la tabla manda, el resumen va arriba, y el ORO se reserva
-   para una sola cosa — el costo de producto de la base, que es el que valúa el catálogo. */
+/* Libro mayor de inventario. Arriba, qué y cuánto tenemos; luego las DOS cifras que no se
+   deben confundir, lado a lado: COSTO total (azul) y PRECIO total (oro). Esos dos colores
+   significan lo mismo en toda la página: tablas, barras y detalle. */
 :root{
   --fondo:#f3f4f7; --papel:#ffffff; --papel2:#f8f9fb; --tinta:#14171c; --tenue:#5a6272;
   --linea:#dbe0e8; --linea2:#eaedf2;
   --oro:#7f5200; --oro-fondo:#fdf2d2; --oro-borde:#e2b54d; --oro-solido:#f3c64e; --oro-tinta:#3b2600;
   --accion:#1d49b6; --accion-fondo:#e7edfc;
+  --costo:#1c459f; --costo-fondo:#e6edfb; --costo-borde:#9cb3ea; --costo-solido:#3f6fd8;
   --bien:#0f6b3c; --bien-fondo:#e1f3e9; --ojo:#8f4c00; --ojo-fondo:#fdead1; --mal:#ad241c; --mal-fondo:#fbe5e3;
-  --c-mk:#f0bf00; --c-ms:#c98a00; --c-az:#f08a00; --c-tt:#00a7a0; --c-tm:#ea6417; --c-wm:#0b6ad0;
   --sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
   --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
 }
@@ -19,6 +20,7 @@
     --linea:#2b303b; --linea2:#21252e;
     --oro:#f2c95f; --oro-fondo:#2a220a; --oro-borde:#7d6423; --oro-solido:#e9bb45; --oro-tinta:#2a1b00;
     --accion:#93adff; --accion-fondo:#1a2440;
+    --costo:#9db6ff; --costo-fondo:#141d36; --costo-borde:#3b4f8f; --costo-solido:#6f8fe6;
     --bien:#62d59c; --bien-fondo:#10281d; --ojo:#f2b266; --ojo-fondo:#2c1f0c; --mal:#ff8d84; --mal-fondo:#2f1513;
     color-scheme:dark;
   }
@@ -28,6 +30,7 @@
   --linea:#2b303b; --linea2:#21252e;
   --oro:#f2c95f; --oro-fondo:#2a220a; --oro-borde:#7d6423; --oro-solido:#e9bb45; --oro-tinta:#2a1b00;
   --accion:#93adff; --accion-fondo:#1a2440;
+  --costo:#9db6ff; --costo-fondo:#141d36; --costo-borde:#3b4f8f; --costo-solido:#6f8fe6;
   --bien:#62d59c; --bien-fondo:#10281d; --ojo:#f2b266; --ojo-fondo:#2c1f0c; --mal:#ff8d84; --mal-fondo:#2f1513;
   color-scheme:dark;
 }
@@ -36,74 +39,101 @@ body{background:var(--fondo);color:var(--tinta);font-family:var(--sans);font-siz
 .marco{max-width:1560px;margin:0 auto;padding-inline:20px;padding-block:22px 56px;display:flex;flex-direction:column;gap:18px}
 h1,h2,h3,p{margin:0}
 h1{font-size:26px;font-weight:700;letter-spacing:-.01em;text-wrap:balance}
-h2{font-size:15px;font-weight:600}
+h2{font-size:16px;font-weight:600}
 .num{font-family:var(--mono);font-variant-numeric:tabular-nums}
 .tenue{color:var(--tenue)}
 .rot{font-size:11px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--tenue)}
 a{color:var(--accion)}
 button,select,input{font:inherit;color:inherit}
 :focus-visible{outline:2px solid var(--accion);outline-offset:2px}
+code{font-family:var(--mono);font-size:12px;background:var(--papel2);border:1px solid var(--linea2);border-radius:4px;padding:0 4px}
 
-/* Cabecera */
 .cab{display:flex;flex-wrap:wrap;gap:12px 24px;align-items:flex-end;justify-content:space-between}
 .cab .sub{color:var(--tenue);max-width:70ch;margin-top:4px}
 .cab .cuando{font-size:13px;color:var(--tenue);text-align:right}
 .fuentes{display:flex;flex-wrap:wrap;gap:6px}
 .fte{display:inline-flex;gap:6px;align-items:center;border:1px solid var(--linea);background:var(--papel);
-     border-radius:999px;padding:3px 10px 3px 8px;font-size:12px;white-space:nowrap}
+     border-radius:999px;padding:3px 10px 3px 8px;font-size:12px}
 .fte b{font-weight:600}
-.fte .pt{width:7px;height:7px;border-radius:50%;background:var(--bien)}
-.fte.no{border-color:var(--mal);background:var(--mal-fondo);color:var(--mal)}
-.fte.no .pt{background:var(--mal)}
-.aviso{border:1px solid var(--ojo);background:var(--ojo-fondo);color:var(--ojo);border-radius:8px;padding:10px 14px;font-size:13px}
-.aviso b{font-weight:600}
+.fte .pt{width:7px;height:7px;border-radius:50%;background:var(--bien);flex:none}
 
-/* Resumen */
-.resumen{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:14px}
-.oficial{background:var(--oro-fondo);border:1px solid var(--oro-borde);border-radius:12px;padding:18px 20px;
-         display:flex;flex-direction:column;gap:10px;min-width:0}
-.oficial .rot{color:var(--oro)}
-.oficial .cifra{font-family:var(--mono);font-size:clamp(28px,4.4vw,46px);font-weight:600;color:var(--oro);
-                letter-spacing:-.02em;line-height:1.05;overflow-wrap:anywhere}
-.oficial .pie{font-size:13px;color:var(--tinta);max-width:64ch}
+/* Qué y cuánto tenemos */
+.tres{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+/* COSTO total y PRECIO total: misma anatomía, distinto color */
+.dos{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.gran{border-radius:14px;padding:18px 20px;display:flex;flex-direction:column;gap:10px;min-width:0;border:2px solid}
+.gran .tit{font-size:13px;font-weight:700;letter-spacing:.09em;text-transform:uppercase}
+.gran .que{font-size:13px;margin-top:-6px}
+.gran .cifra{font-family:var(--mono);font-size:clamp(30px,4.2vw,48px);font-weight:600;letter-spacing:-.02em;line-height:1.05;overflow-wrap:anywhere}
+.gran .pie{font-size:13px;max-width:62ch}
+.gran .mas{font-size:13px;border-top:1px solid;padding-top:8px;display:flex;flex-direction:column;gap:3px}
+.gran .mas b{font-family:var(--mono)}
+.gran.costo{background:var(--costo-fondo);border-color:var(--costo-borde)}
+.gran.costo .tit,.gran.costo .cifra{color:var(--costo)}
+.gran.costo .mas{border-color:var(--costo-borde)}
+.gran.costo .barra,.gran.costo .ley i{border-color:var(--costo-borde)}
+.gran.precio{background:var(--oro-fondo);border-color:var(--oro-borde)}
+.gran.precio .tit,.gran.precio .cifra{color:var(--oro)}
+.gran.precio .mas{border-color:var(--oro-borde)}
+.k-b{background:var(--costo-solido)}
+.k-h{background:repeating-linear-gradient(135deg,var(--costo-solido) 0 4px,var(--costo-fondo) 4px 8px)}
+.k-x{background:repeating-linear-gradient(135deg,var(--costo-borde) 0 2px,var(--costo-fondo) 2px 6px)}
+.comp{background:var(--papel);border:1px solid var(--linea);border-radius:12px;padding:12px 16px;font-size:13.5px;display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline}
+.comp b{font-family:var(--mono)}
+.comp .c{color:var(--costo)} .comp .p{color:var(--oro)}
+.resp{background:var(--papel);border:1px solid var(--linea);border-radius:12px;padding:16px 18px;
+      display:flex;flex-direction:column;gap:8px;min-width:0}
+.resp .cifra{font-family:var(--mono);font-size:clamp(26px,3.4vw,38px);font-weight:600;letter-spacing:-.02em;
+             line-height:1.05;overflow-wrap:anywhere}
+.resp .pie{font-size:13px;color:var(--tenue)}
 .barra{display:flex;height:14px;border-radius:7px;overflow:hidden;border:1px solid var(--oro-borde);background:var(--papel)}
 .barra i{display:block;height:100%}
-.b-b{background:var(--oro-solido)} .b-h{background:repeating-linear-gradient(135deg,var(--oro-solido) 0 4px,var(--oro-fondo) 4px 8px)}
-.b-x{background:repeating-linear-gradient(135deg,var(--accion) 0 4px,var(--accion-fondo) 4px 8px)}
+.b-v{background:var(--oro-solido)}
+.b-p{background:repeating-linear-gradient(135deg,var(--oro-solido) 0 4px,var(--oro-fondo) 4px 8px)}
+.b-c{background:repeating-linear-gradient(90deg,var(--oro-solido) 0 2px,var(--oro-fondo) 2px 5px)}
+.b-r{background:repeating-linear-gradient(135deg,var(--ojo) 0 3px,var(--ojo-fondo) 3px 6px)}
 .b-s{background:var(--linea)}
 .ley{display:flex;flex-wrap:wrap;gap:4px 16px;font-size:12px}
 .ley span{display:inline-flex;gap:6px;align-items:center}
-.ley i{width:12px;height:12px;border-radius:3px;display:inline-block;border:1px solid var(--oro-borde)}
-.otros{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;min-width:0}
+.ley i{width:12px;height:12px;border-radius:3px;display:inline-block;border:1px solid var(--oro-borde);flex:none}
+.menor{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px}
 .caja{background:var(--papel);border:1px solid var(--linea);border-radius:12px;padding:12px 14px;min-width:0;
       display:flex;flex-direction:column;gap:3px}
-.caja .v{font-family:var(--mono);font-size:20px;font-weight:600;letter-spacing:-.01em;overflow-wrap:anywhere}
+.caja .v{font-family:var(--mono);font-size:19px;font-weight:600;overflow-wrap:anywhere}
 .caja .n{font-size:12px;color:var(--tenue)}
 
-/* Canales */
-.canales{background:var(--papel);border:1px solid var(--linea);border-radius:12px;overflow-x:auto}
-.canales table{width:100%;min-width:640px}
 table{border-collapse:collapse}
 th,td{text-align:left;padding:8px 10px;vertical-align:top}
 th{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--tenue);
    border-bottom:1px solid var(--linea);white-space:nowrap;background:var(--papel2)}
 td.d,th.d{text-align:right}
-.canales td{border-top:1px solid var(--linea2)}
-.pt-c{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:7px}
-.k-mk{background:var(--c-mk)} .k-ms{background:var(--c-ms)} .k-az{background:var(--c-az)}
-.k-tt{background:var(--c-tt)} .k-tm{background:var(--c-tm)} .k-wm{background:var(--c-wm)}
+.rollo{background:var(--papel);border:1px solid var(--linea);border-radius:12px;overflow-x:auto}
 
-/* Pestañas y controles */
+/* Por categoría */
+.cats{width:100%;min-width:880px}
+.cats td{border-top:1px solid var(--linea2);vertical-align:middle}
+.cats tr.sub td{background:var(--papel2);font-size:13px}
+.cats tr.sub td:first-child{padding-left:34px}
+.cats .nom{all:unset;cursor:pointer;font-weight:600;display:inline-flex;gap:8px;align-items:center}
+.cats .nom:hover{color:var(--accion)}
+.cats .fl{display:inline-block;width:10px;color:var(--tenue);font-size:11px}
+.pista{height:10px;border-radius:5px;background:var(--linea2);min-width:90px;overflow:hidden}
+.pista i{display:block;height:100%;background:var(--oro-solido);border-radius:5px}
+.ver{all:unset;cursor:pointer;color:var(--accion);font-size:12.5px;white-space:nowrap}
+.ver:hover{text-decoration:underline}
+
 .tabs{display:flex;gap:4px;border-bottom:1px solid var(--linea);flex-wrap:wrap}
 .tabs button{background:none;border:0;border-bottom:2px solid transparent;padding:8px 12px;cursor:pointer;
              color:var(--tenue);font-weight:500;margin-bottom:-1px}
 .tabs button[aria-selected="true"]{color:var(--tinta);border-bottom-color:var(--oro-solido);font-weight:600}
+.panel{display:flex;flex-direction:column;gap:12px}
 .ctl{display:flex;flex-wrap:wrap;gap:8px 10px;align-items:flex-end}
 .ctl label{display:flex;flex-direction:column;gap:3px;font-size:11px;font-weight:600;letter-spacing:.05em;
            text-transform:uppercase;color:var(--tenue);min-width:0}
 .ctl select,.ctl input{background:var(--papel);border:1px solid var(--linea);border-radius:8px;padding:7px 9px;
                        font-size:13.5px;font-weight:400;letter-spacing:0;text-transform:none;color:var(--tinta);max-width:100%}
-.ctl .busca{flex:1 1 260px}
+.ctl select{max-width:230px}
+.ctl .busca{flex:1 1 240px}
 .ctl .busca input{width:100%}
 .btn{background:var(--papel);border:1px solid var(--linea);border-radius:8px;padding:7px 12px;cursor:pointer;font-size:13.5px}
 .btn:hover{border-color:var(--accion);color:var(--accion)}
@@ -112,11 +142,9 @@ td.d,th.d{text-align:right}
        border-radius:10px;padding:9px 14px;font-size:13px}
 .total b{font-family:var(--mono);font-weight:600}
 .total .of b{color:var(--oro)}
+.total .co b{color:var(--costo)}
 
-/* Tabla principal */
-.rollo{background:var(--papel);border:1px solid var(--linea);border-radius:12px;overflow-x:auto}
 .libro{width:100%;min-width:1180px}
-.libro th{position:sticky;top:0}
 .libro th button{all:unset;cursor:pointer;display:inline-flex;gap:4px;align-items:center}
 .libro th button:hover{color:var(--tinta)}
 .libro tbody tr.f>td{border-top:1px solid var(--linea2)}
@@ -128,86 +156,88 @@ td.d,th.d{text-align:right}
 .sku{font-family:var(--mono);font-weight:600;font-size:13px;background:none;border:0;padding:0;cursor:pointer;
      color:var(--tinta);text-align:left;overflow-wrap:anywhere}
 .sku:hover{color:var(--accion)}
-.nom{color:var(--tenue);font-size:12.5px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;max-width:36ch}
+.nom2{color:var(--tenue);font-size:12.5px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;max-width:38ch}
 .et{display:inline-block;font-size:10.5px;font-weight:600;letter-spacing:.03em;border-radius:4px;padding:1px 6px;
     border:1px solid var(--linea);color:var(--tenue);white-space:nowrap}
-.et.b{background:var(--oro-solido);border-color:var(--oro-solido);color:var(--oro-tinta)}
-.et.h{border-color:var(--oro-borde);color:var(--oro)}
-.et.x{border-style:dashed;border-color:var(--accion);color:var(--accion)}
-.et.s{border-color:var(--mal);color:var(--mal);background:var(--mal-fondo)}
 .et.ok{border-color:var(--bien);color:var(--bien);background:var(--bien-fondo)}
 .et.av{border-color:var(--ojo);color:var(--ojo);background:var(--ojo-fondo)}
+.et.s{border-color:var(--mal);color:var(--mal);background:var(--mal-fondo)}
 td.oro{background:var(--oro-fondo)}
 tr.f:hover>td.oro,tr.f.ab>td.oro{background:var(--oro-fondo)}
 td.oro .num{color:var(--oro);font-weight:600}
-.pl{font-family:var(--mono);font-size:12px;overflow-wrap:anywhere;max-width:24ch}
-.chips{display:flex;flex-wrap:wrap;gap:4px;max-width:330px}
-.chip{display:inline-flex;align-items:center;gap:5px;border:1px dashed var(--linea);border-radius:5px;padding:1px 6px;
-      font-size:11.5px;color:var(--tenue);white-space:nowrap;text-decoration:none}
-.chip i{width:7px;height:7px;border-radius:2px;display:inline-block}
-.chip.on{border-style:solid;border-color:var(--tenue);color:var(--tinta);font-weight:600;background:var(--papel)}
+td.azul{background:var(--costo-fondo)}
+tr.f:hover>td.azul,tr.f.ab>td.azul{background:var(--costo-fondo)}
+td.azul .num{color:var(--costo);font-weight:600}
+th.t-p{border-top:3px solid var(--oro-solido);color:var(--oro)}
+th.t-c{border-top:3px solid var(--costo-solido);color:var(--costo)}
+.blo.co{border-color:var(--costo-borde);background:var(--costo-fondo)}
+.pl{font-family:var(--mono);font-size:12px;overflow-wrap:anywhere;max-width:22ch}
 .grande{font-family:var(--mono);font-size:15px;font-weight:600}
+.cat1{font-weight:500;font-size:13px;max-width:24ch}
+.cat2{color:var(--tenue);font-size:12px;max-width:24ch}
 .pag{display:flex;gap:10px;align-items:center;justify-content:flex-end;flex-wrap:wrap;font-size:13px}
+.neg{color:var(--mal)} .pos{color:var(--bien)}
 
-/* Detalle */
-.det{padding:6px 10px 16px;display:grid;grid-template-columns:minmax(220px,300px) minmax(260px,360px) minmax(0,1fr);gap:16px}
+.det{padding:6px 10px 16px;display:grid;grid-template-columns:minmax(220px,300px) minmax(280px,1fr) minmax(260px,1fr);gap:16px}
 .det h3{font-size:11px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--tenue);margin-bottom:6px}
-.kv{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;font-size:13px}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;font-size:13px;margin:0}
 .kv dt{color:var(--tenue)} .kv dd{margin:0;text-align:right;overflow-wrap:anywhere}
 .blo{background:var(--papel);border:1px solid var(--linea);border-radius:10px;padding:12px;min-width:0}
 .blo.of{border-color:var(--oro-borde);background:var(--oro-fondo)}
-.pubs{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:10px;min-width:0}
-.pub{background:var(--papel);border:1px solid var(--linea);border-radius:10px;padding:10px;display:flex;flex-direction:column;gap:8px;min-width:0}
-.pub.on{border-color:var(--tenue)}
-.pub .top{display:flex;gap:10px;min-width:0}
-.pub .tit{font-size:12.5px;overflow-wrap:anywhere;min-width:0}
-.cta{display:grid;grid-template-columns:1fr auto;gap:2px 10px;font-size:12.5px}
-.cta .r{text-align:right;font-family:var(--mono)}
-.cta .ln{grid-column:1/-1;border-top:1px solid var(--linea);margin:2px 0}
-.pos{color:var(--bien)} .neg{color:var(--mal)}
+.col{display:flex;flex-direction:column;gap:10px;min-width:0}
+.ev{display:grid;grid-template-columns:1fr auto;gap:3px 12px;font-size:12.5px}
+.ev .r{text-align:right;font-family:var(--mono)}
+.lista{margin:0;padding-left:18px;font-size:12.5px}
+.limp{width:100%;min-width:720px}
+.limp td{border-top:1px solid var(--linea2);vertical-align:middle}
 .metodo{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}
 .metodo .blo p{font-size:13px;margin-top:6px;max-width:68ch}
-.metodo code,.det code{font-family:var(--mono);font-size:12px;background:var(--papel2);border:1px solid var(--linea2);border-radius:4px;padding:0 4px}
 .vacio{padding:36px;text-align:center;color:var(--tenue)}
 #copia{width:100%;height:120px;font-family:var(--mono);font-size:11px}
-@media (max-width:980px){
-  .resumen{grid-template-columns:minmax(0,1fr)}
+@media (max-width:1040px){
+  .dos{grid-template-columns:minmax(0,1fr)}
   .det{grid-template-columns:minmax(0,1fr)}
   .cab .cuando{text-align:left}
 }
-@media (max-width:520px){ .otros{grid-template-columns:minmax(0,1fr)} .marco{padding-inline:16px} }
+@media (max-width:520px){ .marco{padding-inline:16px} .tres{grid-template-columns:minmax(0,1fr)} }
 </style>
 
 <div class="marco">
   <header class="cab">
     <div>
       <h1>Catálogo vivo · Kubera</h1>
-      <p class="sub">Todo el catálogo de Odoo con su stock libre, cruzado en vivo contra Mercado Libre, Amazon, TikTok, Temu y Walmart, y valuado con el costo de producto de la base.</p>
+      <p class="sub">Qué tenemos, cuánto tenemos, cuánto nos costó y en cuánto se vende: el inventario libre de Odoo, por categoría.</p>
     </div>
     <div class="cuando" id="cuando">Cargando el catálogo…</div>
   </header>
   <div class="fuentes" id="fuentes"></div>
-  <div id="avisos"></div>
 
-  <section class="resumen" id="resumen" aria-label="Valor del catálogo"></section>
-  <section class="canales" id="canales" aria-label="Presencia por canal"></section>
+  <section class="tres" id="tres" aria-label="Qué tenemos y cuánto tenemos"></section>
+  <section class="dos" id="dos" aria-label="Costo total y precio total del inventario"></section>
+  <div class="comp" id="comp"></div>
+  <section class="menor" id="menor" aria-label="Lo que falta"></section>
+
+  <section class="panel" aria-labelledby="h-cat">
+    <h2 id="h-cat">Por categoría</h2>
+    <div class="rollo"><table class="cats" id="cats"></table></div>
+  </section>
 
   <div class="tabs" role="tablist">
     <button role="tab" id="t-cat" aria-selected="true" aria-controls="v-cat">Catálogo</button>
-    <button role="tab" id="t-hue" aria-selected="false" aria-controls="v-hue">Publicaciones sin producto en Odoo</button>
+    <button role="tab" id="t-lim" aria-selected="false" aria-controls="v-lim">Limpieza de datos</button>
     <button role="tab" id="t-met" aria-selected="false" aria-controls="v-met">De dónde sale cada dato</button>
   </div>
 
-  <section id="v-cat" role="tabpanel" aria-labelledby="t-cat" style="display:flex;flex-direction:column;gap:12px">
+  <section id="v-cat" class="panel" role="tabpanel" aria-labelledby="t-cat">
     <div class="ctl">
-      <label class="busca">Buscar<input id="q" type="search" placeholder="SKU, título, contenedor o ID de publicación" autocomplete="off"></label>
-      <label>Stock<select id="f-stock"><option value="">Todo</option><option value="con">Con stock</option><option value="sin">En cero</option><option value="neg">Negativo</option></select></label>
+      <label class="busca">Buscar<input id="q" type="search" placeholder="SKU, título o contenedor" autocomplete="off"></label>
+      <label>Categoría<select id="f-cat"><option value="">Todas</option></select></label>
+      <label>Subcategoría<select id="f-sub"><option value="">Todas</option></select></label>
+      <label>Stock<select id="f-stock"><option value="con">Con stock</option><option value="">Todo</option><option value="sin">En cero</option><option value="neg">Negativo</option></select></label>
+      <label>Precio de venta<select id="f-precio"><option value="">Todos</option><option value="v">En venta hoy</option><option value="p">En pausa</option><option value="c">De catálogo</option><option value="rev">En revisión</option><option value="sin">Sin precio</option></select></label>
       <label>Almacén<select id="f-alm"><option value="">Todos</option></select></label>
-      <label>Publicación<select id="f-pub"><option value="">Todas</option><option value="venta">A la venta</option><option value="pub">Publicado</option><option value="pausa">Publicado, sin vender</option><option value="no">Sin publicar</option></select></label>
-      <label>Canal<select id="f-canal"><option value="">Cualquiera</option></select></label>
-      <label>Costo<select id="f-costo"><option value="">Todos</option><option value="b">De la base (oficial)</option><option value="val">Validado</option><option value="est">Heredado o extrapolado</option><option value="sin">Sin costo</option></select></label>
-      <label>Línea<select id="f-cat"><option value="">Todas</option><option value="propio">Catálogo propio</option><option value="agente">Productos Agente</option></select></label>
-      <button class="btn" id="limpiar" type="button">Limpiar</button>
+      <label>Por limpiar<select id="f-lim"><option value="">Todo</option></select></label>
+      <button class="btn" id="limpiar" type="button">Quitar filtros</button>
       <button class="btn" id="copiar" type="button">Copiar para Excel</button>
     </div>
     <div class="total" id="total" aria-live="polite"></div>
@@ -216,10 +246,9 @@ td.oro .num{color:var(--oro);font-weight:600}
     <div class="pag" id="pag"></div>
   </section>
 
-  <section id="v-hue" role="tabpanel" aria-labelledby="t-hue" hidden style="display:flex;flex-direction:column;gap:12px">
-    <p class="tenue" style="max-width:80ch">Publicaciones que existen en un canal pero cuyo SKU no está en Odoo como producto. La mayoría son SKU padre publicados «planos»: Odoo lleva el inventario por variante.</p>
-    <div class="rollo"><table class="libro" id="hue" style="min-width:820px"></table></div>
-    <div class="pag" id="pag-hue"></div>
+  <section id="v-lim" class="panel" role="tabpanel" aria-labelledby="t-lim" hidden>
+    <p class="tenue" style="max-width:86ch">Lo que conviene corregir en el origen antes de dar por bueno el valor. Cada renglón cuenta solo productos con stock; «Ver» los abre en el catálogo.</p>
+    <div class="rollo"><table class="limp" id="limp"></table></div>
   </section>
 
   <section id="v-met" role="tabpanel" aria-labelledby="t-met" hidden><div class="metodo" id="metodo"></div></section>
@@ -228,10 +257,11 @@ td.oro .num{color:var(--oro);font-weight:600}
 <script>
 (function(){
 "use strict";
-var D=null, FILAS=[], VISTA=[], HUE=[];
-var E={q:"",stock:"",alm:"",pub:"",canal:"",costo:"",cat:"",orden:"valor",dir:-1,pag:0,por:50,ab:{},pagH:0};
-var NOM={}, GRUPOS=[["mk","ms"],["az"],["wm"],["tt"],["tm"]];
-var ORIGEN={b:"Base",h:"Heredado",x:"Extrapolado"};
+var D=null, FILAS=[], VISTA=[], HAL={};
+var E={q:"",cat:"",sub:"",stock:"con",precio:"",alm:"",lim:"",orden:"valor",dir:-1,pag:0,por:50,ab:{},exp:{}};
+var ORIGEN_P={v:"En venta",p:"En pausa",c:"Catálogo"};
+var CLASE_P={v:"ok",p:"",c:""};
+var ORIGEN_C={b:"Base",h:"Heredado",x:"Extrapolado"};
 var $=function(id){return document.getElementById(id)};
 
 function esc(t){return String(t==null?"":t).replace(/[&<>"']/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]})}
@@ -241,50 +271,30 @@ var N0=new Intl.NumberFormat("es-MX",{maximumFractionDigits:0});
 function fm(n){return n==null?"—":F2.format(n)}
 function fm0(n){return n==null?"—":F0.format(n)}
 function nf(n){return n==null?"—":N0.format(n)}
-function pct(n){return n==null?"—":(n*100).toFixed(1)+"%"}
+function pc(n){return(100*n).toFixed(1)+"%"}
 function hora(iso){if(!iso)return"";var d=new Date(iso);return isNaN(d)?"":d.toLocaleString("es-MX",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"})}
 function pz(r){return r.q>0?r.q:0}
+function c1(r){return r.k==null?"Sin categoría":D.K[r.k][0]}
+function c2(r){return r.k==null?"":(D.K[r.k][1]||"")}
+function c3(r){return r.k==null?"":(D.K[r.k][2]||"")}
 
 function foto(i,lado){
   var s=D.sprite||{};
   if(i==null||!s.cols)return '<span class="sinfoto" style="width:'+lado+'px;height:'+lado+'px">sin foto</span>';
   var h=Math.floor(i/s.por_hoja),p=i%s.por_hoja,c=p%s.cols,f=Math.floor(p/s.cols);
-  var n=("00"+h).slice(-3);
-  return '<span class="foto" role="img" aria-label="Foto" style="width:'+lado+'px;height:'+lado+'px;background-image:url(img/h'+n+'.jpg);background-size:'+(s.cols*lado)+'px auto;background-position:-'+(c*lado)+'px -'+(f*lado)+'px"></span>';
+  return '<span class="foto" role="img" aria-label="Foto" style="width:'+lado+'px;height:'+lado+'px;background-image:url(img/h'+("00"+h).slice(-3)+'.jpg);background-size:'+(s.cols*lado)+'px auto;background-position:-'+(c*lado)+'px -'+(f*lado)+'px"></span>';
 }
-
-/* Precio de referencia: la publicación A LA VENTA más barata, buscando canal por canal en este
-   orden: Mercado Libre, Amazon, Walmart, TikTok, Temu. Si ninguna vende, la pausada con ese mismo orden. */
-function precioRef(L){
-  if(!L)return null;
-  for(var a=1;a>=0;a--){
-    for(var g=0;g<GRUPOS.length;g++){
-      var mejor=null;
-      for(var i=0;i<L.length;i++){
-        var p=L[i];
-        if(GRUPOS[g].indexOf(p.k)<0||!(p.p>0)||(p.v?1:0)!==a)continue;
-        if(!mejor||p.p<mejor.p)mejor=p;
-      }
-      if(mejor)return mejor;
-    }
-  }
-  return null;
-}
-function neto(p){return p.p!=null&&p.cm!=null?p.p-p.cm-(p.en||0):null}
 
 function preparar(){
-  D.canales.forEach(function(c){NOM[c.k]=c.nombre});
   FILAS=D.P;
+  D.X.forEach(function(x){HAL[x[0]]={r:x[1],e:x[2]}});
   for(var i=0;i<FILAS.length;i++){
-    var r=FILAS[i],L=r.L||[],h=[r.s,r.n,r.c||"",r.cb||""];
-    for(var j=0;j<L.length;j++){h.push(L[j].t||"",L[j].id||"")}
-    r._i=i; r._h=h.join(" ").toLowerCase();
-    r._pv=precioRef(r.L);
-    r._val=r.cp!=null?pz(r)*r.cp:null;
-    var nt=r._pv?neto(r._pv):null;
-    r._mg=(nt!=null&&r.cp!=null&&r._pv.p)?(nt-r.cp)/r._pv.p:null;
+    var r=FILAS[i];
+    r._i=i; r._h=(r.s+" "+r.n+" "+(r.c||"")+" "+(r.cb||"")).toLowerCase();
+    r._vv=r.pv!=null?pz(r)*r.pv:null;          /* piezas × precio, se cuente o no */
+    r._vt=(r.pv!=null&&!r.rv)?r._vv:null;      /* lo que SÍ entra al valor de venta */
+    r._vc=r.cp!=null?pz(r)*r.cp:null;
   }
-  HUE=D.H||[];
 }
 
 function pasa(r){
@@ -292,32 +302,23 @@ function pasa(r){
   if(E.stock==="con"&&!(r.q>0))return false;
   if(E.stock==="sin"&&r.q!==0)return false;
   if(E.stock==="neg"&&!(r.q<0))return false;
+  if(E.cat&&c1(r)!==E.cat)return false;
+  if(E.sub&&c2(r)!==E.sub)return false;
+  if(E.precio==="sin"&&r.pv!=null)return false;
+  if(E.precio==="rev"&&!r.rv)return false;
+  if(E.precio&&E.precio!=="sin"&&E.precio!=="rev"&&(r.po!==E.precio||r.rv))return false;
   if(E.alm&&!(r.a&&r.a[E.alm]>0))return false;
-  if(E.cat==="agente"&&!r.g)return false;
-  if(E.cat==="propio"&&r.g)return false;
-  if(E.costo==="b"&&r.co!=="b")return false;
-  if(E.costo==="val"&&!r.cv)return false;
-  if(E.costo==="est"&&!(r.co==="h"||r.co==="x"))return false;
-  if(E.costo==="sin"&&r.co)return false;
-  if(E.pub||E.canal){
-    var L=r.L||[],n=0,v=0;
-    for(var i=0;i<L.length;i++){if(E.canal&&L[i].k!==E.canal)continue;n++;if(L[i].v)v++}
-    var modo=E.pub||"pub";
-    if(modo==="venta"&&!v)return false;
-    if(modo==="pub"&&!n)return false;
-    if(modo==="pausa"&&!(n&&!v))return false;
-    if(modo==="no"&&n)return false;
-  }
+  if(E.lim&&!(r.x&&r.x.indexOf(E.lim)>=0))return false;
   return true;
 }
-var CLAVE={valor:function(r){return r._val},stock:function(r){return r.q},sku:function(r){return r.s},
-  costo:function(r){return r.cp},pror:function(r){return r.pr},precio:function(r){return r._pv?r._pv.p:null},
-  margen:function(r){return r._mg}};
+var CLAVE={valor:function(r){return r._vt},stock:function(r){return r.q},sku:function(r){return r.s},
+  precio:function(r){return r.pv},costo:function(r){return r.cp},vcosto:function(r){return r._vc},
+  cat:function(r){return c1(r)+" "+c2(r)}};
 function ordenar(){
   var k=CLAVE[E.orden]||CLAVE.valor,d=E.dir;
   VISTA.sort(function(a,b){
     var x=k(a),y=k(b);
-    if(x==null&&y==null)return a._i-b._i;
+    if(x==null&&y==null)return b.q-a.q||a._i-b._i;
     if(x==null)return 1; if(y==null)return -1;
     if(x<y)return -d; if(x>y)return d; return a._i-b._i;
   });
@@ -325,33 +326,41 @@ function ordenar(){
 function filtrar(){VISTA=FILAS.filter(pasa);ordenar();E.pag=0;pintar()}
 
 function sumar(lista){
-  var t={n:lista.length,pz:0,b:0,pzb:0,est:0,pzest:0,pzsin:0,nsin:0,pr:0,pzpr:0,ct:0,vta:0,pzvta:0,
-         h:0,x:0,pzh:0,pzx:0,nb:0,con:0};
+  var t={n:lista.length,con:0,pz:0,vta:0,v:0,p:0,c:0,pzv:0,pzp:0,pzc:0,pzsin:0,nsin:0,
+         rev:0,pzrev:0,nrev:0,est:0,pzest:0,nest:0,pznada:0,nnada:0,
+         cb:0,pzcb:0,ch:0,pzch:0,cx:0,pzcx:0,pzsc:0,vta2:0,cos2:0,pz2:0};
   for(var i=0;i<lista.length;i++){
     var r=lista[i],q=pz(r); if(!q)continue;
     t.pz+=q; t.con++;
-    if(r.co==="b"){t.b+=q*r.cp;t.pzb+=q;t.nb++; if(r.ct)t.ct+=q*r.ct}
-    else if(r.co){t.est+=q*r.cp;t.pzest+=q;t[r.co]+=q*r.cp;t["pz"+r.co]+=q}
-    else{t.pzsin+=q;t.nsin++}
-    if(r.pr&&!r.pi){t.pr+=q*r.pr;t.pzpr+=q}
-    if(r._pv){t.vta+=q*r._pv.p;t.pzvta+=q}
+    if(r.pv==null){t.pzsin+=q;t.nsin++}
+    else if(r.rv){t.rev+=q*r.pv;t.pzrev+=q;t.nrev++}
+    else{t.vta+=q*r.pv;t[r.po]+=q*r.pv;t["pz"+r.po]+=q}
+    if(r._vt==null){if(r.ex!=null){t.est+=q*r.ex;t.pzest+=q;t.nest++}else{t.pznada+=q;t.nnada++}}
+    if(r.co==="b"){t.cb+=q*r.cp;t.pzcb+=q; if(r._vt!=null){t.vta2+=q*r.pv;t.cos2+=q*r.cp;t.pz2+=q}}
+    else if(r.co==="h"){t.ch+=q*r.cp;t.pzch+=q} else if(r.co==="x"){t.cx+=q*r.cp;t.pzcx+=q} else t.pzsc+=q;
   }
   return t;
 }
 
-function chips(L){
-  if(!L||!L.length)return '<span class="tenue" style="font-size:12px">sin publicar</span>';
-  var s="";
-  for(var i=0;i<L.length&&i<8;i++){
-    var p=L[i];
-    s+='<span class="chip'+(p.v?" on":"")+'" title="'+esc((NOM[p.k]||p.k)+" · "+(p.e||"")+(p.pa?" · publicado con el SKU padre "+p.pa:""))+'"><i class="k-'+p.k+'"></i>'+esc(NOM[p.k]||p.k)+(p.pa?" ↑":"")+" "+(p.p!=null?fm(p.p):"s/p")+"</span>";
-  }
-  if(L.length>8)s+='<span class="chip">+'+(L.length-8)+"</span>";
-  return '<div class="chips">'+s+"</div>";
+function etPrecio(r){
+  if(r.pv==null)return '<span class="et s" title="'+esc((r.pj||[]).join(" · ")||"Sin publicación ni precio de catálogo válido")+'">Sin precio</span>';
+  return '<span class="et '+CLASE_P[r.po]+'" title="'+esc(r.po==="v"?"El más bajo al que hoy se vende":r.po==="p"?"El más bajo de sus publicaciones pausadas":"Precio de catálogo en WooCommerce")+'">'+ORIGEN_P[r.po]+"</span>"+
+    (r.rv?' <span class="et av" title="'+esc(r.pk?"La publicación vende un paquete de "+r.pk+" y Odoo cuenta piezas":r.pgm?"Desproporcionado contra su categoría":"Desproporcionado contra su costo")+'">en revisión</span>':"");
+}
+function estimado(r,total){
+  if(r._vt!=null||r.ex==null)return"";
+  return '<div class="tenue" style="font-size:11.5px" title="Estimado: no es un precio. Costo × el múltiplo típico de su categoría, o precio del paquete ÷ piezas.">est. '+(total?fm0(pz(r)*r.ex):fm(r.ex))+"</div>";
 }
 function etCosto(r){
   if(!r.co)return '<span class="et s">Sin costo</span>';
-  return '<span class="et '+r.co+'" title="'+esc(r.cd||"Renglón propio en costing.costos_validados")+'">'+ORIGEN[r.co]+"</span>"+(r.cv?' <span class="et ok" title="Costo validado contra el packing list">✓ validado</span>':"");
+  return '<span class="et" title="'+esc(r.cd||"Renglón propio en costing.costos_validados")+'">'+ORIGEN_C[r.co]+"</span>"+(r.cv?' <span class="et ok" title="Costo validado contra el packing list">✓</span>':"");
+}
+function etCat(r){
+  if(r.k==null)return '<span class="et s">Sin categoría</span>';
+  var h='<div class="cat1">'+esc(c1(r))+"</div>"+(c2(r)?'<div class="cat2">'+esc(c2(r))+"</div>":"");
+  if(r.kq==="p")h+='<span class="et av" title="Sale del prefijo del SKU: hay que confirmarla">estimada</span>';
+  else if(r.kq==="h")h+='<span class="et" title="La de otra variante del mismo modelo">heredada</span>';
+  return h;
 }
 function almacenes(r){
   if(!r.a)return"";
@@ -362,95 +371,83 @@ function packing(r){
   if(!r.c)return '<span class="tenue" style="font-size:12px">sin contenedor</span>';
   return '<div class="pl">'+esc(r.c)+'</div><span class="et">'+(r.cq?"base de costos":"Odoo")+"</span>";
 }
+function porLimpiar(r){
+  if(!r.x)return"";
+  var t=r.x.map(function(c){return HAL[c]?HAL[c].r:c}).join(" · ");
+  return ' <span class="et av" title="'+esc(t)+'">'+r.x.length+" por limpiar</span>";
+}
 
 function fila(r){
   var ab=!!E.ab[r._i];
   var h='<tr class="f'+(ab?" ab":"")+'"><td>'+foto(r.i,48)+"</td>"+
     '<td><button class="sku" type="button" data-i="'+r._i+'" aria-expanded="'+ab+'">'+esc(r.s)+"</button>"+
-      '<div class="nom">'+esc(r.n)+"</div>"+
-      (r.g?'<span class="et">'+esc(r.g)+"</span> ":"")+(r.dup?'<span class="et av" title="Hay otro producto en Odoo con el mismo SKU">SKU repetido</span>':"")+"</td>"+
-    "<td>"+packing(r)+"</td>"+
+      '<div class="nom2">'+esc(r.n)+"</div>"+(r.g?'<span class="et">'+esc(r.g)+"</span>":"")+porLimpiar(r)+"</td>"+
+    "<td>"+etCat(r)+"</td>"+
     '<td class="d"><div class="grande'+(r.q<0?" neg":"")+'">'+nf(r.q)+"</div>"+(r.f!=null?'<div class="tenue" style="font-size:11.5px">físico '+nf(r.f)+"</div>":"")+almacenes(r)+"</td>"+
-    '<td class="d'+(r.co==="b"?" oro":"")+'"><div class="num">'+fm(r.cp)+"</div>"+etCosto(r)+"</td>"+
-    '<td class="d"><div class="num">'+(r.pr!=null?fm(r.pr):"—")+"</div>"+(r.pr!=null?'<span class="et'+(r.pi?" s":"")+'" title="'+(r.pi?"Volumen por pieza inverosímil: no entra al total":r.ps==="p"?"525,000 × m³ de la pieza ÷ m³ del contenedor":"Contenedor incompleto en la base: m³ de la pieza × 7,500")+'">'+(r.pi?"revisar":r.ps==="p"?"525k":"7,500/m³")+"</span>":"")+"</td>"+
-    '<td class="d'+(r.co==="b"?" oro":"")+'"><div class="num">'+(r._val!=null?fm0(r._val):"—")+"</div></td>"+
-    "<td>"+chips(r.L)+"</td>"+
-    '<td class="d"><div class="num">'+(r._pv?fm(r._pv.p):"—")+"</div>"+(r._pv?'<div class="tenue" style="font-size:11.5px">'+esc(NOM[r._pv.k])+(r._pv.v?"":" · pausada")+"</div>":"")+
-      (r._mg!=null?'<div class="num '+(r._mg<0?"neg":"pos")+'" style="font-size:12px" title="Utilidad sobre precio, después de comisión, envío y costo de producto">'+pct(r._mg)+"</div>":"")+"</td></tr>";
+    '<td class="d"><div class="num">'+fm(r.cp)+"</div>"+etCosto(r)+"</td>"+
+    '<td class="d'+(r.co==="b"?" azul":"")+'"><div class="num">'+(r._vc!=null?fm0(r._vc):"—")+"</div>"+(r._vc!=null&&r.co!=="b"?'<div class="tenue" style="font-size:11.5px">estimado, no suma</div>':"")+"</td>"+
+    '<td class="d"><div class="num'+(r.rv?" tenue":"")+'">'+(r.rv?"<s>"+fm(r.pv)+"</s>":fm(r.pv))+"</div>"+etPrecio(r)+estimado(r,0)+"</td>"+
+    '<td class="d'+(r._vt!=null?" oro":"")+'"><div class="num'+(r.rv?" tenue":"")+'">'+(r._vv!=null?(r.rv?"<s>"+fm0(r._vv)+"</s>":fm0(r._vv)):"—")+"</div>"+estimado(r,1)+"</td>"+
+    "<td>"+packing(r)+"</td></tr>";
   if(ab)h+='<tr><td colspan="9" style="padding:0;border-top:1px solid var(--linea2);background:var(--papel2)">'+detalle(r)+"</td></tr>";
   return h;
 }
 
-function cuenta(p,r){
-  var s='<div class="cta"><span>Precio'+(p.pm?" con promoción":"")+'</span><span class="r">'+fm(p.p)+"</span>";
-  if(p.r)s+='<span class="tenue">Precio regular</span><span class="r tenue"><s>'+fm(p.r)+"</s></span>";
-  if(p.cm!=null){
-    var et=p.cs!=null?"Comisión supuesta "+(p.cs*100).toFixed(0)+"%":"Comisión del canal";
-    s+="<span>− "+et+'</span><span class="r">−'+fm(p.cm)+"</span>";
-    (p.cx||[]).forEach(function(x){s+='<span class="tenue" style="padding-left:12px">'+esc(x[0])+'</span><span class="r tenue">'+(x[1]!=null?fm(x[1]):"")+"</span>"});
-  }
-  if(p.en!=null)s+='<span>− Envío a cargo del vendedor</span><span class="r">−'+fm(p.en)+"</span>";
-  var n=neto(p);
-  if(n!=null){
-    s+='<span class="ln"></span><span><b>Neto del canal</b></span><span class="r"><b>'+fm(n)+"</b></span>";
-    if(r.cp!=null){var u=n-r.cp;s+="<span>− Costo de producto ("+ORIGEN[r.co].toLowerCase()+')</span><span class="r">−'+fm(r.cp)+"</span>"+
-      '<span><b>Utilidad</b> · '+pct(p.p?u/p.p:null)+'</span><span class="r '+(u<0?"neg":"pos")+'"><b>'+fm(u)+"</b></span>"}
-    if(r.pr!=null&&!r.pi){var u2=n-r.pr;s+='<span class="tenue">Con prorrateo 525k ('+fm(r.pr)+')</span><span class="r tenue">'+fm(u2)+"</span>"}
-  }
-  return s+"</div>";
-}
 function detalle(r){
-  var L=r.L||[],q=pz(r);
+  var q=pz(r),k;
   var odoo='<div class="blo"><h3>Odoo · inventario</h3><dl class="kv">'+
-    "<dt>Stock libre (free_qty)</dt><dd class=\"num\"><b>"+nf(r.q)+"</b></dd>"+
-    "<dt>Físico (a la mano)</dt><dd class=\"num\">"+nf(r.f!=null?r.f:r.q)+"</dd>"+
-    (r.qs?"<dt>Saliente (reservado)</dt><dd class=\"num\">"+nf(r.qs)+"</dd>":"")+
-    (r.qe?"<dt>Entrante</dt><dd class=\"num\">"+nf(r.qe)+"</dd>":"");
-  if(r.a)for(var k in r.a)odoo+="<dt>Libre en "+esc(k)+'</dt><dd class="num">'+nf(r.a[k])+"</dd>";
-  odoo+="</dl><h3 style=\"margin-top:12px\">Packing list</h3>";
+    '<dt>Stock libre (free_qty)</dt><dd class="num"><b>'+nf(r.q)+"</b></dd>"+
+    '<dt>Físico (a la mano)</dt><dd class="num">'+nf(r.f!=null?r.f:r.q)+"</dd>"+
+    (r.qs?'<dt>Saliente (reservado)</dt><dd class="num">'+nf(r.qs)+"</dd>":"")+
+    (r.qe?'<dt>Entrante</dt><dd class="num">'+nf(r.qe)+"</dd>":"");
+  if(r.a)for(k in r.a)odoo+="<dt>Libre en "+esc(k)+'</dt><dd class="num">'+nf(r.a[k])+"</dd>";
+  odoo+='</dl><h3 style="margin-top:12px">Categoría</h3>';
+  if(r.k==null)odoo+='<div class="tenue" style="font-size:12.5px">Sin categoría en ML ni en WooCommerce.</div>';
+  else odoo+='<div style="font-size:13px">'+[c1(r),c2(r),c3(r)].filter(Boolean).map(esc).join(" › ")+'</div><div class="tenue" style="font-size:12px">'+(r.kq==="p"?"Estimada por el prefijo del SKU: hay que confirmarla.":r.kq==="h"?"Heredada de otra variante del mismo modelo.":r.kq==="n"?"La categoría que tiene en WooCommerce, ubicada por nombre en el árbol de Mercado Libre.":"La que tiene en Mercado Libre o en WooCommerce.")+"</div>";
+  odoo+='<h3 style="margin-top:12px">Packing list</h3>';
   if(r.c){
     odoo+='<div class="pl" style="max-width:none">'+esc(r.c)+'</div><div class="tenue" style="font-size:12px">'+(r.cq?"Odoo no lo trae: es el contenedor de la base de costos":"Campo «Contenedor #» de Odoo")+"</div>";
-    if(r.cb)odoo+='<div class="tenue" style="font-size:12px;margin-top:4px">En la base de costos: <span class="num">'+esc(r.cb)+"</span></div>";
     (r.d||[]).forEach(function(i){var a=D.drive[i];if(a)odoo+='<div style="font-size:12.5px;margin-top:4px"><a href="https://drive.google.com/open?id='+encodeURIComponent(a[1])+'" target="_blank" rel="noopener">'+esc(a[0])+"</a></div>"});
-    if(!(r.d||[]).length)odoo+='<div class="tenue" style="font-size:12px;margin-top:4px">Sin archivo ubicado en la carpeta de Drive.</div>';
   }else odoo+='<div class="tenue" style="font-size:12.5px">Ni Odoo ni la base dicen a qué contenedor pertenece.</div>';
-  if(r.uo||r.pc)odoo+='<h3 style="margin-top:12px">Ficha del proveedor en Odoo</h3><dl class="kv">'+(r.uo?'<dt>Costo de la ficha (no se usa)</dt><dd class="num">'+r.uo+"</dd>":"")+(r.pc?'<dt>Piezas por caja</dt><dd class="num">'+nf(r.pc)+"</dd>":"")+"</dl>";
   odoo+="</div>";
 
-  var c='<div class="blo of"><h3 style="color:var(--oro)">Costo de producto</h3><dl class="kv">'+
-    '<dt>Costo de producto</dt><dd class="num"><b>'+fm(r.cp)+"</b></dd>"+
-    "<dt>Origen</dt><dd>"+(r.co?esc(r.co==="b"?"Renglón propio en la base":r.cd):"No hay costo en la base")+"</dd>"+
-    (r.cv?"<dt>Validado</dt><dd>"+esc(r.cvp||"sí")+"</dd>":"")+
-    '<dt>Valor del stock libre</dt><dd class="num"><b>'+(r._val!=null?fm(r._val):"—")+"</b></dd></dl>"+
-    '<h3 style="margin-top:12px">Lo demás que dice la base</h3><dl class="kv">'+
-    '<dt>Flete (7,500 $/m³)</dt><dd class="num">'+fm(r.cf)+"</dd>"+
-    '<dt>Costo total (producto + flete)</dt><dd class="num">'+fm(r.ct)+"</dd></dl>"+
-    '<h3 style="margin-top:12px">Prorrateo del contenedor</h3><dl class="kv">'+
-    '<dt>Costo por prorrateo</dt><dd class="num"><b>'+(r.pr!=null?fm(r.pr):"—")+"</b></dd>"+
-    (r.pr!=null?"<dt>Método</dt><dd>"+(r.pi?"volumen inverosímil: no se usa":r.ps==="p"?"525,000 × m³ pieza ÷ m³ contenedor":"m³ pieza × 7,500 (contenedor incompleto)")+"</dd>":"")+
-    (r.vp?'<dt>Volumen por pieza</dt><dd class="num">'+r.vp.toFixed(5)+" m³</dd>":"")+
-    (r.m3?'<dt>m³ del contenedor</dt><dd class="num">'+r.m3.toFixed(1)+"</dd>":"")+
-    (r.cm3?'<dt>Costo por m³</dt><dd class="num">'+fm0(r.cm3)+"</dd>":"")+
-    (r.pr!=null&&!r.pi?'<dt>Valor del stock libre</dt><dd class="num">'+fm(q*r.pr)+"</dd>":"")+"</dl></div>";
-
-  var p='<div style="min-width:0"><h3 class="rot" style="margin-bottom:6px">Publicaciones ('+L.length+')</h3>';
-  if(!L.length)p+='<div class="blo tenue">Este SKU no aparece en ninguno de los canales leídos.</div>';
-  else{
-    p+='<div class="pubs">';
-    L.forEach(function(x){
-      p+='<div class="pub'+(x.v?" on":"")+'"><div class="top">'+foto(x.i,56)+'<div style="min-width:0"><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"><span class="chip'+(x.v?" on":"")+'"><i class="k-'+x.k+'"></i>'+esc(NOM[x.k])+"</span>"+
-        (x.lg?'<span class="et">'+esc(x.lg)+"</span>":"")+'<span class="et '+(x.v?"ok":"")+'">'+esc(x.e||"")+"</span>"+(x.pa?'<span class="et av" title="La publicación lleva el SKU padre, no el de esta variante">SKU padre '+esc(x.pa)+"</span>":"")+"</div>"+
-        '<div class="tit">'+esc(x.t||"(sin título)")+'</div><div class="tenue num" style="font-size:11.5px">'+esc(x.id||"")+(x.st!=null?" · stock en canal "+nf(x.st):"")+(x.u?' · <a href="'+esc(x.u)+'" target="_blank" rel="noopener">abrir</a>':"")+"</div></div></div>"+cuenta(x,r)+"</div>";
-    });
+  var p='<div class="blo of"><h3 style="color:var(--oro)">Precio · en cuánto se vende</h3><dl class="kv">'+
+    '<dt>Precio unitario</dt><dd class="num"><b>'+fm(r.pv)+"</b></dd>"+
+    "<dt>De dónde sale</dt><dd>"+(r.pv==null?"No hay precio válido":r.po==="v"?"El más bajo al que hoy se vende":r.po==="p"?"El más bajo de sus publicaciones pausadas":"Precio de catálogo (WooCommerce)")+"</dd>"+
+    '<dt>Precio total del stock libre</dt><dd class="num"><b>'+(r._vv!=null?fm(r._vv):"—")+"</b></dd></dl>";
+  if(r.rv)p+='<p style="font-size:12.5px;margin-top:8px"><b>En revisión: no entra al precio total.</b> '+
+    (r.pk?"La publicación vende un paquete de "+nf(r.pk)+" y Odoo cuenta piezas sueltas. Por pieza serían "+fm(r.pv/r.pk)+", y el stock valdría "+fm(q*r.pv/r.pk)+".":
+     r.pgm?"No tiene costo para comparar y su precio es "+(r.pv/r.pgm).toFixed(0)+" veces la mediana de su categoría ("+fm(r.pgm)+").":
+     "El precio es "+(r.cp?(r.pv/r.cp).toFixed(0)+" veces su costo de producto":"mayor a $50,000 por pieza")+": hay que confirmar que la publicación sea de este producto.")+"</p>";
+  if(r._vt==null&&r.ex!=null)p+='<p class="tenue" style="font-size:12.5px;margin-top:6px">Estimado, mientras no tenga precio propio: '+fm(r.ex)+" por pieza, "+fm(q*r.ex)+" el stock. No es un precio.</p>";
+  if(r.pe&&r.pe.length){
+    p+='<h3 style="margin-top:12px">Precios vistos</h3><div class="ev">';
+    r.pe.forEach(function(e){p+='<span style="min-width:0">'+(e[2]?'<a href="'+esc(e[2])+'" target="_blank" rel="noopener">'+esc(e[0])+"</a>":esc(e[0]))+(e[3]?'<div class="tenue" style="font-size:11.5px;overflow-wrap:anywhere">'+esc(e[3])+"</div>":"")+'</span><span class="r">'+fm(e[1])+"</span>"});
     p+="</div>";
   }
+  if(r.pj&&r.pj.length)p+='<h3 style="margin-top:12px">Descartados por no ser precio</h3><ul class="lista">'+r.pj.map(function(x){return"<li>"+esc(x)+"</li>"}).join("")+"</ul>";
   p+="</div>";
-  return '<div class="det"><div style="display:flex;flex-direction:column;gap:10px;min-width:0"><div style="display:flex;gap:12px;align-items:flex-start">'+foto(r.i,96)+'<div style="min-width:0"><div class="num" style="font-weight:600;overflow-wrap:anywhere">'+esc(r.s)+'</div><div style="font-size:13px;overflow-wrap:anywhere">'+esc(r.n)+"</div></div></div>"+odoo+"</div>"+c+p+"</div>";
+
+  var c='<div class="blo co"><h3 style="color:var(--costo)">Costo · lo que nos costó</h3><dl class="kv">'+
+    '<dt>Costo unitario</dt><dd class="num"><b>'+fm(r.cp)+"</b></dd>"+
+    "<dt>De dónde sale</dt><dd>"+(r.co?esc(r.co==="b"?"Renglón propio en la base":r.cd):"No hay costo en la base")+"</dd>"+
+    (r.cv?"<dt>Validado</dt><dd>sí</dd>":"")+
+    '<dt>Costo total del stock libre</dt><dd class="num"><b>'+(r._vc!=null?fm(r._vc):"—")+"</b>"+(r._vc!=null&&r.co!=="b"?" (estimado, no suma)":"")+"</dd>"+
+    (r.pv!=null&&r.cp!=null?'<dt>Precio ÷ costo</dt><dd class="num '+(r.pv<r.cp?"neg":"")+'">'+(r.pv/r.cp).toFixed(1)+" veces</dd>":"")+"</dl></div>";
+  var fin='<div class="blo"><h3>Para el final · prorrateo del contenedor</h3><dl class="kv">'+
+    '<dt>Costo por prorrateo</dt><dd class="num">'+(r.pr!=null?fm(r.pr):"—")+"</dd>"+
+    (r.pr!=null?"<dt>Método</dt><dd>"+(r.pi?"volumen inverosímil: no se usa":r.pt==="p"?"525,000 × m³ pieza ÷ m³ contenedor":"m³ pieza × 7,500")+"</dd>":"")+
+    (r.m3?'<dt>m³ del contenedor</dt><dd class="num">'+r.m3.toFixed(1)+"</dd>":"")+
+    '<dt>Flete en la base</dt><dd class="num">'+fm(r.cf)+"</dd>"+
+    '<dt>Costo total en la base</dt><dd class="num">'+fm(r.ct)+"</dd></dl></div>";
+  var lim="";
+  if(r.x)lim='<div class="blo"><h3>Por limpiar</h3><ul class="lista">'+r.x.map(function(k2){var h=HAL[k2]||{r:k2,e:""};return"<li><b>"+esc(h.r)+".</b> "+esc(h.e)+"</li>"}).join("")+"</ul></div>";
+  return '<div class="det"><div class="col"><div style="display:flex;gap:12px;align-items:flex-start">'+foto(r.i,96)+'<div style="min-width:0"><div class="num" style="font-weight:600;overflow-wrap:anywhere">'+esc(r.s)+'</div><div style="font-size:13px;overflow-wrap:anywhere">'+esc(r.n)+"</div></div></div>"+odoo+'</div><div class="col">'+c+p+'</div><div class="col">'+lim+fin+"</div></div>";
 }
 
 function cabecera(){
-  function th(k,t,d){var act=E.orden===k;return '<th class="'+(d?"d":"")+'" aria-sort="'+(act?(E.dir<0?"descending":"ascending"):"none")+'"><button type="button" data-o="'+k+'">'+t+(act?(E.dir<0?" ↓":" ↑"):"")+"</button></th>"}
-  return "<thead><tr><th>Foto</th>"+th("sku","Producto (Odoo)")+"<th>Packing list</th>"+th("stock","Stock libre",1)+th("costo","Costo de producto",1)+th("pror","Prorrateo 525k",1)+th("valor","Valor a costo",1)+"<th>Publicaciones y precio</th>"+th("precio","Valor de venta",1)+"</tr></thead>";
+  function th(k,t,d,c){var act=E.orden===k;return '<th class="'+(d?"d":"")+(c?" "+c:"")+'" aria-sort="'+(act?(E.dir<0?"descending":"ascending"):"none")+'"><button type="button" data-o="'+k+'">'+t+(act?(E.dir<0?" ↓":" ↑"):"")+"</button></th>"}
+  return "<thead><tr><th>Foto</th>"+th("sku","Producto")+th("cat","Categoría")+th("stock","Stock libre",1)+th("costo","Costo unitario",1,"t-c")+th("vcosto","Costo total",1,"t-c")+th("precio","Precio unitario",1,"t-p")+th("valor","Precio total",1,"t-p")+"<th>Packing list</th></tr></thead>";
 }
 function pintar(){
   var ini=E.pag*E.por,pag=VISTA.slice(ini,ini+E.por),h=cabecera()+"<tbody>";
@@ -458,114 +455,145 @@ function pintar(){
   for(var i=0;i<pag.length;i++)h+=fila(pag[i]);
   $("libro").innerHTML=h+"</tbody>";
   var t=sumar(VISTA),tot=Math.max(1,Math.ceil(VISTA.length/E.por));
-  $("total").innerHTML="<span>"+nf(t.n)+" productos · <b>"+nf(t.pz)+'</b> piezas libres</span><span class="of">A costo de producto (base) <b>'+fm0(t.b)+"</b></span>"+
-    "<span>Heredado <b>"+fm0(t.h)+"</b> · extrapolado <b>"+fm0(t.x)+"</b></span><span>Prorrateo 525k <b>"+fm0(t.pr)+"</b></span><span>A precio de venta <b>"+fm0(t.vta)+"</b></span>"+
-    (t.pzsin?'<span class="neg">'+nf(t.pzsin)+" piezas sin costo</span>":"");
+  $("total").innerHTML="<span>"+nf(t.n)+" productos · <b>"+nf(t.pz)+'</b> piezas libres</span><span class="co">Costo total <b>'+fm0(t.cb)+'</b></span><span class="of">Precio total <b>'+fm0(t.vta)+"</b></span>"+
+    (t.pzrev?"<span>Precio en revisión <b>"+fm0(t.rev)+"</b> ("+nf(t.pzrev)+" pzas, no suma)</span>":"")+
+    (t.pzsin?'<span class="neg">'+nf(t.pzsin)+" piezas sin precio</span>":"")+
+    (t.pzsc?'<span class="neg">'+nf(t.pzsc)+" piezas sin costo</span>":"");
   $("pag").innerHTML='<span class="tenue">'+(VISTA.length?nf(ini+1)+"–"+nf(Math.min(ini+E.por,VISTA.length))+" de "+nf(VISTA.length):"0")+'</span><button class="btn" type="button" id="ant"'+(E.pag<=0?" disabled":"")+'>Anterior</button><span class="num">'+(E.pag+1)+" / "+tot+'</span><button class="btn" type="button" id="sig"'+(E.pag>=tot-1?" disabled":"")+">Siguiente</button>";
 }
 
-function pintarHue(){
-  var q=E.q,lista=q?HUE.filter(function(x){return((x.s||"")+" "+(x.t||"")+" "+(x.id||"")).toLowerCase().indexOf(q)>=0}):HUE;
-  var ini=E.pagH*E.por,pag=lista.slice(ini,ini+E.por),tot=Math.max(1,Math.ceil(lista.length/E.por));
-  var h='<thead><tr><th>Foto</th><th>SKU en el canal</th><th>Canal</th><th>Título</th><th>Estado</th><th class="d">Precio</th><th></th></tr></thead><tbody>';
-  if(!pag.length)h+='<tr><td colspan="7"><div class="vacio">Nada que mostrar.</div></td></tr>';
-  pag.forEach(function(x){
-    h+='<tr class="f"><td>'+foto(x.i,48)+'</td><td><span class="num" style="font-weight:600">'+esc(x.s||"(sin SKU)")+"</span>"+(x.np?'<div><span class="et" title="Odoo tiene variantes que empiezan con este SKU">padre de '+x.np+" variantes</span></div>":"")+"</td>"+
-      '<td><span class="chip'+(x.v?" on":"")+'"><i class="k-'+x.k+'"></i>'+esc(NOM[x.k])+'</span></td><td style="max-width:44ch;overflow-wrap:anywhere">'+esc(x.t||"")+'<div class="tenue num" style="font-size:11.5px">'+esc(x.id||"")+"</div></td>"+
-      '<td><span class="et '+(x.v?"ok":"")+'">'+esc(x.e||"")+'</span></td><td class="d num">'+fm(x.p)+"</td><td>"+(x.u?'<a href="'+esc(x.u)+'" target="_blank" rel="noopener">abrir</a>':"")+"</td></tr>";
-  });
-  $("hue").innerHTML=h+"</tbody>";
-  $("pag-hue").innerHTML='<span class="tenue">'+nf(lista.length)+' publicaciones</span><button class="btn" type="button" id="antH"'+(E.pagH<=0?" disabled":"")+'>Anterior</button><span class="num">'+(E.pagH+1)+" / "+tot+'</span><button class="btn" type="button" id="sigH"'+(E.pagH>=tot-1?" disabled":"")+">Siguiente</button>";
-}
-
-function resumen(){
-  var t=sumar(FILAS),P=t.pz||1;
+function respuestas(){
+  var t=sumar(FILAS),P=t.pz||1,raices={},alm={};
+  FILAS.forEach(function(r){if(r.q>0){if(r.k!=null)raices[c1(r)]=1;if(r.a)for(var k in r.a)alm[k]=(alm[k]||0)+r.a[k]}});
   function w(x){return(100*x/P).toFixed(2)+"%"}
-  var h='<div class="oficial"><span class="rot">Valor del catálogo a costo de producto</span><div class="cifra">'+fm0(t.b)+"</div>"+
-    '<p class="pie">Suma de <b>piezas libres × costo de producto</b> de la base (<code style="font-family:var(--mono)">costing.costos_validados</code>): '+nf(t.nb)+" productos con stock y renglón propio, "+nf(t.pzb)+" piezas ("+w(t.pzb)+" del inventario libre).</p>"+
-    '<div class="barra" role="img" aria-label="Piezas libres según el origen de su costo"><i class="b-b" style="width:'+w(t.pzb)+'"></i><i class="b-h" style="width:'+w(t.pzh)+'"></i><i class="b-x" style="width:'+w(t.pzx)+'"></i><i class="b-s" style="width:'+w(t.pzsin)+'"></i></div>'+
-    '<div class="ley"><span><i class="b-b"></i>Base '+nf(t.pzb)+' pzas</span><span><i class="b-h"></i>Heredado de variante '+nf(t.pzh)+" pzas · "+fm0(t.h)+'</span><span><i class="b-x"></i>Extrapolado del contenedor '+nf(t.pzx)+" pzas · "+fm0(t.x)+'</span><span><i class="b-s"></i>Sin costo '+nf(t.pzsin)+" pzas</span></div></div>";
-  h+='<div class="otros">'+
-    '<div class="caja"><span class="rot">Sumando variantes heredadas</span><span class="v">'+fm0(t.b+t.h)+'</span><span class="n">El oficial más '+fm0(t.h)+" de variantes que toman el costo de su hermana o de su SKU padre. Aparte, "+fm0(t.x)+" extrapolados por contenedor (estimación gruesa).</span></div>"+
-    '<div class="caja"><span class="rot">Con prorrateo del contenedor</span><span class="v">'+fm0(t.pr)+'</span><span class="n">525,000 MXN por contenedor repartidos por volumen. Cubre '+nf(t.pzpr)+" piezas.</span></div>"+
-    '<div class="caja"><span class="rot">Costo total de la base</span><span class="v">'+fm0(t.ct)+'</span><span class="n">Producto + flete a 7,500 $/m³, sobre las mismas piezas del valor oficial.</span></div>'+
-    '<div class="caja"><span class="rot">A precio de venta</span><span class="v">'+fm0(t.vta)+'</span><span class="n">Piezas libres × precio de su publicación de referencia ('+nf(t.pzvta)+" piezas con precio; incluye publicaciones pausadas).</span></div>"+
-    '<div class="caja"><span class="rot">Inventario libre</span><span class="v">'+nf(t.pz)+'</span><span class="n">piezas en '+nf(t.con)+" productos con stock, de "+nf(FILAS.length)+" en Odoo.</span></div>"+
-    '<div class="caja"><span class="rot">Sin costo</span><span class="v">'+nf(t.pzsin)+'</span><span class="n">piezas en '+nf(t.nsin)+" productos sin renglón en la base ni contenedor del cual estimar.</span></div></div>";
-  $("resumen").innerHTML=h;
+  var porAlm=(D.almacenes||[]).map(function(a){return esc(a.nombre)+" "+nf(alm[a.codigo]||0)}).join(" · ");
+  $("tres").innerHTML=
+    '<div class="resp"><span class="rot">Qué tenemos</span><div class="cifra">'+nf(t.con)+'</div><p class="pie"><b>SKUs con stock libre</b> en Odoo, en '+Object.keys(raices).length+" categorías. Hay "+nf(FILAS.length)+" dados de alta; el resto está en cero.</p></div>"+
+    '<div class="resp"><span class="rot">Cuánto tenemos</span><div class="cifra">'+nf(t.pz)+'</div><p class="pie"><b>piezas libres</b> (<code>free_qty</code>: lo físico menos lo ya reservado).<br>'+porAlm+"</p></div>";
+  var pzPrecio=t.pzv+t.pzp+t.pzc,pzCostoTodo=t.pzcb+t.pzch+t.pzcx;
+  $("dos").innerHTML=
+    '<div class="gran costo"><span class="tit">Costo total del inventario</span><span class="que">Lo que nos costó la mercancía que hay en bodega.</span><div class="cifra">'+fm0(t.cb)+"</div>"+
+      '<p class="pie">Piezas libres × <b>costo de producto</b> registrado en la base. Cubre '+nf(t.pzcb)+" piezas ("+w(t.pzcb)+" del inventario).</p>"+
+      '<div class="barra" role="img" aria-label="Piezas libres según de dónde sale su costo"><i class="k-b" style="width:'+w(t.pzcb)+'"></i><i class="k-h" style="width:'+w(t.pzch)+'"></i><i class="k-x" style="width:'+w(t.pzcx)+'"></i><i class="b-s" style="width:'+w(t.pzsc)+'"></i></div>'+
+      '<div class="ley"><span><i class="k-b"></i>Costo en la base '+nf(t.pzcb)+" pzas · "+fm0(t.cb)+'</span><span><i class="k-h"></i>Heredado de una variante '+nf(t.pzch)+" pzas · "+fm0(t.ch)+'</span><span><i class="k-x"></i>Extrapolado del contenedor '+nf(t.pzcx)+" pzas · "+fm0(t.cx)+'</span><span><i class="b-s"></i>Sin costo '+nf(t.pzsc)+" pzas</span></div>"+
+      '<div class="mas"><span>Sumando heredado y extrapolado: <b>'+fm0(t.cb+t.ch+t.cx)+"</b> ("+w(pzCostoTodo)+" de las piezas).</span></div></div>"+
+    '<div class="gran precio"><span class="tit">Precio total del inventario</span><span class="que">En cuánto se vende esa misma mercancía, a precio de lista.</span><div class="cifra">'+fm0(t.vta)+"</div>"+
+      '<p class="pie">Piezas libres × <b>precio de venta</b>. Cubre '+nf(pzPrecio)+" piezas ("+w(pzPrecio)+" del inventario).</p>"+
+      '<div class="barra" role="img" aria-label="Piezas libres según de dónde sale su precio"><i class="b-v" style="width:'+w(t.pzv)+'"></i><i class="b-p" style="width:'+w(t.pzp)+'"></i><i class="b-c" style="width:'+w(t.pzc)+'"></i><i class="b-r" style="width:'+w(t.pzrev)+'"></i><i class="b-s" style="width:'+w(t.pzsin)+'"></i></div>'+
+      '<div class="ley"><span><i class="b-v"></i>En venta hoy '+nf(t.pzv)+" pzas · "+fm0(t.v)+'</span><span><i class="b-p"></i>Publicación en pausa '+nf(t.pzp)+" pzas · "+fm0(t.p)+'</span><span><i class="b-c"></i>Precio de catálogo '+nf(t.pzc)+" pzas · "+fm0(t.c)+'</span><span><i class="b-r"></i>En revisión '+nf(t.pzrev)+' pzas</span><span><i class="b-s"></i>Sin precio '+nf(t.pzsin)+" pzas</span></div>"+
+      '<div class="mas"><span>Sumando el estimado de lo que no tiene precio: <b>'+fm0(t.vta+t.est)+"</b> ("+w(pzPrecio+t.pzest)+" de las piezas).</span></div></div>";
+  $("comp").innerHTML='<span><b>Para compararlos parejo:</b> en las '+nf(t.pz2)+' piezas que tienen costo y precio a la vez,</span><span class="c">cuestan <b>'+fm0(t.cos2)+'</b></span><span class="p">se venden en <b>'+fm0(t.vta2)+"</b></span><span>El precio es <b>"+(t.cos2?(t.vta2/t.cos2).toFixed(1):"—")+" veces</b> el costo, antes de comisiones, envíos e impuestos.</span>";
+  $("menor").innerHTML=
+    '<div class="caja"><span class="rot">Precio en revisión</span><span class="v">'+fm0(t.rev)+'</span><span class="n">'+nf(t.pzrev)+" piezas en "+nf(t.nrev)+" productos cuyo precio no es el de una pieza: paquetes, o desproporcionado contra su costo. No está sumado en el precio total.</span></div>"+
+    '<div class="caja"><span class="rot">Sin precio de venta</span><span class="v">'+nf(t.pzsin)+' piezas</span><span class="n">en '+nf(t.nsin)+" productos. No suman al precio total hasta que tengan precio.</span></div>"+
+    '<div class="caja"><span class="rot">Sin costo</span><span class="v">'+nf(t.pzsc)+' piezas</span><span class="n">No tienen renglón en la base de costos ni de dónde estimarlo. No suman al costo total.</span></div>'+
+    '<div class="caja"><span class="rot">Cómo se estima lo que falta</span><span class="v">'+fm0(t.est)+'</span><span class="n">'+nf(t.pzest)+" piezas sin precio contable, valuadas a su costo × el múltiplo al que hoy se vende lo de su categoría ("+((D.veces||{}).global||"—")+" veces en la mediana). No es un precio. Quedan "+nf(t.pznada)+" piezas sin precio ni costo.</span></div>";
 }
 
-function canales(){
-  var h='<table><thead><tr><th>Canal</th><th class="d">Publicaciones</th><th class="d">A la venta</th><th class="d">Productos de Odoo publicados</th><th class="d">…a la venta</th><th class="d">Con stock y sin publicar</th><th>Leído</th></tr></thead><tbody>';
-  var conStock=FILAS.filter(function(r){return r.q>0});
-  D.canales.forEach(function(c){
-    var f=D.fuentes[c.k]||{},n=0,v=0,sp=0;
-    FILAS.forEach(function(r){var L=r.L||[],a=false,b=false;for(var i=0;i<L.length;i++)if(L[i].k===c.k){a=true;if(L[i].v)b=true}if(a)n++;if(b)v++});
-    conStock.forEach(function(r){var L=r.L||[];for(var i=0;i<L.length;i++)if(L[i].k===c.k)return;sp++});
-    h+='<tr><td><span class="pt-c k-'+c.k+'"></span><b>'+esc(c.nombre)+"</b></td>";
-    if(!f.ok)h+='<td colspan="5" class="neg">No se pudo leer en esta corrida: '+esc(f.detalle||"")+'</td><td class="neg">no leído</td></tr>';
-    else h+='<td class="d num">'+nf(f.filas)+'</td><td class="d num">'+nf(f.venta)+'</td><td class="d num">'+nf(n)+'</td><td class="d num">'+nf(v)+'</td><td class="d num">'+nf(sp)+'</td><td class="tenue">'+hora(f.leido)+"</td></tr>";
+function categorias(){
+  var g={},orden=[],tv=0,conStock=FILAS.filter(function(r){return r.q>0});
+  conStock.forEach(function(r){
+    var a=c1(r),b=c2(r)||"(sin subcategoría)",q=pz(r);
+    if(!g[a]){g[a]={n:0,pz:0,v:0,sin:0,rev:0,cb:0,est:0,sub:{}};orden.push(a)}
+    var x=g[a],y=x.sub[b]||(x.sub[b]={n:0,pz:0,v:0,sin:0,rev:0,cb:0});
+    [x,y].forEach(function(z){z.n++;z.pz+=q;if(r.pv==null)z.sin+=q;else if(r.rv)z.rev+=q*r.pv;else z.v+=q*r.pv;if(r.co==="b")z.cb+=q*r.cp});
+    if(r.kq==="p")x.est++;
+    if(r._vt!=null)tv+=r._vt;
   });
-  $("canales").innerHTML=h+"</tbody></table>";
+  orden.sort(function(a,b){return g[b].v-g[a].v||g[b].pz-g[a].pz});
+  var max=orden.length?g[orden[0]].v:1;
+  var h='<thead><tr><th>Categoría</th><th class="d">Productos</th><th class="d">Piezas</th><th class="d t-c">Costo total</th><th class="d t-p">Precio total</th><th class="t-p" style="width:15%">Parte del precio</th><th class="d">Precio en revisión</th><th class="d">Piezas sin precio</th><th></th></tr></thead><tbody>';
+  orden.forEach(function(a,i){
+    var x=g[a],ab=!!E.exp[a];
+    h+='<tr><td><button class="nom" type="button" data-exp="'+i+'" aria-expanded="'+ab+'"><span class="fl">'+(ab?"▾":"▸")+"</span>"+esc(a)+"</button>"+(x.est?' <span class="et av" title="Productos cuya categoría sale del prefijo del SKU">'+nf(x.est)+" estimados</span>":"")+"</td>"+
+      '<td class="d num">'+nf(x.n)+'</td><td class="d num">'+nf(x.pz)+'</td><td class="d num" style="color:var(--costo)"><b>'+fm0(x.cb)+'</b></td><td class="d num" style="color:var(--oro)"><b>'+fm0(x.v)+"</b></td>"+
+      '<td><div style="display:flex;gap:8px;align-items:center"><div class="pista" style="flex:1"><i style="width:'+(100*x.v/(max||1)).toFixed(1)+'%"></i></div><span class="num tenue" style="font-size:12px;min-width:44px;text-align:right">'+(tv?pc(x.v/tv):"—")+"</span></div></td>"+
+      '<td class="d num tenue">'+(x.rev?fm0(x.rev):"—")+'</td><td class="d num'+(x.sin?" neg":"")+'">'+nf(x.sin)+'</td><td><button class="ver" type="button" data-cat="'+i+'">Ver productos</button></td></tr>';
+    if(ab){
+      Object.keys(x.sub).sort(function(p,q2){return x.sub[q2].v-x.sub[p].v||x.sub[q2].pz-x.sub[p].pz}).forEach(function(b,j){
+        var y=x.sub[b];
+        h+='<tr class="sub"><td>'+esc(b)+'</td><td class="d num">'+nf(y.n)+'</td><td class="d num">'+nf(y.pz)+'</td><td class="d num" style="color:var(--costo)">'+fm0(y.cb)+'</td><td class="d num" style="color:var(--oro)">'+fm0(y.v)+"</td><td></td>"+
+          '<td class="d num tenue">'+(y.rev?fm0(y.rev):"—")+'</td><td class="d num'+(y.sin?" neg":"")+'">'+nf(y.sin)+'</td><td>'+(b.charAt(0)==="("?"":'<button class="ver" type="button" data-cat="'+i+'" data-sub="'+esc(b)+'">Ver productos</button>')+"</td></tr>";
+      });
+    }
+  });
+  $("cats").innerHTML=h+"</tbody>";
+  $("cats")._orden=orden;
+}
+
+function limpieza(){
+  var h='<thead><tr><th>Qué hay que limpiar</th><th class="d">Productos</th><th class="d">Piezas</th><th class="d">Precio total que toca</th><th></th></tr></thead><tbody>';
+  D.X.forEach(function(x){
+    var n=0,p=0,v=0;
+    FILAS.forEach(function(r){if(r.x&&r.x.indexOf(x[0])>=0&&(r.q>0||x[0]==="sn")){n++;p+=pz(r);if(r._vv!=null)v+=r._vv}});
+    h+='<tr><td><b>'+esc(x[1])+'</b><div class="tenue" style="font-size:12.5px;max-width:70ch">'+esc(x[2])+'</div></td><td class="d num">'+nf(n)+'</td><td class="d num">'+nf(p)+'</td><td class="d num">'+(v?fm0(v):"—")+'</td><td>'+(n?'<button class="ver" type="button" data-lim="'+x[0]+'">Ver</button>':"")+"</td></tr>";
+  });
+  $("limp").innerHTML=h+"</tbody>";
 }
 
 function fuentes(){
-  var h="",malas=[];
-  ["odoo","costos"].concat(D.canales.map(function(c){return c.k})).forEach(function(k){
+  var h="";
+  ["odoo","woo","precios","costos"].forEach(function(k){
     var f=D.fuentes[k]; if(!f)return;
-    if(!f.ok)malas.push(f);
-    h+='<span class="fte'+(f.ok?"":" no")+'" title="'+esc(f.detalle||"")+'"><span class="pt"></span><b>'+esc(f.nombre)+"</b> "+(f.ok?nf(f.filas)+" · "+hora(f.leido):"no leído")+"</span>";
+    h+='<span class="fte" title="'+esc(f.detalle||"")+'"><span class="pt"></span><b>'+esc(f.nombre)+"</b> "+nf(f.filas)+" · "+hora(f.leido)+"</span>";
   });
   $("fuentes").innerHTML=h;
   $("cuando").innerHTML="Generado el <b>"+hora(D.generado)+"</b><br>Cada fuente dice a qué hora se leyó";
-  $("avisos").innerHTML=malas.map(function(f){return '<div class="aviso"><b>'+esc(f.nombre)+" no se pudo leer en esta corrida.</b> "+esc(f.detalle||"")+" Sus publicaciones no aparecen aquí, y eso NO significa «sin publicar».</div>"}).join("");
 }
 
 function metodo(){
   var pa=D.parametros||{},cb=D.contenedores_base||{};
   var b=[
-   ["Foto","La del producto en Odoo (<code>image_128</code>). En el detalle, cada publicación lleva la miniatura que devolvió su canal. Walmart no entrega imagen por API."],
-   ["Título","El nombre del producto en Odoo. Los títulos de cada marketplace están en el detalle de la fila, uno por publicación."],
-   ["Stock","<code>free_qty</code> de Odoo, leído en vivo: lo físico menos lo ya reservado. También por almacén (TEXCO, DROP OFF, TEXCO II). Las piezas negativas cuentan como cero al valuar."],
-   ["Packing list","El campo «Contenedor #» de Odoo (<code>container_numbers</code>). Cuando Odoo lo trae vacío se muestra el contenedor de la base de costos, y la fila lo dice. El archivo se ubica por código en la carpeta de Drive de packing lists."],
-   ["Costo de producto — el oficial","<code>costing.costos_validados.costo_producto</code> de la base kubera. Solo los productos con renglón propio entran al total oficial (dorado). Si no lo tienen se busca, en orden: una variante hermana o el SKU padre en la base (heredado) y, si no, la mediana del costo de su contenedor (extrapolado, una estimación gruesa). Cada fila dice cuál se usó y esos importes se suman aparte. El costo de la ficha de Odoo no se usa: no viene en la misma unidad en todos los productos."],
-   ["Prorrateo del contenedor","Cada contenedor cuesta "+fm0(pa.costo_contenedor)+". Por pieza: 525,000 × m³ de la pieza ÷ m³ del contenedor, cuando el contenedor reconstruido mide entre "+((pa.rango_m3||[])[0])+" y "+((pa.rango_m3||[])[1])+" m³ ("+nf(cb.en_rango)+" de "+nf(cb.total)+" contenedores). Si no, m³ de la pieza × "+fm0(pa.tarifa_m3)+"."],
-   ["Valor de venta","El precio vigente en cada canal. En Mercado Libre es el que se cobra hoy, con promoción aplicada. El de referencia es la publicación a la venta más barata, buscando en este orden: Mercado Libre, Amazon, Walmart, TikTok, Temu; si ninguna vende, la pausada."],
-   ["Publicado con el SKU padre","Mercado Libre publica sin variaciones: la publicación lleva el SKU padre y Odoo lleva el inventario por variante. A cada variante se le muestra la publicación de su padre marcada con ↑: cuenta como publicada, pero no tiene una propia."],
-   ["Comisiones","Mercado Libre: la comisión que su API calcula al precio cobrado y el envío a cargo del vendedor. Amazon: su estimador de comisiones al precio publicado. Walmart, TikTok y Temu no la entregan por API: se muestra un porcentaje supuesto, marcado como tal. La utilidad es antes de IVA e impuestos."],
-   ["Lo que NO es esta página","No escribe en ningún sistema. Es una foto: cada fuente dice a qué hora se leyó. Un canal que no se pudo leer aparece como «no leído», nunca rellenado con datos viejos."]
+   ["Qué tenemos y cuánto","Una fila por producto de Odoo con referencia interna. El stock es <code>free_qty</code>, leído en vivo: lo físico menos lo ya reservado. Las piezas negativas cuentan como cero."],
+   ["Costo y precio no son lo mismo","<b style=\"color:var(--costo)\">Costo total del inventario</b> (azul) es lo que nos costó la mercancía. <b style=\"color:var(--oro)\">Precio total del inventario</b> (oro) es en cuánto se vende. Cada uno cubre las piezas que tienen ese dato, que no son las mismas: por eso hay un renglón que los compara solo donde existen los dos."],
+   ["Precio total del inventario","Piezas libres × precio de venta. El precio se busca en este orden y cada fila dice cuál se usó: el más bajo al que hoy se vende en un marketplace; si no se vende, el más bajo de sus publicaciones pausadas; si no tiene, el precio de catálogo de WooCommerce. Sin ninguno, el producto queda sin precio y no suma."],
+   ["Lo que parece precio y no lo es","Se descartan dos cosas, vengan de donde vengan: el <code>1.00</code> que deja un borrador sin trabajar, y el «Sales Price» de Odoo copiado tal cual (en el catálogo propio es el costo en dólares o un 1). Quedan anotados en el detalle de la fila."],
+   ["Precio en revisión","Un precio existe pero no se suma cuando casi seguro no es el de una pieza de ese producto: la publicación vende un paquete («100 piezas») y Odoo cuenta piezas sueltas, o el precio pasa de "+((D.veces||{}).tope_costo||25)+" veces su costo de producto (en lo que hoy se vende, la mediana es "+((D.veces||{}).global||"—")+" veces), o —cuando no hay costo— de "+((D.veces||{}).tope_categoria||20)+" veces la mediana de su categoría. Se ve tachado, con su importe, y en «Limpieza de datos» está la lista."],
+   ["Categoría","La de Mercado Libre: 31 categorías raíz y sus ramas. Sale de la publicación del producto o de la categoría que el panel le guardó en WooCommerce. Si no tiene, hereda la de otra variante del mismo modelo. Como último recurso se estima por el prefijo del SKU, y se marca: ese prefijo se asignó a ojo y hay que confirmarlo."],
+   ["Costo total del inventario","Piezas libres × costo de producto: <code>costing.costos_validados.costo_producto</code> de la base kubera. Solo suma lo que tiene renglón propio. Sin renglón, el costo se hereda de una variante o del SKU padre, o se extrapola con la mediana de su contenedor; esos importes se muestran aparte. La ficha de Odoo no se usa."],
+   ["Estimado de lo que falta","Para las piezas sin precio contable se calcula cuánto valdrían a su costo × el múltiplo al que hoy se vende lo de su categoría (la mediana de precio ÷ costo, medida solo en lo que está a la venta), o a precio del paquete ÷ piezas cuando el paquete se conoce. Es una estimación para dimensionar; nunca se mezcla con el precio total."],
+   ["Packing list","El campo «Contenedor #» de Odoo. Si viene vacío se muestra el contenedor de la base de costos, y la fila lo dice. El archivo se ubica por código en la carpeta de Drive."],
+   ["Para el final: prorrateo","Cada contenedor cuesta "+fm0(pa.costo_contenedor)+" y se reparte por volumen entre sus piezas ("+nf(cb.en_rango)+" de "+nf(cb.total)+" contenedores reconstruidos caen entre "+((pa.rango_m3||[])[0])+" y "+((pa.rango_m3||[])[1])+" m³). Ya está calculado y se ve en el detalle de cada fila; no entra a ninguna cifra de arriba."],
+   ["Lo que NO es esta página","No escribe en ningún sistema. Es una foto: cada fuente dice a qué hora se leyó. El precio total es a precio de lista, antes de comisiones, envíos e impuestos: no es lo que se cobraría neto."]
   ];
   $("metodo").innerHTML=b.map(function(x){return '<div class="blo"><h2>'+x[0]+"</h2><p>"+x[1]+"</p></div>"}).join("");
 }
 
 function tsv(){
-  var cab=["SKU","Título Odoo","Stock libre","Stock físico","Packing list","Costo de producto","Origen del costo","Flete base","Costo total base","Prorrateo 525k","Valor a costo de producto","Valor de venta","Canal de referencia"];
-  D.canales.forEach(function(c){cab.push(c.nombre+" precio",c.nombre+" estado")});
+  var cab=["SKU","Título","Categoría","Subcategoría","Hoja","Stock libre","Precio unitario","Origen del precio","Precio total","Costo unitario","Origen del costo","Costo total","Packing list","Por limpiar"];
   var out=[cab.join("\t")];
   VISTA.forEach(function(r){
-    var f=[r.s,r.n,r.q,r.f!=null?r.f:r.q,r.c||"",r.cp!=null?r.cp:"",r.co?ORIGEN[r.co]:"Sin costo",r.cf!=null?r.cf:"",r.ct!=null?r.ct:"",r.pr!=null?r.pr:"",r._val!=null?r._val.toFixed(2):"",r._pv?r._pv.p:"",r._pv?NOM[r._pv.k]:""];
-    D.canales.forEach(function(c){var p=null;(r.L||[]).forEach(function(x){if(x.k===c.k&&(!p||(x.v&&!p.v)))p=x});f.push(p&&p.p!=null?p.p:"",p?p.e||"":"")});
+    var f=[r.s,r.n,c1(r),c2(r),c3(r),r.q,r.pv!=null?r.pv:"",r.po?ORIGEN_P[r.po]+(r.rv?" (en revisión, no suma)":""):"Sin precio",r._vt!=null?r._vt.toFixed(2):"",r.cp!=null?r.cp:"",r.co?ORIGEN_C[r.co]:"Sin costo",r._vc!=null?r._vc.toFixed(2):"",r.c||"",(r.x||[]).map(function(c){return HAL[c]?HAL[c].r:c}).join("; ")];
     out.push(f.map(function(x){return String(x).replace(/[\t\r\n]+/g," ")}).join("\t"));
   });
   return out.join("\n");
 }
 
-function pestana(id){
-  ["cat","hue","met"].forEach(function(k){var on=k===id;$("t-"+k).setAttribute("aria-selected",on);$("v-"+k).hidden=!on});
-  if(id==="hue")pintarHue();
+function llenarSub(){
+  var s=$("f-sub"),vistos={};
+  s.innerHTML='<option value="">Todas</option>';
+  if(E.cat)FILAS.forEach(function(r){if(r.q>0&&c1(r)===E.cat&&c2(r))vistos[c2(r)]=1});
+  Object.keys(vistos).sort().forEach(function(n){var o=document.createElement("option");o.value=n;o.textContent=n;s.appendChild(o)});
+  s.value=E.sub||"";
 }
+function pestana(id){["cat","lim","met"].forEach(function(k){var on=k===id;$("t-"+k).setAttribute("aria-selected",on);$("v-"+k).hidden=!on})}
+function irACatalogo(){pestana("cat");filtrar();$("v-cat").scrollIntoView({block:"start"})}
 
 function arrancar(d){
   D=d; preparar();
   (D.almacenes||[]).forEach(function(a){var o=document.createElement("option");o.value=a.codigo;o.textContent=a.nombre;$("f-alm").appendChild(o)});
-  D.canales.forEach(function(c){var o=document.createElement("option");o.value=c.k;o.textContent=c.nombre;$("f-canal").appendChild(o)});
-  $("t-hue").textContent="Publicaciones sin producto en Odoo ("+nf(HUE.length)+")";
-  fuentes(); resumen(); canales(); metodo(); filtrar();
+  D.X.forEach(function(x){var o=document.createElement("option");o.value=x[0];o.textContent=x[1];$("f-lim").appendChild(o)});
+  var raices={};FILAS.forEach(function(r){if(r.q>0)raices[c1(r)]=1});
+  Object.keys(raices).sort().forEach(function(n){var o=document.createElement("option");o.value=n;o.textContent=n;$("f-cat").appendChild(o)});
+  fuentes(); respuestas(); categorias(); limpieza(); metodo(); filtrar();
 
   var espera=null;
-  $("q").addEventListener("input",function(){clearTimeout(espera);var v=this.value;espera=setTimeout(function(){E.q=v.trim().toLowerCase();E.pagH=0;filtrar();if(!$("v-hue").hidden)pintarHue()},160)});
-  [["f-stock","stock"],["f-alm","alm"],["f-pub","pub"],["f-canal","canal"],["f-costo","costo"],["f-cat","cat"]].forEach(function(x){$(x[0]).addEventListener("change",function(){E[x[1]]=this.value;filtrar()})});
-  $("limpiar").addEventListener("click",function(){["q","f-stock","f-alm","f-pub","f-canal","f-costo","f-cat"].forEach(function(i){$(i).value=""});E.q=E.stock=E.alm=E.pub=E.canal=E.costo=E.cat="";filtrar()});
+  $("q").addEventListener("input",function(){clearTimeout(espera);var v=this.value;espera=setTimeout(function(){E.q=v.trim().toLowerCase();filtrar()},160)});
+  [["f-stock","stock"],["f-alm","alm"],["f-precio","precio"],["f-lim","lim"],["f-sub","sub"]].forEach(function(x){$(x[0]).addEventListener("change",function(){E[x[1]]=this.value;filtrar()})});
+  $("f-cat").addEventListener("change",function(){E.cat=this.value;E.sub="";llenarSub();filtrar()});
+  $("limpiar").addEventListener("click",function(){
+    ["q","f-cat","f-sub","f-precio","f-alm","f-lim"].forEach(function(i){$(i).value=""});$("f-stock").value="con";
+    E.q=E.cat=E.sub=E.precio=E.alm=E.lim="";E.stock="con";llenarSub();filtrar()});
   $("copiar").addEventListener("click",function(){
     var t=tsv(),b=this,ok=function(){b.textContent="Copiado: "+nf(VISTA.length)+" filas";setTimeout(function(){b.textContent="Copiar para Excel"},2200)};
     var plan=function(){var a=$("copia");a.hidden=false;a.value=t;a.focus();a.select();b.textContent="Selecciona y copia (Ctrl+C)"};
@@ -573,12 +601,25 @@ function arrancar(d){
   });
   $("libro").addEventListener("click",function(ev){
     var o=ev.target.closest("[data-o]"),s=ev.target.closest("[data-i]");
-    if(o){var k=o.getAttribute("data-o");if(E.orden===k)E.dir=-E.dir;else{E.orden=k;E.dir=k==="sku"?1:-1}ordenar();E.pag=0;pintar()}
+    if(o){var k=o.getAttribute("data-o");if(E.orden===k)E.dir=-E.dir;else{E.orden=k;E.dir=(k==="sku"||k==="cat")?1:-1}ordenar();E.pag=0;pintar()}
     else if(s){var i=s.getAttribute("data-i");if(E.ab[i])delete E.ab[i];else E.ab[i]=1;pintar()}
   });
-  $("pag").addEventListener("click",function(ev){if(ev.target.id==="ant"&&E.pag>0){E.pag--;pintar()}if(ev.target.id==="sig"){E.pag++;pintar()}if(ev.target.id==="ant"||ev.target.id==="sig")$("total").scrollIntoView({block:"nearest"})});
-  $("pag-hue").addEventListener("click",function(ev){if(ev.target.id==="antH"&&E.pagH>0){E.pagH--;pintarHue()}if(ev.target.id==="sigH"){E.pagH++;pintarHue()}});
-  [["cat"],["hue"],["met"]].forEach(function(x){$("t-"+x[0]).addEventListener("click",function(){pestana(x[0])})});
+  $("pag").addEventListener("click",function(ev){
+    var id=ev.target.id; if(id!=="ant"&&id!=="sig")return;
+    if(id==="ant"&&E.pag>0)E.pag--; if(id==="sig")E.pag++;
+    pintar();$("total").scrollIntoView({block:"nearest"})});
+  $("cats").addEventListener("click",function(ev){
+    var x=ev.target.closest("[data-exp]"),v=ev.target.closest("[data-cat]"),orden=$("cats")._orden||[];
+    if(x){var a=orden[+x.getAttribute("data-exp")];if(E.exp[a])delete E.exp[a];else E.exp[a]=1;categorias()}
+    else if(v){
+      E.cat=orden[+v.getAttribute("data-cat")];E.sub=v.getAttribute("data-sub")||"";
+      E.stock="con";$("f-stock").value="con";$("f-cat").value=E.cat;llenarSub();irACatalogo()}
+  });
+  $("limp").addEventListener("click",function(ev){
+    var v=ev.target.closest("[data-lim]"); if(!v)return;
+    E.lim=v.getAttribute("data-lim");$("f-lim").value=E.lim;
+    E.stock=E.lim==="sn"?"":"con";$("f-stock").value=E.stock;irACatalogo()});
+  ["cat","lim","met"].forEach(function(k){$("t-"+k).addEventListener("click",function(){pestana(k)})});
 }
 
 function cargar(){

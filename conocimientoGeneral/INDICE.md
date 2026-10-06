@@ -29,9 +29,13 @@ chat va a volver a hacer desde cero.
 
 | Capacidad | Estado | Dónde |
 |---|---|---|
-| **Todo el catálogo de Odoo (`free_qty`) cruzado EN VIVO contra ML ×2, Amazon, TikTok, Temu y Walmart: qué está publicado, a qué precio, con qué comisión, costo de producto de la base, prorrateo de 525k y packing list — en una página web** | **PUEDE** (solo lectura; Temu necesita la IP de producción) | [CATALOGO_VIVO/scripts/](CATALOGO_VIVO/scripts/) |
-| Cómo se censa cada canal desde su API, y lo que se midió al hacerlo | SE SABE CÓMO | [CATALOGO_VIVO/CONOCIMIENTO.md](CATALOGO_VIVO/CONOCIMIENTO.md) |
-| Valuar el inventario a costo (qué columna, qué se hereda, qué queda fuera) | **PUEDE** | etapa `pagina` de [CATALOGO_VIVO/scripts/](CATALOGO_VIVO/scripts/) |
+| **Qué tenemos, cuánto tenemos, COSTO TOTAL y PRECIO TOTAL del inventario: todo el catálogo de Odoo (`free_qty`) leído en vivo, con precio de venta, categoría, costo de producto y packing list, por categoría y en una página web** | **PUEDE** (solo lectura) | [CATALOGO_VIVO/scripts/](CATALOGO_VIVO/scripts/) |
+| Ponerle precio de venta a un SKU: el más bajo a la venta → en pausa → catálogo de WooCommerce; qué descartar (el `1.00` de borrador, el «Sales Price» de Odoo) y qué mandar a revisión (paquete contra pieza, precio sin proporción con el costo) | **PUEDE** | `pagina.py` en [CATALOGO_VIVO/scripts/](CATALOGO_VIVO/scripts/) |
+| Darle a cada producto su categoría de mercado (árbol de ML, 31 raíces) desde su publicación o desde WooCommerce | **PUEDE** | etapas `woo` y `categorias` de [CATALOGO_VIVO/scripts/](CATALOGO_VIVO/scripts/) |
+| Leer WooCommerce completo por REST, variaciones incluidas (`/products?sku=a,b,c`), sin que el hosting bloquee | **PUEDE** | `f_woo.py` en [CATALOGO_VIVO/scripts/](CATALOGO_VIVO/scripts/) |
+| Censar en vivo ML ×2, Amazon (con su estimador de comisiones), TikTok y Walmart; Temu por `/investigacion` | **PUEDE** | `f_ml.py`, `f_amazon.py`, `f_tiktok.py`, `f_walmart.py`, `f_temu.py` |
+| Lista de lo que hay que limpiar en el catálogo (sin precio, sin costo, sin categoría, stock dudoso, títulos, SKUs repetidos) con su impacto | **PUEDE** (diagnostica; corregir es desde el panel) | pestaña «Limpieza de datos» que arma `pagina.py` |
+| Cómo se lee cada sistema y lo que se midió al hacerlo | SE SABE CÓMO | [CATALOGO_VIVO/CONOCIMIENTO.md](CATALOGO_VIVO/CONOCIMIENTO.md) |
 
 ## Imágenes
 

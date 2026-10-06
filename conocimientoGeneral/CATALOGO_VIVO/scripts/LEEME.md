@@ -5,10 +5,18 @@
 > Escrito el 6-oct-2026 a pedido de Brandon. Lógica de lectura copiada de
 > producción (`origin/main` v0.618.0) y del laboratorio de precios (`sandbox/precios-optimos`).
 
-Le preguntas a cada sistema qué tiene **ahora**, y te deja una página web con una
-fila por producto de Odoo: foto, título, packing list, stock libre, costo de
-producto, prorrateo del contenedor, y en qué canales está publicado, a qué precio
-y con qué comisión.
+Le preguntas a cada sistema qué tiene **ahora**, y te deja una página web que
+contesta tres cosas: **qué tenemos, cuánto tenemos y cuánto vale en el mercado**.
+Una fila por producto de Odoo: foto, título, categoría, stock libre, precio de
+venta, valor de venta, costo de producto y packing list. Arriba, el total y el
+desglose por categoría; aparte, la lista de lo que hay que limpiar.
+
+> **Cambio de enfoque (6-oct-2026, por la tarde).** La primera versión giraba
+> alrededor de los canales (en cuál está publicado cada producto, con qué
+> comisión). Se pidió dejar eso: *los marketplaces no son relevantes, lo que
+> importa es el valor de venta; agreguen categorías; el prorrateo, hasta el final;
+> después, limpieza de datos.* Los extractores de canal siguen aquí porque de
+> ellos sale el precio al que se vende — pero la página ya no habla de canales.
 
 **No publica nada. No escribe nada. En ningún lado.**
 
@@ -44,13 +52,19 @@ diccionario en memoria.
 |---|---|---|---|
 | `odoo` | Odoo | XML-RPC `search_read` de `product.product`: `free_qty` (total y por almacén), `container_numbers`, `image_128` | 3 min |
 | `costos` | kubera | **un** `SELECT` a `costing.costos_validados` + el prorrateo de 525k | 3 s |
+| `woo` | WooCommerce | REST: productos (precio de catálogo, estado, categoría) y variaciones por SKU | 15 min |
 | `amazon` | SP-API | `searchListingsItems` por ventanas de fecha + `getMyFeesEstimates` | 3 min |
 | `walmart` | Walmart MX | `GET /v3/items` paginado | 10 s |
 | `ml` | Mercado Libre | scan + `/items` + (activas) `sale_price`, `listing_prices`, `shipping_options/free` | 8 min |
 | `tiktok` | TikTok Shop | `products/search` + detalle para la foto | 1 min |
 | `temu` | Temu | `bg.local.goods.list.query` — **solo desde la IP de producción** (ver abajo) | — |
-| `imagenes` | CDNs públicos | baja las miniaturas y arma las hojas | 1 min |
+| `categorias` | Mercado Libre | resuelve cada categoría a su ruta en el árbol de ML (31 raíces) | 5 s |
+| `imagenes` | CDNs públicos | baja las miniaturas que hagan falta y arma las hojas | 1 min |
 | `pagina` | lo anterior | cruza por SKU y escribe la página | 2 s |
+
+Los cuatro canales (`amazon`, `walmart`, `ml`, `tiktok`) ya no son el tema: se leen
+porque **de ahí sale el precio al que se vende**. Si solo quieres refrescar stock y
+valor, basta `odoo woo categorias imagenes pagina`.
 
 Cada etapa escribe su archivo en `datos/` y su estado en `datos/_estado/`. Si una
 falla, las demás quedan intactas y la página dice **«no leído»** con el motivo.
@@ -74,17 +88,26 @@ NOT_IN_IP_WHITE_LIST`). Camino para leerla:
 
 ## Lo que hay que saber antes de fiarse de un número
 
+- **El precio de venta se busca en orden, y cada fila dice cuál se usó:** el más
+  bajo al que hoy se vende en un marketplace → el más bajo de sus publicaciones
+  pausadas → el precio de catálogo de WooCommerce → sin precio. Lo que no tiene
+  precio NO suma: no se inventa.
+- **Dos cosas parecen precio y no lo son**, y se descartan vengan de donde vengan:
+  el `1.00` de un borrador sin trabajar, y el «Sales Price» de Odoo copiado tal
+  cual (en el catálogo propio es el costo en dólares o un 1).
+- **La categoría es la de Mercado Libre** (31 raíces y sus ramas). Sale de la
+  publicación o de lo que el panel guardó en WooCommerce. Si no hay, se hereda de
+  otra variante; y como último recurso se ESTIMA por el prefijo del SKU, marcada:
+  ese prefijo se asignó a ojo (`PAS-` «Paseo Bebé» trae bozales para perro).
 - **El costo oficial es `costo_producto` de la base**, no el de la ficha de Odoo.
-  La página lo pinta en dorado y solo los productos con renglón propio entran al
-  total. Lo heredado y lo extrapolado se suman aparte, con su nombre.
-- **La ficha de Odoo (`standard_price`) no se usa para costear.** Coincide con la
-  base en tres de cada cuatro productos y en el resto viene en otra unidad.
+  Solo los productos con renglón propio entran a ese total; lo heredado y lo
+  extrapolado se suman aparte.
+- **El prorrateo de 525k va al final.** Está calculado y se ve en el detalle de
+  cada fila, pero no entra a ninguna cifra de la página.
 - **Una variante puede estar publicada con el SKU de su padre.** Mercado Libre
-  publica sin variaciones; a la variante se le cuelga esa publicación marcada con ↑.
-- **El precio de Mercado Libre es el que se cobra hoy** (`sale_price`), con la
-  promoción aplicada, no el de lista.
-- **Comisión real vs supuesta.** ML y Amazon la calculan por API. Walmart, TikTok y
-  Temu no: la página muestra un porcentaje supuesto y lo dice.
+  publica sin variaciones; a la variante le sirve el precio de esa publicación.
+- **El valor de venta es a precio de lista**: antes de comisiones, envíos e
+  impuestos.
 
 ---
 

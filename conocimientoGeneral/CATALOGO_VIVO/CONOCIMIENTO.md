@@ -74,6 +74,84 @@ Comparando por el ordinal coinciden casi nueve de cada diez; por código, algo m
 
 ---
 
+## 2b · Precio de venta y categorías: lo que se midió al cambiar el enfoque
+
+La tarde del 6-oct se pidió dejar los canales y poner el foco en **cuánto vale en
+el mercado**, con categorías. Lo que hubo que averiguar:
+
+**Ninguna fuente le pone precio a todo.** Dos de cada tres productos con stock no
+están publicados en ningún marketplace. Para esos, el único precio que existe es el
+de catálogo en WooCommerce — cuando lo tiene.
+
+**El «Sales Price» de Odoo (`list_price`) no es un precio de venta.** En el
+catálogo propio vale `1` o repite el costo en dólares de la ficha. En «Productos
+Agente» trae cualquier cosa. Contra los productos que sí tienen precio vivo en un
+marketplace no coincide prácticamente nunca. Y como hay flujos que lo copian tal
+cual a WooCommerce (y de ahí a un feed), aparece disfrazado de precio en otros
+lados: hay que descartarlo **por igualdad con el campo de Odoo**, no por fuente.
+
+**Un borrador de WooCommerce vale `1.00`.** Es el marcador de lo que nunca pasó por
+el Estudio. No es un precio.
+
+**La REST de WooCommerce sí devuelve variaciones, si se le pregunta por SKU.**
+`GET /products` lista solo padres y simples. Pero `GET /products?sku=A,B,C` trae
+también variaciones (`type: variation`, con su `parent_id`) y acepta varios SKUs
+separados por coma. Con lotes de 40 se cubren miles de variantes sin ir padre por
+padre. Una variación no trae categorías: son las de su padre.
+
+**Las categorías de WooCommerce NO forman árbol.** Son ~1,700 hojas, todas en la
+raíz: el nombre es el de la hoja de Mercado Libre y la **descripción** dice
+`ML: MLM123456` (así las crea `crear_producto.py::get_or_create_wc_categoria`).
+Agrupar por ellas no contesta «qué tenemos». Lo que sirve es resolver ese id contra
+el árbol de ML.
+
+**El árbol de ML se baja entero en una llamada.** `GET /sites/MLM/categories/all`
+devuelve las ~12,000 categorías con su `path_from_root` (30 MB, pide token). Y
+`GET /categories/{id}` es **público**, sin token, para resolver de una en una.
+Las raíces son 31.
+
+**El prefijo del SKU no es una categoría.** La taxonomía de la casa
+(`packing_taxonomia.SUBCATEGORIAS`) dice que `PAS-` es «Paseo Bebé», y bajo ese
+prefijo hay bozales para perro y cambiadores de agua para pecera; `MES-` trae
+toallas; `OFI-`, un hacha de cocina. Sirve como último recurso para no dejar un
+producto sin clasificar, **marcado como estimado**, y nada más.
+
+**Cuatro de cada diez categorías de WooCommerce no traen el id de ML.** Las creó
+otro flujo y solo llevan el nombre — que casi siempre es ambiguo en el árbol
+(«Tenis» existe siete veces: el calzado y el deporte). Se resuelven así: si todas
+las candidatas cuelgan de la misma raíz, la raíz es segura; si no, el prefijo del
+SKU desempata; si tampoco, no se adivina. Y se descartan las raíces que no son
+mercancía: «Tecnología» existe en ML… dentro de *Servicios › Servicios de
+Reparación*.
+
+**El árbol de ML se contradice a sí mismo en dos nombres.** La raíz `MLM1071` se
+llama «Mascotas» en el árbol y «Animales y Mascotas» en la lista de raíces; y
+«Deportes y Fitness » trae un espacio al final. Sin normalizar, la misma categoría
+sale en dos renglones.
+
+**Multiplicar piezas por precio no siempre es valuar.** Lo que más infla un «valor
+de venta» no son los precios altos, son dos desajustes de UNIDAD y de IDENTIDAD:
+
+- *Paquete contra pieza.* La publicación vende «100 piezas» y Odoo cuenta bolsas
+  sueltas: el valor sale cien veces mayor. Se detecta cuando el título de la
+  publicación trae una cantidad que el nombre de Odoo no trae.
+- *SKU reciclado.* La publicación es de otro producto que heredó el SKU (pendiente
+  #7 de CLAUDE.md). Se nota porque el precio no guarda ninguna proporción con el
+  costo.
+
+Los dos se mandan a **revisión**: el precio se muestra, pero no se suma. El corte
+para «desproporcionado» se midió sobre lo que hoy sí se vende (ahí solo el 3% más
+alto pasa de 25 veces su costo); cuando no hay costo, se compara contra la mediana
+de su subcategoría. La distribución con sus cifras no se escribe en este
+repositorio: sale en `datos.json`, que no se sube.
+
+**Un puñado de SKUs puede ser un cuarto del inventario.** Once referencias con
+diez mil piezas o más concentraban más de la cuarta parte de las piezas libres. Con
+esa forma, un total es tan bueno como el conteo de esos once: van primero en
+cualquier limpieza.
+
+---
+
 ## 3 · Tres cosas que NO se hacen, aunque el código lo permitiría
 
 1. **Renovar tokens.** El de ML se rota al usarse. Un script que lo renueve deja a

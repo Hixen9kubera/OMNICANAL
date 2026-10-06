@@ -22,7 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-from comun import Red, aviso, escribir_json, leer_json
+from comun import Red, aviso, escribir_json, leer_json, sku_norm
 
 LADO = 72
 COLS = 20
@@ -69,11 +69,20 @@ def construir(salida: Path) -> dict[str, Any]:
     cache_url = salida / "cache" / "img" / "url"
     cache_url.mkdir(parents=True, exist_ok=True)
 
-    # 1 · Qué URLs de canal hay que tener
+    # 1 · Qué URLs de canal hay que tener. La foto de la página es la de ODOO; la de un
+    #     marketplace solo se usa de respaldo, para el producto que en Odoo no tiene foto.
+    #     (Un SKU padre publicado plano no existe en Odoo: su foto sirve a sus variantes.)
+    odoo_doc = leer_json(datos / "odoo.json") or {}
+    con_foto = {sku_norm(f["sku"]) for f in odoo_doc.get("filas") or [] if f.get("foto")}
     urls: list[str] = []
     for canal in CANALES:
         doc = leer_json(datos / f"{canal}.json") or {}
-        urls.extend(f["imagen"] for f in doc.get("filas") or [] if f.get("imagen"))
+        for f in doc.get("filas") or []:
+            if not f.get("imagen"):
+                continue
+            skus = f.get("skus") or ([f["sku"]] if f.get("sku") else [])
+            if any(sku_norm(s) not in con_foto for s in skus):
+                urls.append(f["imagen"])
     urls = list(dict.fromkeys(urls))
 
     def _ruta(url: str) -> Path:

@@ -107,6 +107,7 @@ class Cfg:
 # ── Red: solo lecturas ────────────────────────────────────────────────────────
 
 ANFITRIONES_GET = (
+    "chunche.shop",                      # WooCommerce: precio de catálogo y categorías
     "api.mercadolibre.com",
     "sellingpartnerapi-na.amazon.com",
     "marketplace.walmartapis.com",
