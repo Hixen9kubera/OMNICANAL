@@ -21,10 +21,11 @@
 | Ambiente | Estado |
 |---|---|
 | **Sandbox** (`yvootpbz`) | 0064 y 0065 **APLICADAS** desde el 6-oct 09:08 UTC. Están registradas en `ops.migraciones` (`0064_ops_ordenes_venta`, `0065_ops_inventario_kubera`). |
-| **Producción** (`tukwcvsi`) | **NO aplicadas.** Ninguna tabla de esta guía existe ahí, salvo `ops.stock_watch_photo`, que todavía no tiene `stock_kubera`. |
-| **Repo** | Rama local `feat/ov-almacen-kubera-0064-0065` con los commits `49dafab`, `9c12725` y `bf6edd4`, **sin push**. Contiene las dos migraciones y el verificador. No hay código de servicio. **Mientras no se empuje (lo decide el coordinador), tu copia del repo no tiene la verdad n.º 1 ni la n.º 2:** pídela antes de escribir código. |
+| **Producción** (`tukwcvsi`) | **APLICADAS** el 6-oct a las 17:40:45 UTC, las dos en una sola transacción, con el acta `_paso_prod_ov_0064_0065`: 71 de 71 comprobaciones después del COMMIT. Están vacías: 6 bodegas sembradas, TEX3 apagada, `ov_folio` en 0, ninguna bandera. `ops.stock_watch_photo` ya tiene `stock_kubera`, en NULL en todas las filas. |
+| **Repo** | Rama `feat/ov-almacen-kubera-0064-0065` **empujada a GitHub y sin fusionar a main**. Contiene las dos migraciones, el verificador, esta guía y el `schema_manifest.json` con las 16 relaciones nuevas, medidas en producción. No hay código de servicio. |
 
-- **El encabezado de los `.sql` ya está al día:** aplicadas en el sandbox y sin aplicar en producción. Las «55 pruebas OK» que menciona son de la corrida dentro de una transacción, antes de aplicarlas.
+- **El encabezado de los `.sql` ya está al día:** aplicadas en producción y en el sandbox. Las «55 pruebas OK» que menciona son de la corrida dentro de una transacción, antes de aplicarlas en el sandbox.
+- **Ya puedes fusionar código que lea estas tablas** (SEG-01 se cumplió: las migraciones entraron primero). Va con las banderas apagadas; encender TEX3 o cualquier bandera es otra acta.
 - **Pruebas sobre lo aplicado:** en modo por omisión, 54 OK, 0 FALLA y 2 omitidas (las de concurrencia). Con `--concurrencia-con-commit` las dos pasan:
   - dos confirmar simultáneos del mismo SKU: A gana; B espera el candado del saldo y recibe `KB001 no_alcanzo`;
   - un INSERT de renglón durante un confirmar en curso: espera y recibe `42501 ov_lineas_inmutable`.
@@ -771,7 +772,9 @@ El backend entra por Supavisor en modo transacción, puerto 6543: **la conexión
 5. **`application_name` no identifica conexiones:** a través del 6543 siempre vale `'Supavisor'`. Para identificar una conexión, usa `select pg_backend_pid()` **dentro de la misma transacción** (así lo hace el verificador desde `bf6edd4`).
 6. **Valores interpolados.** psycopg2 interpola en el cliente: el planificador ve constantes. Un `%` literal en una sentencia con parámetros va como `%%`. Los arreglos de SKU van `sku = any(%(skus)s::citext[])`, nunca `sku::text = …`, porque eso anula el índice citext.
 
-### 4.8 Tolerar que las tablas no existan (mientras no estén en producción)
+### 4.8 Tolerar que las tablas no existan
+
+Desde el 6-oct a las 17:40 UTC existen en producción. La guarda se queda: no cuesta nada y protege cualquier ambiente sin las migraciones, como un sandbox recreado o una base local.
 
 Hay código que lee estas tablas **sin depender de una bandera**:
 - el planeador, Crear FULL y Temu leen `ops.almacenes` en cada llamada;
