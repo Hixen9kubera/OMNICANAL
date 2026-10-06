@@ -5,8 +5,11 @@
 --        Plan v3 (5-oct-2026) con las correcciones de la revisión técnica.
 -- ═══════════════════════════════════════════════════════════════════════════
 --
--- Estado: APLICADA en el SANDBOX (yvootpbz) el 6-oct-2026 09:08 UTC; SIN
--- APLICAR en producción. Sobre lo aplicado: 54 pruebas OK y las 2 de
+-- Estado: APLICADA en PRODUCCIÓN (tukwcvsi) el 6-oct-2026 17:40:45 UTC, junto
+-- con la 0065 en una sola transacción, con el acta _paso_prod_ov_0064_0065 (fuera
+-- de ventana, autorizado por Eduardo): 71 de 71 comprobaciones después del
+-- COMMIT, 0.33 s de candado sobre ops.stock_watch_photo. APLICADA en el SANDBOX
+-- (yvootpbz) el 6-oct-2026 09:08 UTC. Sobre lo aplicado en el sandbox: 54 pruebas OK y las 2 de
 -- concurrencia OK con --concurrencia-con-commit. Antes de aplicarla se probó
 -- dentro de una transacción que termina en ROLLBACK:
 --     backend/scripts/verificar_0064_0065.py --en-transaccion
