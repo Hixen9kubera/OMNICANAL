@@ -1001,6 +1001,179 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.620.0 — Operaciones › Bodegas: el inventario propio de kubera contra Odoo por bodega y contra lo que stock_watch copia a Woo (solo lectura)
+
+Eduardo, 6-oct: *"¿Podemos verlo en operaciones para ver cómo está sincronizado a Odoo y Woo?"*
+
+**Para qué.** Las tablas de la 0064/0065 ya están en producción (vacías, TEX3 apagada, ninguna bandera). Antes de que
+Bodega cargue su primer formato y de encender TEX3 hace falta UNA pantalla donde se vea, SKU por SKU, qué dice Odoo
+en cada bodega, qué dice kubera en las suyas, qué debería tener Woo y qué tiene. Es la cuarta pestaña de Operaciones
+(`/dashboard/bodegas`, junto a «En vivo», «Coincidencia por SKU» y «FULL»). **No escribe en ningún lado.**
+
+**Qué se ve.**
+- **Encabezado:**
+  - TEX3 con sus tres banderas de `ops.almacenes` (surte ventas, cuenta para Woo, admite OV) y las demás bodegas de
+    kubera;
+  - las cuatro banderas de `ops.automatizacion_flags` (`ordenes_venta`, `stock_watch_lee_kubera`,
+    `ov_generacion_auto`, `inventario_libro`), cada una diciendo de dónde sale: fila, «sin fila» (manda la variable de
+    respaldo con el valor que tenga hoy; sin variable, apagada) o «no se pudo leer: apagada»;
+  - la salud: última pasada de stock_watch (`max(actualizado)` de `ops.stock_watch_photo`; verde hasta 45 min, ámbar
+    hasta 2 h), las ventas que esperan su orden en Odoo, la lectura de Odoo (con los archivados en TEX2 que stock_watch
+    no cuenta y los códigos duplicados), los formatos (por confirmar · renglones esperando puerta · puertas abiertas
+    hoy · movimientos del libro · OV abiertas) y la vigía `ops.stock_apartado_descuadre_v`;
+  - mientras falte algo, **«Qué falta para que TEX3 cuente en Woo»** en cuatro pasos con su palomita: Bodega carga su
+    primer formato, se confirma y se abre la puerta, acta para encender TEX3, acta para encender
+    `stock_watch_lee_kubera` (y que stock_watch la sepa leer).
+- **Un aviso índigo** que dice cómo se calcula hoy el «Woo esperado». Hoy: *kubera NO suma a Woo* (la bandera está
+  apagada y stock_watch de esta versión todavía no sabe sumarla).
+- **La tabla, una fila por SKU**, los peores primero (Woo de más, de menos, por copiar, esperando puerta, con kubera,
+  el resto):
+  - Odoo TEXCO / TEX2 / DROP: libre = físico − reservado (con «fís · res» debajo cuando hay reservado);
+  - una columna por bodega de kubera (TEX3 siempre; las demás sólo si tienen saldo): libre, con «fís · apart»;
+  - Woo esperado (con su desglose al pasar el cursor; debajo, lo que de verdad entra: «Odoo N + kubera N − N sin
+    orden», y «(kubera N no suma)» si kubera tiene libre pero stock_watch no lo suma) y «fuera de las 3» cuando Odoo
+    tiene hoy piezas en otras bodegas;
+  - Woo hoy (la foto de stock_watch, con su hora);
+  - Coincide (los mismos colores que la matriz: igual · de más · de menos · **por copiar** · sin comparar) con la
+    diferencia;
+  - la puerta: sin formato · formato por confirmar · esperando (piezas y folios) · abierta con su vía (`tex2_bajo`,
+    `tex2_cero`, `movimiento`).
+- **Filtros** Todo · Solo TEX3/kubera · Esperando puerta · No coincide con Woo (respetan `?filtro=`), y búsqueda por
+  SKU: Enter o «Ver libro de X» abre cualquier SKU, esté o no en la tabla.
+- **El cajón de un SKU** (`LibroSku`): cómo está hoy, su libro (`ops.stock_mov`, los 200 más recientes en línea de
+  tiempo por día), sus renglones de formato (folio, estado, cantidad contra el archivo, la puerta y lo que Odoo tenía
+  en TEX2 al cargar, confirmar y abrir) y sus OV (`ov_lineas` + `ov_ordenes`, **sin el cliente**: el repo es público).
+  Desde ahí se abre la trazabilidad del fan-out del mismo SKU.
+
+**El universo.** Los SKUs con algo (físico o reservado) en TEX2 en Odoo, más los que tienen fila en
+`ops.stock_almacen` (también en 0: un SKU que entró a TEX3 y se vendió hasta 0 sigue siendo de kubera; sólo las filas
+en 0 que dejó la prueba de concurrencia en ENSAYO no entran), más los que tienen un renglón de formato no descartado.
+TEX2 trae hoy ~1,236 productos.
+
+**«Woo esperado» — exactamente lo que calcula hoy `stock_watch._deltas_odoo`.**
+- Modo ABSOLUTO (`STOCK_WATCH_ABSOLUTO`, el de producción): `max(0, stock_odoo − vendidas sin orden)` si
+  `stock_watch.resta_pendientes()`, si no `stock_odoo` crudo. `stock_odoo` es el `free_qty` TOTAL (todas las bodegas,
+  ya con `max(0)`) que guardó la última pasada en `ops.stock_watch_photo`, o sea lo que de verdad se copia; las vendidas
+  sin orden salen de la MISMA función que usa stock_watch (`stock_watch._pendientes`, centinela incluido) y se buscan
+  con el código EXACTO, como su `pend.get(sku)` (`odoo_sale_order_items.sku` es text: «dec-0078-pla» no le resta a
+  «DEC-0078-PLA» allá, y aquí tampoco). Si no se pueden medir, stock_watch no copia nada y la pestaña tampoco inventa
+  un esperado («Pendientes sin medir»). **No** se llama a `_vincular_capturadas`: ésa escribe la bitácora.
+- Modo DELTA: no hay un número absoluto que esperar, y se dice.
+- `stock_odoo` NULL (Odoo no lo conoce o está archivado): stock_watch no lo toca → «sin comparar».
+- Woo sin número: con esperado 0 stock_watch no lo prende; con más, le prendería el inventario (salvo un padre con
+  variantes) → «sin comparar», con el texto.
+- **Con kubera** (guía §5.2.7): `max(0, max(0, Odoo) + libre_kubera − vendidas sin orden)`, donde `libre_kubera` = Σ
+  libre ≥ 0 de las bodegas kubera con `cuenta_para_woo` (el comment de `stock_watch_photo.stock_kubera`). Se aplica
+  SÓLO si stock_watch de verdad suma kubera: la pestaña busca `stock_watch.lee_kubera()` —la misma lectura que decida—
+  y, mientras no exista, kubera no suma aunque la fila de la bandera diga encendida, y el aviso lo dice («la bandera
+  está encendida, pero stock_watch de esta versión todavía no la lee»). Cuando sume, la mitad kubera sale de la foto
+  (`stock_kubera`, lo que sumó ESA pasada) y sólo sin ella del saldo de hoy: cada fuente contra su propia foto. La
+  fórmula con kubera es **provisional**: los componentes `tras/entro/cub` del plan v3 §4 no están en el repo.
+- `woo_esperado` + `coincide` se prueban contra la función REAL `stock_watch._deltas_odoo` en una rejilla
+  (`EquivaleAStockWatch`): «igual» exactamente cuando ella no escribiría nada y, si escribe, el esperado es su destino.
+
+**«Coincide» — por qué no basta la foto, y el estado «por copiar».** Tras una pasada normal la foto guarda
+`stock_woo = max(0, stock_odoo − pend)`, así que esperado (de la foto) contra Woo hoy (de la foto) coincide por
+construcción. Y justo en los casos que importan stock_watch conserva valores viejos y consistentes entre sí: escritura
+fallida (guarda el `stock_odoo` viejo para reintentar), cortacircuitos (no guarda foto) y solo registro (conserva odoo
+y woo viejos). Por eso la pestaña lee además el **`free_qty` de HOY** del producto que copia stock_watch, en la misma
+lectura que las tres bodegas:
+- si el Odoo de hoy no es el de la foto → **«Por copiar»**: «Odoo cambió desde la pasada: la foto tenía X y hoy hay Y;
+  la próxima pasada copia Z». Es normal durante ≤20 min; **si sigue así después de la próxima pasada, es una
+  escritura fallida, un freno o el modo solo registro**. Sólo se compara si la lectura de Odoo es POSTERIOR a la
+  pasada: cuando la pasada es más nueva que la caché, se relee (una lectura vieja por Odoo caído no se compara, y el
+  encabezado lo dice);
+- con kubera sumando, lo mismo si el libre de kubera de hoy no es el que sumó la foto;
+- una **venta u orden posterior a la pasada** (creada o tocada después, o que salió de la ventana de días) mueve el
+  `pend` de hoy pero no la foto: esos SKUs quedan «Por copiar» en lugar de un falso «de más / de menos». Sale de una
+  consulta a `ops.odoo_sale_orders` + `items` acotada por `creado_at` (su índice);
+- «de más / de menos» con el Odoo de hoy igual al de la foto es lo que una pasada guardó sin copiar (pendientes sin
+  medir). «Por copiar» no cuenta en «no coinciden» y tiene su cifra en la leyenda.
+- «Fuera de las 3» = `free_qty` de hoy − Σ libre de las tres bodegas, las dos de la MISMA lectura: es lo que Odoo
+  tiene en otras bodegas (antes restaba una foto de hasta 20 min a una lectura en vivo, y cualquier movimiento entre
+  las dos salía como «otras bodegas»).
+
+**Cómo se lee Odoo — SOLO LECTURA, fuera del event loop.** Todas las llamadas pasan por `_kw_solo_lectura`, con lista
+blanca `search_read` / `read_group` (cualquier otro método lanza `PermissionError` antes de tocar la red), sobre
+`odoo._kw_flujo` (ServerProxy nuevo por llamada, timeout de 45 s, uid que no se queda en `None`); una prueba comprueba
+que es la única puerta a Odoo del módulo. Cinco llamadas por lectura completa, más la de almacenes una vez al día:
+1. `stock.warehouse search_read` de 135, 150 y 142 → su ubicación raíz (caché de 24 h);
+2. `stock.quant read_group` bajo la raíz de TEX2, sólo `internal`, con cantidad o reservado ≠ 0, agrupado por
+   producto (`quantity:sum`, `reserved_quantity:sum`, `lazy=False`): fija el universo;
+3. `product.product search_read` de esos ids (`default_code`, `name`, `active`, `free_qty`; `active_test=False`);
+4. `product.product search_read` de sus **hermanos por código** más los SKUs de kubera (`default_code in …`, `id not
+   in` lo ya leído). Hace falta porque el universo sale por id: si el que tiene piezas en TEX2 es un archivado (o el
+   duplicado de id menor), sin esta llamada el activo que copia stock_watch no se traía y la fila mostraba otro
+   producto. Marca archivados (stock_watch no los cuenta) y duplicados (stock_watch se queda con el de id más alto, y
+   aquí también);
+5–6. el mismo `read_group` para TEXCO y DROP, restringido a todos esos productos.
+
+Caché de 10 min (si cambia el conjunto de SKUs de kubera, o si hay una pasada de stock_watch más nueva, relee). Dos
+candados: uno sólo para el dict de la caché (nunca se sostiene durante la red) y otro para que haya una relectura a la
+vez, así el cajón lee la caché sin esperar las cinco llamadas. Si Odoo falla se sirve la última lectura buena con su
+edad («lectura vieja»); sin ninguna, `odoo.ok = false`, y **ni la tabla ni el cajón** vuelven a Odoo antes de un
+minuto. La ruta corre todo el armado **y la codificación del JSON** en `asyncio.to_thread` (regla 11): con ~1,300 filas
+son ~0.9 MB y `jsonable_encoder` tardaba ~60 ms dentro del loop. Va gzip si el navegador lo acepta, y la caché de 20 s
+guarda también los bytes (y su gzip), no sólo el dict. Los conteos de formatos y la vigía (recorren el libro y los
+renglones, que sólo crecen) llevan su propia caché de 5 min; lo que se pinta por fila (renglones esperando, puertas
+abiertas) sale fresco de la consulta de puertas.
+
+**Rutas** (heredan admin del prefijo `/api/fanout` en `core/rbac.py`; `auditar_rbac.py` las lista como ADMIN
+explícito):
+- `GET /api/fanout/bodegas` → `{ok, ahora, hoy, tablas{ok, faltan, vigia, stock_kubera}, almacenes[], banderas[],
+  stock_watch{…, ultima, edad_s, suma_kubera, pendientes}, formula{texto, suma_kubera, …}, formatos{…}, vigia[],
+  que_falta[], odoo{ok, motivo, viejo, edad_s, leido, tras_pasada, skus_tex2, archivados_tex2, …}, columnas_odoo[],
+  columnas_kubera[], universo_parcial, conteo{…, por_copiar}, filas[]}`. Cada fila: `sku, nombre, odoo{TEXCO|TEX2|
+  DROP: {fisico, reservado, libre}} | null, odoo_existe, odoo_total, odoo_hoy, otras, avisos[], kubera{bodega:
+  {fisico, apartado, libre}}, libre_kubera, pend, esperado, esperado_motivo, esperado_d, odoo_base, kubera_base, woo,
+  woo_de, coincide (igual|mas|menos|por_copiar|no_toca), dif, coincide_t, puerta{estado, texto, …}, tags[]`.
+- `GET /api/fanout/bodegas/sku?sku=` → `{ok, sku, existe, tablas, fila, odoo, libro[], libro_total, renglones[],
+  ov[], formula}`. Un SKU fuera de la caché de Odoo se lee solo (`default_code =ilike`, sin distinguir mayúsculas y
+  con `%`/`_` literales, + tres `read_group`, timeout de 15 s) y queda en su propia caché de 10 min. El cajón descarta
+  una respuesta vieja si mientras tanto se abrió otro SKU, y sin las tablas de la 0064/0065 no pinta las secciones de
+  libro, formatos y OV (no afirma que estén vacías).
+
+**Lo que tolera, sin un solo 500.**
+- **Sin las tablas de la 0064/0065** (`to_regclass`, caché de 60 s, guía §4.8): 200 con `tablas.ok = false` y un
+  aviso ámbar; no se consulta ninguna de esas tablas y la tabla sigue comparando Odoo con la foto. Lo mismo si falta
+  la columna `stock_kubera`.
+- **Odoo caído:** aviso ámbar, columnas de Odoo en «—» (nunca en 0), y el Woo esperado se sigue calculando porque
+  sale de la foto. Sin lectura previa no se sabe qué hay en TEX2, así que la tabla trae sólo lo de kubera
+  (`universo_parcial`) y lo dice.
+- **kubera caída:** `{ok: false, motivo}` y la página muestra el error (o, si ya tenía datos, el aviso flotante de
+  «se perdió la conexión»).
+- **Las banderas:** si la lectura de `ops.automatizacion_flags` falla, todas apagadas (SEG-05).
+
+**Archivos.** `backend/services/fanout_bodegas.py` (nuevo: SQL marcadas, funciones puras `woo_esperado`,
+`libre_kubera`, `coincide`, `estado_puerta`, `odoo_por_sku`, `universo`, `armar_fila`, `que_falta`, y las
+lecturas); `backend/routers/fanout.py` (las dos rutas `async` con `to_thread`); `frontend/app/dashboard/bodegas/page.tsx`
+(nueva); `frontend/components/fanout/EstadoBodegas.tsx` y `LibroSku.tsx` (nuevos); `FanoutPestanas.tsx` (cuarta
+pestaña, ícono Boxes; la barra ya puede partirse en dos renglones en pantallas angostas); `tipos.ts` (sección Bodegas,
+`horaCorta`, `haceSegundos`); `SaludFull.tsx` (exporta `Renglon` para reusarlo).
+
+**Probado.**
+- 63 pruebas nuevas (`tests/test_fanout_bodegas.py`, con kubera y Odoo de mentira): el esperado con la bandera
+  apagada y encendida, delta, pendientes sin medir, Odoo que no lo conoce, el libre de kubera que cuenta, la puerta,
+  las banderas (fila, sin fila, lectura fallida), duplicados y archivados como stock_watch, el activo hermano de un
+  archivado en TEX2, el universo (también filas en 0 de TEX3), el estado vacío completo, Odoo caído con y sin lectura
+  previa (y que no reintenta antes de un minuto, tampoco desde el cajón), la relectura cuando la pasada es más nueva,
+  «por copiar» (escritura fallida, kubera que cambió, venta posterior a la pasada), las vendidas sin orden por código
+  exacto, las tablas ausentes (sin consultarlas), kubera caída, el cajón (caché, `=ilike`, falla anotada), la
+  equivalencia con `stock_watch._deltas_odoo`, que toda sentencia `_SQL_*` sea un `select`, la lista blanca de Odoo y
+  la ruta (bytes, gzip y caché). Con las suites vecinas (`test_fanout_full`, `test_stock_watch`,
+  `test_fanout_excedentes`, `test_fanout_recuperar`, `test_flujo_omnicanal`): 237 OK.
+- Las sentencias, contra el **sandbox** en una transacción `read only` que termina en ROLLBACK: todas corren; la
+  foto por SKU usa el índice de la llave (`sku = any(…::citext[])`); el sandbox tiene las 6 bodegas, cero banderas,
+  cero formatos y saldos en 0 en ENSAYO, o sea el estado vacío. `resumen()` y `detalle_sku()` completos con datos del
+  sandbox y Odoo de mentira: JSON válido y gzip.
+- `npx tsc --noEmit` limpio.
+- **Falta verificar en vivo** (lo hace el coordinador): la lectura real de Odoo (tiempo, que `reserved_quantity:sum`
+  agrupe en esta versión de Odoo y que `free_qty` venga en el `search_read` con `active_test=False`), el cuadre «fuera
+  de las 3» contra producción, cuántas filas quedan «por copiar» en un minuto cualquiera y cómo se ve con ~1,236 filas.
+- **Pendiente fuera de esta versión:** la comparación exacta sería contra el `pend` que usó cada pasada, guardado por
+  SKU en la foto (columna nueva en `ops.stock_watch_photo` que escribiría stock_watch); eso toca el flujo vivo y va
+  aparte. Y cuando se reabra la 0065, un índice `stock_mov (ref, almacen) where motivo = 'entrada'` para la vigía.
+
 ### v0.619.0 — Inventario → Órdenes de venta: la orden de venta PROPIA sobre el inventario de kubera (aparta todo o nada, entrega por renglón, «¿salió?» cuando el canal cancela en camino) — nace APAGADA
 
 Brandon, 2-oct (ClickUp «Generación de ordenes de venta PROPIA no de odoo en OMNICANAL»): *"generar un nuevo

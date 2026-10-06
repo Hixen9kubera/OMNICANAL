@@ -14,13 +14,16 @@ fanout.py — Monitoreo y simulación del fan-out de stock DROP.
   GET  /api/fanout/historia?sku=&dias= → la línea de trazabilidad de un SKU.
   GET  /api/fanout/full             → la pestaña FULL (stock, avisos, cuadre, salud).
   GET  /api/fanout/full/camino      → las salidas de Odoo a FULL (caché de envíos).
+  GET  /api/fanout/bodegas          → la pestaña Bodegas: kubera (0064/0065) contra
+                                      Odoo por bodega y contra lo que copia stock_watch.
+  GET  /api/fanout/bodegas/sku?sku= → el cajón de un SKU: su fila, libro, formatos y OV.
   GET  /api/fanout/simular?sku=     → QUÉ haría con ese SKU ahora mismo, sin
                                       encolar ni escribir (seguro siempre).
   POST /api/fanout/encolar?sku=     → lo mete a la cola real (respeta dry-run).
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request, Response
 
 from config import settings
 
@@ -164,6 +167,40 @@ async def full_camino():
         return {"ok": False, "motivo": f"Odoo no contestó ({str(exc)[:160]})"}
     return {"ok": True, **fanout_full.camino(datos.get("envios") or []),
             "generado": datos.get("generado"), "edad_s": edad}
+
+
+@router.get("/bodegas")
+async def bodegas(request: Request):
+    """La pestaña Bodegas: por SKU, Odoo por bodega (TEXCO, TEX2, DROP), kubera
+    por bodega (`ops.stock_almacen`), el «Woo esperado» tal como lo calcula hoy
+    stock_watch, el Woo de su foto y la puerta de los formatos; más el estado de
+    TEX3, las banderas de la 0064/0065 y la última pasada de stock_watch.
+    Odoo con caché de 10 min: si no contesta, la pestaña sigue con kubera y Woo.
+    Sin las tablas de la 0064/0065 responde 200 y lo dice. Solo lee."""
+    import asyncio
+
+    from services import fanout_bodegas
+    # psycopg2 y XML-RPC bloquean, y codificar ~0.9 MB de JSON también: todo en
+    # un hilo (regla 11). Va ya codificado (y en gzip si el navegador lo acepta)
+    # para que FastAPI no lo pase por `jsonable_encoder` dentro del loop.
+    gz = "gzip" in (request.headers.get("accept-encoding") or "").lower()
+    cuerpo, comprimido = await asyncio.to_thread(fanout_bodegas.resumen_bytes, gz)
+    cabeceras = {"Vary": "Accept-Encoding", "Cache-Control": "no-store"}
+    if comprimido:
+        cabeceras["Content-Encoding"] = "gzip"
+    return Response(content=cuerpo, media_type="application/json", headers=cabeceras)
+
+
+@router.get("/bodegas/sku")
+async def bodegas_sku(sku: str = Query(..., min_length=2, max_length=80, description="SKU")):
+    """El cajón de un SKU (esté o no en la tabla): su fila, sus últimos
+    movimientos en el libro (`ops.stock_mov`), sus renglones de formato y sus
+    órdenes de venta. Solo lee."""
+    import asyncio
+
+    from services import fanout_bodegas
+    cuerpo = await asyncio.to_thread(lambda: fanout_bodegas.a_json(fanout_bodegas.detalle_sku(sku)))
+    return Response(content=cuerpo, media_type="application/json", headers={"Cache-Control": "no-store"})
 
 
 @router.get("/full/observacion")

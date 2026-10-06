@@ -29,7 +29,7 @@ function minutosDesde(hora: string | null, hoy: string, ahora: string): number |
   return Number.isNaN(a) || Number.isNaN(b) ? null : Math.round((b - a) / 60_000);
 }
 
-function Renglon({ punto, titulo, texto }: { punto: "bien" | "ojo" | "mal"; titulo: React.ReactNode; texto: React.ReactNode }) {
+export function Renglon({ punto, titulo, texto }: { punto: "bien" | "ojo" | "mal"; titulo: React.ReactNode; texto: React.ReactNode }) {
   const color = punto === "bien" ? "bg-emerald-500" : punto === "ojo" ? "bg-amber-500" : "bg-rose-600";
   return (
     <li className="flex items-start gap-2.5">

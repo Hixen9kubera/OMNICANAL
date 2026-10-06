@@ -1,7 +1,7 @@
 /**
  * Tipos y estilos compartidos de la página del fan-out en vivo
- * (/dashboard, /dashboard/matriz y el panel del rastro).
- * La forma de los datos la define `backend/services/fanout_vivo.py`.
+ * (/dashboard, /dashboard/matriz, /dashboard/full, /dashboard/bodegas y los cajones).
+ * La forma de los datos la define `backend/services/fanout_vivo.py` (FULL y Bodegas, la suya).
  */
 
 export type Tono = "mal" | "ok" | "full" | "omit";
@@ -395,3 +395,269 @@ export const CUENTA_CHIP: Record<string, string> = {
 /** +5 · −61 · 0, con separador de miles y el signo menos tipográfico. */
 export const conSigno = (n: number) =>
   n > 0 ? `+${n.toLocaleString("es-MX")}` : n < 0 ? `−${Math.abs(n).toLocaleString("es-MX")}` : "0";
+
+// ── La pestaña Bodegas (`backend/services/fanout_bodegas.py`) ────────────────
+
+export interface CeldaOdoo {
+  fisico: number;
+  reservado: number;
+  libre: number;
+}
+
+export interface CeldaKubera {
+  fisico: number;
+  apartado: number;
+  libre: number;
+}
+
+/**
+ * Woo de la foto contra el «Woo esperado»: `mas` es Woo ofreciendo de más (sobreventa).
+ * `por_copiar`: algo se movió desde la foto (Odoo hoy no es el de la foto, kubera cambió,
+ * o hubo una venta u orden después de la pasada); lo resuelve la próxima pasada, y si
+ * sigue igual después de ella es una escritura fallida, un freno o el modo solo registro.
+ */
+export type CoincideBodega = "igual" | "mas" | "menos" | "por_copiar" | "no_toca";
+export type EstadoPuerta = "sin_formato" | "por_confirmar" | "esperando" | "abierta";
+
+export interface PuertaBodega {
+  estado: EstadoPuerta;
+  texto: string;
+  renglones?: number;
+  piezas?: number;
+  folios?: string;
+  via?: string;
+  abierta?: string | null;
+}
+
+export interface FilaBodega {
+  sku: string;
+  nombre: string;
+  /** null = Odoo no contestó; {} = contestó y el código no existe allá. */
+  odoo: Record<string, CeldaOdoo> | null;
+  odoo_existe: boolean;
+  /** El `free_qty` total que leyó (y absorbió) la última pasada de stock_watch. */
+  odoo_total: number | null;
+  /** max(0, `free_qty`) de HOY del producto que copia stock_watch, en la misma lectura que las tres bodegas. */
+  odoo_hoy: number | null;
+  /** `free_qty` de hoy − Σ libre de las tres bodegas (misma lectura): lo que Odoo tiene en otras bodegas. */
+  otras: number | null;
+  avisos: string[];
+  kubera: Record<string, CeldaKubera>;
+  /** Σ libre ≥ 0 de las bodegas kubera con cuenta_para_woo. */
+  libre_kubera: number;
+  /** Vendidas sin orden en Odoo (lo que resta stock_watch). */
+  pend: number;
+  esperado: number | null;
+  esperado_motivo: "calculado" | "delta" | "ciega" | "sin_odoo";
+  esperado_d: string;
+  /** El Odoo y el kubera que entran en «Woo esperado» (kubera null = no suma). */
+  odoo_base: number | null;
+  kubera_base: number | null;
+  woo: number | null;
+  /** Hora local de la foto de stock_watch («YYYY-MM-DD HH:MM:SS»). */
+  woo_de: string | null;
+  stock_kubera_foto: number | null;
+  coincide: CoincideBodega;
+  dif: number | null;
+  coincide_t: string;
+  puerta: PuertaBodega;
+  tags: string[];
+}
+
+export interface AlmacenBodega {
+  codigo: string;
+  nombre: string;
+  fuente: "odoo" | "kubera";
+  odoo_warehouse_id: number | null;
+  preferencia: number | null;
+  surte_ventas: boolean;
+  admite_ov: boolean;
+  cuenta_para_woo: boolean;
+  motivo: string | null;
+  actualizado: string | null;
+}
+
+export interface BanderaBodega {
+  flag: string;
+  que: string;
+  encendida: boolean;
+  /** fila en ops.automatizacion_flags · sin fila (manda la variable, que vale false) · lectura fallida (apagada). */
+  fuente: "fila" | "variable" | "error";
+  variable: string | null;
+  motivo: string | null;
+  por: string | null;
+  actualizado: string | null;
+}
+
+export interface ResumenBodegas {
+  ok: boolean;
+  motivo?: string;
+  ahora: string;
+  hoy: string;
+  tablas: { ok: boolean; faltan: string[]; vigia: boolean; stock_kubera: boolean };
+  almacenes: AlmacenBodega[];
+  banderas: BanderaBodega[];
+  stock_watch: {
+    habilitado: boolean;
+    solo_registro: boolean;
+    tope: number | null;
+    modo: string | null;
+    absoluto: boolean;
+    resta: boolean;
+    dias: number | null;
+    estado_memoria: string | null;
+    ultima: string | null;
+    edad_s: number | null;
+    filas_foto: number;
+    /** null = stock_watch de esta versión no sabe sumar kubera. */
+    suma_kubera: boolean | null;
+    pendientes: {
+      aplica: boolean; ciega: boolean; ventas: number | null; mas_vieja_h?: number | null; motivo?: string;
+      /** SKUs con una venta u orden posterior a la pasada (quedan «por copiar», no «de más»). */
+      recientes?: number; recientes_error?: string | null;
+    };
+  };
+  formula: { texto: string; suma_kubera: boolean; absoluto: boolean; resta: boolean; solo_registro: boolean; habilitado: boolean };
+  formatos: Partial<Record<"por_confirmar" | "confirmados" | "esperando" | "abiertas_hoy" | "abiertas" | "movimientos" | "ov_abiertas" | "renglones", number>>;
+  vigia: { problema: string; sku: string | null; almacen: string | null; ref: string | null; esperado: unknown; encontrado: unknown; detalle: string | null }[];
+  que_falta: { paso: string; hecho: boolean }[];
+  odoo: {
+    ok: boolean;
+    motivo?: string | null;
+    viejo: boolean;
+    edad_s: number | null;
+    leido: string | null;
+    /** La lectura es posterior a la última pasada: sólo así se compara Odoo hoy contra la foto. */
+    tras_pasada: boolean;
+    skus_tex2: number | null;
+    archivados_tex2: number;
+    piezas_archivadas_tex2: number;
+    duplicados: number;
+  };
+  columnas_odoo: { codigo: string; nombre: string; warehouse_id: number }[];
+  columnas_kubera: { codigo: string; nombre: string; cuenta_para_woo: boolean }[];
+  /** Sin Odoo no se sabe qué hay en TEX2: la tabla sólo trae lo de kubera. */
+  universo_parcial: boolean;
+  conteo: { filas: number; no_coincide: number; de_mas: number; por_copiar: number; esperando: number; kubera: number };
+  filas: FilaBodega[];
+}
+
+export interface MovLibro {
+  id: number;
+  almacen: string;
+  delta: number;
+  saldo_despues: number;
+  motivo: string;
+  ref: string | null;
+  nota: string | null;
+  quien: string | null;
+  via: string | null;
+  hora: string;
+}
+
+export interface RenglonFormato {
+  folio: string;
+  estado: "por_confirmar" | "confirmado" | "descartado";
+  almacen: string;
+  fila: number;
+  cantidad: number;
+  cantidad_archivo: number;
+  sku_archivo: string;
+  ubicacion: string | null;
+  nota: string | null;
+  aviso: string | null;
+  via: string | null;
+  via_t: string | null;
+  ref_odoo: string | null;
+  odoo_tex2_al_cargar: number | null;
+  odoo_tex2_al_confirmar: number | null;
+  odoo_tex2_al_abrir: number | null;
+  abierta: string | null;
+  cargado: string | null;
+  confirmado: string | null;
+}
+
+export interface LineaOv {
+  folio: string;
+  estado: "borrador" | "confirmada" | "entregada" | "cancelada" | "entregada_cancelada";
+  tipo: "venta" | "full";
+  canal: string | null;
+  full_tienda: string | null;
+  borrada: boolean;
+  linea: number;
+  cantidad: number;
+  almacen: string | null;
+  reservado: number;
+  entregado: number | null;
+  creada: string | null;
+  confirmada: string | null;
+  entregada: string | null;
+  cancelada: string | null;
+}
+
+export interface DetalleBodega {
+  ok: boolean;
+  motivo?: string;
+  sku: string;
+  existe: boolean;
+  hoy: string;
+  tablas: ResumenBodegas["tablas"];
+  fila: FilaBodega;
+  odoo: { ok: boolean; motivo?: string | null; edad_s?: number | null; viejo?: boolean };
+  columnas_odoo: ResumenBodegas["columnas_odoo"];
+  libro: MovLibro[];
+  libro_total: number;
+  renglones: RenglonFormato[];
+  ov: LineaOv[];
+  formula: ResumenBodegas["formula"];
+}
+
+/** La celda «Coincide» reusa los colores de la matriz contra Woo (contraste ≥ 4.5:1). */
+export const COINCIDE_BODEGA: Record<CoincideBodega, { texto: string; cls: string }> = {
+  igual: { texto: "Coincide", cls: CELDA_MATRIZ_SOLIDO.igual },
+  mas: { texto: "Woo de más", cls: CELDA_MATRIZ_SOLIDO.mas },
+  menos: { texto: "Woo de menos", cls: CELDA_MATRIZ_SOLIDO.menos },
+  por_copiar: { texto: "Por copiar", cls: CAUSA_CLS.camino },
+  no_toca: { texto: "Sin comparar", cls: "border border-slate-200 bg-slate-50 text-slate-700" },
+};
+
+/** Chip de la puerta (contraste ≥ 4.5:1). «Esperando» usa el mismo índigo que «En camino». */
+export const PUERTA_CLS: Record<EstadoPuerta, string> = {
+  sin_formato: "bg-slate-100 text-slate-700",
+  por_confirmar: "bg-amber-100 text-amber-900",
+  esperando: CAUSA_CLS.camino,
+  abierta: "bg-emerald-50 text-emerald-800",
+};
+
+/** Los motivos del libro (`stock_mov_motivo_chk`, guía §3.12). */
+export const MOTIVO_MOV: Record<string, string> = {
+  entrada: "Entrada",
+  salida_ov: "Salida por OV",
+  traspaso_salida: "Traspaso: sale",
+  traspaso_entrada: "Traspaso: entra",
+  devolucion: "Devolución",
+  ajuste_conteo: "Ajuste por conteo",
+  merma: "Merma",
+  correccion: "Corrección",
+};
+
+const MESES_CORTOS = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
+
+/** «11:50» si la hora local (CDMX) es de `hoy`; si no, «2 oct 17:58». */
+export function horaCorta(hora: string | null | undefined, hoy: string): string {
+  if (!hora) return "—";
+  if (hora.slice(0, 10) === hoy) return hora.slice(11, 16);
+  const [, m, d] = hora.slice(0, 10).split("-").map(Number);
+  return `${d} ${MESES_CORTOS[m - 1]} ${hora.slice(11, 16)}`;
+}
+
+/** Segundos de antigüedad → «hace segundos» · «hace 4 min» · «hace 3 h» · «hace 2 d». */
+export function haceSegundos(s: number | null | undefined): string {
+  if (s == null || !Number.isFinite(s) || s < 0) return "sin registro";
+  const min = Math.floor(s / 60);
+  if (min < 1) return "hace segundos";
+  if (min < 60) return `hace ${min} min`;
+  const h = Math.floor(min / 60);
+  if (h < 24) return `hace ${h} h`;
+  return `hace ${Math.floor(h / 24)} d`;
+}
