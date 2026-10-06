@@ -73,8 +73,9 @@ def _ids_en_ml(cuenta: str, token: str) -> list[str]:
 
 def huerfanas() -> list[dict]:
     """Publicaciones DROP de ML, con SKU en Woo, que no están en el caché."""
-    from services import db, meli, wp_db
+    from services import db, meli, ml_multiget, wp_db
     P = wp_db._prefix()
+    campos = "id,status,available_quantity,attributes,shipping"
     fuera: list[dict] = []
     for cuenta in ("BEKURA", "SANCORFASHION"):
         token = meli._access_token(cuenta)
@@ -91,15 +92,13 @@ def huerfanas() -> list[dict]:
         for i in range(0, len(faltan), 20):
             lote = faltan[i:i + 20]
             try:
-                r = httpx.get("https://api.mercadolibre.com/items",
+                r = httpx.get(f"https://api.mercadolibre.com{ml_multiget.ruta()}",
                               headers={"Authorization": f"Bearer {token}"},
-                              params={"ids": ",".join(lote),
-                                      "attributes": "id,status,available_quantity,"
-                                                    "attributes,shipping"},
+                              params=ml_multiget.params(lote, campos),
                               timeout=40.0)
                 if r.status_code != 200:
                     continue
-                for e in r.json():
+                for e in ml_multiget.normalizar(r.json(), campos):
                     b = e.get("body") or {}
                     ats = {a.get("id"): (a.get("values") or [{}])[0].get("name")
                            for a in (b.get("attributes") or [])}

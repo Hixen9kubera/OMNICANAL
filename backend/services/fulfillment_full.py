@@ -85,6 +85,7 @@ from config import settings
 from services import fulfillment_envios as fenv
 from services import fulfillment_semana as fsem
 from services import full_publicaciones
+from services import ml_multiget
 from services import odoo_ventas
 from services import supabase_db as sdb
 
@@ -372,8 +373,9 @@ def _token_ml(codigo: str, renovar: bool = False) -> str | None:
 def verificar_ml(codigo: str, listing_ids: list[str]) -> dict[str, dict[str, Any]]:
     """
     Estado, stock y título de cada publicación, preguntándole a Mercado Libre
-    AHORA (`/items?ids=`, de 20 en 20). Sólo GET. Si ML no contesta, lo que no se
-    pudo verificar simplemente no viene: el que llama lo marca «sin verificar».
+    AHORA (`/items/bulk?ids=`, de 20 en 20; ver `ml_multiget`). Sólo GET. Si ML
+    no contesta, lo que no se pudo verificar simplemente no viene: el que llama
+    lo marca «sin verificar».
     """
     ids = sorted({i for i in listing_ids if i})
     if not ids:
@@ -387,13 +389,14 @@ def verificar_ml(codigo: str, listing_ids: list[str]) -> dict[str, dict[str, Any
     def lote(grupo: list[str]) -> list[dict]:
         nonlocal token
         for intento in range(2):
-            r = httpx.get(f"{_ML}/items", params={"ids": ",".join(grupo), "attributes": campos},
+            r = httpx.get(f"{_ML}{ml_multiget.ruta()}", params=ml_multiget.params(grupo, campos),
                           headers={"Authorization": f"Bearer {token}"}, timeout=30)
             if r.status_code == 401 and intento == 0:
                 token = _token_ml(codigo, renovar=True) or token
                 continue
             r.raise_for_status()
-            return r.json()
+            # Bulk o legado, en los sobres {code, body} de siempre.
+            return ml_multiget.normalizar(r.json(), campos)
         return []
 
     salida: dict[str, dict[str, Any]] = {}

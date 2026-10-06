@@ -1001,6 +1001,105 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.621.0 — Mercado Libre: el multiget de publicaciones pasa de `/items?ids=` a `/items/bulk?ids=` antes de que ML lo apague (25-oct-2026) — los nueve llamadores leen lo mismo que antes, con reversa por variable
+
+**Por qué.** ML avisó que los multiget `/items?ids=` y `/users?ids=` entran en deprecación: el reemplazo es
+`/items/bulk?ids=` (y `/users/bulk?ids=`), las dos rutas conviven y hay que migrar **antes del 25-oct-2026**.
+`/users?ids=` no lo usa nadie en el repo; `/items?ids=` lo usan nueve sitios (cinco de producción y cuatro scripts).
+
+**La trampa, medida el 6-oct-2026** (token de BEKURA, los mismos 5 ids: uno propio, dos de la otra cuenta, uno que no
+existe y uno ajeno borrado). Bulk no es solo otra ruta, **contesta con otra forma**:
+- `/items?ids=` → `[{"code": 200|403|404, "body": {...}}]`; el body de un fallo trae `id`, `message`, `error`,
+  `status` (el número) y `cause`. Con `attributes=` el 200 viene recortado.
+- `/items/bulk?ids=` → `[{"id", "status_code": 200, "body": {...item completo...}}]` y, por cada fallo,
+  `{"id", "status_code": 403|404, "error": {"message"}}`, **sin body**.
+- `/items/bulk` con `attributes=body.id,body.status,…` → `[{"body": {...}}]` para los 200 y **`{}` vacío por cada
+  fallo**: no se sabe cuál falló ni por qué.
+- `/items/bulk` con `attributes=id,status,…` (sin `body.`) → `[{"id": …}]` para **todos y sin error**: el filtro se
+  aplica al sobre y el item se pierde entero.
+- Ninguna de las dos respeta el orden del pedido (cambió entre dos llamadas iguales). El tope sigue en 20 ids.
+
+Ocho de los nueve sitios piden `attributes` y cuatro filtran `code == 200`. Cambiar solo la ruta los habría roto **en
+silencio**: el Checklist con todo «no viva» (y así 30 min en caché), los títulos y permalinks de Competencia sin
+refrescarse, Crear FULL con todo «sin verificar» (y el stock FULL de vuelta a la copia del sync), el inventario FULL de
+un envío con todo «sin dato», y la ficha de ML guardando **todas** las fichas vacías: borraba los pesos medidos por una
+semana y apagaba la marca `peso_divergente`.
+
+**Qué cambia.**
+- **`services/ml_multiget.py` (nuevo, puro: no hace red).** Cada sitio conserva su cliente HTTP, su token y su manejo
+  del 401 (son distintos a propósito: el Checklist nunca renueva; Competencia, Crear FULL y el inventario FULL renuevan
+  con `refrescar_token`; la ficha con `_renovar_con_candado`). Del módulo solo toman:
+  - `ruta()` → `/items/bulk`, o `/items` con el interruptor apagado;
+  - `params(ids, campos)` → en bulk **nunca** manda `attributes`: pide el item completo y el recorte se hace del lado
+    nuestro. En el modo legado, `attributes` como siempre;
+  - `normalizar(respuesta, campos)` → cualquiera de las tres formas, de vuelta a la legada `[{"code", "body"}]`: el
+    código por id (200/403/404), el body de un fallo como el del legado (`id`, `message`, `error`, `status` numérico),
+    el 200 recortado a `campos` (+ `id`), el orden en que llegó. Lo que no se puede atribuir a un id (`{}`, `[{"id"}]`)
+    y un 200 sin item (sin body o con `body: {}`) se descartan con un WARNING `multiget de ML: N de M sobres sin forma
+    conocida`. **No inventa un 404** para un id que no vino: qué hacer con lo que falta lo sigue decidiendo cada
+    llamador, como antes. Una respuesta que no es lista da `[]` con el WARNING `respuesta sin forma conocida` (con
+    `None` no avisa: es el error que `competencia_ml._get` ya registró). En v0.620.0 esa misma respuesta tumbaba el
+    lote con un `AttributeError`; ahora Crear FULL la marca «sin verificar», el inventario FULL «sin dato» y la ficha
+    no guarda nada, pero las tres dejan el aviso.
+- **`ML_ITEMS_BULK`** (`config.ml_items_bulk`, nace **encendido**). `ML_ITEMS_BULK=false` es la reversa sin revertir
+  código: `/items?ids=` con `attributes`, idéntico a v0.620.0. Sirve solo hasta el 25-oct; después ML puede apagar la
+  ruta vieja y la variable se retira.
+- **Los sitios** (en cada uno: la ruta y los params salen del módulo y `r.json()` pasa por `normalizar` antes de su
+  lógica de siempre; nadie dependía del orden, todos indexan por `body.id`):
+  - `services/checklist.py::_multiget` — producción: Checklist (tablero, detalle, Excel, CSV y el precalentamiento al
+    arrancar). Una respuesta que no es lista **levanta** antes de `normalizar`, como en v0.620.0: la cuenta se pausa
+    2 min y se enseña lo último leído, en vez de guardar 30 min todo «no viva» encima de lo bueno.
+  - `services/competencia_ml.py::datos_por_ids` — producción: cron `competencia-visitas` (12:00 UTC), título de
+    `market_listing_metrics` y `channel.listings.url`.
+  - `services/ficha_ml.py::completar` — producción: tarea de fondo de `GET /api/fulfillment/tabla`. Los 403/404 se
+    siguen guardando como ficha vacía (no se repreguntan en 168 h), igual que antes. **Regla 11**: el token
+    (`meli.access_token_async`) y la lectura de la caché (`leer` + `_asegurar_tabla`, en `asyncio.to_thread`) ya no
+    bloquean el event loop; antes eran síncronos dentro de la corrutina.
+  - `services/fulfillment_full.py::verificar_ml` — producción: Crear FULL (propuesta, buscar, vista previa).
+  - `services/fulfillment_ml_inventario.py::inventario` — producción: `GET /api/fulfillment/envios/{id}/ml`.
+  - Scripts manuales: `alinear_ml_drop` (un 403/404 vuelve con `status` numérico, así que el filtro active/paused lo
+    sigue dejando fuera aunque `canal_inventario` —congelado— diga «active»; sin `normalizar`, `--aplicar --en-vivo`
+    habría escrito stock a publicaciones borradas o ajenas), `sincronizar_ml_huerfanas`,
+    `backfill_fecha_publicacion_ml` y `reporte_sync_desde_ml`.
+  - `scripts/competencia_visitas.py` solo llama a `datos_por_ids`: cambia su comentario.
+- Comentarios y docs que nombraban `/items?ids=` como la ruta vigente: `checklist.py`, `competencia_ml.py`,
+  `competencia_scraper.py`, `fulfillment_full.py`, `fulfillment_ml_inventario.py`, los scripts,
+  `docs/FULLFILMENT_EVIDENCIA_ORDENES.md` y los docstrings de `test_checklist_publicado.py` y
+  `test_competencia_multiget.py`. Las entradas viejas de este README que citan `/items?ids=` se quedan como historia.
+
+**Lo que NO cambia.** `/visits/items?ids=` es otro endpoint (un id por llamada) y no entra en el aviso; `/items/{id}`,
+`/users/{id}/items/search` y el POST `/items` del publicador (`vendor/`, intocable) tampoco. Ningún flujo de pedidos,
+stock ni precios pasa por el multiget.
+
+**Costo.** Bulk sin `attributes` trae el item completo: medido, ~9 KB por publicación contra ~4.8 KB de
+`id,status,attributes` (y menos de 1 KB con los campos de Crear FULL). Mismo número de llamadas; respuestas de hasta
+~180 KB por lote de 20.
+
+**Verificado en vivo** (6-oct-2026, solo lectura, token vigente sin renovar): 82 publicaciones de las dos cuentas más un id inexistente, con los 4 juegos de campos que piden los sitios (Checklist, Crear FULL, inventario FULL y Competencia): `normalizar(bulk)` contra la respuesta legada con `attributes` dio **328 comparaciones idénticas** en código y valores, salvo la llave `cause` del cuerpo de error del 404, que ningún sitio lee.
+
+**Pruebas.** Sin red ni base. 32 nuevas en `tests/test_ml_multiget.py` con la forma REAL medida (ids y datos
+inventados: el repo es público): ruta y params en los dos modos; `normalizar` desde las tres formas, el código por id,
+el orden de la respuesta, el recorte, las trampas (`[{"id"}]`, `{}` y el 200 con `body: {}`) que no se cuelan como 200
+vacíos ni como 404 inventados, y la respuesta que no es lista (avisa; con `None`, no); **una por cada sitio**, que pasa
+la respuesta de bulk por su camino real y obtiene exactamente lo mismo que con la legada; el Checklist ante una
+respuesta sin lista (levanta, pausa la cuenta y no pisa lo último leído); **el reintento tras un 401** en el Checklist,
+la ficha, Crear FULL y el inventario FULL (un doble que contesta 401 al token vencido: las dos llamadas van a
+`/items/bulk` sin `attributes` y con la política de token de cada sitio), y la ficha **fuera del event loop** (los
+dobles de la base revientan si se les llama dentro del loop). Contraprueba: con la migración ingenua (solo la ruta, sin
+`normalizar`) fallan 8 de las 10 pruebas de equivalencia por sitio (`sincronizar_ml_huerfanas` y el backfill no
+cambiaban de comportamiento: solo fijan la ruta); y once mutaciones (reintentar en `/items` con `attributes`, no
+renovar ante el 401, regresar la base de la ficha a la corrutina, quitar el aviso o el candado del Checklist, aceptar
+`body: {}`) tumban al menos una prueba cada una. El backend completo, 1,958 pruebas en verde (108 omitidas). **No se
+probó contra la API de ML con este código**; las formas son las de la sonda del 6-oct.
+
+**Al desplegar.** No hace falta variable (nace encendido). Señales de que algo anda mal: el WARNING `sobres sin forma
+conocida` (o `respuesta sin forma conocida`) en los logs; el Checklist sin nada «publicado»; Crear FULL con 0
+verificadas; títulos de Competencia que dejan de cambiar. Reversa: `ML_ITEMS_BULK=false` en Railway, **en dos
+servicios**: el de la API (Checklist, Crear FULL, `envíos/{id}/ml` y la ficha de ML; reinicia el contenedor y surte
+efecto al arrancar) y el cron `competencia-visitas` (`railway.competencia-visitas.json`: títulos y permalinks; no hay
+reinicio que valga, surte efecto en su corrida siguiente de las 12:00 UTC). Con la variable solo en la API, el cron se
+queda en `/items/bulk`.
+
 ### v0.620.0 — Operaciones › Bodegas: el inventario propio de kubera contra Odoo por bodega y contra lo que stock_watch copia a Woo (solo lectura)
 
 Eduardo, 6-oct: *"¿Podemos verlo en operaciones para ver cómo está sincronizado a Odoo y Woo?"*

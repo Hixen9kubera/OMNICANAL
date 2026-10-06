@@ -904,6 +904,19 @@ class Settings(BaseSettings):
     ml_site_id: str = "MLM"  # MLM = México
     meli_app_id: str = ""
     meli_client_secret: str = ""
+    # MULTIGET DE PUBLICACIONES (v0.621.0, 6-oct-2026). ML deprecó
+    # `GET /items?ids=` y pidió pasar a `GET /items/bulk?ids=` antes del
+    # 25-oct-2026; hasta esa fecha conviven las dos. Encendido (default): los
+    # nueve llamadores van a `/items/bulk` SIN `attributes` (con ellos, bulk
+    # pierde en silencio el item o el motivo del fallo) y la respuesta vuelve a
+    # la forma de siempre en `services/ml_multiget.py`. ML_ITEMS_BULK=false es
+    # la REVERSA sin revertir código: `/items?ids=` con `attributes`, idéntico
+    # a v0.620.0. Va en DOS servicios de Railway: el de la API (Checklist, Crear
+    # FULL, envíos/{id}/ml y la ficha de ML; surte efecto al reiniciar) y el
+    # cron `competencia-visitas` (títulos y permalinks de Competencia; surte
+    # efecto en su corrida siguiente, 12:00 UTC). Solo sirve hasta el 25-oct:
+    # después ML puede apagar la ruta vieja, y entonces esta variable se retira.
+    ml_items_bulk: bool = True
 
     # ── Supabase (Postgres) — nuevo medio de consultas de ML ──
     # Dataset ya sincronizado a diario (products_snapshot, daily_stock, ml_accounts…).

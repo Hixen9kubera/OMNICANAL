@@ -15,9 +15,11 @@ Dos fallos reportados el 4-sep-2026, con la misma raíz:
    oferta del vendedor que gana la compra, no la nuestra.
 
 Las dos se arreglan con el mismo multiget, y por eso se prueba su PARSEO: la
-respuesta de `/items?ids=` no es una lista de items, es una lista de sobres
-`{code, body}`, y un sobre que no sea 200 debe ignorarse en vez de colarse como
-un item sin datos.
+respuesta no es una lista de items, es una lista de sobres `{code, body}`, y un
+sobre que no sea 200 debe ignorarse en vez de colarse como un item sin datos.
+Desde v0.621.0 la ruta es `/items/bulk?ids=`, que contesta con otra forma;
+`ml_multiget.normalizar` la deja en estos mismos sobres (las pruebas con la
+forma de bulk están en `test_ml_multiget.py`).
 
     cd backend && python -m unittest discover -s tests -v
 """
@@ -80,7 +82,7 @@ class DatosPorIds(unittest.TestCase):
                 self.assertEqual(ML.datos_por_ids(["MLM1"]), {})
 
     def test_parte_en_lotes_de_20(self):
-        """El tope es de ML: `/items?ids=` no acepta más. Sin partir, la llamada
+        """El tope es de ML: el multiget no acepta más. Sin partir, la llamada
         entera falla y se pierden los 4,700 títulos."""
         with mock.patch.object(ML, "_get", return_value=[]) as falso:
             ML.datos_por_ids([f"MLM{i}" for i in range(45)])

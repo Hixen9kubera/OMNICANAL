@@ -17,7 +17,7 @@ scraper:
   BLOQUEADO (403 aun con token válido, en las DOS apps: BEKURA y SANCORFASHION)
     GET /sites/MLM/search                       → NO hay posición orgánica por API
     GET /items/{id} de un competidor            → NO da título, precio ni imagen
-    GET /items?ids=… (multiget)                 → 403 por cada item ajeno
+    GET /items/bulk?ids=… (multiget)            → 403 por cada item ajeno
     GET /users/{id}/items/search de otro seller
 
 O sea: **la API da la MÉTRICA (visitas) pero no la FICHA (título/imagen/precio/
@@ -38,7 +38,7 @@ from typing import Any
 import requests
 
 from config import settings
-from services import meli
+from services import meli, ml_multiget
 
 log = logging.getLogger("omnicanal.competencia.ml")
 
@@ -382,7 +382,7 @@ def visitas_30d(item_id: str, cuenta: str = _CUENTA_DEFAULT) -> int | None:
     return None if s is None else int(s["total"])
 
 
-TOPE_MULTIGET = 20      # el máximo que ML acepta en /items?ids=
+TOPE_MULTIGET = 20      # el máximo que ML acepta en /items/bulk?ids=
 
 
 def datos_por_ids(item_ids: list[str],
@@ -391,8 +391,8 @@ def datos_por_ids(item_ids: list[str],
     { item_id: {titulo, permalink} } de NUESTRAS publicaciones, en lotes.
 
     ── POR QUÉ EN LOTE Y POR QUÉ SE PUEDE ──────────────────────────────────────
-    El encabezado de este módulo dice que `/items?ids=` (multiget) da 403 — y es
-    cierto **para items AJENOS**. Con el token de la cuenta dueña, los propios
+    El encabezado de este módulo dice que el multiget da 403 — y es cierto
+    **para items AJENOS**. Con el token de la cuenta dueña, los propios
     pasan: medido el 4-sep-2026, 20 de 20 con `code: 200`. Eso convierte 4,702
     llamadas en 236.
 
@@ -412,15 +412,18 @@ def datos_por_ids(item_ids: list[str],
 
     Un item que el multiget no devuelva simplemente no aparece en el resultado:
     no se inventa, y quien llame conserva lo que ya tenía.
+
+    Desde v0.621.0 el multiget es `/items/bulk?ids=` (ML deprecó `/items?ids=`)
+    y su respuesta pasa por `ml_multiget.normalizar`, que la deja en los sobres
+    `{code, body}` de siempre.
     """
     out: dict[str, dict[str, str]] = {}
     ids = [i for i in item_ids if i]
     for ini in range(0, len(ids), TOPE_MULTIGET):
         lote = ids[ini:ini + TOPE_MULTIGET]
-        d = _get("/items", {"ids": ",".join(lote),
-                            "attributes": "id,title,permalink"}, cuenta)
-        if not isinstance(d, list):
-            continue
+        campos = "id,title,permalink"
+        d = ml_multiget.normalizar(
+            _get(ml_multiget.ruta(), ml_multiget.params(lote, campos), cuenta), campos)
         for x in d:
             if not isinstance(x, dict) or x.get("code") != 200:
                 continue

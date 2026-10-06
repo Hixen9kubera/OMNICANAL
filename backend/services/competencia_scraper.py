@@ -4,7 +4,8 @@ competencia_scraper.py — La ficha de la competencia, que la API de ML no da.
 Por qué existe (sondeado contra la API con el token real de BEKURA):
 
   • `GET /items/{id}` de una publicación ajena → **403**. Ni título, ni precio,
-    ni imagen, ni permalink. El multiget `GET /items?ids=` también, uno por uno.
+    ni imagen, ni permalink. El multiget `GET /items?ids=` también, uno por uno
+    (y `/items/bulk?ids=`, su reemplazo, da 403 por item de otra cuenta: 6-oct-2026).
   • `GET /sites/MLM/search` → **403** en las dos apps. O sea que la posición
     orgánica de búsqueda tampoco existe por API.
   • `sold_quantity` de un competidor: no hay endpoint.

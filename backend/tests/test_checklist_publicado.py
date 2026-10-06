@@ -2,8 +2,9 @@
 
 ── QUÉ FIJAN ───────────────────────────────────────────────────────────────────
 1. **Se lee en lotes de 20, con el token de la cuenta dueña.** El multiget de
-   ML (`/items?ids=`) acepta 20 publicaciones por llamada, y con el token de la
-   otra cuenta contesta 403 por cada item ajeno.
+   ML (`/items/bulk?ids=`; antes `/items?ids=`) acepta 20 publicaciones por
+   llamada, y con el token de la otra cuenta contesta 403 por cada item ajeno.
+   Las pruebas con la forma de bulk están en `test_ml_multiget.py`.
 2. **Manda UNA publicación por SKU**: la `active` (si no, la `paused`) más
    reciente. No se mezclan: un SKU reciclado puede ser otro producto en la otra
    cuenta (EST-0091). Una cerrada no cuenta.

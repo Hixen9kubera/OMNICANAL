@@ -204,8 +204,9 @@ def main() -> int:
     # AGOSTO 3,118 filas con título (100%), SEPTIEMBRE 4,741 con CERO. En el
     # panel eso es la columna «Título de la tienda» vacía para todo el mes.
     #
-    # Sale gratis y en lote: `/items?ids=` acepta 20 por llamada para las
-    # publicaciones PROPIAS, así que son ~236 llamadas y no 4,702.
+    # Sale gratis y en lote: el multiget (`/items/bulk?ids=` desde v0.621.0)
+    # acepta 20 por llamada para las publicaciones PROPIAS, así que son ~236
+    # llamadas y no 4,702.
     tok_de = {etiqueta: tok for tok, etiqueta in CUENTAS}
     datos: dict[str, dict[str, str]] = {}
     for etiqueta, tok in tok_de.items():

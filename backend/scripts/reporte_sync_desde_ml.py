@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import httpx  # noqa: E402
 
-from services import db, inventario, meli  # noqa: E402
+from services import db, inventario, meli, ml_multiget  # noqa: E402
 
 CUENTAS = ("BEKURA", "SANCORFASHION")
 
@@ -50,11 +50,12 @@ async def main() -> None:
             sin_sku = []
             for i in range(0, len(entran), 20):
                 lote = entran[i:i + 20]
-                r = await cli.get("/items", headers={"Authorization": f"Bearer {token}"},
-                                  params={"ids": ",".join(lote)})
+                r = await cli.get(ml_multiget.ruta(),
+                                  headers={"Authorization": f"Bearer {token}"},
+                                  params=ml_multiget.params(lote))
                 if r.status_code != 200:
                     continue
-                for envuelto in r.json():
+                for envuelto in ml_multiget.normalizar(r.json()):
                     it = envuelto.get("body") or {}
                     if not it.get("id"):
                         continue

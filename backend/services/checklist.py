@@ -31,7 +31,7 @@ Brandon del 17-sep: nada de WordPress)
   · Lo ya capturado ....... `enrich.channel_content` (cuenta ''), el MISMO sitio
                              que el Publicador y el editor de specs del cajón.
   · Lo ya PUBLICADO ....... las publicaciones vivas de ML del SKU, leídas con el
-                             multiget (`/items?ids=`, 20 por llamada) y el token
+                             multiget (`/items/bulk?ids=`, 20 por llamada) y el token
                              de la cuenta dueña. Cuenta como lleno; ver
                              «Lo publicado» más abajo.
   · Nombre de la categoría  `channel.categories`.
@@ -347,8 +347,8 @@ def _campos_por_categoria(cats: Iterable[str]) -> dict[str, list[dict[str, Any]]
 # que la publicación VIVA ya trae, Mercado Libre ya lo tiene: pedírselo otra vez
 # a almacén es trabajo tirado.
 #
-# Se lee con el MULTIGET de ML (`/items?ids=`, hasta 20 publicaciones por
-# llamada) y con el token de la cuenta DUEÑA de cada una: con el de la otra, ML
+# Se lee con el MULTIGET de ML (`/items/bulk?ids=`, hasta 20 publicaciones por
+# llamada; ver `ml_multiget`) y con el token de la cuenta DUEÑA de cada una: con el de la otra, ML
 # contesta 403 por cada item ajeno. Solo cuentan las `active` y `paused`: una
 # cerrada puede ser de un SKU RECICLADO (TEC-0492-MUL), otro producto.
 #
@@ -360,7 +360,7 @@ def _campos_por_categoria(cats: Iterable[str]) -> dict[str, list[dict[str, Any]]
 # NUNCA levanta: sin ML, el tablero sigue con lo de kubera.
 _PUB_TTL_S = 30 * 60.0      # lo leído vale media hora; «Recargar» lo vuelve a pedir
 _PUB_POR_SKU = 3            # publicaciones por SKU: las más recientes bastan
-_PUB_MULTIGET = 20          # el tope de ML en /items?ids=
+_PUB_MULTIGET = 20          # el tope de ML en /items/bulk?ids=
 _PUB_HILOS = 4
 _PUB_TIMEOUT_S = 15.0
 _PUB_PAUSA_S = 120.0        # si ML no contesta a una cuenta, no se le insiste en 2 min
@@ -408,13 +408,15 @@ def _multiget(cuenta: str, ids: list[str]) -> dict[str, dict[str, Any]]:
     """UNA llamada de hasta 20 publicaciones de UNA cuenta:
     {item_id: {"estado", "atributos"}}. Levanta si ML no contesta."""
     import httpx
-    from services import meli
+    from services import meli, ml_multiget
 
     token = meli._access_token(cuenta)
     if not token:
         raise RuntimeError(f"sin token de ML para {cuenta}")
-    params = {"ids": ",".join(ids), "attributes": "id,status,attributes"}
-    r = httpx.get(f"{meli._API}/items", params=params,
+    campos = "id,status,attributes"
+    url = f"{meli._API}{ml_multiget.ruta()}"
+    params = ml_multiget.params(ids, campos)
+    r = httpx.get(url, params=params,
                   headers={"Authorization": f"Bearer {token}"}, timeout=_PUB_TIMEOUT_S)
     if r.status_code == 401:
         # El Checklist NO renueva tokens: es una pantalla de LECTURA, y cuatro
@@ -425,12 +427,20 @@ def _multiget(cuenta: str, ids: list[str]) -> dict[str, dict[str, Any]]:
         if not nuevo or nuevo == token:
             raise RuntimeError(f"el token de ML de {cuenta} venció; lo renueva la "
                                "próxima venta")
-        r = httpx.get(f"{meli._API}/items", params=params,
+        r = httpx.get(url, params=params,
                       headers={"Authorization": f"Bearer {nuevo}"},
                       timeout=_PUB_TIMEOUT_S)
     r.raise_for_status()
+    datos = r.json()
+    if not isinstance(datos, list):
+        # Levantar es lo que hace que `_publicados` pause la cuenta y enseñe lo
+        # último leído. Si `normalizar` lo volviera [], abajo cada id quedaría
+        # «no viva» y se guardaría 30 min encima de lo bueno.
+        raise RuntimeError("multiget de ML: respuesta sin lista "
+                           f"({type(datos).__name__})")
     salida: dict[str, dict[str, Any]] = {}
-    for x in r.json() or []:
+    # `normalizar`: bulk o legado, de vuelta a [{code, body}] (ver ml_multiget).
+    for x in ml_multiget.normalizar(datos, campos):
         b = x.get("body") or {}
         iid = str(b.get("id") or "")
         if x.get("code") == 200 and iid:

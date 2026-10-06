@@ -17,7 +17,7 @@ TRANSFER_DELIVERY / INBOUND_RECEPTION por SKU. Eso deja dos huecos, medidos el
 
 QUÉ HACE. Para un envío ya validado con renglones a los que les falta algo, lee
 EN VIVO (sólo GET) el inventario FULL de cada SKU en su cuenta —
-`/items` → `inventory_id` → `/inventories/{id}/stock/fulfillment`: vendible, no
+`/items/bulk` → `inventory_id` → `/inventories/{id}/stock/fulfillment`: vendible, no
 vendible y su motivo (withdrawal = retiro, damaged, lost…)— y lo cruza con lo
 vendido por FULL desde la llegada y con el stock que ya había antes del envío.
 Contesta UN veredicto por renglón:
@@ -45,7 +45,7 @@ from typing import Any
 
 import httpx
 
-from services import fulfillment_etapas, full_publicaciones
+from services import fulfillment_etapas, full_publicaciones, ml_multiget
 from services import supabase_db as sdb
 
 log = logging.getLogger("omnicanal.fulfillment_ml_inventario")
@@ -122,19 +122,22 @@ def inventario(codigo: str, listing_ids: list[str]) -> dict[str, dict[str, Any] 
         return {**salida, **{lid: None for lid in faltan}}
 
     invs: dict[str, str] = {}
+    campos = "id,inventory_id"
     for i in range(0, len(faltan), 20):
         grupo = faltan[i:i + 20]
         try:
-            cod, cuerpo = _get("/items", token, {"ids": ",".join(grupo), "attributes": "id,inventory_id"})
+            ruta, par = ml_multiget.ruta(), ml_multiget.params(grupo, campos)
+            cod, cuerpo = _get(ruta, token, par)
             if cod == 401:
                 token = _token(codigo, renovar=True) or token
-                cod, cuerpo = _get("/items", token, {"ids": ",".join(grupo), "attributes": "id,inventory_id"})
-            for x in (cuerpo or []) if cod == 200 else []:
+                cod, cuerpo = _get(ruta, token, par)
+            # Bulk o legado, en los sobres {code, body} de siempre (ver ml_multiget).
+            for x in ml_multiget.normalizar(cuerpo, campos) if cod == 200 else []:
                 b = x.get("body") or {}
                 if x.get("code") == 200 and b.get("inventory_id"):
                     invs[b["id"]] = b["inventory_id"]
         except Exception as exc:  # noqa: BLE001 — sin ML, el renglón dice «sin dato»
-            log.warning("inventario FULL: /items falló (%s)", exc)
+            log.warning("inventario FULL: el multiget de /items falló (%s)", exc)
 
     def stock(lid: str) -> tuple[str, dict[str, Any] | None]:
         inv = invs.get(lid)

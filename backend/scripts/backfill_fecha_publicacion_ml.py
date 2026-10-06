@@ -34,7 +34,7 @@ import psycopg2.extras
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 _API = "https://api.mercadolibre.com"
-_LOTE = 20  # multiget de ML: mismo tamaño que sincronizar_ml_huerfanas.py
+_LOTE = 20  # multiget de ML (/items/bulk): mismo tamaño que sincronizar_ml_huerfanas.py
 
 
 def cargar(nombre: str) -> dict[str, str]:
@@ -62,6 +62,7 @@ def main() -> None:
 
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # backend/
     from services import meli  # noqa: E402  (token por cuenta, MySQL ml_tokens*)
+    from services import ml_multiget  # noqa: E402  (ruta y forma del multiget)
 
     pg = psycopg2.connect(E["SUPABASE_DB_URL"], connect_timeout=25)
     with pg.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as c:
@@ -98,13 +99,14 @@ def main() -> None:
                 lote = filas[i:i + _LOTE]
                 ids = ",".join(f["listing_id"] for f in lote)
                 try:
-                    r = cli.get("/items", headers=headers,
-                                params={"ids": ids, "attributes": "id,date_created"})
+                    campos = "id,date_created"
+                    r = cli.get(ml_multiget.ruta(), headers=headers,
+                                params=ml_multiget.params(ids, campos))
                     if r.status_code != 200:
                         fallidos += len(lote)
                         continue
                     por_id = {}
-                    for e in r.json():
+                    for e in ml_multiget.normalizar(r.json(), campos):
                         b = e.get("body") or {}
                         if b.get("id"):
                             por_id[b["id"]] = b.get("date_created")

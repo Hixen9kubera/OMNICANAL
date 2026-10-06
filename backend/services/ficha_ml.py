@@ -31,11 +31,14 @@ import re
 from typing import Any
 
 from config import settings
-from services import db, meli
+from services import db, meli, ml_multiget
 
 log = logging.getLogger("omnicanal.ficha_ml")
 
 _API = "https://api.mercadolibre.com"
+# Lo que se lee de cada publicación. En `/items/bulk` NO viaja como `attributes`
+# (ML perdería el item en silencio): `ml_multiget` lo recorta de nuestro lado.
+_CAMPOS = "id,title,attributes"
 
 # El peso de un producto no cambia; solo cambia si RECICLAN la publicación,
 # que es justamente lo que queremos detectar. Una semana es suficiente.
@@ -94,8 +97,12 @@ async def completar(pares: list[tuple[str, str]], presupuesto: int = 400) -> int
     """Consulta las publicaciones sin ficha (o vencida). `pares` = [(cuenta, id)]."""
     from datetime import datetime, timedelta
 
-    _asegurar_tabla()
-    cache = leer([i for _, i in pares])
+    def _cache_actual() -> dict[str, dict[str, Any]]:
+        _asegurar_tabla()
+        return leer([i for _, i in pares])
+
+    # Base de datos en un hilo: esto corre como tarea del event loop (regla 11).
+    cache = await asyncio.to_thread(_cache_actual)
     vence = datetime.utcnow() - timedelta(hours=TTL_HORAS)
     faltan = [(c, str(i)) for (c, i) in pares
               if str(i) not in cache or cache[str(i)]["consultado_at"] < vence]
@@ -109,32 +116,36 @@ async def completar(pares: list[tuple[str, str]], presupuesto: int = 400) -> int
     for cuenta, iid in lote:
         por_cuenta.setdefault(cuenta, []).append(iid)
 
-    tokens: dict[str, str | None] = {}
+    # Los tokens, antes de lanzar los bloques y sin bloquear el loop (regla 11):
+    # `_access_token` puede ir a la base.
+    tokens: dict[str, str | None] = {
+        cuenta: await meli.access_token_async(cuenta) for cuenta in por_cuenta}
     resultados: list[tuple[str, str, str | None, float | None, bool]] = []
     sem = asyncio.Semaphore(6)
 
     async with httpx.AsyncClient(base_url=_API, timeout=30.0) as cli:
 
         async def bloque(cuenta: str, ids: list[str]) -> None:
-            if cuenta not in tokens:
-                tokens[cuenta] = meli._access_token(cuenta)
             tk = tokens.get(cuenta)
             if not tk:
                 return
             async with sem:
-                par = {"ids": ",".join(ids), "attributes": "id,title,attributes"}
-                r = await cli.get("/items", params=par,
+                ruta, par = ml_multiget.ruta(), ml_multiget.params(ids, _CAMPOS)
+                r = await cli.get(ruta, params=par,
                                   headers={"Authorization": f"Bearer {tk}"})
                 if r.status_code == 401:
                     nuevo = await meli._renovar_con_candado(cuenta)
                     if not nuevo:
                         return
                     tokens[cuenta] = nuevo
-                    r = await cli.get("/items", params=par,
+                    r = await cli.get(ruta, params=par,
                                       headers={"Authorization": f"Bearer {nuevo}"})
                 if r.status_code != 200:
                     return
-                for fila in r.json():
+                # Bulk o legado, en sobres {code, body}. Sin mirar `code`, como
+                # siempre: el body de un 403/404 trae su `id` y se guarda como
+                # ficha vacía, para no volver a preguntar por él en una semana.
+                for fila in ml_multiget.normalizar(r.json(), _CAMPOS):
                     b = fila.get("body") or {}
                     iid = b.get("id")
                     if not iid:
@@ -148,8 +159,8 @@ async def completar(pares: list[tuple[str, str]], presupuesto: int = 400) -> int
 
         tareas = []
         for cuenta, ids in por_cuenta.items():
-            for i in range(0, len(ids), 20):     # tope del multiget de ML
-                tareas.append(bloque(cuenta, ids[i:i + 20]))
+            for i in range(0, len(ids), ml_multiget.TOPE):   # tope del multiget de ML
+                tareas.append(bloque(cuenta, ids[i:i + ml_multiget.TOPE]))
         await asyncio.gather(*tareas)
 
     def _guardar() -> None:

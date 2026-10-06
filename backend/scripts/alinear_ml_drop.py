@@ -45,13 +45,16 @@ def _refrescar_en_vivo(filas: list[dict]) -> list[dict]:
     """
     Reemplaza `stock_real`/`situacion` del caché por lo que dice ML AHORA.
 
-    Usa el endpoint multi-get (`/items?ids=…&attributes=…`), 20 por llamada: 2,300
-    publicaciones salen en ~115 peticiones en vez de 2,300.
+    Usa el endpoint multi-get (`/items/bulk?ids=…`; ver `ml_multiget`), 20 por
+    llamada: 2,300 publicaciones salen en ~115 peticiones en vez de 2,300.
+    Un 403/404 vuelve con `status` numérico (como en el `/items?ids=` de antes),
+    así que el filtro active/paused del final lo deja fuera.
     Si un lote falla, esas filas se quedan con el valor del caché y se marcan
     `_vivo=False` para no afirmar que se verificaron.
     """
     import httpx
-    from services import meli
+    from services import meli, ml_multiget
+    campos = "id,available_quantity,status"
     por_cuenta: dict[str, list[dict]] = {}
     for f in filas:
         por_cuenta.setdefault(f["cuenta"], []).append(f)
@@ -65,15 +68,14 @@ def _refrescar_en_vivo(filas: list[dict]) -> list[dict]:
             lote = grupo[i:i + 20]
             ids = ",".join(x["item_id"] for x in lote)
             try:
-                r = httpx.get("https://api.mercadolibre.com/items",
+                r = httpx.get(f"https://api.mercadolibre.com{ml_multiget.ruta()}",
                               headers=cab,
-                              params={"ids": ids,
-                                      "attributes": "id,available_quantity,status"},
+                              params=ml_multiget.params(ids, campos),
                               timeout=40.0)
                 if r.status_code != 200:
                     continue
                 vivos = {}
-                for e in r.json():
+                for e in ml_multiget.normalizar(r.json(), campos):
                     b = e.get("body") or {}
                     if b.get("id"):
                         vivos[b["id"]] = b
@@ -101,8 +103,8 @@ def candidatos(en_vivo: bool = False) -> list[dict]:
     antigüedad en las filas que el sync todavía no revisitó, así que un "0
     desalineadas" solo significa "0 según el caché".
 
-    `en_vivo=True` le pregunta a Mercado Libre por CADA publicación (`/items` en
-    lotes de 20 con `attributes=`). Es la verificación de verdad — la que puede
+    `en_vivo=True` le pregunta a Mercado Libre por CADA publicación (el
+    multiget, en lotes de 20). Es la verificación de verdad — la que puede
     afirmar que el canal está alineado. Tarda unos minutos.
     """
     from services import db, wp_db
