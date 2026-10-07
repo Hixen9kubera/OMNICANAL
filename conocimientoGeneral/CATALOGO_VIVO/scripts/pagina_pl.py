@@ -28,6 +28,99 @@ from ia_titulos import clave_renglon
 from inventario_pl import ROTULO_CLASE
 
 ALIAS_RAIZ = {"Mascotas": "Animales y Mascotas"}
+TC = 19.0                       # pesos por dólar del packing list (el tipo de cambio fijo de la casa)
+# Contenedores cuyo contenido NO parece mercancía para vender (material de exhibición de tienda:
+# tiras antirrobo, etiquetas colgantes, ganchos). Sus piezas se cuentan, pero no se valúan.
+# Está por confirmar con Brandon: para valuarlas basta vaciar este conjunto.
+SIN_VALOR = {"NYKU4963456"}
+# …y los SKUs que son EMPAQUE de otro producto (la caja de color y la caja master de un foco):
+# se compraron y están en el packing list, pero no se venden solos.
+RE_INSUMO = re.compile(r"^(outer box|colou?red box|inner box|caja master|caja de color)", re.I)
+
+
+def _firme(p: dict[str, Any] | None, canal: str) -> bool:
+    """Precio MEDIDO: dos publicaciones del mismo producto y del mismo tamaño de paquete; en ML, no de catálogo."""
+    return bool(p) and p["n"] >= 2 and not p.get("x") and not (canal == "ml" and p.get("o") == "c")
+
+
+def estimar(filas: list[dict[str, Any]], rutas: list[list[str]]) -> dict[str, Any]:
+    """Le pone un precio ESTIMADO a lo que no tiene precio medido, para que el valor cubra todas las piezas.
+
+    En orden, y cada fila dice cuál le tocó (`[precio, nivel, múltiplo, de dónde, topado]`):
+      c  su COSTO × el múltiplo (precio de mercado ÷ costo) de los productos de su subcategoría
+         que sí tienen precio medido. Es el mejor: está anclado en lo que costó la pieza.
+      i  su propio INDICIO: una sola publicación, o paquetes de otro tamaño, o el catálogo de ML.
+      t  solo productos sin SKU: el precio de ese TIPO de producto.
+      p  el precio PROMEDIO por pieza de su subcategoría. Último recurso, y no para granel: a una
+         fila de 10,000 piezas o más sin costo ni indicio no se le inventa precio.
+    Subcategoría → categoría → todo el inventario, según dónde haya base suficiente.
+
+    Tres frenos, puestos después de ver qué inflaba el total:
+      · el múltiplo de una subcategoría no se aleja más de la mitad del múltiplo general;
+      · ningún precio estimado pasa del 90% más caro de los precios MEDIDOS de su subcategoría
+        (un costo mal capturado —el del cartón en vez de la pieza— ya no vale millones);
+      · lo que se sabe que no es mercancía (`nv`) no se valúa."""
+    import statistics
+
+    def sub(f: dict[str, Any]) -> tuple[str, str]:
+        return (rutas[f["k"]][0], rutas[f["k"]][1]) if f.get("k") is not None else ("Sin categoría", "")
+
+    def de(tabla: dict[Any, float], s: tuple[str, str]) -> tuple[float | None, str | None]:
+        for nivel, llave in (("s", s), ("r", s[0]), ("g", "*")):
+            if llave in tabla:
+                return tabla[llave], nivel
+        return None, None
+
+    resumen: dict[str, Any] = {"tc": TC}
+    for canal, campo in (("ml", "em"), ("az", "ea")):
+        veces: dict[Any, list[float]] = defaultdict(list)
+        precios: dict[Any, list[float]] = defaultdict(list)
+        prom: dict[Any, list[float]] = defaultdict(lambda: [0.0, 0.0])
+        for f in filas:
+            if f.get("sin") or "pc" not in f or not _firme(f.get(canal), canal):
+                continue
+            precio, s = f[canal]["m"], sub(f)
+            for llave in (s, s[0], "*"):
+                precios[llave].append(precio)
+                prom[llave][0] += f["pc"] * precio
+                prom[llave][1] += f["pc"]
+                if f.get("co", 0) >= 0.05 and 0.3 <= precio / f["co"] <= 80:
+                    veces[llave].append(precio / f["co"])
+        if not precios["*"]:
+            resumen[canal] = {"base": 0}
+            continue
+        general = statistics.median(veces["*"]) if veces["*"] else 0
+        mult = {k: min(max(statistics.median(v), 0.5 * general), 1.5 * general)
+                for k, v in veces.items() if len(v) >= 5 or k == "*"} if general else {}
+        medio = {k: prom[k][0] / prom[k][1] for k, v in precios.items() if prom[k][1] > 0 and (len(v) >= 3 or k == "*")}
+        tope = {k: sorted(v)[min(len(v) - 1, int(0.9 * len(v)))] for k, v in precios.items() if len(v) >= 5 or k == "*"}
+        for f in filas:
+            p = f.get(canal)
+            if "pc" not in f or f.get("nv") or (not f.get("sin") and _firme(p, canal)):
+                continue
+            s = sub(f)
+            est: list[Any] | None = None
+            if f.get("co", 0) >= 0.05:
+                m, nivel = de(mult, s)
+                if m:
+                    est = [f["co"] * m, "c", round(m, 2), nivel, 0]
+            if est is None and p:
+                est = [p["m"], "t" if f.get("sin") and _firme(p, canal) else "i", None, None, 0]
+            if est is None and f["pq"] < 10000:
+                a, nivel = de(medio, s)
+                if a:
+                    est = [a, "p", None, nivel, 0]
+            if est:
+                techo, _ = de(tope, s)
+                if techo and est[0] > techo:
+                    est[0], est[4] = techo, 1
+                est[0] = round(est[0], 2)
+                f[campo] = est
+        resumen[canal] = {"base": len(precios["*"]), "multiplo": round(general, 2),
+                          "promedio": round(medio.get("*", 0), 2)}
+    return resumen
+
+
 LADO, COLS, POR_HOJA = 72, 20, 400
 
 
@@ -170,6 +263,13 @@ def construir(salida: Path) -> dict[str, Any]:
         clave = (amz.get("sku") or {}).get(llave)
         return _precio((amz.get("grupos") or {}).get(clave), "k", entre) if clave else None
 
+    precio_pl: dict[tuple, float] = {}
+    crudo = leer_json(d / "pl.json") or {}
+    for tipo, lista in (("o", crudo.get("originales") or []), ("v", crudo.get("validados") or [])):
+        for a in lista:
+            for f in a["filas"]:
+                if f.get("precio_usd"):
+                    precio_pl[(tipo, a["id"], f["fila"] + 1)] = f["precio_usd"]
     filas: list[dict[str, Any]] = []
     for sku, x in inv["skus"].items():
         c = de_cat.get(sku)
@@ -207,6 +307,21 @@ def construir(salida: Path) -> dict[str, Any]:
                 fila[b] = x[a]
         if c and "pv" in c and not c.get("rv"):
             fila["v"] = c["pv"]
+        if RE_INSUMO.search(nombre.strip()):
+            fila["nv"] = 1
+        # Lo que costó la pieza: el costo de producto de la base si tiene renglón propio; si no,
+        # el precio en dólares de su renglón del packing list.
+        if c and c.get("co") == "b" and c.get("cp"):
+            fila["co"] = c["cp"]
+        else:
+            usd = 0.0
+            for ren in x.get("ren") or []:
+                if ren.get("av") is not None:
+                    usd = usd or precio_pl.get(("v", ren["av"], ren.get("fv")), 0.0)
+                for fo in ren.get("fo") or []:
+                    usd = usd or precio_pl.get(("o", ren.get("ao"), fo), 0.0)
+            if 0.01 <= usd <= 3000:
+                fila["co"] = round(usd * TC, 2)
         entre = divisor_por_pieza(nombre, int(t.get("u") or 1))
         p = precio_ml(sku, entre)
         if p:
@@ -246,6 +361,10 @@ def construir(salida: Path) -> dict[str, Any]:
             fila["td"] = 1
         if j["usd"]:
             fila["usd"] = j["usd"]
+            if 0.01 <= j["usd"] <= 3000:
+                fila["co"] = round(j["usd"] * TC, 2)
+        if all(any(cod in str(cont) for cod in SIN_VALOR) for cont in j["ct"]):
+            fila["nv"] = 1
         k, kq = categoria(llave, None, fila["t"])
         if k is not None:
             fila["k"], fila["kq"] = k, kq
@@ -261,6 +380,7 @@ def construir(salida: Path) -> dict[str, Any]:
             fila["az"] = p
         filas.append(fila)
     hojas_pl = _hojas(fotos_pl, salida / "img", "p") if fotos_pl else 0
+    estimacion = estimar(filas, lista_rutas)
 
     # Lo que salió, repartido a cada contenedor en proporción a las piezas que cada uno trajo.
     sal_cont: dict[str, float] = defaultdict(float)
@@ -279,6 +399,7 @@ def construir(salida: Path) -> dict[str, Any]:
     grupos_amz, hechas_amz = len(set((amz.get("sku") or {}).values())), len(amz.get("grupos") or {})
     doc = {
         "generado": ahora_iso(), "fuentes": inv["fuentes"], "resumen": r, "rot": ROTULO_CLASE,
+        "estimacion": estimacion, "sin_valor": sorted(SIN_VALOR),
         "K": lista_rutas, "A": inv["archivos"], "C": conts,
         "sprite": cat.get("sprite") or {}, "spritePL": {"lado": LADO, "cols": COLS, "por_hoja": POR_HOJA, "hojas": hojas_pl},
         "mercado": {
