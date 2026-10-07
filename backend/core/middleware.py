@@ -95,10 +95,22 @@ RUTAS_ABIERTAS: frozenset[str] = frozenset({
                             # a las 5 fallas deshabilita el webhook solo.
                             # `/api/webhooks/woo/log` sigue cerrado (exacta).
     "/",                    # raíz: solo versión y lista de canales
+    "/robots.txt",          # sin esto la API contesta 401 a robots.txt, y el
+                            # descargador de imágenes de un marketplace no
+                            # tiene por qué leer ese 401 a nuestro favor.
+                            # Solo abre `/pub/img/` — ver routers/publico.py.
 })
 
 # Prefijos abiertos (con cuidado): documentación y estáticos de FastAPI.
-_PREFIJOS_ABIERTOS: tuple[str, ...] = ("/docs", "/redoc", "/openapi.json")
+#
+# `/pub/img/` (7-oct-2026): las FOTOS del catálogo para los marketplaces. Walmart
+# no recibe la imagen sino una URL, y su descargador no puede mandar nuestro
+# token — mismo caso que un webhook. Lo que sale por ahí ya es público en la
+# tienda; el origen es un host fijo y la respuesta siempre es un JPEG recién
+# codificado (routers/publico.py explica por qué no expone nada).
+# ⚠️ Lleva la barra final A PROPÓSITO: `/pub/imgs-privadas` NO queda abierta.
+_PREFIJOS_ABIERTOS: tuple[str, ...] = ("/docs", "/redoc", "/openapi.json",
+                                       "/pub/img/")
 
 
 def _normalizar(ruta: str) -> str:

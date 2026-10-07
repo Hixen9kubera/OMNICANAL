@@ -1450,6 +1450,16 @@ class Settings(BaseSettings):
     # caché es un fallo intermitente de los que cuesta reproducir.
     wm_client_id: str = ""
     wm_client_secret: str = ""
+    # De dónde baja Walmart las FOTOS del feed (services/imagenes_walmart.py).
+    #   propio  → este backend las sirve en JPEG ≥ 1000 px (`/pub/img/wm/…`).
+    #   weserv  → el proxy images.weserv.nl (la receta de agosto).
+    #   directo → la URL de la tienda tal cual. Desde el 17-sep Walmart las
+    #             rechaza TODAS ("not authorized to download"): robots.txt de
+    #             chunche.shop contesta 503 por el modo mantenimiento.
+    # Se cambia sin deploy. `walmart_img_base` es la URL pública del backend;
+    # vacía = `https://$RAILWAY_PUBLIC_DOMAIN`, o la de producción.
+    walmart_img_modo: str = "propio"
+    walmart_img_base: str = ""
 
     # Vigilante de Odoo: compara qty_available contra la última foto
     # (productos.stock_odoo) cada N minutos; los cambios van a la campana.

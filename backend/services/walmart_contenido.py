@@ -38,6 +38,9 @@ from typing import Any
 # LÍMITES — todos del esquema oficial salvo donde se diga
 # ═════════════════════════════════════════════════════════════════════════════
 TITULO_MAX = 200            # `productName.maxLength` — cierra el pendiente #7
+# La marca de casa: la que pone `_item()` del publicador cuando Woo no trae el
+# atributo BRAND. Tiene que ser la MISMA que usa el título.
+MARCA_DE_CASA = "Ferrahome"
                             # del manual, que lo tenía como [SUPUESTO]
 TITULO_IDEAL = (50, 75)     # regla de negocio de Kubera, no del esquema
 DESCRIPCION_MAX = 4000      # `shortDescription.maxLength`
@@ -345,7 +348,7 @@ se entera hasta que un cliente reclama.
 PRODUCTO
     SKU:                {sku}
     Categoría Walmart:  {categoria}
-    Nombre/marca hoy:   {marca or '(sin marca)'}
+    Marca del feed:     {marca or MARCA_DE_CASA}
     Título hoy:         {titulo_woo}
     Ficha cruda:        {descripcion_woo[:1800]}
     Atributos conocidos:
@@ -362,7 +365,10 @@ PRODUCTO
    · NO repitas la categoría dentro del título si es redundante.
    · NADA de keyword stuffing: cada palabra debe aportar información real
      (marca, atributo, tamaño, color). Repetir para "ganar" búsquedas se penaliza.
-   · Si no hay marca reconocida, usa el fabricante o "Sin marca".
+   · La marca es EXACTAMENTE «{marca or MARCA_DE_CASA}»: es la que viaja en el
+     campo `brand` del feed. Empieza el título con ella, tal cual. NUNCA
+     escribas "Sin marca", "Genérico" ni otra marca que creas reconocer en la
+     ficha: un nombre con una marca y un campo `brand` con otra se publica así.
    · Escribe como busca un comprador mexicano, no como habla un catálogo chino.
 
 2 · DESCRIPCIÓN
@@ -391,7 +397,7 @@ SALIDA — SOLO JSON, sin texto alrededor:
   "caracteristicas": ["<especificación objetiva>", "..."],
   "beneficios": ["<máx {BULLET_MAX} caracteres>", "..."],
   "palabras_clave": ["<lo que teclearía un comprador mexicano>"],
-  "marca": "<marca o 'Sin marca'>",
+  "marca": "{marca or MARCA_DE_CASA}",
   "confianza": 0.0,
   "flags": ["<qué dato NO pudiste confirmar>"]
 }}"""
@@ -489,6 +495,13 @@ def validar_contenido(contenido: dict[str, Any], titulo_original: str = ""
             problemas.append(f"titulo: frase penalizada '{p}'")
         if FALTA in t:
             problemas.append("titulo: trae un [FALTA DATO] sin resolver")
+        # «Sin marca» en el NOMBRE. El esquema pide "Sin marca" en el campo
+        # `brand` de un artículo sin marca, no en su título — y el feed manda
+        # la marca desde Woo. Tres juguetes quedaron publicados como «Sin marca
+        # Cocina de Juguete…» con `brand: Ferrahome` (medido el 28-sep).
+        if re.match(r"(?i)^\s*(sin\s+marca|gen[eé]ric[oa]|unbranded|no\s+brand)\b", t):
+            problemas.append("titulo: empieza con «Sin marca» — usa la marca "
+                             "del feed, que se te dio arriba")
         # ── LA COMPROBACIÓN QUE MÁS IMPORTA ────────────────────────────
         # Un título puede quedar impecable de forma y describir OTRO producto.
         # Caso real en TikTok: un cono veterinario acabó en "Joyas para

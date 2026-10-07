@@ -19,11 +19,13 @@ exenciones, se agregan a CATEGORIAS_AUTORIZADAS y ya.
 
 LAS DOS TRAMPAS QUE COSTARON DESCUBRIR
 --------------------------------------
-1. **Las imágenes.** El catálogo es mayormente WEBP (viene del scraping de
-   Alibaba) y las editadas con IA son PNG con extensión `.jpg`. Walmart lee el
-   CONTENIDO, no el nombre, y las rechaza. La solución ya existía:
-   `imagenes_amazon.preparar_para_amazon` convierte a JPEG conservando la
-   resolución, sube a WordPress y cachea por hash. Se reusa tal cual.
+1. **Las imágenes.** Walmart no recibe la foto: recibe una URL y manda a su
+   descargador por ella. Desde el 17-sep-2026 rechaza TODAS las de chunche.shop
+   ("We are not authorized to download the image"), sea cual sea el formato o
+   el origen de la foto: `robots.txt` de la tienda contesta 503 por el modo
+   mantenimiento. Las fotos del feed salen ahora de `services/imagenes_walmart`
+   (JPEG ≥ 1000 px servido por el propio backend), igual que en el botón del
+   panel. Ahí está todo lo que se midió y se descartó.
 
 2. **Walmart valida POR ETAPAS.** Corriges un error y aparecen otros que estaban
    escondidos detrás. Que cambien los mensajes NO significa que lo anterior se
@@ -52,7 +54,22 @@ import os
 import sys
 import uuid
 
-logging.disable(logging.WARNING)
+# ⚠️ AQUÍ HABÍA UN `logging.disable(logging.WARNING)` A NIVEL DE MÓDULO, y este
+# módulo NO es solo un script: `services/publicar_walmart`, `walmart_panel` y
+# `walmart_ia` lo IMPORTAN para leer `CATEGORIAS_AUTORIZADAS`, `_item` y
+# `_sobre`. `logging.disable` es global al proceso, así que la primera vez que
+# alguien abría Walmart en el Estudio después de un reinicio, el BACKEND ENTERO
+# dejaba de escribir INFO y WARNING hasta el siguiente deploy.
+#
+# Medido en producción el 7-oct-2026: el deployment c1422d39 escribía varias
+# líneas INFO por segundo (webhooks de ML, scheduler) hasta las 23:32:32 UTC
+# del 6-oct; a partir de ahí, en siete horas y media, SOLO hay [ERROR]. A las
+# 23:40 salió el primer feed de Walmart de esa noche. Lo que se perdía en ese
+# hueco: los avisos de 401, los `log.warning` de cada servicio, el rastro de
+# los webhooks de venta — justo lo que se busca cuando algo falla.
+#
+# El silencio es para la CORRIDA A MANO (que imprime su propio reporte); se
+# pone en `__main__`, abajo, donde no le cae a nadie más.
 
 # `backend/` en la ruta, igual que en `publicar_temu.py`. Sin esto el script solo
 # corre si alguien puso el PYTHONPATH a mano: lanzándolo por su ruta, `sys.path[0]`
@@ -297,6 +314,15 @@ CATEGORIAS_AUTORIZADAS: dict[str, dict] = {
         # es que hoy esté publicada.
         "prueba": "feed",
         "pide_genero": True,
+        # Sin esto una pijama salía con material «Plástico» y actividad «Juego»
+        # (los respaldos generales): medido en la vista previa de ROP-0010-BEI
+        # el 7-oct. Siguen siendo RESPALDOS —el dato bueno es el atributo de
+        # Woo o el que genera la IA— y el panel avisa cuando se usan.
+        "material_default": "Poliéster",
+        "activity_default": "Uso diario",
+        "activity_por_patron": (
+            (r"ijama|amis[oó]n|dormir|bata", "Dormir"),
+        ),
         "patron_categoria": "ijama|amis[oó]n|ropa de dormir",
         "patron_titulo": "ijama|amis[oó]n|ropa de dormir",
         # `activity` va porque el PILOTO del 4-sep lo exigió, no porque el
@@ -438,6 +464,14 @@ CATEGORIAS_AUTORIZADAS: dict[str, dict] = {
         # "`Enfoque Educativo` is a required attribute". El valor sale del
         # ejemplo del propio esquema y la IA lo afina al generar el contenido.
         "educational_focus_default": "Habilidades motoras",
+        # `screenSize` — MEDIDO EL 2-OCT, y es el sexto desfase 3.19↔3.11.
+        # JUGU-0049-MUL (dos veces) y BEB-0014-MUL rebotaron con
+        #   "`screenSize` is a required attribute, but no value was provided"
+        # El esquema publicado lo lista como OPCIONAL y NO cambió: el archivo
+        # de hoy es idéntico byte a byte al de agosto (mismo SHA-256). Releer
+        # los requisitos no lo habría mostrado — solo lo dice un feed.
+        # Es `{measure, unit:"in"}` con `minimum: 0`: un juguete sin pantalla
+        # mide 0 pulgadas, que es la verdad. `_item()` lo arma.
         "patron_categoria": "juguetes? (para|de) beb",
         "patron_titulo": ("mordedera|mordedor|sonaja|gimnasio (para|de) beb|"
                           "m[oó]vil (para|de) cuna|juguetes? (para|de) beb"),
@@ -447,7 +481,7 @@ CATEGORIAS_AUTORIZADAS: dict[str, dict] = {
             "countPerPack", "material", "colorCategory",
             "assembledProductLength", "assembledProductWidth",
             "assembledProductHeight", "assembledProductWeight",
-            "size", "gender", "educationalFocus"),
+            "size", "gender", "educationalFocus", "screenSize"),
     },
     "baby_clothing": {
         "clave_visible": "Ropa de Bebé",     # "Bebé" con MAYÚSCULA: así la escribe el esquema
@@ -719,8 +753,12 @@ PAUSA_ENTRE_LOTES = 360
 # de formato, pero las URLs son ASCII puro, .jpg y HTTPS: el problema era el
 # tiempo. Un día después, las MISMAS urls responden 200 con ocho User-Agents.
 #
-# Por eso ahora hay dos fases: se preparan TODAS las imágenes, se espera, se
-# revalida cada URL contra el servidor público, y recién entonces se publica.
+# Por eso había dos fases: se preparaban TODAS las imágenes, se esperaba, se
+# revalidaba cada URL contra el servidor público, y recién entonces se publicaba.
+#
+# 7-oct-2026: ya no se sube nada a WordPress —las fotos las sirve el backend,
+# ver `services/imagenes_walmart`—, así que no hay CDN que esperar. La constante
+# y `--espera` se conservan para no romper a quien las pase, pero no se usan.
 ESPERA_PROPAGACION = 120
 
 # SKUs que NO se mandan y por qué. Documentarlo aquí evita volver a gastarles
@@ -762,6 +800,9 @@ ALIAS = {
     "marca": ("BRAND", "Marca", "MARCA"),
     "modelo": ("MODEL", "Modelo", "MODELO"),
     "personaje": ("CHARACTER", "Personaje"),
+    "actividad": ("ACTIVITY", "Actividad", "ACTIVIDAD"),
+    "pantalla": ("SCREEN_SIZE", "DISPLAY_SIZE", "Tamaño de pantalla",
+                 "Tamaño de la pantalla", "Pantalla"),
 }
 
 
@@ -1005,6 +1046,18 @@ async def ficha(cx, sku: str) -> dict | None:
         precio = _f(p.get("price"))
     # Se marca en la ficha para que _armar() no tenga que repetir la lógica.
     p["_precio_lista"] = precio
+    # Una VARIACIÓN no trae categorías, ni la marca o el material de su padre.
+    # Misma fusión que el botón del panel (`publicar_walmart.fundir_padre`):
+    # las dos rutas tienen que armar el mismo artículo.
+    if p.get("type") == "variation" and p.get("parent_id"):
+        try:
+            rp = await cx.get(f"{base}/products/{p['parent_id']}", auth=auth,
+                              timeout=60.0, params={"_cb": "wmpub"})
+            if rp.status_code == 200:
+                from services.publicar_walmart import fundir_padre
+                p = fundir_padre(p, rp.json())
+        except Exception:  # noqa: BLE001 — sin padre, sale lo de la variación
+            pass
     return p
 
 
@@ -1045,12 +1098,50 @@ def _clave_sat(cfg: dict, nombre: str) -> int:
     return cfg["clave_sat"]
 
 
-def _item(p: dict, imgs: list[str], categoria: str, cfg: dict) -> dict:
-    """Una entrada de `MPItem` a partir de lo que Woo ya tiene."""
+def _valor_atributo(a: dict):
+    """
+    El valor de un atributo de Woo, venga como venga.
+
+    Un producto simple lo trae en `options` (lista); una VARIACIÓN, en `option`
+    (singular). Leer solo `options` dejaba TODOS los atributos de una variante
+    en None: color → «Multicolor», talla → «Unitalla», material → el respaldo.
+    Y como nunca se publica el padre, eso era cada variante que salía del panel.
+    """
+    ops = a.get("options")
+    if ops:
+        return ops[0]
+    return a.get("option")
+
+
+def _pulgadas(valor) -> float:
+    """Un tamaño de pantalla de Woo ("2.4 in", "7 pulgadas", "5″") en número.
+    Sin dato legible → 0: el producto no tiene pantalla."""
+    import re
+    m = re.search(r"(\d+(?:[.,]\d+)?)", str(valor or ""))
+    if not m:
+        return 0.0
+    try:
+        v = float(m.group(1).replace(",", "."))
+    except ValueError:
+        return 0.0
+    return round(v, 2) if 0 < v < 200 else 0.0
+
+
+def _item(p: dict, imgs: list[str], categoria: str, cfg: dict,
+          notas: dict | None = None) -> dict:
+    """
+    Una entrada de `MPItem` a partir de lo que Woo ya tiene.
+
+    `notas` (opcional): si se pasa un diccionario, queda en `notas["respaldos"]`
+    cada campo que salió de un valor POR OMISIÓN porque Woo no lo tenía
+    (`{campo: valor}`). Walmart no rechaza un respaldo: lo publica. El panel lo
+    usa para decirlo antes de mandar.
+    """
     clave = cfg["clave_visible"]
-    atrs = {a.get("name"): (a.get("options") or [None])[0]
+    atrs = {a.get("name"): _valor_atributo(a)
             for a in (p.get("attributes") or [])}
     dims = p.get("dimensions") or {}
+    respaldos: dict = {}
 
     def num(v, x=10.0) -> float:
         """
@@ -1074,10 +1165,28 @@ def _item(p: dict, imgs: list[str], categoria: str, cfg: dict) -> dict:
     # Los 7 obligatorios que TODA categoría comparte, según el `required` del
     # esquema oficial. Disfraces añade el octavo (`gender`); "Cocina, Decoración
     # y Otros" no lo pide — mandarlo de más ahí sería inventar un dato.
+    def _tiene(v) -> bool:
+        try:
+            return float(v) > 0
+        except (TypeError, ValueError):
+            return False
+
+    material = _attr(atrs, "material")
+    if not material:
+        material = cfg.get("material_default", "Plástico")
+        respaldos["material"] = material
+    color_woo = _attr(atrs, "color")
+    if not color_woo:
+        respaldos["colorCategory"] = "Multicolor"
+    if not _tiene(p.get("weight")):
+        respaldos["peso"] = "0.3 kg"
+    if not all(_tiene(dims.get(k)) for k in ("length", "width", "height")):
+        respaldos["medidas"] = "10 cm"
+
     visible = {
         "countPerPack": 1,
-        "material": _attr(atrs, "material") or cfg.get("material_default", "Plástico"),
-        "colorCategory": [_color(_attr(atrs, "color"))],
+        "material": material,
+        "colorCategory": [_color(color_woo)],
         "modelNumber": atrs.get("MODEL") or p.get("sku"),
         "assembledProductLength": {"measure": num(dims.get("length")), "unit": "cm"},
         "assembledProductWidth": {"measure": num(dims.get("width")), "unit": "cm"},
@@ -1098,8 +1207,19 @@ def _item(p: dict, imgs: list[str], categoria: str, cfg: dict) -> dict:
     blanca_cfg = cfg.get("campos_visible") or ()
     if "activity" in blanca_cfg:
         # array de strings, minItems 1 (esquema oficial).
-        visible["activity"] = [(_attr(atrs, "actividad")
-                                or cfg.get("activity_default", "Juego"))[:600]]
+        actividad = _attr(atrs, "actividad")
+        if not actividad:
+            import re as _re
+            for patron, valor in cfg.get("activity_por_patron") or ():
+                if _re.search(patron, p.get("name") or "", _re.I):
+                    # Deducido del título ("pijama" → Dormir): es un dato, no
+                    # un respaldo a ciegas, y no se avisa como tal.
+                    actividad = valor
+                    break
+            else:
+                actividad = cfg.get("activity_default", "Juego")
+                respaldos["activity"] = actividad
+        visible["activity"] = [actividad[:600]]
     if "productLine" in blanca_cfg:
         # string libre. La marca es el único valor real que tenemos.
         visible["productLine"] = (atrs.get("BRAND")
@@ -1111,6 +1231,12 @@ def _item(p: dict, imgs: list[str], categoria: str, cfg: dict) -> dict:
         # declara y el feed sale sin él — y cada artículo rebota.
         visible["educationalFocus"] = [(cfg.get("educational_focus_default")
                                         or "Habilidades motoras")[:600]]
+    if "screenSize" in blanca_cfg:
+        # Producción lo EXIGE en «Juguetes de bebé» aunque el esquema lo marque
+        # opcional (ver la categoría). El dato real, si Woo lo trae; si no, 0:
+        # sin pantalla. No se inventa una medida para "pasar".
+        visible["screenSize"] = {"measure": _pulgadas(_attr(atrs, "pantalla")),
+                                 "unit": "in"}
 
     # LA PODA. Un solo campo de más tumba el artículo y arrastra el lote (85/85
     # por `modelNumber`, 83/83 por `gender`, 33/33 por `countPerPack`). Si la
@@ -1120,6 +1246,11 @@ def _item(p: dict, imgs: list[str], categoria: str, cfg: dict) -> dict:
     blanca = cfg.get("campos_visible")
     if blanca:
         visible = {k: v for k, v in visible.items() if k in blanca}
+    if notas is not None:
+        # Solo lo que de verdad viaja: un respaldo de un campo podado no importa.
+        notas["respaldos"] = {
+            k: v for k, v in respaldos.items()
+            if k in ("peso", "medidas") or k in visible}
 
     return {
             "Orderable": {
@@ -1432,7 +1563,7 @@ async def main() -> int:
 
     import httpx
 
-    from services import imagenes_amazon
+    from services import imagenes_walmart
 
     skus = solo or [s for s in candidatos(cfg) if s not in EXCLUIDOS]
     if limite:
@@ -1458,26 +1589,17 @@ async def main() -> int:
     feeds: list[tuple[str, list[str]]] = []     # (feedId, [skus del lote])
 
     async with httpx.AsyncClient(timeout=120.0) as cx:
-        # ── FASE 1: dejar TODAS las imágenes servidas y publicadas ────────────
+        # ── FASES 1 y 2: las fotos, preparadas y comprobadas ──────────────────
         print("\n" + "=" * 78)
-        print("FASE 1 — preparar imágenes (nada se manda a Walmart todavía)")
+        print("FASES 1 y 2 — preparar y comprobar las fotos (nada se manda todavía)")
         print("=" * 78, flush=True)
-        if refrescar and skus:
-            # Walmart parece CACHEAR el fallo por URL: las tres imágenes que
-            # rechazó el 4-ago volvieron a ser rechazadas el 5-ago con el mismo
-            # mensaje, estando perfectas (JPEG, 1600×1600, 197 KB, descargables
-            # desde fetchers externos de datacenter). Borrar el caché de
-            # `amazon_imagenes` fuerza a regenerarlas: WordPress les pone un
-            # nombre nuevo y Walmart las ve como URLs que nunca ha visto.
-            from services import db as _db
-            ph = ",".join(["%s"] * len(skus))
-            try:
-                _db.execute(f"DELETE FROM amazon_imagenes WHERE sku IN ({ph})",
-                            tuple(skus))
-                print(f"   caché de imágenes borrado para {len(skus)} SKUs "
-                      f"(se regeneran con URL nueva)", flush=True)
-            except Exception as e:  # noqa: BLE001
-                print(f"   no se pudo borrar el caché: {e}", flush=True)
+        if refrescar:
+            # `--refrescar-imagenes` borraba el caché `amazon_imagenes` para que
+            # WordPress les diera URL nueva. Las fotos de Walmart ya no pasan
+            # por ese caché (ver `imagenes_walmart`), y borrarlo solo le quitaría
+            # a AMAZON sus imágenes ya preparadas. La bandera queda sin efecto.
+            print("   --refrescar-imagenes ya no aplica: las fotos de Walmart no "
+                  "usan el caché de Amazon.", flush=True)
 
         fichas: dict[str, dict] = {}
         imgs: dict[str, list[str]] = {}
@@ -1487,44 +1609,32 @@ async def main() -> int:
                 resultados.append((sku, "SIN_FICHA", ["no se encontró en WooCommerce"]))
                 print(f"[{i}/{len(skus)}] {sku:<22} sin ficha en Woo", flush=True)
                 continue
-            urls = [im.get("src") for im in (p.get("images") or [])][:5]
+            urls = [im.get("src") for im in (p.get("images") or []) if im.get("src")]
             if not urls:
                 resultados.append((sku, "SIN_IMAGEN", ["el producto no tiene imágenes"]))
                 print(f"[{i}/{len(skus)}] {sku:<22} sin imágenes", flush=True)
                 continue
-            listas, _ = await imagenes_amazon.preparar_para_amazon(sku, urls)
-            fichas[sku], imgs[sku] = p, listas
-            print(f"[{i}/{len(skus)}] {sku:<22} {len(listas)} imágenes preparadas",
-                  flush=True)
-
-        # ── Propagación: el CDN necesita tiempo antes de que Walmart entre ────
-        if fichas and espera:
-            print(f"\nesperando {espera}s a que el CDN sirva las imágenes nuevas…",
-                  flush=True)
-            await asyncio.sleep(espera)
-
-        # ── FASE 2: revalidar contra el servidor público ──────────────────────
-        print("\n" + "=" * 78)
-        print("FASE 2 — revalidar que las imágenes se descargan de verdad")
-        print("=" * 78, flush=True)
-        listos: list[str] = []
-        for sku in list(fichas):
-            buenas = await _solo_jpeg(cx, imgs[sku])
-            imgs[sku] = buenas
-            if not buenas:
-                resultados.append((sku, "IMAGEN_FALLIDA",
-                                   ["ninguna imagen quedó en JPEG utilizable"]))
-                print(f"   {sku:<22} ✗ ninguna descargable", flush=True)
-            elif len(buenas) < 2:
-                # Walmart exige al menos una 'Foto adicional'. No se inventa
-                # duplicando la principal: se reporta para que se suba otra.
-                resultados.append((sku, "FALTA_2A_FOTO",
-                                   ["solo 1 imagen utilizable; Walmart exige "
-                                    "mínimo 1 foto adicional"]))
-                print(f"   {sku:<22} ✗ solo 1 imagen utilizable", flush=True)
-            else:
-                listos.append(sku)
-                print(f"   {sku:<22} ✓ {len(buenas)} imágenes vivas", flush=True)
+            # LAS FOTOS, POR EL MISMO CAMINO QUE EL BOTÓN DEL PANEL (7-oct).
+            # Antes: `imagenes_amazon.preparar_para_amazon` las subía en JPEG a
+            # WordPress y el feed mandaba esa URL de chunche.shop. Desde el
+            # 17-sep Walmart rechaza TODAS las de ese host ("not authorized to
+            # download"), JPEG o no. `imagenes_walmart.preparar` las deja en una
+            # URL que sí baja, ya comprobada, y exige la principal + 1 adicional.
+            # Ya no se sube nada a WordPress, así que tampoco hay que esperar al
+            # CDN ni revalidar aparte: por eso las fases 1 y 2 son ahora una.
+            fotos = await imagenes_walmart.preparar(urls, sku)
+            for a in fotos["avisos"]:
+                print(f"      · {a}", flush=True)
+            if not fotos["ok"]:
+                estado = "FALTA_2A_FOTO" if fotos["urls"] else "IMAGEN_FALLIDA"
+                resultados.append((sku, estado, [fotos["motivo"]]))
+                print(f"[{i}/{len(skus)}] {sku:<22} ✗ {fotos['motivo'][:70]}",
+                      flush=True)
+                continue
+            fichas[sku], imgs[sku] = p, fotos["urls"]
+            print(f"[{i}/{len(skus)}] {sku:<22} ✓ {len(fotos['urls'])} fotos "
+                  f"({fotos['modo']})", flush=True)
+        listos: list[str] = list(fichas)
 
         # ── FASE 3: publicar POR LOTE ─────────────────────────────────────────
         lotes = [listos[i:i + tam_lote] for i in range(0, len(listos), tam_lote)]
@@ -1608,4 +1718,7 @@ async def main() -> int:
 
 
 if __name__ == "__main__":
+    # Corrida a mano: el reporte es lo que imprime `main()`, sin el ruido de
+    # httpx y de los servicios. SOLO aquí — ver la nota junto a los imports.
+    logging.disable(logging.WARNING)
     raise SystemExit(asyncio.run(main()))

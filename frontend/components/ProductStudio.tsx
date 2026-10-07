@@ -3028,6 +3028,17 @@ export default function ProductStudio({
                       {faltantes.leido_at && ` · requisitos leídos el ${faltantes.leido_at.slice(0, 10)}`}
                     </p>
                   )}
+
+                  {/* Lo que el verde NO garantiza. En Walmart el esquema
+                      publicado no dice todo lo que producción exige: una
+                      categoría que nunca ha publicado puede rebotar por un
+                      campo que aquí no aparece (pasó con `screenSize`). */}
+                  {faltantes.nota && (
+                    <p className="mt-2 flex items-start gap-1.5 rounded-lg bg-amber-50 px-2.5 py-2 text-[11px] leading-relaxed text-amber-800">
+                      <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+                      <span>{faltantes.nota}</span>
+                    </p>
+                  )}
                 </section>
               )}
 

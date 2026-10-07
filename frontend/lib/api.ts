@@ -928,6 +928,8 @@ export interface FaltantesCanal {
   automaticos: { campo: string; valor: unknown }[];
   categoria: string | null;
   leido_at: string | null;
+  /** Lo que el verde NO garantiza (Walmart: categoría en piloto). */
+  nota?: string | null;
 }
 
 export function faltantesCanal(

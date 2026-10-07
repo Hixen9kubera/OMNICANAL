@@ -64,7 +64,26 @@ _SISTEMA = "Devuelve SOLO JSON válido, sin texto alrededor."
 _DEL_PUBLICADOR = {
     "assembledProductLength", "assembledProductWidth", "assembledProductHeight",
     "assembledProductWeight", "countPerPack", "modelNumber", "size",
+    # Producción lo exige en «Juguetes de bebé» (medido el 2-oct) y `_item()` lo
+    # arma: 0 pulgadas si el juguete no tiene pantalla. No es tarea de la IA —
+    # pedírselo sería invitarla a inventar una pantalla.
+    "screenSize",
 }
+
+
+def marca_del_feed(atributos: dict[str, Any] | None) -> str:
+    """
+    La marca con la que el publicador va a mandar este SKU — la MISMA regla que
+    `_item()`: el atributo BRAND de Woo y, si no hay, la de casa.
+
+    El título se le pide a la IA con ESTA marca. Antes se le pasaba la del
+    Estudio (vacía en la mayoría) y ella escribía «Sin marca» en el nombre
+    mientras el feed mandaba `brand: Ferrahome`. Medido el 7-oct: de 1,926
+    productos publicados, 1,594 traen BRAND = Ferrahome y 332 no traen nada.
+    """
+    from services import walmart_contenido as wc
+    v = str((atributos or {}).get("BRAND") or "").strip()
+    return v or wc.MARCA_DE_CASA
 
 
 def _categoria(sku: str, nombre: str, cats_woo: str
@@ -185,7 +204,7 @@ async def mejorar(producto: dict[str, Any], *, guardar: bool = True) -> dict[str
         sku=sku, categoria=categoria,
         titulo_woo=nombre,
         descripcion_woo=str(producto.get("descripcion") or ""),
-        marca=str(producto.get("marca") or ""),
+        marca=marca_del_feed(atributos_woo),
         atributos_conocidos=atributos_woo,
         variante=variante,
     )

@@ -397,6 +397,7 @@ def _faltantes_sync(sku: str, canal: str, cuenta: str,
             "del_producto": cubiertos_fuera,
             "categoria": categoria,
             "leido_at": leido_at.isoformat() if leido_at else None,
+            "nota": _nota_walmart(categoria),
         }
 
     for campo, canonico, default, label in filas:
@@ -416,6 +417,32 @@ def _faltantes_sync(sku: str, canal: str, cuenta: str,
         "categoria": categoria,
         "leido_at": leido_at.isoformat() if leido_at else None,
     }
+
+
+def _nota_walmart(categoria: str | None) -> str | None:
+    """
+    Lo que el verde de Walmart NO garantiza.
+
+    El 2-oct la ficha de JUGU-0049-MUL decía «Listo para Walmart» con todos los
+    obligatorios cubiertos, y Walmart la rebotó por `screenSize`. No era un
+    catálogo viejo: el esquema público de hoy es idéntico al que se cargó el
+    17-ago. Es que el esquema PUBLICADO (3.19) no dice lo que PRODUCCIÓN (3.11)
+    exige, y eso solo lo enseña un feed. En una categoría que ya publicó, lo
+    que producción pide de más ya está medido; en una que solo tiene ticket,
+    todavía no — y decir «Listo» a secas ahí es prometer lo que no se sabe.
+    """
+    try:
+        from services.publicar_walmart import cfg_de_etiqueta
+        _clave, cfg = cfg_de_etiqueta(categoria)
+    except Exception:  # noqa: BLE001 — la nota es un extra; sin ella, sin nota
+        return None
+    if cfg and cfg.get("prueba") == "ticket":
+        return ("Categoría en PILOTO: ningún artículo de «" + str(categoria)
+                + "» ha sido aceptado todavía. Los requisitos son los del "
+                "esquema publicado de Walmart, y producción puede pedir campos "
+                "que ese esquema no marca (pasó con `screenSize`). Manda UNO y "
+                "revisa su resultado en la vista previa antes de mandar más.")
+    return None
 
 
 async def faltantes(sku: str, canal: str, cuenta: str = "",

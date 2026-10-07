@@ -28,7 +28,7 @@ from routers import (alertas as r_alertas, auth, automatizacion, canales, checkl
                      crear, fanout,
                      fba, fulfillment, fulfillment_envios, fulfillment_full, ia, imagenes, inventario, investigacion, metricas, migracion,
                      ordenes_venta,
-                     productos, publicaciones, publicar, radar_precios, resolver, sync, ventas,
+                     productos, publicaciones, publicar, publico, radar_precios, resolver, sync, ventas,
                      tiktok, webhooks)
 from services import db, odoo, scheduler, woocommerce
 
@@ -220,7 +220,7 @@ app = FastAPI(
         "Temu, Shein)."
     ),
 
-    version="0.621.0",
+    version="0.622.0",
     lifespan=lifespan,
     # /docs, /redoc y /openapi.json publican el mapa COMPLETO de los 84
     # endpoints: rutas, parámetros y esquemas. Con la API abierta eso es un
@@ -323,6 +323,10 @@ app.include_router(radar_precios.router)
 # ni ningún marketplace. Confirmar/reservar/entregar, detrás de
 # ORDENES_VENTA_ENABLED — ver docs/ORDENES_VENTA.md.
 app.include_router(ordenes_venta.router)
+# Las fotos del catálogo para los marketplaces, y el robots.txt del backend.
+# Es lo ÚNICO público fuera de webhooks y healthcheck: solo re-sirve, en JPEG,
+# imágenes que ya son públicas en la tienda. Ver routers/publico.py.
+app.include_router(publico.router)
 
 
 @app.get("/", tags=["meta"])
@@ -330,7 +334,7 @@ def raiz():
     return {
         "app": "OMNICANAL Â· Kubera",
 
-        "version": "0.621.0",
+        "version": "0.622.0",
         "docs": "/docs",
         "canales": [c["id"] for c in lista_canales()],
     }

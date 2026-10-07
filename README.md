@@ -1001,6 +1001,60 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.622.0 — Walmart: las fotos salen de un host que Walmart sí descarga, `screenSize`, candado contra reenvíos, variantes completas — y el backend deja de quedarse sin logs
+
+Cuatro reportes del equipo (2 al 7-oct). Medido contra los feeds de Walmart: del 17-sep al 7-oct el botón mandó 49 altas
+y **no entró ninguna** — 38 por la foto, 3 por `screenSize`, 2 por reenvío en revisión, 3 por falta de foto adicional.
+
+- **Fotos (la causa de 38 de 49).** Walmart contestaba `ERR_EXT_DATA_0101312 "We are not authorized to download the
+  image"` a TODAS las de `chunche.shop`. Descartado midiendo: no es el formato (el 12-sep entraron 11 artículos con WEBP
+  de 720 px de ese host), ni el origen de la foto (`ORG-0244-BLN` lleva las de Amazon y rebotó), ni un bloqueo por
+  cliente o IP (200 a curl/Java/Go/sin UA/HEAD/Range y al backend de producción), ni el certificado. Lo único anómalo:
+  **`chunche.shop/robots.txt` contesta 503** (modo mantenimiento desde el 19-ago). Es la causa más probable, **no
+  probada** — por eso el arreglo no depende de ella:
+  - `services/imagenes_walmart.py` + `routers/publico.py`: el backend sirve cada foto de la tienda en
+    `/pub/img/wm/<ruta>.jpg` — JPEG RGB, lado corto ≥ 1000 px (agranda hasta 2× y rellena con blanco), ≤ 1 MB, URL sin
+    cadena de consulta y sin estado. `GET /robots.txt` del backend contesta 200.
+  - **Se abren sin credencial esas dos rutas** en `core/middleware.py` (`/robots.txt` exacta y el prefijo `/pub/img/`).
+    Solo re-sirven fotos ya públicas: host de origen fijo, sin redirecciones, respuesta siempre re-codificada.
+  - El feed exige la principal **más una adicional** antes de gastar el envío, y avisa de fotos chicas o ilegibles.
+  - Interruptor sin deploy: `WALMART_IMG_MODO = propio | weserv | directo`. Si la ruta pública no contesta, cae sola a
+    weserv. La tanda (`scripts/publicar_walmart.py`) usa el mismo camino; ya no sube nada a WordPress.
+- **`screenSize` en «Juguetes de bebé».** Walmart NO cambió su especificación: el archivo público de hoy es idéntico
+  byte a byte al cargado el 17-ago y las 75 categorías coinciden. Producción lo exige aunque el esquema lo marque
+  opcional. Va en `CORRECCIONES_MEDIDAS`, lo arma `_item()` (0 pulgadas si no hay pantalla) y el semáforo lo cuenta como
+  automático. Nuevo `python -m scripts.walmart_esquema_verificar` contesta "¿cambió el esquema?" sin recargar nada. El
+  semáforo añade una nota en categorías en piloto: el verde no garantiza lo que producción pida de más.
+- **Candado contra reenvíos + veredicto de vuelta.** `confirmar` se niega si el envío anterior del SKU sigue en proceso,
+  si Walmart lo aceptó hace menos de 48 h (revisión de cumplimiento), o si se mandó hace menos de 30 min y no se pudo
+  consultar. La vista previa dice qué pasó la última vez y escribe el veredicto en `ops.channel_submissions` (antes 143
+  filas se quedaron en «ENVIADO»). `POST /api/automatizacion/walmart/veredictos` vacía el atraso a mano; sin job.
+- **Datos que viajaban mal.**
+  - Una **variante** perdía todo lo heredado: la REST la da sin categorías ni atributos del padre y con `option`
+    singular. Ahora `fundir_padre` le pone categorías, marca, material, descripción, peso y medidas (ROP-0010-BEI pasó
+    de «Multicolor / Plástico / Juego» a «Beige / Algodón / Dormir»). Esto puede cambiar la categoría *por reglas* de una
+    variante, porque ahora ve las categorías de Woo de su padre.
+  - **«Sin marca»** en el nombre con `brand: Ferrahome`: lo pedía el prompt. La IA recibe la marca del feed, el
+    validador lo marca y `_aplicar_ia` limpia el contenido ya guardado.
+  - La vista previa avisa de **datos por omisión** y de **peso dudoso** (BEB-0014-MUL: 30 kg para $434; es el dato de
+    WooCommerce, hay que corregirlo allá).
+- **El backend se quedaba sin logs.** `scripts/publicar_walmart.py` tenía `logging.disable(logging.WARNING)` a nivel de
+  módulo y los servicios de Walmart lo importan: al primer uso de Walmart tras un reinicio, TODO el backend dejaba de
+  escribir INFO y WARNING hasta el siguiente deploy (medido: 7.5 h con solo `[ERROR]` el 6–7 oct). Movido a `__main__`;
+  una prueba estática cubre cualquier script que la app importe.
+
+**Verificado:** 68 pruebas nuevas (`tests.test_walmart_envios`); suite completa igual que la línea base de `main` (un
+único error preexistente, `test_competencia_juez_rutas`); `next build` limpio; integración contra datos reales sin
+mandar feeds ni escribir (16/16 con JUGU-0049-MUL, ROP-0010-BEI, BEB-0014-MUL).
+
+**NO verificado:** que Walmart baje las fotos de la ruta nueva y acepte `screenSize` en 0 — solo lo dice un feed real.
+El primer envío es el piloto.
+
+**Reversa:** `WALMART_IMG_MODO=directo` devuelve las fotos a como estaban; lo demás, revert del commit. Sin migraciones.
+
+**Pendiente:** `robots.txt` de chunche.shop en 200 (WordPress/Hostinger); corregir pesos de caja en Woo (100 productos
+con ≥ 30 kg); los `DEC-0182-*` tienen una sola foto; tres juguetes siguen publicados como «Sin marca …» en Walmart.
+
 ### v0.621.0 — Mercado Libre: el multiget de publicaciones pasa de `/items?ids=` a `/items/bulk?ids=` antes de que ML lo apague (25-oct-2026) — los nueve llamadores leen lo mismo que antes, con reversa por variable
 
 **Por qué.** ML avisó que los multiget `/items?ids=` y `/users?ids=` entran en deprecación: el reemplazo es

@@ -1480,6 +1480,24 @@ async def walmart_feed(feed_id: str):
     return await walmart.feed_estado(feed_id)
 
 
+@router.post("/walmart/veredictos")
+async def walmart_veredictos(limite: int = 30):
+    """
+    Le pregunta a Walmart por los envíos que siguen 'ENVIADO' y escribe el
+    veredicto de cada SKU en `ops.channel_submissions`.
+
+    El botón de publicar ya lo hace por SKU cada vez que alguien abre la vista
+    previa; esto es para vaciar de golpe el atraso (143 filas al 7-oct-2026) y
+    para que Monitoreo deje de contar como "sin confirmar" lo que Walmart ya
+    juzgó. Se llama a mano: no hay job. `limite` = feeds por llamada (máx. 100),
+    del más reciente al más viejo.
+    """
+    from services import publicar_walmart, walmart
+    if not walmart.disponible():
+        return {"ok": False, "motivo": "Walmart no está configurado."}
+    return {"ok": True, **(await publicar_walmart.reconciliar_veredictos(limite))}
+
+
 @router.get("/walmart/pedidos")
 async def walmart_pedidos(dias: int = 30):
     """

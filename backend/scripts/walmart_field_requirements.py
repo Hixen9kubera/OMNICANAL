@@ -93,7 +93,29 @@ CORRECCIONES_MEDIDAS: dict[tuple[str, str], tuple[str, str]] = {
         ("OBLIGATORIO", "`Talla` is a required attribute — sonda CAM-0030, 19-ago"),
     ("Blancos", "gender"):
         ("OBLIGATORIO", "`Género` is a required attribute — sonda CAM-0030, 19-ago"),
+    # MEDIDO EL 2-OCT, en tres feeds del panel (JUGU-0049-MUL ×2, BEB-0014-MUL):
+    # el esquema lo lista OPCIONAL en este bloque y producción lo exige. Es
+    # `{measure, unit:"in"}`; el publicador manda 0 si el juguete no tiene
+    # pantalla (`minimum: 0` en el esquema).
+    ("Juguetes de bebé", "screenSize"):
+        ("OBLIGATORIO", "`screenSize` is a required attribute — JUGU-0049-MUL y "
+                        "BEB-0014-MUL, 2-oct"),
 }
+
+# LA HUELLA DEL ESQUEMA CARGADO. `channel.field_requirements` se llenó el 17-ago
+# con el archivo que tiene este SHA-256. El 7-oct, cuando «Juguetes de bebé»
+# empezó a rebotar por `screenSize`, la primera hipótesis fue "Walmart actualizó
+# su especificación": se bajó de nuevo y es IDÉNTICO byte a byte. Lo que cambió
+# no fue el esquema — nunca dijo lo que producción exige.
+#
+# Antes de recargar el catálogo "por si cambió":
+#     python -m scripts.walmart_esquema_verificar
+# compara el archivo público de hoy contra esta huella. Si coincide, recargar no
+# aporta nada; el dato nuevo va en CORRECCIONES_MEDIDAS, que el semáforo, la IA
+# y el publicador leen en caliente.
+SPEC_SHA256_CARGADO = "76e19a9b6158389aa3387d760afda49e59c4f5ea7ddb6c2bb04412559c5295e6"
+SPEC_VERSION_CARGADA = "3.19"
+SPEC_URL = "https://developer.walmart.com/file/mp/mx/MX_MP_ITEM_INTL_SPEC.json"
 
 # Categorías con exención de UPC PROBADA (un SKU llegó a SUCCESS por ahí).
 # "Ropa" entra con prueba POSITIVA del 4-sep: el feed de ROP-0417-ROS NO trajo
