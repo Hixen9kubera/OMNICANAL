@@ -329,6 +329,26 @@ no tiene ni texto ni foto resultó no ser mercancía: son notas de bodega escrit
 celda del SKU («llegaron 4 piezas de más»). **Antes de decir «están todos los títulos»,
 contar las filas de la página cuyo título es igual a su SKU.**
 
+**El mismo packing list puede estar dos veces con el código mal escrito.** Un contenedor
+apareció una vez con su número y otra como «sin número», porque la segunda copia tenía una
+letra de más en el nombre: el mismo archivo, byte por byte. Los repetidos solo se buscaban
+DENTRO de cada contenedor, así que sus piezas se contaron doble. Ahora un archivo «sin
+número» con los mismos renglones y las mismas cantidades que otro ya contado es copia. Se
+notó porque al filtrar ese contenedor la página mostraba más piezas de las que decía su
+renglón. Dos cosas más salieron de ahí:
+
+- *Dos archivos iguales tienen el mismo sha256 y dos ids.* Si un tercero (el archivo de
+  precios de Eduardo) identifica el archivo por su sha256, sus líneas tienen que valer para
+  los dos ids: el inventario se queda con uno solo, y no siempre es el que el diccionario
+  guardó al último. Sin eso, el contenedor bueno se quedaba sin precio.
+- *Filtrar por contenedor no es filtrar filas.* Un producto sin SKU junta los renglones con
+  el mismo nombre de varios contenedores. Al filtrar un contenedor hay que contar solo sus
+  piezas de ahí (y repartir en esa proporción lo que salió y lo que queda), no la fila entera.
+
+**Dos contenedores con las mismas fotos no son un duplicado.** Hay pedidos que se parten en
+dos contenedores hermanos: mismos productos, mismas fotos, cantidades casi iguales pero no
+idénticas. Lo que distingue una copia de un hermano son las cantidades renglón por renglón.
+
 ---
 
 ## 3 · Tres cosas que NO se hacen, aunque el código lo permitiría

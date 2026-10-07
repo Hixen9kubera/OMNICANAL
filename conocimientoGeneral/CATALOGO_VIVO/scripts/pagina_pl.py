@@ -295,7 +295,7 @@ def construir(salida: Path) -> dict[str, Any]:
 
     def cubiertas(ls: list[dict[str, Any]], ct: dict[Any, float] | None) -> float | None:
         """Las piezas de la fila en los contenedores que cubren esas líneas."""
-        claves = {cont_de.get(ln["arch"]) for ln in ls} - {None}
+        claves = {cont_de.get(a) for ln in ls for a in ln["archs"]} - {None}
         return sum(v for k, v in (ct or {}).items() if str(k) in claves) or None
 
     def precio_eduardo(sku: str, fila: dict[str, Any], x: dict[str, Any]) -> dict[str, Any] | None:
@@ -570,6 +570,7 @@ def construir(salida: Path) -> dict[str, Any]:
         "estimacion": estimacion, "sin_valor": sorted(SIN_VALOR),
         "K": lista_rutas, "A": inv["archivos"], "C": conts,
         "sprite": cat.get("sprite") or {}, "spritePL": {"lado": LADO, "cols": COLS, "por_hoja": POR_HOJA, "hojas": hojas_pl},
+        "spriteG": leer_json(d / "fotos_grandes.json") or None,      # las mismas fotos, al doble (etapa `fotos_grandes`)
         "mercado": {
             "ml": {"produccion": len(prod), "produccion_leido": ml.get("produccion_leido"),
                    "grupos": len(ml.get("grupos") or {}), "actualizado": ml.get("actualizado"),

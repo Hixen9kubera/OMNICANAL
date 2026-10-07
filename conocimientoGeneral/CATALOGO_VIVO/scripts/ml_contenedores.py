@@ -65,7 +65,12 @@ def cargar(carpeta: Path, indice: dict[str, Any]) -> dict[str, Any] | None:
     necesarios = ("contenedores_v2.csv", "valor_lineas.csv", "pm_precios_full.csv")
     if not all((carpeta / n).exists() for n in necesarios):
         return None
-    id_de_sha = {a["sha256"]: a["id"] for a in indice.get("archivos") or [] if a.get("sha256")}
+    # El MISMO archivo puede estar dos veces en el indice (subido dos veces, byte por byte igual): sus
+    # lineas valen para cualquiera de los dos ids, porque el inventario se queda con uno solo de ellos.
+    ids_de_sha: dict[str, list[int]] = {}
+    for a in indice.get("archivos") or []:
+        if a.get("sha256"):
+            ids_de_sha.setdefault(a["sha256"], []).append(a["id"])
 
     precios = {p["sku"]: p for p in _csv(carpeta / "pm_precios_full.csv")}
     segunda = carpeta / "pm_precios_sd.csv"
@@ -96,11 +101,12 @@ def cargar(carpeta: Path, indice: dict[str, Any]) -> dict[str, Any] | None:
     por_sku: dict[str, list[dict[str, Any]]] = {}
     sin_archivo = 0
     for r in _csv(carpeta / "contenedores_v2.csv"):
-        arch = id_de_sha.get(r.get("archivo_sha256") or "")
+        archs = sorted(ids_de_sha.get(r.get("archivo_sha256") or "") or [])
+        arch = archs[0] if archs else None
         v = valor.get((r["contenedor"], r["archivo"], r["fila_excel"], r["id_precio"])) or {}
         sku = (r.get("sku") or "").strip().upper()
         ln = {
-            "arch": arch, "fila": int(_f(r["fila_excel"])), "cont": r["contenedor"], "sku": sku,
+            "arch": arch, "archs": archs, "fila": int(_f(r["fila_excel"])), "cont": r["contenedor"], "sku": sku,
             "id": r["id_precio"], "desc": r.get("descripcion_original") or "",
             "pz": _f(r["piezas"]), "us": _f(r["piezas_usadas"]),
             # las unidades con que ÉL valuó (ya con el factor de la revisión); si no hay valuación, las del conteo
@@ -111,7 +117,8 @@ def cargar(carpeta: Path, indice: dict[str, Any]) -> dict[str, Any] | None:
         if arch is None:
             sin_archivo += 1
         else:
-            lineas.setdefault((arch, ln["fila"]), []).append(ln)
+            for uno in archs:
+                lineas.setdefault((uno, ln["fila"]), []).append(ln)
         if sku:
             por_sku.setdefault(sku, []).append(ln)
     resumen = {}

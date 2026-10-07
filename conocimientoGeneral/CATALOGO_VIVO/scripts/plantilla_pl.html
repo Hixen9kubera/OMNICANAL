@@ -23,6 +23,14 @@ td.q .grande{color:var(--bien)}
 .sublista{width:100%;font-size:12.5px}
 .sublista td{border-top:1px solid var(--linea2);padding:5px 10px}
 .cats tr.sub2 td{background:var(--fondo);padding:0}
+.foto.zoom{cursor:zoom-in}
+.foto.zoom:hover,.foto.zoom:focus-visible{outline:2px solid var(--accion);outline-offset:1px}
+.lupa{position:fixed;inset:0;z-index:60;background:rgba(6,8,12,.78);display:flex;align-items:center;justify-content:center;padding:16px}
+.lupa[hidden]{display:none}
+.lupa-caja{background:var(--papel);border:1px solid var(--linea);border-radius:14px;padding:14px;max-width:100%;display:flex;flex-direction:column;gap:10px}
+.lupa-pie{display:flex;gap:10px;align-items:flex-start;justify-content:space-between;max-width:360px}
+.lupa-pie .txt{font-size:13px;line-height:1.35;min-width:0;overflow-wrap:anywhere}
+.lupa-pie .txt b{font-family:var(--mono);display:block}
 .subcaja{position:sticky;left:0;overflow-x:auto;border-top:1px solid var(--linea);border-bottom:1px solid var(--linea)}
 .cats tr.sub2 .sublista td{padding:6px 10px;background:transparent;vertical-align:top}
 .cats tr.sub2 .sublista td.oro{background:var(--oro-fondo)}
@@ -98,6 +106,13 @@ td.q .grande{color:var(--bien)}
   <section id="v-met" role="tabpanel" aria-labelledby="t-met" hidden><div class="metodo" id="metodo"></div></section>
 </div>
 
+<div class="lupa" id="lupa" hidden role="dialog" aria-modal="true" aria-label="Foto del producto en grande">
+  <div class="lupa-caja">
+    <div id="lupa-foto" role="img" aria-label="Foto del producto"></div>
+    <div class="lupa-pie"><div class="txt"><b id="lupa-sku"></b><span id="lupa-tit"></span><div class="mini" id="lupa-nota"></div></div><button class="btn" type="button" id="lupa-cerrar">Cerrar</button></div>
+  </div>
+</div>
+
 <script>
 (function(){
 "use strict";
@@ -123,7 +138,38 @@ function foto(r,s){
   var i=r.i!=null?r.i:r.j,pre=r.i!=null?"h":"p";
   if(i==null)return '<span class="sinfoto" style="width:'+s+'px;height:'+s+'px">sin foto</span>';
   var h=Math.floor(i/400),c=i%400,k=s/72,x=(c%20)*72*k,y=Math.floor(c/20)*72*k;
-  return '<span class="foto" role="img" aria-label="Foto del producto" style="width:'+s+'px;height:'+s+'px;background-image:url(img/'+pre+("00"+h).slice(-3)+'.jpg);background-size:'+(1440*k)+'px auto;background-position:-'+x+'px -'+y+'px"></span>';
+  return '<span class="foto zoom" role="img" tabindex="0" data-f="'+r._i+'" title="Clic para verla en grande" aria-label="Foto del producto: clic para verla en grande" style="width:'+s+'px;height:'+s+'px;background-image:url(img/'+pre+("00"+h).slice(-3)+'.jpg);background-size:'+(1440*k)+'px auto;background-position:-'+x+'px -'+y+'px"></span>';
+}
+function abrirLupa(r){
+  // La foto en grande. Si hay hoja de 144 px (fotos de Odoo o del marketplace) se usa esa; si la foto es
+  // la del packing list, no hay más que la de 72 px y se amplía (se ve borrosa: se avisa).
+  if(!r)return;
+  var G=D.spriteG,W=Math.min(320,((typeof window!=="undefined"&&window.innerWidth)||600)-60),lado,cols,h,c,url,baja=false;
+  if(r.i!=null&&G&&G.hojas){lado=G.lado;cols=G.cols;h=Math.floor(r.i/G.por_hoja);c=r.i%G.por_hoja;url="img/g"+("00"+h).slice(-3)+".jpg"}
+  else{var i=r.i!=null?r.i:r.j;if(i==null)return;lado=72;cols=20;h=Math.floor(i/400);c=i%400;url="img/"+(r.i!=null?"h":"p")+("00"+h).slice(-3)+".jpg";baja=true}
+  var k=W/lado;
+  $("lupa-foto").setAttribute("style","width:"+W+"px;height:"+W+"px;border-radius:10px;background-color:#fff;background-repeat:no-repeat;background-image:url("+url+");background-size:"+(cols*lado*k)+"px auto;background-position:-"+((c%cols)*lado*k)+"px -"+(Math.floor(c/cols)*lado*k)+"px");
+  $("lupa-sku").textContent=r.sin?"Sin SKU":r.s;
+  $("lupa-tit").textContent=r.t;
+  $("lupa-nota").textContent=baja?(r.i!=null?"Foto en baja resolución.":"Es la foto del renglón del packing list, en baja resolución."):"";
+  $("lupa").hidden=false;
+}
+function cerrarLupa(){$("lupa").hidden=true}
+function enContenedor(r,c){
+  // La parte de una fila que llegó en UN contenedor. Un producto sin SKU junta los renglones con el mismo
+  // nombre de varios contenedores, y un SKU puede venir en dos: al filtrar por contenedor se cuentan solo
+  // sus piezas de ahí, y lo que salió y lo que queda se reparten en esa proporción.
+  var pz=r.ct?r.ct[c]:null;
+  if(pz==null||!r.pc||pz>=r.pc)return r;
+  var f=pz/r.pc,x=Object.assign({},r);
+  x._parte=r.pc;x.pc=pz;x.pq=Math.round(r.pq*f);delete x.pp;
+  if(r.ps!=null)x.ps=Math.round(r.ps*f);
+  if(r.pz!=null)x.pz=Math.round(r.pz*f);
+  x._q=x.pq;
+  x._vm=r._vm!=null?x._q*r._pm:null;x._em=r._em!=null?x._q*r._pm:null;
+  x._va=r._va!=null?x._q*r._pa:null;x._ea=r._ea!=null?x._q*r._pa:null;
+  x._tm=x._vm!=null?x._vm:x._em;x._ta=x._va!=null?x._va:x._ea;
+  return x;
 }
 function preparar(){
   R.forEach(function(r,i){
@@ -191,7 +237,7 @@ function ordenar(){
     return d*(x-y)||(a.s<b.s?-1:1);
   });
 }
-function filtrar(){VISTA=R.filter(pasa);ordenar();E.pag=0;pintar()}
+function filtrar(){VISTA=R.filter(pasa);if(E.con)VISTA=VISTA.map(function(r){return enContenedor(r,E.con)});ordenar();E.pag=0;pintar()}
 function sumar(l){
   var t={n:0,sk:0,sin:0,pc:0,ps:0,pq:0,so:0,viv:0,lb:0,psx:0,pe:0,nest:0,nopl:0,lbx:0,
     vm:0,pzm:0,em:0,pem:0,emc:0,emt:0,emp:0,emi:0,pmc:0,pmt:0,pmp:0,pmi:0,nm:0,
@@ -274,7 +320,7 @@ function contenedores(r){
 }
 function fila(r){
   var ab=!!E.ab[r._i];
-  var comprado=r.pc!=null?'<div class="grande">'+nf(r.pc)+"</div>"+(r.pp!=null?'<div class="mini">proveedor <b>'+nf(r.pp)+"</b></div>":""):(r.pe!=null?'<div class="num tenue">≈ '+nf(r.pe)+'</div><div class="mini">según costos</div>':'<div class="num tenue">—</div>');
+  var comprado=r.pc!=null?'<div class="grande">'+nf(r.pc)+"</div>"+(r.pp!=null?'<div class="mini">proveedor <b>'+nf(r.pp)+"</b></div>":"")+(r._parte?'<div class="mini">de <b>'+nf(r._parte)+"</b> con los otros contenedores</div>":""):(r.pe!=null?'<div class="num tenue">≈ '+nf(r.pe)+'</div><div class="mini">según costos</div>':'<div class="num tenue">—</div>');
   var salio=r.ps?'<div class="grande">'+nf(r.pz||r.ps)+"</div>"+(r.pz?'<div class="mini">'+nf(r.ps)+" en Odoo × "+r.uf+"</div>":"")+'<div class="mini">'+Object.keys(r.cl||{}).slice(0,2).map(function(k){return esc(CORTO[k]||k)+" <b>"+nf(r.cl[k])+"</b>"}).join(" · ")+"</div>":'<div class="num tenue">0</div>';
   var queda=r.pc==null?'<div class="num tenue">—</div>':(r.so?'<span class="so">SOLD OUT</span>':'<div class="grande">'+nf(r.pq)+"</div>")+(r.dm?'<div class="mini neg">salió '+nf(r.dm)+" de más</div>":"");
   var h='<tr class="f'+(ab?" ab":"")+'"><td>'+foto(r,48)+"</td>"+
@@ -395,7 +441,8 @@ function pintar(){
     "<span>SOLD OUT <b>"+nf(t.so)+"</b></span>"+
     '<span class="of">Valor a precio de ML <b>'+fm0(t.tm)+"</b> (del producto "+mill(t.vmp)+" + banda "+mill(t.vmb)+" + estimado "+mill(t.em)+")</span>"+
     '<span class="pr">Valor a precio de Amazon <b>'+fm0(t.ta)+"</b> (medido "+mill(t.va)+" + estimado "+mill(t.ea)+")</span>"+
-    (t.nest+t.nopl?'<span class="tenue">'+nf(t.nest+t.nopl)+" SKUs sin renglón, no suman</span>":"");
+    (t.nest+t.nopl?'<span class="tenue">'+nf(t.nest+t.nopl)+" SKUs sin renglón, no suman</span>":"")+
+    (E.con?'<span class="tenue">Solo las piezas que llegaron en este contenedor.</span>':"");
   $("libro").innerHTML=cabecera()+"<tbody>"+(trozo.length?trozo.map(fila).join(""):'<tr><td colspan="12" class="vacio">Nada con esos filtros.</td></tr>')+"</tbody>";
   var pags=Math.max(1,Math.ceil(VISTA.length/E.por));
   $("pag").innerHTML='<span class="tenue">'+(VISTA.length?nf(ini+1)+"–"+nf(Math.min(ini+E.por,VISTA.length))+" de "+nf(VISTA.length):"0")+'</span><button class="btn" type="button" id="ant"'+(E.pag<=0?" disabled":"")+'>Anterior</button><span class="num">'+(E.pag+1)+" / "+pags+'</span><button class="btn" type="button" id="sig"'+(E.pag>=pags-1?" disabled":"")+">Siguiente</button>";
@@ -613,7 +660,15 @@ function arrancar(d){
   $("limpiar").addEventListener("click",function(){irAProductos({})});
   $("copiar").addEventListener("click",function(){var t=tsv(),b=this;function ok(){b.textContent="Copiado ("+nf(VISTA.length)+" filas)";setTimeout(function(){b.textContent="Copiar para Excel"},1800)}
     if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(t).then(ok,function(){var a=$("copia");a.hidden=false;a.value=t;a.select()});else{var a=$("copia");a.hidden=false;a.value=t;a.select()}});
+  document.addEventListener("keydown",function(ev){
+    if(ev.key==="Escape"){cerrarLupa();return}
+    var d=ev.target&&ev.target.dataset;
+    if((ev.key==="Enter"||ev.key===" ")&&d&&d.f!=null){ev.preventDefault();abrirLupa(R[d.f])}
+  });
   document.addEventListener("click",function(ev){
+    var ft=ev.target.closest("[data-f]");
+    if(ft&&ft.dataset&&ft.dataset.f!=null){abrirLupa(R[ft.dataset.f]);return}
+    if(ev.target.id==="lupa"||ev.target.id==="lupa-cerrar"){cerrarLupa();return}
     var b=ev.target.closest("button");if(!b)return;
     if(b.getAttribute("role")==="tab"){pestana(b.id.slice(2));return}
     if(b.dataset.i!=null){E.ab[b.dataset.i]=!E.ab[b.dataset.i];pintar();return}

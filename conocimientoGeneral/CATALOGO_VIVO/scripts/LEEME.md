@@ -139,6 +139,11 @@ usa lo que haya de su renglón (el nombre traducido del paquete de Eduardo, el t
 renglón aunque esté en chino, o su foto). Después de correrla hay que volver a correr
 `categorias_ml`, `mercado_amazon` y `pagina_pl`: solo procesan lo nuevo.
 
+`fotos_grandes` arma un segundo juego de hojas de fotos (`img/gNNN.jpg`, 144 px, con el mismo
+índice que el mosaico de 72 px) para que la página abra cada foto en grande al darle clic. Pide a
+Odoo la `image_256` de los SKUs del inventario (solo lectura) y se reanuda sola. Va antes de
+`pagina_pl`. Las fotos que salen del packing list no pasan por ahí: se amplían desde su mosaico.
+
 Hay también una etapa que no estaba en la tabla: `empate_ia` (DeepSeek empareja, dentro de
 un contenedor sin validar, los renglones sueltos con los SKUs sueltos; solo cuenta lo que
 marca con confianza alta).

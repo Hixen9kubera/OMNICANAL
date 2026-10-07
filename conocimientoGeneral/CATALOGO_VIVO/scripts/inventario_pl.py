@@ -181,10 +181,17 @@ def construir(salida: Path) -> dict[str, Any]:
     def grupo(clave: Any) -> dict[str, Any]:
         return grupos.setdefault(clave, {"clave": clave, "orig": [], "val": [], "repetidos": []})
 
+    def sin_numero(a: dict[str, Any]) -> str:
+        """La llave de un contenedor sin número Kubera: su código. Si el nombre del archivo trae algo
+        pegado («ABCD1234567Lista de empaque»), se queda solo el código (4 letras + 7 dígitos)."""
+        cont = str(a.get("contenedor") or a["id"])
+        m = re.search(r"[A-Z]{4}\d{7}(?!\d)", cont.upper())
+        return "s/n " + (m.group(0) if m else cont)
+
     for o in originales:
-        grupo(o["num"] if o["num"] else f"s/n {o.get('contenedor') or o['id']}")["orig"].append(o)
+        grupo(o["num"] if o["num"] else sin_numero(o))["orig"].append(o)
     for v in validados:
-        grupo(v["num"] if v.get("num") else f"s/n {v.get('contenedor') or v['id']}")["val"].append(v)
+        grupo(v["num"] if v.get("num") else sin_numero(v))["val"].append(v)
     for g in grupos.values():
         for lista, campo in ((g["orig"], "piezas"), (g["val"], "piezas")):
             lista.sort(key=lambda a: (a["archivo"].lower().startswith("copia"), -len(a["filas"])))
@@ -196,6 +203,26 @@ def construir(salida: Path) -> dict[str, Any]:
                 else:
                     quedan.append(a)
             lista[:] = quedan
+
+    # El MISMO packing list subido dos veces con el codigo del contenedor mal escrito cae en dos grupos:
+    # uno con numero y otro «s/n» (paso una vez, y sus piezas se contaban doble). Mismo numero
+    # de renglones y las mismas cantidades = es copia, y no se suma.
+    firmes = [(g, a) for g in grupos.values() if not str(g["clave"]).startswith("s/n") for a in g["orig"]]
+    for clave in [k for k in grupos if str(k).startswith("s/n")]:
+        g = grupos[clave]
+        quedan = []
+        for a in g["orig"]:
+            h = _huella_qty(a["filas"], "piezas")
+            gemelo = next((gg for gg, b in firmes if len(a["filas"]) >= 3 and len(b["filas"]) == len(a["filas"])
+                           and _parecido(h, _huella_qty(b["filas"], "piezas")) >= 0.95), None)
+            if gemelo is not None:
+                gemelo["repetidos"].append(a["archivo"])
+            else:
+                quedan.append(a)
+                firmes.append((g, a))
+        g["orig"] = quedan
+        if not g["orig"] and not g["val"]:
+            del grupos[clave]
 
     # ── 3 · Lo comprado por SKU, y de qué renglón sale ───────────────────────────
     comprado: dict[str, dict[str, Any]] = {}
