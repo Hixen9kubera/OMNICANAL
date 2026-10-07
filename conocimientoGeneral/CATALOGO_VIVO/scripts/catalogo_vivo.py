@@ -30,7 +30,7 @@ ETAPAS = ("odoo", "costos", "woo", "amazon", "walmart", "ml", "tiktok", "temu", 
 # El inventario visto DESDE LOS PACKING LISTS (lo que se compró) y no desde Odoo (lo
 # que el sistema dice que queda). Son etapas largas: se piden por nombre, no entran
 # en `todo`, y cada una guarda su avance para poder reanudarse.
-ETAPAS_PL = ("pl_bajar", "pl_leer", "movimientos", "inventario", "titulos", "categorias_ml",
+ETAPAS_PL = ("pl_bajar", "pl_leer", "movimientos", "inventario", "empate_ia", "titulos", "categorias_ml",
              "mercado_ml", "mercado_amazon", "pagina_pl")
 
 
@@ -48,6 +48,9 @@ def _correr_pl(nombre: str, cfg: Cfg, salida: Path, args: argparse.Namespace) ->
     if nombre == "titulos":
         import ia_titulos
         return ia_titulos.generar(cfg, salida, limite=args.limite)
+    if nombre == "empate_ia":
+        import empate_ia
+        return empate_ia.emparejar(cfg, salida, limite=args.limite)
     if nombre == "categorias_ml":
         import mercado_ml
         return mercado_ml.predecir_categorias(cfg, salida, limite=args.limite)

@@ -27,6 +27,9 @@ Las tres cuentas
 
    queda = comprado − salió        SOLD OUT = comprado > 0 y queda ≤ 0
 
+   Cuando Odoo cuenta en otra unidad (recibió una fracción exacta de lo comprado: cartones
+   contra piezas), sus salidas se multiplican por ese factor antes de restar.
+
 El empate SKU ↔ renglón
 -----------------------
 Cada SKU dice en qué packing list y en qué renglón está, y CÓMO se supo:
@@ -37,6 +40,8 @@ Cada SKU dice en qué packing list y en qué renglón está, y CÓMO se supo:
                 (solo entre los SKUs que Odoo o la base de costos mandan a ESE contenedor);
   · `foto_parecida` la misma imagen vuelta a guardar (dHash ≤ 8 de 64 bits, con margen);
   · `cantidad`  lo recibido en su orden de compra coincide con UN solo renglón;
+  · `ia`        la IA emparejó el nombre del SKU con el del renglón dentro de su contenedor
+                (etapa `empate_ia`; solo confianza alta; es inferencia, sin foto que la respalde);
   · `costos`    sin renglón: la base de costos dice cuántas cajas llegaron. Es un
                 estimado y NO suma: esas piezas ya están entre los renglones sin SKU.
 Lo que no empata queda en dos listas: SKUs sin renglón y renglones sin SKU.
@@ -253,6 +258,7 @@ def construir(salida: Path) -> dict[str, Any]:
     for sku, h in fotos_odoo.items():
         sha_a_skus[h].add(sku_norm(sku))
     recibido = {s: sum(x["recibido"] for x in lin) for s, lin in (mov.get("compras") or {}).items()}
+    pares_ia = (leer_json(d / "empate_ia.json") or {}).get("contenedores") or {}
     id_odoo = {sku_norm(f["sku"]): f["id"] for f in odoo["filas"] if f.get("foto")}
     miniaturas_odoo = salida / "cache" / "img" / "odoo"
     miniaturas_pl = Path(pl["cache"]) / "thumbs" if pl.get("cache") else None
@@ -327,6 +333,35 @@ def construir(salida: Path) -> dict[str, Any]:
                 x["conts"][n] += f["piezas"]
                 x["como"].add("cantidad")
                 x["ren"].append({"c": n, "ao": o["id"], "fo": [f["fila"] + 1], "m": "cantidad"})
+
+    # …y lo que la IA emparejó por NOMBRE dentro de cada contenedor sin validar (`empate_ia`).
+    # Solo confianza alta, y solo para SKUs que siguen sin renglón. Si varias variantes
+    # apuntan al mismo renglón, sus piezas se reparten según lo que Odoo recibió de cada una.
+    for g in grupos.values():
+        n = g["clave"]
+        if g["val"] or str(n) not in pares_ia:
+            continue
+        donde = {(o["id"], f["fila"] + 1): (o, f) for o in g["orig"] for f in o["filas"]}
+        por_renglon: dict[tuple[int, int], list[str]] = defaultdict(list)
+        for par in pares_ia[str(n)]:
+            llave = (par["a"], par["f"])
+            if par.get("conf") == "alta" and par["sku"] not in comprado and llave in donde \
+                    and not donde[llave][1]["_sku"] and par["sku"] not in por_renglon[llave]:
+                por_renglon[llave].append(par["sku"])
+        for llave, skus in por_renglon.items():
+            if not skus:
+                continue
+            o, f = donde[llave]
+            pesos_ = [recibido.get(s) or 1.0 for s in skus]
+            for s, w in zip(skus, pesos_):
+                parte = f["piezas"] * w / sum(pesos_)
+                x = de(s)
+                x["pz"] += parte
+                x["prov"] += parte
+                x["conts"][n] += parte
+                x["como"].add("ia")
+                x["ren"].append({"c": n, "ao": o["id"], "fo": [f["fila"] + 1], "m": "ia"})
+            f["_sku"] = skus[0]
 
     # ── 4 · Contenedores: comprado, validado, con SKU ────────────────────────────
     conts = []
@@ -404,6 +439,26 @@ def construir(salida: Path) -> dict[str, Any]:
             fila["lib"] = round(libre[s], 2)
         if "pl" not in fila and s in estimado:
             fila["est"], fila["est_c"] = round(estimado[s][1], 2), estimado[s][0]
+        # ¿Odoo cuenta en OTRA unidad? Si lo que recibió es una fracción exacta de lo comprado
+        # (206,600 focos en el packing list, 1,033 «piezas» recibidas: cartones de 200), sus
+        # salidas también están en esa unidad. Con un múltiplo de 5 o más se llevan a piezas;
+        # con 2, 3 o 4 solo se avisa: puede ser media recepción, o pares.
+        # Se compara contra lo RECIBIDO (proveedor y traslados), sin ajustes, y la división
+        # tiene que ser exacta: 231 comprados y 10 recibidos no es «cajas de 23», es que solo
+        # entraron 10.
+        tot["pz_salio_odoo"] += salio                   # tal como lo cuenta Odoo, antes de convertir
+        if "pl" in fila and entro >= 5:
+            razon = fila["pl"] / entro
+            veces = round(razon)
+            # …y lo que Odoo vendió más lo que dice tener debe CABER en lo que recibió. Si no,
+            # el producto entró por ajuste de inventario y «recibido» no mide nada.
+            cabe = (max(0.0, sal_cliente) + libre.get(s, 0)) <= entro * 1.15
+            if veces >= 2 and abs(razon - veces) < 0.001 and cabe:
+                fila["uf"] = veces
+                if veces >= 5 and salio:
+                    fila["sal_pz"] = round(salio * veces, 2)
+                    salio = salio * veces
+                    tot["skus_otra_unidad"] += 1
         if "pl" in fila:
             fila["q"] = round(max(0.0, fila["pl"] - salio), 2)
             if fila["q"] <= 0:
@@ -430,7 +485,7 @@ def construir(salida: Path) -> dict[str, Any]:
 
     como = Counter()
     for c in comprado.values():
-        orden = ("foto", "texto", "foto_odoo", "foto_parecida", "cantidad", "bodega")
+        orden = ("foto", "texto", "foto_odoo", "foto_parecida", "cantidad", "ia", "bodega")
         como[next((k for k in orden if k in c["como"]), "?")] += 1
     doc = {
         "generado": ahora_iso(),

@@ -189,7 +189,8 @@ def construir(salida: Path) -> dict[str, Any]:
                 fila["rm"] = x["ren_mas"]
         elif "est" in x:
             fila["pe"], fila["ec"] = x["est"], x["est_c"]
-        for a, b in (("sal", "ps"), ("cls", "cl"), ("lib", "lb"), ("ent", "en"), ("aj", "aj"), ("v1", "v1"), ("v2", "v2")):
+        for a, b in (("sal", "ps"), ("cls", "cl"), ("lib", "lb"), ("ent", "en"), ("aj", "aj"), ("v1", "v1"), ("v2", "v2"),
+                     ("uf", "uf"), ("sal_pz", "pz")):
             if x.get(a):
                 fila[b] = x[a]
         if c and "pv" in c and not c.get("rv"):
