@@ -264,6 +264,34 @@ def _hojas(fotos: list[Path], destino: Path, prefijo: str) -> int:
     return n
 
 
+LADO_G, COLS_G, POR_HOJA_G = 256, 8, 64
+
+
+def _hojas_grandes(fotos: list[Path], grandes: Path, destino: Path, prefijo: str) -> int:
+    """Las mismas fotos de `_hojas`, con el mismo índice, a 256 px: para abrirlas en grande. La de cada una
+    es la que dejó `fotos_grandes` en `<caché>/fotos/` con el mismo nombre; si no está, se amplía la miniatura."""
+    from PIL import Image, ImageOps
+
+    for viejo in destino.glob(f"{prefijo}*.jpg"):
+        viejo.unlink()
+    n = 0
+    for h in range(0, len(fotos), POR_HOJA_G):
+        trozo = fotos[h:h + POR_HOJA_G]
+        filas = (len(trozo) + COLS_G - 1) // COLS_G
+        lienzo = Image.new("RGB", (COLS_G * LADO_G, filas * LADO_G), (255, 255, 255))
+        for i, chica in enumerate(trozo):
+            ruta = grandes / chica.name
+            try:
+                im = Image.open(ruta if ruta.exists() else chica).convert("RGB")
+            except Exception:  # noqa: BLE001
+                continue
+            im = ImageOps.contain(im, (LADO_G, LADO_G), Image.LANCZOS)      # llena el cuadro sin deformar
+            lienzo.paste(im, ((i % COLS_G) * LADO_G + (LADO_G - im.width) // 2, (i // COLS_G) * LADO_G + (LADO_G - im.height) // 2))
+        lienzo.save(destino / f"{prefijo}{n:03d}.jpg", "JPEG", quality=74, optimize=True, progressive=True)
+        n += 1
+    return n
+
+
 def construir(salida: Path) -> dict[str, Any]:
     d = salida / "datos"
     inv = leer_json(d / "inventario_pl.json")
@@ -533,6 +561,7 @@ def construir(salida: Path) -> dict[str, Any]:
             fila["az"] = p
         filas.append(fila)
     hojas_pl = _hojas(fotos_pl, salida / "img", "p") if fotos_pl else 0
+    hojas_q = _hojas_grandes(fotos_pl, cache / "fotos", salida / "img", "q") if fotos_pl else 0
     # Un «medido» de Amazon a más de 8 veces el precio de ML del MISMO producto (exacto, nuestro o
     # revisado) casi siempre es otro producto con el mismo nombre —la batería de litio para casa contra
     # la de una herramienta— o un paquete contra una pieza. Queda como indicio y se estima.
@@ -570,7 +599,8 @@ def construir(salida: Path) -> dict[str, Any]:
         "estimacion": estimacion, "sin_valor": sorted(SIN_VALOR),
         "K": lista_rutas, "A": inv["archivos"], "C": conts,
         "sprite": cat.get("sprite") or {}, "spritePL": {"lado": LADO, "cols": COLS, "por_hoja": POR_HOJA, "hojas": hojas_pl},
-        "spriteG": leer_json(d / "fotos_grandes.json") or None,      # las mismas fotos, al doble (etapa `fotos_grandes`)
+        "spriteG": leer_json(d / "fotos_grandes.json") or None,      # las mismas fotos, en grande (etapa `fotos_grandes`)
+        "spriteQ": {"lado": LADO_G, "cols": COLS_G, "por_hoja": POR_HOJA_G, "hojas": hojas_q},   # …y las del packing list
         "mercado": {
             "ml": {"produccion": len(prod), "produccion_leido": ml.get("produccion_leido"),
                    "grupos": len(ml.get("grupos") or {}), "actualizado": ml.get("actualizado"),

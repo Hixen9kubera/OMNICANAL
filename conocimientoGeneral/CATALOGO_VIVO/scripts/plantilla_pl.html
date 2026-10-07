@@ -28,7 +28,7 @@ td.q .grande{color:var(--bien)}
 .lupa{position:fixed;inset:0;z-index:60;background:rgba(6,8,12,.78);display:flex;align-items:center;justify-content:center;padding:16px}
 .lupa[hidden]{display:none}
 .lupa-caja{background:var(--papel);border:1px solid var(--linea);border-radius:14px;padding:14px;max-width:100%;display:flex;flex-direction:column;gap:10px}
-.lupa-pie{display:flex;gap:10px;align-items:flex-start;justify-content:space-between;max-width:360px}
+.lupa-pie{display:flex;gap:10px;align-items:flex-start;justify-content:space-between;max-width:384px}
 .lupa-pie .txt{font-size:13px;line-height:1.35;min-width:0;overflow-wrap:anywhere}
 .lupa-pie .txt b{font-family:var(--mono);display:block}
 .subcaja{position:sticky;left:0;overflow-x:auto;border-top:1px solid var(--linea);border-bottom:1px solid var(--linea)}
@@ -141,17 +141,18 @@ function foto(r,s){
   return '<span class="foto zoom" role="img" tabindex="0" data-f="'+r._i+'" title="Clic para verla en grande" aria-label="Foto del producto: clic para verla en grande" style="width:'+s+'px;height:'+s+'px;background-image:url(img/'+pre+("00"+h).slice(-3)+'.jpg);background-size:'+(1440*k)+'px auto;background-position:-'+x+'px -'+y+'px"></span>';
 }
 function abrirLupa(r){
-  // La foto en grande. Si hay hoja de 144 px (fotos de Odoo o del marketplace) se usa esa; si la foto es
-  // la del packing list, no hay más que la de 72 px y se amplía (se ve borrosa: se avisa).
+  // La MISMA foto de la fila, en grande: la de Odoo (o del marketplace) desde las hojas `g`, y la del
+  // renglón del packing list desde las hojas `q`. Si no hay hoja grande, se amplía la miniatura.
   if(!r)return;
-  var G=D.spriteG,W=Math.min(320,((typeof window!=="undefined"&&window.innerWidth)||600)-60),lado,cols,h,c,url,baja=false;
-  if(r.i!=null&&G&&G.hojas){lado=G.lado;cols=G.cols;h=Math.floor(r.i/G.por_hoja);c=r.i%G.por_hoja;url="img/g"+("00"+h).slice(-3)+".jpg"}
-  else{var i=r.i!=null?r.i:r.j;if(i==null)return;lado=72;cols=20;h=Math.floor(i/400);c=i%400;url="img/"+(r.i!=null?"h":"p")+("00"+h).slice(-3)+".jpg";baja=true}
+  var G=r.i!=null?D.spriteG:D.spriteQ,i=r.i!=null?r.i:r.j,W=Math.min(384,((typeof window!=="undefined"&&window.innerWidth)||600)-60),lado,cols,h,c,url,baja=false;
+  if(i==null)return;
+  if(G&&G.hojas){lado=G.lado;cols=G.cols;h=Math.floor(i/G.por_hoja);c=i%G.por_hoja;url="img/"+(r.i!=null?"g":"q")+("00"+h).slice(-3)+".jpg"}
+  else{lado=72;cols=20;h=Math.floor(i/400);c=i%400;url="img/"+(r.i!=null?"h":"p")+("00"+h).slice(-3)+".jpg";baja=true}
   var k=W/lado;
   $("lupa-foto").setAttribute("style","width:"+W+"px;height:"+W+"px;border-radius:10px;background-color:#fff;background-repeat:no-repeat;background-image:url("+url+");background-size:"+(cols*lado*k)+"px auto;background-position:-"+((c%cols)*lado*k)+"px -"+(Math.floor(c/cols)*lado*k)+"px");
   $("lupa-sku").textContent=r.sin?"Sin SKU":r.s;
   $("lupa-tit").textContent=r.t;
-  $("lupa-nota").textContent=baja?(r.i!=null?"Foto en baja resolución.":"Es la foto del renglón del packing list, en baja resolución."):"";
+  $("lupa-nota").textContent=baja?"Foto en baja resolución.":(r.i==null?"Es la foto de su renglón en el packing list.":"");
   $("lupa").hidden=false;
 }
 function cerrarLupa(){$("lupa").hidden=true}

@@ -5,33 +5,38 @@ La página pinta cada foto desde un mosaico de 72 px (`img/hNNN.jpg`): sirve par
 ver qué producto es. Al dar clic en una foto se abre en grande, y para eso hace falta una imagen mejor.
 
 Esta etapa arma un SEGUNDO juego de hojas, `img/gNNN.jpg`, con la misma numeración que el mosaico
-chico (el índice `i` de cada fila), pero a 144 px. De dónde sale cada foto:
+chico (el índice `i` de cada fila), pero a 256 px. De dónde sale cada foto:
 
   · Odoo: `image_256` del producto (SOLO LECTURA; se guarda en `cache/img/odoo256/`).
   · Si la foto de la fila es la de un marketplace: la misma URL pública, pedida en grande (GET).
   · Si no se consigue ninguna, se amplía la de 72 px: se ve borrosa, pero el índice no queda vacío.
 
 Solo se bajan las fotos de los SKUs del inventario (`inventario_pl.json`). Se reanuda sola:
-lo que ya está en el caché no se vuelve a pedir. Las fotos que vienen del packing list (las filas
-sin foto en Odoo) NO pasan por aquí: la página las amplía desde su mosaico de 72 px.
+lo que ya está en el caché no se vuelve a pedir.
+
+Las filas sin foto en Odoo usan la foto de su renglón del PACKING LIST. De esas solo existía la
+miniatura de 72 px que deja `pl_leer`; aquí se vuelven a abrir los Excel que hacen falta y se
+guarda la misma foto a tamaño completo en `<caché de packing lists>/fotos/`. Las hojas de esas
+(`img/qNNN.jpg`) las arma `pagina_pl`, que es quien sabe qué foto le tocó a cada fila.
 """
 from __future__ import annotations
 
 import base64
 import hashlib
 import io
+import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 from comun import Cfg, Red, aviso, escribir_json, leer_json, sku_norm
 
-LADO, COLS, POR_HOJA = 144, 12, 144
+LADO, COLS, POR_HOJA = 256, 8, 64
 
 
 def _cuadro(datos: bytes) -> bytes | None:
     """La foto centrada en un lienzo blanco de LADO × LADO."""
-    from PIL import Image
+    from PIL import Image, ImageOps
 
     try:
         im = Image.open(io.BytesIO(datos))
@@ -45,12 +50,65 @@ def _cuadro(datos: bytes) -> bytes | None:
         im = fondo
     else:
         im = im.convert("RGB")
-    im.thumbnail((LADO, LADO), Image.LANCZOS)
+    im = ImageOps.contain(im, (LADO, LADO), Image.LANCZOS)          # llena el cuadro sin deformar
     lienzo = Image.new("RGB", (LADO, LADO), (255, 255, 255))
     lienzo.paste(im, ((LADO - im.width) // 2, (LADO - im.height) // 2))
     sal = io.BytesIO()
     lienzo.save(sal, "JPEG", quality=88)
     return sal.getvalue()
+
+
+def _extraer(tarea: tuple[dict[str, Any], str, str]) -> int:
+    """Vuelve a leer UN packing list solo para sacar sus fotos grandes (lo hace `pl_leer.huella`)."""
+    import warnings
+
+    import pl_leer
+
+    meta, cache_txt, tmp_txt = tarea
+    warnings.simplefilter("ignore")
+    ruta = Path(cache_txt) / meta["tipo"] / f"{meta['id']}.xlsx"
+    try:
+        (pl_leer._original if meta["tipo"] == "original" else pl_leer._validado)(meta, ruta, Path(tmp_txt))
+    except Exception:  # noqa: BLE001 — un archivo roto no detiene a los demás
+        return 0
+    return 1
+
+
+def del_packing_list(salida: Path, procesos: int = 4) -> dict[str, Any]:
+    """Las fotos de los renglones SIN SKU, a tamaño completo, en `<caché>/fotos/`."""
+    import os
+    import shutil
+    from concurrent.futures import ProcessPoolExecutor
+
+    datos = salida / "datos"
+    indice = leer_json(datos / "pl_indice.json") or {}
+    inv = leer_json(datos / "inventario_pl.json") or {}
+    cache = Path(indice.get("cache") or "")
+    if not indice or not cache.exists():
+        aviso("fotos grandes: no está el caché de packing lists; las fotos de renglón se quedan en 72 px")
+        return {"pedidas": 0, "listas": 0}
+    destino = cache / "fotos"
+    destino.mkdir(parents=True, exist_ok=True)
+    quiero = {f"{r.get('o', 'o')}_{r['a']}_{r['f'] - 1}.jpg" for r in inv.get("renglones_sin_sku") or [] if r.get("foto")}
+    faltan = {n for n in quiero if not (destino / n).exists()}
+    if faltan:
+        (destino / "_quiero.json").write_text(json.dumps(sorted(faltan)), encoding="utf-8")
+        ids = {(n[0], int(n.split("_")[1])) for n in faltan}
+        metas = [a for a in indice["archivos"] if a["local"].get("ok")
+                 and (("o" if a["tipo"] == "original" else "v"), a["id"]) in ids]
+        metas.sort(key=lambda a: -(a["local"].get("bytes") or 0))
+        tmp = cache / "thumbs_tmp"
+        os.environ["PL_FOTOS_GRANDES"] = str(destino)
+        aviso(f"fotos grandes: sacando {len(faltan)} fotos de {len(metas)} packing lists")
+        with ProcessPoolExecutor(max_workers=max(1, procesos)) as pool:
+            hechos = sum(pool.map(_extraer, [(a, str(cache), str(tmp)) for a in metas]))
+        os.environ.pop("PL_FOTOS_GRANDES", None)
+        shutil.rmtree(tmp, ignore_errors=True)
+        (destino / "_quiero.json").unlink(missing_ok=True)
+        aviso(f"fotos grandes: {hechos} de {len(metas)} packing lists releídos")
+    listas = sum(1 for n in quiero if (destino / n).exists())
+    aviso(f"fotos grandes: {listas} de {len(quiero)} fotos de renglón a tamaño completo")
+    return {"pedidas": len(quiero), "listas": listas}
 
 
 def construir(cfg: Cfg, salida: Path) -> dict[str, Any]:
@@ -155,4 +213,4 @@ def construir(cfg: Cfg, salida: Path) -> dict[str, Any]:
     doc = {"lado": LADO, "cols": COLS, "por_hoja": POR_HOJA, "hojas": hojas, "fotos": buenas, "ampliadas": ampliadas}
     escribir_json(datos / "fotos_grandes.json", doc)
     aviso(f"fotos grandes: {buenas} fotos en {hojas} hojas ({peso / 1e6:.1f} MB) · {ampliadas} ampliadas de la chica")
-    return {**doc, "mb": round(peso / 1e6, 1)}
+    return {**doc, "mb": round(peso / 1e6, 1), "packing_list": del_packing_list(salida)}

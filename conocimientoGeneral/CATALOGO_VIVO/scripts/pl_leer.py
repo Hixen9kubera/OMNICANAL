@@ -30,6 +30,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import posixpath
 import re
 import warnings
@@ -180,6 +181,37 @@ def fotos_hoja(xlsx: bytes, hoja: str, columna: int | None = None) -> dict[int, 
         return out
 
 
+LADO_GRANDE = 320
+_GRANDES: Any = False          # (carpeta, nombres que se quieren) · None si no se pidió · False = sin mirar
+
+
+def _grandes() -> tuple[Path, set[str]] | None:
+    """¿Se pidió guardar también la foto a tamaño completo? Lo dice la variable de entorno
+    `PL_FOTOS_GRANDES` (una carpeta con `_quiero.json`: los nombres de miniatura que hacen falta).
+    Va por el entorno para que llegue a los procesos hijos."""
+    global _GRANDES
+    if _GRANDES is False:
+        carpeta = os.environ.get("PL_FOTOS_GRANDES") or ""
+        lista = Path(carpeta) / "_quiero.json" if carpeta else None
+        _GRANDES = (Path(carpeta), set(json.loads(lista.read_text(encoding="utf-8")))) if lista and lista.exists() else None
+    return _GRANDES
+
+
+def _guardar_grande(datos: bytes, destino: Path) -> None:
+    """La misma foto del renglón, sin achicarla a miniatura: hasta LADO_GRANDE px por lado."""
+    from PIL import Image
+
+    try:
+        im = Image.open(io.BytesIO(datos)).convert("RGBA")
+    except Exception:  # noqa: BLE001
+        return
+    fondo = Image.new("RGB", im.size, (255, 255, 255))
+    fondo.paste(im, mask=im.split()[3])
+    fondo.thumbnail((LADO_GRANDE, LADO_GRANDE), Image.LANCZOS)
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    fondo.save(destino, "JPEG", quality=88)
+
+
 def huella(datos: bytes, destino: Path) -> dict[str, str] | None:
     """Miniatura a disco + las dos huellas de la foto: `s` (sha1 del archivo tal cual
     viene incrustado: si coincide con la de Odoo es EL MISMO archivo) y `d` (dHash
@@ -205,6 +237,9 @@ def huella(datos: bytes, destino: Path) -> dict[str, str] | None:
     lienzo.paste(fondo, ((LADO - fondo.width) // 2, (LADO - fondo.height) // 2))
     destino.parent.mkdir(parents=True, exist_ok=True)
     lienzo.save(destino, "JPEG", quality=62)
+    pedidas = _grandes()
+    if pedidas and destino.name in pedidas[1]:
+        _guardar_grande(datos, pedidas[0] / destino.name)
     return {"s": hashlib.sha1(datos).hexdigest(), "d": f"{bits:016x}"}
 
 
