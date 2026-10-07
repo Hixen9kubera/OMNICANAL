@@ -135,7 +135,10 @@ def construir(salida: Path) -> dict[str, Any]:
             for t in tokens(v["archivo"]):
                 tok_num.setdefault(t, v["num"])
     cont_de_sku: dict[str, set[int]] = defaultdict(set)        # dónde dicen Odoo y costos que está cada SKU
+    skus_de_codigo: dict[str, set[str]] = defaultdict(set)     # …y por CÓDIGO, para los que no traen «contenedor N»
     for sku, c in costos.items():
+        for t in tokens(c.get("contenedor")):
+            skus_de_codigo[t].add(sku_norm(sku))
         m = RE_SUFIJO.search(c.get("contenedor") or "")
         if m:
             n = int(m.group(1))
@@ -143,6 +146,8 @@ def construir(salida: Path) -> dict[str, Any]:
             for t in tokens(c["contenedor"]):
                 tok_num.setdefault(t, n)
     for f in odoo["filas"]:
+        for t in tokens(f.get("contenedor")):
+            skus_de_codigo[t].add(sku_norm(f["sku"]))
         m = RE_NUM.search(f.get("contenedor") or "")
         if m:
             n = int(m.group(1))
@@ -199,6 +204,7 @@ def construir(salida: Path) -> dict[str, Any]:
         return comprado.setdefault(sku, {"pz": 0.0, "prov": 0.0, "conts": defaultdict(float), "ren": [], "como": set()})
 
     renglones_sin_sku: list[dict[str, Any]] = []
+    en_odoo = {sku_norm(f["sku"]) for f in odoo["filas"]}
     for g in grupos.values():
         n = g["clave"]
         por_sha: dict[str, list[tuple[dict, dict]]] = defaultdict(list)
@@ -211,7 +217,10 @@ def construir(salida: Path) -> dict[str, Any]:
                 por_texto[(_plano(f["titulo"]), round(f["piezas"]))].append((o, f))
         for v in g["val"]:
             for f in v["filas"]:
-                sku = f["sku"]
+                # Bodega a veces anota un SKU con comillas de pulgada, grados o asteriscos
+                # (TEC-1614-NEG-TV7"): no pasa el filtro de forma, pero si ES una referencia
+                # de Odoo, vale.
+                sku = f["sku"] or (sku_norm(f.get("sku_raw")) if sku_norm(f.get("sku_raw")) in en_odoo else "")
                 if not sku:
                     # Bodega contó el renglón pero no le puso SKU: sigue siendo mercancía comprada.
                     pz = f["piezas"] or f["qty_pl"]
@@ -265,9 +274,14 @@ def construir(salida: Path) -> dict[str, Any]:
     for g in grupos.values():
         n = g["clave"]
         libres = [(o, f) for o in g["orig"] for f in o["filas"] if not f["_sku"]]
-        if not isinstance(n, int) or g["val"]:
+        if g["val"]:
             continue                      # con validado, el contenido lo dice bodega: no se adivina
-        candidatos = {s for s, ns in cont_de_sku.items() if n in ns}
+        candidatos = {s for s, ns in cont_de_sku.items() if n in ns} if isinstance(n, int) else set()
+        for a in g["orig"]:
+            for t in tokens(a["archivo"]) | tokens(a.get("contenedor")):
+                candidatos |= skus_de_codigo.get(t, set())
+        if not candidatos:
+            continue
         for o, f in libres:
             if not f.get("foto"):
                 continue

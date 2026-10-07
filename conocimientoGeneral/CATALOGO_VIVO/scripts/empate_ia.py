@@ -63,11 +63,16 @@ def emparejar(cfg: Cfg, salida: Path, limite: int = 0) -> dict[str, Any]:
             cont_odoo[sku_norm(f["sku"])] = int(m.group(1))
     recibido = {s: sum(x["recibido"] for x in lin) for s, lin in (mov.get("compras") or {}).items()}
 
+    # Un contenedor sin número de Kubera se reconoce por su código (MRKU2054020).
+    clave_de_codigo = {cod: c["clave"] for c in inv["contenedores"] if not c["val"] for cod in c.get("codigos") or []}
+    texto_cont = {sku_norm(f["sku"]): (f.get("contenedor") or "").upper() for f in odoo["filas"]}
     sueltos: dict[str, list[str]] = defaultdict(list)          # contenedor → SKUs sin renglón
     for sku, x in inv["skus"].items():
         if "pl" in x:
             continue
         n = x.get("est_c") or cont_odoo.get(sku)
+        if not n:
+            n = next((clave for cod, clave in clave_de_codigo.items() if cod in texto_cont.get(sku, "")), None)
         if n:
             sueltos[str(n)].append(sku)
     renglones: dict[str, list[dict[str, Any]]] = defaultdict(list)

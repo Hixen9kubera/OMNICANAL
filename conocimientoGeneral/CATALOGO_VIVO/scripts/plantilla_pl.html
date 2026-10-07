@@ -119,7 +119,9 @@ function preparar(){
     // calcula y se muestra, pero se suma APARTE, como estimación gruesa.
     // Firme = al menos dos publicaciones del mismo producto Y del mismo tamaño de paquete. Llevar
     // el precio de un paquete de 100 a uno de 200 con una regla de tres no es un precio: va a débil.
-    var fm_=r.ml&&r.ml.n>=2&&!r.ml.x,fa_=r.az&&r.az.n>=2&&!r.az.x;
+    // El catálogo de Mercado Libre es de productos de marca (Truper, Thomas & Friends): sirve de
+    // referencia, pero valuar con él mercancía genérica la encarece. Tampoco suma.
+    var fm_=r.ml&&r.ml.n>=2&&!r.ml.x&&r.ml.o!=="c",fa_=r.az&&r.az.n>=2&&!r.az.x;
     r._vm=r._q!=null&&fm_&&!r.sin?r._q*r.ml.m:null;
     r._va=r._q!=null&&fa_&&!r.sin?r._q*r.az.m:null;
     r._sm=r.sin&&fm_?r._q*r.ml.m:null;
@@ -244,6 +246,7 @@ function bloquePrecio(nombre,p,clase){
     '<dt>De dónde sale</dt><dd>'+esc(ORIGEN[p.o]||"")+(p.q?" «"+esc(p.q)+"»":"")+"</dd></dl>";
   if(p.pk)h+='<div class="mini" style="margin-top:6px">Las publicaciones venden un paquete de '+p.pk+" y el inventario cuenta piezas sueltas: el precio está partido entre "+p.pk+".</div>";
   if(p.n<2)h+='<div class="mini" style="margin-top:6px">Una sola publicación comparable: se muestra como indicio y no entra al valor total.</div>';
+  if(p.o==="c")h+='<div class="mini" style="margin-top:6px">Sale del catálogo de Mercado Libre, que es de productos de marca: es una referencia y no entra al valor total.</div>';
   if(p.x)h+='<div class="mini" style="margin-top:6px">No entra al valor total: no hubo dos publicaciones con el mismo tamaño de paquete.</div>';
   if(p.x)h+='<div class="mini" style="margin-top:6px">Incluye rivales con otro tamaño de paquete, llevados a nuestra unidad: es aproximado.</div>';
   if(p.ej&&p.ej.length)h+='<ul class="lista" style="margin-top:8px">'+p.ej.map(function(e){return "<li>"+esc(e[0])+' <span class="num">'+fm0(e[1])+"</span></li>"}).join("")+"</ul>";
@@ -329,7 +332,7 @@ function cuenta(){
     '<div class="gran precio"><span class="tit">Valor de lo que queda, a precio de Mercado Libre</span><span class="que">Piezas que quedan × precio promedio de la competencia en Mercado Libre.</span><div class="cifra">'+fm0(t.vm)+"</div>"+
       '<p class="pie">SKUs identificados con al menos dos publicaciones del mismo producto. Cubre <b>'+nf(t.pzm)+"</b> piezas ("+(t.pqs?(100*t.pzm/t.pqs).toFixed(1):"0")+"% de lo que queda con SKU); el resto no tiene todavía un rival comparable medido en Mercado Libre.</p>"+
       aparte(t.sm,t.psm,t.dm,t.pdm,t.vm)+
-      '<div class="mas"><span>Fuente: los rivales que el juez de Competencia del panel marcó como el mismo producto ('+nf((m.ml||{}).produccion)+" SKUs medidos) y, donde no hay, el catálogo de Mercado Libre.</span></div></div>"+
+      '<div class="mas"><span>Fuente: los rivales que el juez de Competencia del panel marcó como el mismo producto ('+nf((m.ml||{}).produccion)+" SKUs medidos), para ese SKU o para otra variante de su modelo.</span></div></div>"+
     '<div class="gran pror"><span class="tit">Valor de lo que queda, a precio de Amazon</span><span class="que">Piezas que quedan × precio promedio de la competencia en Amazon México.</span><div class="cifra">'+fm0(t.va)+"</div>"+
       '<p class="pie">SKUs identificados con al menos dos publicaciones del mismo producto. Cubre <b>'+nf(t.pza)+"</b> piezas ("+(t.pqs?(100*t.pza/t.pqs).toFixed(1):"0")+"% de lo que queda con SKU)."+(faltan?" <b>La captura sigue en curso:</b> van "+nf(am.juzgados)+" de "+nf(am.grupos)+" grupos de productos.":"")+"</p>"+
       aparte(t.sa,t.psa,t.da,t.pda,t.va)+
@@ -338,7 +341,7 @@ function cuenta(){
 function aparte(sin,pzSin,deb,pzDeb,base){
   if(!sin&&!deb)return "";
   return '<div class="mas">'+(sin?"<span>Aparte, productos sin SKU (estimación gruesa, por el nombre del packing list): <b>"+fm0(sin)+"</b> · "+nf(pzSin)+" piezas</span>":"")+
-    (deb?"<span>Aparte, con evidencia débil —una sola publicación, o solo paquetes de otro tamaño— (no suma): <b>"+fm0(deb)+"</b> · "+nf(pzDeb)+" piezas</span>":"")+
+    (deb?"<span>Aparte, con evidencia débil —una sola publicación, paquetes de otro tamaño, o solo catálogo de marca— (no suma): <b>"+fm0(deb)+"</b> · "+nf(pzDeb)+" piezas</span>":"")+
     (sin?"<span>SKUs identificados + productos sin SKU: <b>"+fm0(base+sin)+"</b></span>":"")+"</div>";
 }
 function agrupar(){
@@ -414,7 +417,7 @@ function metodo(){
    ["Productos sin SKU","El packing list original no trae SKU. En los contenedores que bodega no ha validado, un renglón solo tiene SKU si la foto del producto en Odoo es la de ese renglón, o si lo recibido en su orden de compra coincide con un solo renglón. Lo demás aparece como «Sin SKU», agrupado por nombre: es mercancía comprada y cuenta en el total, pero no se le puede restar ninguna salida."],
    ["Títulos","Todos los productos llevan un título al estilo de Mercado Libre México. Si el producto está publicado en Mercado Libre, es el de su publicación. Si no, lo escribió la IA (DeepSeek) con las mismas instrucciones del panel; cuando el nombre no describía el producto y no había categoría confiable, la IA lo escribió viendo la foto. Cada fila dice cuál fue su caso."],
    ["Categoría","La de Mercado Libre. Sale de la publicación o de lo que el panel guardó; si no hay, la da el predictor de categorías de Mercado Libre a partir del título (marcada «predicha»); como último recurso, el prefijo del SKU (marcada «estimada»)."],
-   ["Precio de Mercado Libre","Precio promedio de las publicaciones rivales que son el mismo producto. Primero, las que el juez de Competencia del panel ya midió para ese SKU; si no hay, las de otra variante del mismo modelo; si tampoco, las del catálogo de Mercado Libre juzgadas aquí. El buscador de Mercado Libre no se puede leer por API ni por página, así que la cobertura es la de lo ya medido."],
+   ["Precio de Mercado Libre","Precio promedio de las publicaciones rivales que son el mismo producto. Primero, las que el juez de Competencia del panel ya midió para ese SKU; si no hay, las de otra variante del mismo modelo; si tampoco, se muestra como referencia el catálogo de Mercado Libre, que no suma porque es de productos de marca. El buscador de Mercado Libre no se puede leer por API ni por página, así que la cobertura es la de lo ya medido."],
    ["Precio de Amazon","Por palabra clave: se busca el término en la API de Amazon México, se lee el precio de la caja de compra de cada publicación, se cuenta una vez cada familia de variantes, y un juez (IA) deja solo las que son el mismo producto. El dato principal es la media; al lado van la mediana y el rango central, porque dos publicaciones caras mueven el promedio. Amazon no da ventas ni visitas de publicaciones ajenas: no se estiman."],
    ["Valor a precio de mercado","Piezas que quedan × precio promedio de la competencia, por separado para cada canal. Es precio al público, antes de comisiones, envíos e impuestos. La cifra grande solo suma SKUs identificados que tienen al menos dos publicaciones del mismo producto y del mismo tamaño de paquete. Aparte van dos cosas que no se mezclan con ella: los productos sin SKU, cuyo precio es el de ese TIPO de producto (solo se conoce el nombre que le puso el proveedor), y los que tienen evidencia débil (una sola publicación comparable, o solo paquetes de otro tamaño). Cuando la publicación vende un paquete y el inventario cuenta piezas, el precio se parte entre las piezas del paquete."],
    ["Lo que NO es esta página","No escribe en ningún sistema. Es una foto: cada fuente dice a qué hora se leyó. «Queda» es lo que debería existir según lo comprado y lo que salió; lo que Odoo dice tener hoy se muestra al lado para comparar."]

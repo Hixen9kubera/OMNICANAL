@@ -73,6 +73,18 @@ def _precio(g: dict[str, Any] | None, origen: str, entre: int = 1) -> dict[str, 
     return p
 
 
+def _limpio(x: Any) -> Any:
+    """Quita el carácter de reemplazo (U+FFFD) que dejan los textos mal codificados de origen:
+    un título de Amazon o un nombre de packing list con un byte roto no debe tumbar la publicación."""
+    if isinstance(x, str):
+        return x.replace(chr(0xFFFD), "")
+    if isinstance(x, list):
+        return [_limpio(v) for v in x]
+    if isinstance(x, dict):
+        return {k: _limpio(v) for k, v in x.items()}
+    return x
+
+
 def _hojas(fotos: list[Path], destino: Path, prefijo: str) -> int:
     """Hojas de mosaicos de 72 px. Devuelve cuántas escribió."""
     from PIL import Image
@@ -277,7 +289,7 @@ def construir(salida: Path) -> dict[str, Any]:
         },
         "R": filas,
     }
-    escribir_json(salida / "datos_pl.json", doc)
+    escribir_json(salida / "datos_pl.json", _limpio(doc))
     (salida / "datos_pl.js").write_text(
         "window.INVENTARIO=" + (salida / "datos_pl.json").read_text(encoding="utf-8") + ";", encoding="utf-8")
 
