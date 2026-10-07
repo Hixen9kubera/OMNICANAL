@@ -134,6 +134,11 @@ Cómo se une: por SKU; lo que no tiene SKU, por archivo (el `sha256` es el mismo
 cuál de sus cuatro fuentes salió el precio (exacto, nuestro precio publicado, revisado a
 mano, banda de categoría), y en la página se ven el mínimo, la media y el máximo.
 
+`titulos` también titula los SKUs que bodega anotó y que no tienen nombre en ningún sistema:
+usa lo que haya de su renglón (el nombre traducido del paquete de Eduardo, el texto del
+renglón aunque esté en chino, o su foto). Después de correrla hay que volver a correr
+`categorias_ml`, `mercado_amazon` y `pagina_pl`: solo procesan lo nuevo.
+
 Hay también una etapa que no estaba en la tabla: `empate_ia` (DeepSeek empareja, dentro de
 un contenedor sin validar, los renglones sueltos con los SKUs sueltos; solo cuenta lo que
 marca con confianza alta).

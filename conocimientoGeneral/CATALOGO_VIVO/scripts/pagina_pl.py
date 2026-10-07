@@ -47,7 +47,7 @@ def _firme(p: dict[str, Any] | None, canal: str) -> bool:
     """Precio MEDIDO: dos publicaciones del mismo producto y del mismo tamaño de paquete; en ML, no de catálogo.
     Del paquete de Eduardo cuenta lo que es precio DEL PRODUCTO (exacto, nuestro o revisado), no la banda."""
     if p and p.get("o") == "e":
-        return p.get("f") in ("f", "n", "r")
+        return p.get("cl") in ("f", "n", "r")
     if p and p.get("dz"):                    # Amazon «medido» a más de 8 veces su precio de ML: no cuenta
         return False
     return bool(p) and p["n"] >= 2 and not p.get("x") and not (canal == "ml" and p.get("o") == "c")
@@ -129,7 +129,7 @@ def estimar(filas: list[dict[str, Any]], rutas: list[list[str]]) -> dict[str, An
                 r = a["m"] / m["m"]
                 if 0.25 <= r <= 8:
                     for llave in llaves(sub(f)):
-                        cruce["p" if m.get("f") in ("f", "n", "r") else "b"][llave].append(r)
+                        cruce["p" if m.get("cl") in ("f", "n", "r") else "b"][llave].append(r)
             for tipo, tabla in cruce.items():
                 if tabla["*"]:
                     gen = statistics.median(tabla["*"])
@@ -153,7 +153,7 @@ def estimar(filas: list[dict[str, Any]], rutas: list[list[str]]) -> dict[str, An
                 # El precio de ML de la fila: el de Eduardo; si su archivo no la trae, el estimado de aquí.
                 de_ml, tipo = None, "b"
                 if m and m.get("o") == "e" and m["m"] > 0:
-                    de_ml, tipo = m["m"], ("p" if m.get("f") in ("f", "n", "r") else "b")
+                    de_ml, tipo = m["m"], ("p" if m.get("cl") in ("f", "n", "r") else "b")
                 elif f.get("em"):
                     de_ml = f["em"][0]
                 rz, nivel = de(razon.get(tipo) or {}, s) if de_ml else (None, None)
@@ -288,9 +288,10 @@ def construir(salida: Path) -> dict[str, Any]:
     por_desc: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     cuenta_edu = {"sku": 0, "sku_renglon": 0, "sin": 0, "sin_nombre": 0, "insumos": 0}
     if edu:
-        for (arch, _fila), ln in edu["lineas"].items():
-            if not ln["sku"] and arch in cont_de:
-                por_desc[(cont_de[arch], plano(ln["desc"].split(" / ")[0]))].append(ln)
+        for (arch, _fila), del_renglon in edu["lineas"].items():
+            for ln in del_renglon:
+                if not ln["sku"] and arch in cont_de:
+                    por_desc[(cont_de[arch], plano(ln["desc"].split(" / ")[0]))].append(ln)
 
     def cubiertas(ls: list[dict[str, Any]], ct: dict[Any, float] | None) -> float | None:
         """Las piezas de la fila en los contenedores que cubren esas líneas."""
@@ -310,10 +311,10 @@ def construir(salida: Path) -> dict[str, Any]:
             ls, vistos = [], set()
             for ren in x.get("ren") or []:
                 for fo in ren.get("fo") or []:
-                    ln = edu["lineas"].get((ren.get("ao"), fo))
-                    if ln and id(ln) not in vistos:
-                        vistos.add(id(ln))
-                        ls.append(ln)
+                    for ln in edu["lineas"].get((ren.get("ao"), fo)) or []:
+                        if id(ln) not in vistos:
+                            vistos.add(id(ln))
+                            ls.append(ln)
         if not ls:
             return None
         piezas = fila.get("pc") or sum(ln["us"] for ln in ls)
@@ -496,9 +497,10 @@ def construir(salida: Path) -> dict[str, Any]:
             for r in j["todos"]:
                 suyas: list[dict[str, Any]] = []
                 if r.get("o") != "v":
-                    ln = edu["lineas"].get((r["a"], r["f"]))
-                    if ln and (abs(ln["pz"] - r["pz"]) < 0.6 or (plano(r.get("t")) and plano(r.get("t")) in plano(ln["desc"]))):
-                        suyas = [ln]
+                    del_renglon = edu["lineas"].get((r["a"], r["f"])) or []
+                    if del_renglon and (abs(sum(ln["pz"] for ln in del_renglon) - r["pz"]) < 0.6 or (
+                            plano(r.get("t")) and any(plano(r.get("t")) in plano(ln["desc"]) for ln in del_renglon))):
+                        suyas = list(del_renglon)
                 if not suyas and plano(r.get("t")):
                     suyas = por_desc.get((str(r["c"]), plano(r.get("t")))) or []
                     por_nombre += 1 if suyas else 0
@@ -537,8 +539,13 @@ def construir(salida: Path) -> dict[str, Any]:
     descartados = 0
     for f in filas:
         a, m = f.get("az"), f.get("ml")
-        if a and m and m.get("o") == "e" and m.get("f") in ("f", "n", "r") and m["m"] > 0 and a["m"] > 8 * m["m"]:
-            a["dz"] = round(a["m"] / m["m"], 1)
+        if not (a and m and m.get("o") == "e"):
+            continue
+        # El precio DEL PRODUCTO en Mercado Libre: la media del mismo producto, el revisado, o si no
+        # hay, nuestro propio precio publicado. La media de la categoria no sirve para esta comparacion.
+        del_producto = m["m"] if m.get("cl") in ("f", "n", "r") else m.get("pn")
+        if del_producto and a["m"] > 8 * del_producto:
+            a["dz"] = round(a["m"] / del_producto, 1)
             descartados += 1
     estimacion = estimar(filas, lista_rutas)
     estimacion["az_descartados"] = descartados

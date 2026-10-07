@@ -49,6 +49,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+import ml_contenedores
 from comun import Cfg, Red, ahora_iso, aviso, escribir_json, leer_json, sku_norm
 
 URL = "https://api.deepseek.com/chat/completions"
@@ -212,10 +213,58 @@ def generar(cfg: Cfg, salida: Path, limite: int = 0) -> dict[str, Any]:
     # SKUs que bodega anotó en un packing list y Odoo no conoce: también llevan título.
     for sku, t in titulo_pl.items():
         productos.setdefault(sku, {"sku": sku, "nombre": t, "titulo_pl": t})
+    inv = leer_json(salida / "datos" / "inventario_pl.json") or {}
+    # SKUs que bodega anotó en un packing list y que NO tienen nombre en ningún sistema (Odoo no los
+    # conoce y su renglón del validado viene vacío o en chino). Se titulan con lo que se sepa del
+    # renglón, de lo más firme a lo menos: la revisión a mano y el nombre traducido del archivo de
+    # precios de Eduardo (si está), el texto del renglón tal cual, y si no hay texto, su foto.
+    indice = leer_json(salida / "datos" / "pl_indice.json") or {}
+    edu = ml_contenedores.cargar(salida / "datos" / "eduardo_ml", indice)
+    fila_pl: dict[tuple, dict[str, Any]] = {}
+    for tipo, lista in (("o", pl.get("originales") or []), ("v", pl.get("validados") or [])):
+        for a in lista:
+            for f in a["filas"]:
+                fila_pl[(tipo, a["id"], f["fila"] + 1)] = f
+    cache_pl = Path(indice.get("cache") or "")
+    for sku, x in (inv.get("skus") or {}).items():
+        if sku in productos or "pl" not in x:
+            continue
+        textos: list[str] = []
+
+        def suma(texto: Any) -> None:
+            limpio = re.sub(r"\s+", " ", str(texto or "")).strip()
+            if limpio and limpio.upper() != sku and limpio not in textos:
+                textos.append(limpio)
+
+        if edu:
+            suma((edu["revisado"].get(sku) or {}).get("que_es"))
+            nombre = ((edu["precios"].get(sku) or {}).get("nombre") or "").strip()
+            if nombre and not re.fullmatch(r"[A-Z0-9/\- .#]+", nombre):      # no un código repetido
+                suma(nombre)
+            for ln in (edu["por_sku"].get(sku) or [])[:2]:
+                suma(ln["desc"])
+        foto = None
+        for ren in x.get("ren") or []:
+            lugares = [("v", ren.get("av"), ren.get("fv"))] if ren.get("av") is not None else []
+            lugares += [("o", ren.get("ao"), fo) for fo in ren.get("fo") or []]
+            for tipo, arch, fila in lugares:
+                f = fila_pl.get((tipo, arch, fila))
+                if not f:
+                    continue
+                suma(f.get("titulo"))
+                suma(f.get("titulo_chn"))
+                jpg = cache_pl / "thumbs" / f"{tipo}_{arch}_{fila - 1}.jpg"
+                if foto is None and jpg.exists():
+                    foto = str(jpg)
+        if not textos and not foto:
+            continue                                   # ni texto ni foto: no hay con qué
+        p = {"sku": sku, "nombre": " / ".join(textos)[:220] or sku}
+        if foto and not textos:
+            p["foto_pl"] = foto
+        productos[sku] = p
     # Renglones de packing list a los que NADIE les puso SKU (contenedores que bodega no
     # validó): también son mercancía comprada y también hay que saber qué son. Van por
     # TÍTULO, no por renglón: el mismo nombre repetido en veinte renglones se pide una vez.
-    inv = leer_json(salida / "datos" / "inventario_pl.json") or {}
     for r in inv.get("renglones_sin_sku") or []:
         clave = clave_renglon(r.get("t") or "")
         if clave:
@@ -229,8 +278,8 @@ def generar(cfg: Cfg, salida: Path, limite: int = 0) -> dict[str, Any]:
     pendientes = [p for p in productos.values() if (hechos.get(p["sku"]) or {}).get("h") != p["_firma"]]
     if limite:
         pendientes = pendientes[:limite]
-    con_foto = [p for p in pendientes if p.get("con_foto")]
-    de_texto = [p for p in pendientes if not p.get("con_foto")]
+    con_foto = [p for p in pendientes if p.get("con_foto") or p.get("foto_pl")]
+    de_texto = [p for p in pendientes if not (p.get("con_foto") or p.get("foto_pl"))]
     aviso(f"títulos: {len(productos)} SKUs · ya hechos {len(productos) - len(pendientes)} · "
           f"por hacer {len(de_texto)} con texto y {len(con_foto)} con foto")
     ia = DeepSeek(cfg)
@@ -279,9 +328,13 @@ def generar(cfg: Cfg, salida: Path, limite: int = 0) -> dict[str, Any]:
     carpeta_fotos = salida / "cache" / "img" / "odoo"
 
     def foto_uno(p: dict[str, Any], intento: int = 0) -> None:
-        jpg = carpeta_fotos / f"{p['con_foto']}.jpg"
-        grande = salida / "cache" / "img" / "odoo256" / f"{p['con_foto']}.jpg"
-        datos = grande.read_bytes() if grande.exists() else (jpg.read_bytes() if jpg.exists() else None)
+        if p.get("foto_pl"):                         # la foto del renglón del packing list
+            de_pl = Path(p["foto_pl"])
+            datos = de_pl.read_bytes() if de_pl.exists() else None
+        else:
+            jpg = carpeta_fotos / f"{p['con_foto']}.jpg"
+            grande = salida / "cache" / "img" / "odoo256" / f"{p['con_foto']}.jpg"
+            datos = grande.read_bytes() if grande.exists() else (jpg.read_bytes() if jpg.exists() else None)
         if datos is None:
             resolver([p], SISTEMA, json.dumps({"productos": [_renglon(p)]}, ensure_ascii=False), "actual", 1)
             return
@@ -295,7 +348,8 @@ def generar(cfg: Cfg, salida: Path, limite: int = 0) -> dict[str, Any]:
 
         destino = salida / "cache" / "img" / "odoo256"
         destino.mkdir(parents=True, exist_ok=True)
-        faltantes = [p["con_foto"] for p in con_foto if not (destino / f"{p['con_foto']}.jpg").exists()]
+        faltantes = [p["con_foto"] for p in con_foto
+                     if p.get("con_foto") and not (destino / f"{p['con_foto']}.jpg").exists()]
         if faltantes:
             o = Odoo(cfg)
             for i in range(0, len(faltantes), 50):

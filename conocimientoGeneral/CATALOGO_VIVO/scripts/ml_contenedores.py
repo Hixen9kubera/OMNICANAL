@@ -55,7 +55,8 @@ def _csv(ruta: Path) -> list[dict[str, str]]:
 def cargar(carpeta: Path, indice: dict[str, Any]) -> dict[str, Any] | None:
     """Devuelve `None` si el paquete no está. Si está:
 
-    lineas    {(id de archivo, fila de Excel): línea}
+    lineas    {(id de archivo, fila de Excel): [líneas]}   un renglón repartido entre varios SKUs
+              (caja compartida) son varias líneas con el mismo archivo y la misma fila
     por_sku   {SKU: [líneas]}
     precios   {id de precio: fila de precio de mercado}   (ya con la 2ª pasada)
     revisado  {id de precio: corrección a mano}
@@ -89,13 +90,14 @@ def cargar(carpeta: Path, indice: dict[str, Any]) -> dict[str, Any] | None:
             revision = {"lineas": len(todas), "antes": round(antes), "despues": round(despues),
                         "baja": round(100 * (1 - despues / antes))}
 
-    valor = {(v["contenedor"], v["archivo"], v["fila_excel"]): v for v in _csv(carpeta / "valor_lineas.csv")}
-    lineas: dict[tuple[int, int], dict[str, Any]] = {}
+    valor = {(v["contenedor"], v["archivo"], v["fila_excel"], v["id_precio"]): v
+             for v in _csv(carpeta / "valor_lineas.csv")}
+    lineas: dict[tuple[int, int], list[dict[str, Any]]] = {}
     por_sku: dict[str, list[dict[str, Any]]] = {}
     sin_archivo = 0
     for r in _csv(carpeta / "contenedores_v2.csv"):
         arch = id_de_sha.get(r.get("archivo_sha256") or "")
-        v = valor.get((r["contenedor"], r["archivo"], r["fila_excel"])) or {}
+        v = valor.get((r["contenedor"], r["archivo"], r["fila_excel"], r["id_precio"])) or {}
         sku = (r.get("sku") or "").strip().upper()
         ln = {
             "arch": arch, "fila": int(_f(r["fila_excel"])), "cont": r["contenedor"], "sku": sku,
@@ -109,7 +111,7 @@ def cargar(carpeta: Path, indice: dict[str, Any]) -> dict[str, Any] | None:
         if arch is None:
             sin_archivo += 1
         else:
-            lineas[(arch, ln["fila"])] = ln
+            lineas.setdefault((arch, ln["fila"]), []).append(ln)
         if sku:
             por_sku.setdefault(sku, []).append(ln)
     resumen = {}
@@ -134,7 +136,14 @@ def precio_de(lineas: list[dict[str, Any]], piezas: float, paquete: dict[str, An
          aplica SU tope sobre el conteo de la página: la fila no vale más de 10 × el FOB de esas líneas.
          Es lo que frena el caso «el proveedor anotó 100 paquetes y bodega contó 10,000 piezas».
 
-    Devuelve `None` si esas líneas no tienen precio. `fu`: f exacto · n nuestro precio · r revisado · b banda.
+    El precio que se USA (`m`) es el PROMEDIO del marketplace: la media de las publicaciones (del mismo
+    producto, o de los más vendidos de su categoría), llevada a pieza; si no hay publicaciones, su precio
+    depurado. El depurado de Eduardo —mediana, o nuestro precio, con su tope de FOB— va aparte en `dp`.
+    El tope del punto 4 se aplica a los dos: es una protección de CONTEO, no de precio.
+
+    Devuelve `None` si esas líneas no tienen precio. `f` (su fuente): f exacto · n nuestro precio · r revisado
+    · b banda. `cl` (de qué es la media): f del mismo producto · b de su categoría · r revisada a mano ·
+    n no hubo publicaciones y se usa nuestro precio.
     """
     vivas = [l for l in lineas if not l["ex"]]
     con = [l for l in vivas if l["d"] > 0 and l["u"] > 0]
@@ -160,13 +169,12 @@ def precio_de(lineas: list[dict[str, Any]], piezas: float, paquete: dict[str, An
     for l in con:
         peso[l["fu"]] = peso.get(l["fu"], 0.0) + l["d"]
     fu = max(peso, key=lambda k: peso[k])
-    topado = 0
+    techo = None
     if distinto:
         fob = sum(l["fob"] for l in con)
         if fob > 0 and all(l["fob"] > 0 for l in con) and "r" not in peso:
             techo = 10.0 * fob * tc / base
-            if precio > techo:
-                precio, topado = techo, 1
+            precio = min(precio, techo)
 
     # Las cifras de mercado (mín, media, máx…). Una fila puede juntar varios ids de precio (renglones
     # con el mismo nombre que él cotizó por separado): la media, la mediana y los cuartiles se promedian
@@ -189,7 +197,7 @@ def precio_de(lineas: list[dict[str, Any]], piezas: float, paquete: dict[str, An
         return {"me": _n(q.get("media")) or med, "d": med, "lo": _n(q.get("min")) or med, "hi": _n(q.get("max")) or med,
                 "a": _n(q.get("p25")) or med, "b": _n(q.get("p75")) or med}
 
-    out: dict[str, Any] = {"o": "e", "f": fu, "m": round(precio, 2)}
+    out: dict[str, Any] = {"o": "e", "f": fu, "dp": round(precio, 2)}
     c = lambda v: round(v * g, 2)  # noqa: E731
     juntas = [(w, x) for w, x in ((por_id[i], cifras(i)) for i in por_id) if x]
     if juntas:
@@ -229,8 +237,13 @@ def precio_de(lineas: list[dict[str, Any]], piezas: float, paquete: dict[str, An
     # Su tope (10 × FOB) o su regla sin FOB (el p25) bajaron el precio contra el nominal de la fuente.
     if nominal and por_unidad < 0.97 * nominal:
         out["aj"] = 1
-    if topado:
-        out["tp"] = 1
+    # El precio que se usa: la media. Y de qué es esa media.
+    media = out.get("me")
+    out["cl"] = ("r" if rev else "f" if out["nv"] in ("e", "x") else "b") if media is not None else fu
+    usado = media if media is not None else out["dp"]
+    if techo is not None and usado > techo:
+        usado, out["tp"] = techo, 1
+    out["m"] = round(usado, 2)
     if distinto:
         out["ue"] = round(unidades, 1)            # él cuenta otra cantidad para lo mismo
         fob = sum(l["fob"] for l in con)

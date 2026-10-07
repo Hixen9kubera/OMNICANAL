@@ -319,6 +319,16 @@ contra una pieza: no se toma como medido.
 estas reglas, da prácticamente su total para sus contenedores. Si no hubiera cuadrado, el
 error habría estado en la unión, no en los precios.
 
+**Un SKU sin nombre no es un SKU sin información.** Hay SKUs que bodega anotó en el validado
+y que Odoo no conoce: su renglón viene vacío o en chino, así que la etapa de títulos los
+saltaba, y sin título no hay término de búsqueda: tampoco se buscaban en Amazon. Se ven
+fácil porque en la página su título es el propio código. Casi todos tienen de dónde
+titularse: la revisión a mano y el nombre traducido del archivo de precios de Eduardo, el
+texto de su renglón (el modelo lee chino) y, si no hay texto, la foto del renglón. Lo que
+no tiene ni texto ni foto resultó no ser mercancía: son notas de bodega escritas en la
+celda del SKU («llegaron 4 piezas de más»). **Antes de decir «están todos los títulos»,
+contar las filas de la página cuyo título es igual a su SKU.**
+
 ---
 
 ## 3 · Tres cosas que NO se hacen, aunque el código lo permitiría
