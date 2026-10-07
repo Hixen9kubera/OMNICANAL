@@ -78,6 +78,48 @@ Un canal que no se leyó nunca se rellena con datos viejos.
 
 ---
 
+## El inventario contado DESDE LOS PACKING LISTS (7-oct-2026)
+
+La página de arriba parte de Odoo: «qué dice el sistema que hay». Esta parte de lo que
+se COMPRÓ, porque Odoo solo sabe lo que le capturaron y su historia empieza en
+diciembre de 2025:
+
+    piezas de los packing lists  −  lo que Odoo movió hacia afuera  =  lo que debería quedar
+
+```bash
+CACHE=C:/algun/lugar/fuera/de/onedrive      # los packing lists pesan ~3.3 GB
+python catalogo_vivo.py pl_bajar pl_leer --cache-pl $CACHE    # 3 + 8 min
+python catalogo_vivo.py movimientos inventario                # 1 min
+python catalogo_vivo.py titulos                               # 12 min, ~1 USD de DeepSeek
+python catalogo_vivo.py categorias_ml mercado_ml              # 25 min + lo que dure
+python catalogo_vivo.py mercado_amazon                        # ~3 h (lo manda el límite de Amazon)
+python catalogo_vivo.py pagina_pl                             # 20 s → index_pl.html
+```
+
+| Etapa | De dónde lee | Qué deja |
+|---|---|---|
+| `pl_bajar` | `costing.packing_archivos` (índice) + Drive público (GET) | los `.xlsx` originales y los validados por bodega |
+| `pl_leer` | esos archivos | por renglón: nombre, cajas, piezas, precio, huella de la foto; en los validados, el SKU |
+| `movimientos` | Odoo `stock.move.line` hechos + `purchase.order.line` | entradas y salidas por SKU, por tipo de socio; lo comprado y recibido |
+| `inventario` | lo anterior | comprado − salió = queda, por SKU y por contenedor; el empate SKU ↔ renglón |
+| `titulos` | DeepSeek | título estilo Mercado Libre, término de búsqueda y unidades por paquete, para cada SKU y cada renglón sin SKU |
+| `categorias_ml` | predictor de categorías de ML | categoría para lo que no tenía una confiable |
+| `mercado_ml` | kubera (rivales ya juzgados) + catálogo de ML | precio de la competencia en ML |
+| `mercado_amazon` | SP-API de Amazon | precio de la competencia en Amazon, por palabra clave |
+| `pagina_pl` | todo lo anterior | `index_pl.html` y `datos_pl.json` |
+
+Todas se reanudan: lo ya hecho no se vuelve a pedir. Las dos de mercado procesan
+primero lo que más piezas tiene detrás, así que una corrida cortada a la mitad ya
+cubre casi todo el inventario.
+
+La llave de DeepSeek va en `scripts/.env` (`DEEPSEEK_API_KEY=`), que no se sube.
+
+Lógica de lectura de packing lists: la de `kubera-exit` de José
+(github.com/joseKubera/kubera-exit), copiada en `pl_leer.py`; el lector de originales
+es `pl_parser.py`, copia literal del de producción.
+
+---
+
 ## Temu: la única etapa que no corre desde una laptop
 
 La Open API de Temu solo contesta desde la IP de Railway (`5000003

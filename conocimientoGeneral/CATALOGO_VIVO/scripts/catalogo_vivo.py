@@ -27,9 +27,46 @@ from comun import SALIDAS, Cfg, ahora_iso, aviso, consola_utf8, escribir_json
 
 ETAPAS = ("odoo", "costos", "woo", "amazon", "walmart", "ml", "tiktok", "temu", "categorias",
           "imagenes", "pagina")
+# El inventario visto DESDE LOS PACKING LISTS (lo que se compró) y no desde Odoo (lo
+# que el sistema dice que queda). Son etapas largas: se piden por nombre, no entran
+# en `todo`, y cada una guarda su avance para poder reanudarse.
+ETAPAS_PL = ("pl_bajar", "pl_leer", "movimientos", "inventario", "titulos", "categorias_ml",
+             "mercado_ml", "mercado_amazon", "pagina_pl")
+
+
+def _correr_pl(nombre: str, cfg: Cfg, salida: Path, args: argparse.Namespace) -> dict:
+    cache = Path(args.cache_pl).resolve() if args.cache_pl else salida / "cache" / "pl"
+    if nombre == "pl_bajar":
+        import pl_bajar
+        return pl_bajar.bajar(cfg, salida, cache)
+    if nombre == "pl_leer":
+        import pl_leer
+        return pl_leer.leer_todos(salida, cache, procesos=args.procesos)
+    if nombre == "movimientos":
+        import mov_odoo
+        return mov_odoo.extraer(cfg, salida)
+    if nombre == "titulos":
+        import ia_titulos
+        return ia_titulos.generar(cfg, salida, limite=args.limite)
+    if nombre == "categorias_ml":
+        import mercado_ml
+        return mercado_ml.predecir_categorias(cfg, salida, limite=args.limite)
+    if nombre == "mercado_ml":
+        import mercado_ml
+        return mercado_ml.extraer(cfg, salida, limite=args.limite)
+    if nombre == "mercado_amazon":
+        import mercado_amazon
+        return mercado_amazon.extraer(cfg, salida, limite=args.limite)
+    if nombre == "pagina_pl":
+        import pagina_pl
+        return pagina_pl.construir(salida)
+    import inventario_pl
+    return inventario_pl.construir(salida)
 
 
 def _correr(nombre: str, cfg: Cfg, salida: Path, args: argparse.Namespace) -> dict:
+    if nombre in ETAPAS_PL:
+        return _correr_pl(nombre, cfg, salida, args)
     if nombre == "odoo":
         import f_odoo
         return f_odoo.extraer(cfg, salida, con_fotos=not args.sin_fotos)
@@ -69,8 +106,13 @@ def _correr(nombre: str, cfg: Cfg, salida: Path, args: argparse.Namespace) -> di
 def main() -> int:
     consola_utf8()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
-    ap.add_argument("etapas", nargs="+", choices=ETAPAS + ("todo",))
+    ap.add_argument("etapas", nargs="+", choices=ETAPAS + ETAPAS_PL + ("todo",))
     ap.add_argument("--salida", default=str(SALIDAS))
+    ap.add_argument("--cache-pl", default="",
+                    help="dónde guardar los packing lists (~3.3 GB); mejor FUERA de una carpeta sincronizada")
+    ap.add_argument("--procesos", type=int, default=4, help="procesos para leer packing lists")
+    ap.add_argument("--limite", type=int, default=0,
+                    help="títulos / precios de mercado: cuántos hacer en esta corrida (0 = todos)")
     ap.add_argument("--sin-fotos", action="store_true", help="Odoo sin image_128")
     ap.add_argument("--sin-economia", action="store_true",
                     help="ML sin precio cobrado / comisión / envío (3 GET por publicación activa)")
@@ -78,6 +120,7 @@ def main() -> int:
     salida = Path(args.salida).resolve()
     salida.mkdir(parents=True, exist_ok=True)
     etapas = list(ETAPAS) if "todo" in args.etapas else [e for e in ETAPAS if e in args.etapas]
+    etapas = [e for e in ETAPAS_PL if e in args.etapas] + etapas
 
     cfg = Cfg()
     fallas = 0

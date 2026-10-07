@@ -208,6 +208,71 @@ variantes ni entra a la mediana del contenedor.
 
 ---
 
+## 2d · Contar desde los packing lists: lo que se midió el 7-oct-2026
+
+**Los packing lists se bajan de Drive sin credenciales.** `costing.packing_archivos`
+guarda el `drive_file_id` de cada uno y las carpetas son públicas. Binario:
+`drive.google.com/uc?export=download&id=`; si es grande, Drive contesta un aviso de
+antivirus y el archivo sale por `drive.usercontent.google.com/download?…&confirm=t`.
+Hoja nativa de Google: `docs.google.com/spreadsheets/d/<id>/export?format=xlsx`. La
+copia que producción guarda en Storage pide una llave de servicio; no hace falta.
+
+**Un contenedor tiene DOS archivos y no dicen lo mismo.** El original del proveedor
+no trae SKU. El validado de bodega (carpeta Ferraforme) es el mismo archivo con la
+columna «SKU ODOO» y lo contado en físico. El conteo de bodega es la unidad en que
+Odoo mueve: donde el proveedor declara cartones o paquetes, bodega cuenta piezas (o al
+revés). Para restar movimientos de Odoo hay que usar el de bodega.
+
+**Tres maneras de contar dos veces la misma mercancía**, y las tres pasaron:
+sumar el original y el validado de un mismo contenedor; sumar a un SKU las piezas
+que dice la base de costos cuando esas piezas ya están entre los renglones sin SKU de
+su contenedor; y sumar dos archivos de un contenedor que resultan ser copia uno del
+otro (se distinguen comparando sus cantidades renglón por renglón: una copia coincide,
+dos proveedores en el mismo contenedor no).
+
+**El renglón del original se ubica por la foto.** Bodega copia el archivo del
+proveedor, así que el renglón donde anotó el SKU trae incrustada LA MISMA imagen
+(mismo sha1) que su renglón en el original: empata la mayoría sin IA. En contenedores
+sin validar funciona lo mismo contra la foto del producto en Odoo (`ir.attachment`,
+`res_field = image_1920`, da el sha1 sin bajar la imagen), pero SOLO entre los SKUs que
+Odoo o la base de costos mandan a ese contenedor: en todo el catálogo las fotos se
+repiten demasiado.
+
+**Lo que Odoo llama «cliente» es casi todo traslado.** Las entregas a ubicación de
+cliente incluyen los envíos a Full, FBA y WFS: en la muestra, más de tres cuartas
+partes de las piezas «entregadas» iban a Mercado Libre Full. Se separan por el NOMBRE
+del socio (es un contacto nuevo por orden: el id no sirve). Y la mitad del historial de
+movimientos son traslados de rack a rack: para contar entradas y salidas hay que
+quedarse con los que cruzan la frontera de la bodega (un lado interno y el otro no).
+
+**El buscador de Mercado Libre no se puede leer.** `/sites/MLM/search` contesta 403
+a cualquier aplicación y la página pública redirige a un muro de verificación:
+producción lo resuelve con un navegador de pago y eso no se hace desde aquí. Lo que SÍ
+está abierto: `domain_discovery/search` (el predictor de categoría, sin token) y
+`/products/search` + `/products/{id}/items` (el catálogo). El catálogo rinde poco: de
+catorce productos que devuelve una búsqueda, entre cero y cuatro tienen oferta activa.
+
+**Amazon sí da precio de la competencia por palabra clave**, con dos llamadas:
+`searchCatalogItems` y `getCompetitivePricing` (20 ASIN, una llamada cada dos
+segundos: ese límite manda toda la corrida). Hay que contar una vez cada familia de
+variantes.
+
+**Sin juez, el promedio no sirve.** «Zapatero organizador» devuelve zapateros de
+todo tipo y accesorios. Un modelo de lenguaje barato, con las reglas del juez de
+Competencia de producción y la respuesta compactada (`[[1,"m",1],…]`), cuesta
+centésimas de centavo por producto. Con `deepseek-flash` hay que mandar
+`"thinking": {"type": "disabled"}`: si no, razona, tarda el triple y cobra el
+razonamiento como salida.
+
+**Multiplicar piezas por el precio del paquete infla N veces.** La publicación vende
+«paquete de 5 focos» y el inventario cuenta focos. Si el nombre con que se compró no
+habla de paquete ni trae ese número, el precio de referencia se parte entre N. Y un
+precio sostenido por UNA sola publicación, o un producto sin SKU cuyo nombre son dos
+palabras («thermos»), se muestra pero no se suma: sin esas dos reglas, tres renglones
+valían más que todo lo demás junto.
+
+---
+
 ## 3 · Tres cosas que NO se hacen, aunque el código lo permitiría
 
 1. **Renovar tokens.** El de ML se rota al usarse. Un script que lo renueve deja a

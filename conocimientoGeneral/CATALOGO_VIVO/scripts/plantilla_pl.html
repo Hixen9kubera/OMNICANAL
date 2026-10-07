@@ -1,0 +1,452 @@
+<style>
+/* Inventario desde los packing lists. La cuenta se lee de izquierda a derecha:
+   COMPRADO − SALIÓ = QUEDA, y al lado lo que Odoo dice tener. Oro = Mercado Libre, verde azulado = Amazon. */
+.cuenta{display:grid;grid-template-columns:minmax(0,1.15fr) auto minmax(0,1.15fr) auto minmax(0,1.15fr) minmax(0,1fr);gap:10px;align-items:stretch}
+.cuenta .op{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:34px;font-weight:600;color:var(--tenue);padding:0 2px}
+.paso{background:var(--papel);border:2px solid var(--linea);border-radius:14px;padding:16px 18px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.paso .tit{font-size:12.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase}
+.paso .cifra{font-family:var(--mono);font-size:clamp(24px,2.6vw,36px);font-weight:600;letter-spacing:-.02em;line-height:1.05;overflow-wrap:anywhere}
+.paso .pie{font-size:12.5px;color:var(--tenue)}
+.paso .lin{display:grid;grid-template-columns:1fr auto;gap:2px 10px;font-size:12.5px;border-top:1px solid var(--linea2);padding-top:7px}
+.paso .lin b{font-family:var(--mono);font-weight:600;text-align:right}
+.paso.compra{border-color:var(--costo-borde);background:var(--costo-fondo)} .paso.compra .tit,.paso.compra .cifra{color:var(--costo)}
+.paso.salio{border-color:var(--ojo);background:var(--ojo-fondo)} .paso.salio .tit,.paso.salio .cifra{color:var(--ojo)}
+.paso.queda{border-color:var(--bien);background:var(--bien-fondo)} .paso.queda .tit,.paso.queda .cifra{color:var(--bien)}
+.paso.odoo{border-style:dashed}
+.valor{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.so{display:inline-block;font-size:10.5px;font-weight:700;letter-spacing:.06em;border-radius:4px;padding:2px 7px;background:var(--mal);color:#fff;white-space:nowrap}
+.mini{font-size:11.5px;color:var(--tenue);line-height:1.35}
+.mini b{font-family:var(--mono);font-weight:500;color:var(--tinta)}
+th.t-q{border-top:3px solid var(--bien);color:var(--bien)}
+th.t-s{border-top:3px solid var(--ojo);color:var(--ojo)}
+td.q .grande{color:var(--bien)}
+.sublista{width:100%;font-size:12.5px}
+.sublista td{border-top:1px solid var(--linea2);padding:5px 10px}
+.cats tr.sub2 td{background:var(--fondo);padding:0}
+.aviso{background:var(--ojo-fondo);border:1px solid var(--ojo);color:var(--ojo);border-radius:10px;padding:9px 14px;font-size:13px}
+.empate{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:10px}
+@media (max-width:1180px){.cuenta{grid-template-columns:minmax(0,1fr)} .cuenta .op{font-size:26px;padding:0} .valor{grid-template-columns:minmax(0,1fr)}}
+</style>
+
+<div class="marco">
+  <header class="cab">
+    <div>
+      <h1>Inventario Kubera, contado desde los packing lists</h1>
+      <p class="sub">Lo que se compró según los packing lists de todos los contenedores, menos lo que Odoo movió hacia afuera. Lo que queda se valúa al precio promedio de la competencia en Mercado Libre y en Amazon.</p>
+    </div>
+    <div class="cuando" id="cuando">Cargando…</div>
+  </header>
+  <div class="fuentes" id="fuentes"></div>
+  <section class="cuenta" id="cuenta" aria-label="Comprado menos lo que salió, igual a lo que queda"></section>
+  <div id="porque"></div>
+  <section class="valor" id="valor" aria-label="Valor de lo que queda a precio de mercado"></section>
+
+  <div class="tabs" role="tablist">
+    <button role="tab" id="t-pro" aria-selected="true" aria-controls="v-pro">Productos</button>
+    <button role="tab" id="t-cat" aria-selected="false" aria-controls="v-cat">Por categoría</button>
+    <button role="tab" id="t-con" aria-selected="false" aria-controls="v-con">Contenedores</button>
+    <button role="tab" id="t-emp" aria-selected="false" aria-controls="v-emp">Empate SKU y packing list</button>
+    <button role="tab" id="t-met" aria-selected="false" aria-controls="v-met">De dónde sale cada dato</button>
+  </div>
+
+  <section id="v-pro" class="panel" role="tabpanel" aria-labelledby="t-pro">
+    <div class="ctl">
+      <label class="busca">Buscar<input id="q" type="search" placeholder="SKU, título o contenedor" autocomplete="off"></label>
+      <label>Categoría<select id="f-cat"><option value="">Todas</option></select></label>
+      <label>Subcategoría<select id="f-sub"><option value="">Todas</option></select></label>
+      <label>Estado<select id="f-est"><option value="">Todo</option><option value="queda">Queda mercancía</option><option value="so">SOLD OUT</option><option value="sin">Sin SKU en el packing list</option><option value="est">SKU sin renglón ubicado</option><option value="nopl">SKU sin packing list</option><option value="dm">Salió más de lo comprado</option><option value="noodoo">Comprado y nunca entró a Odoo</option></select></label>
+      <label>Contenedor<select id="f-con"><option value="">Todos</option></select></label>
+      <label>Precio de mercado<select id="f-pre"><option value="">Todos</option><option value="ml">Con precio de Mercado Libre</option><option value="az">Con precio de Amazon</option><option value="dos">Con los dos</option><option value="no">Sin ninguno</option></select></label>
+      <label>Empate<select id="f-emp"><option value="">Todos</option><option value="foto">Misma foto</option><option value="texto">Mismo nombre y cantidad</option><option value="bodega">Solo validado de bodega</option><option value="foto_odoo">Foto de Odoo</option><option value="foto_parecida">Foto de Odoo parecida</option><option value="cantidad">Cantidad de la compra</option></select></label>
+      <button class="btn" id="limpiar" type="button">Quitar filtros</button>
+      <button class="btn" id="copiar" type="button">Copiar para Excel</button>
+    </div>
+    <div class="total" id="total" aria-live="polite"></div>
+    <textarea id="copia" hidden readonly aria-label="Tabla en texto para copiar"></textarea>
+    <div class="rollo"><table class="libro" id="libro"></table></div>
+    <div class="pag" id="pag"></div>
+  </section>
+
+  <section id="v-cat" class="panel" role="tabpanel" aria-labelledby="t-cat" hidden>
+    <p class="tenue" style="max-width:90ch">Cada categoría compara los SKUs que traían los packing lists contra los que todavía tienen mercancía. Abre una categoría para ver sus subcategorías, y una subcategoría para ver sus productos ahí mismo.</p>
+    <div class="rollo"><table class="cats" id="cats"></table></div>
+  </section>
+
+  <section id="v-con" class="panel" role="tabpanel" aria-labelledby="t-con" hidden>
+    <p class="tenue" style="max-width:90ch">Un renglón por contenedor. «Proveedor» es lo que declara el packing list original; «bodega» es lo que se contó al validarlo. Cuando hay validado, ese conteo es el que vale.</p>
+    <div class="rollo"><table class="cats" id="conts"></table></div>
+  </section>
+
+  <section id="v-emp" class="panel" role="tabpanel" aria-labelledby="t-emp" hidden>
+    <div class="empate" id="empate"></div>
+  </section>
+
+  <section id="v-met" role="tabpanel" aria-labelledby="t-met" hidden><div class="metodo" id="metodo"></div></section>
+</div>
+
+<script>
+(function(){
+"use strict";
+var D,R=[],VISTA=[],E={q:"",cat:"",sub:"",est:"",con:"",pre:"",emp:"",ord:"pq",dir:-1,pag:0,por:50,ab:{},xc:{},xs:{}};
+var $=function(i){return document.getElementById(i)};
+function esc(t){return String(t==null?"":t).replace(/[&<>"']/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]})}
+var N0=new Intl.NumberFormat("es-MX",{maximumFractionDigits:0}),F0=new Intl.NumberFormat("es-MX",{style:"currency",currency:"MXN",maximumFractionDigits:0}),F2=new Intl.NumberFormat("es-MX",{style:"currency",currency:"MXN",minimumFractionDigits:2,maximumFractionDigits:2});
+function nf(n){return n==null?"—":N0.format(n)}
+function fm0(n){return n==null?"—":F0.format(n)}
+function fm(n){return n==null?"—":F2.format(n)}
+function mill(n){return n==null?"—":(Math.abs(n)>=1e6?"$"+(n/1e6).toFixed(1)+" M":fm0(n))}
+function hora(iso){if(!iso)return"";var d=new Date(iso);return isNaN(d)?"":d.toLocaleString("es-MX",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"})}
+function c1(r){return r.k==null?"Sin categoría":D.K[r.k][0]}
+function c2(r){return r.k==null?"":(D.K[r.k][1]||"")}
+function c3(r){return r.k==null?"":(D.K[r.k][2]||"")}
+var METODO={foto:"misma foto en el original",texto:"mismo nombre y cantidad",bodega:"bodega lo anotó en el validado",foto_odoo:"la foto de Odoo es la del renglón",foto_parecida:"foto de Odoo casi idéntica a la del renglón",cantidad:"lo recibido en la compra coincide con el renglón"};
+var CORTO={full:"Full",fba:"Amazon",wfs:"Walmart",parolera:"Parolera",canales:"canales",directa:"directa",proveedor:"devuelto"};
+var ORIGEN={p:"rivales del mismo producto (Competencia del panel)",g:"rivales de otra variante del mismo modelo",c:"catálogo de Mercado Libre",k:"búsqueda por palabra clave"};
+
+function foto(r,s){
+  var i=r.i!=null?r.i:r.j,pre=r.i!=null?"h":"p";
+  if(i==null)return '<span class="sinfoto" style="width:'+s+'px;height:'+s+'px">sin foto</span>';
+  var h=Math.floor(i/400),c=i%400,k=s/72,x=(c%20)*72*k,y=Math.floor(c/20)*72*k;
+  return '<span class="foto" role="img" aria-label="Foto del producto" style="width:'+s+'px;height:'+s+'px;background-image:url(img/'+pre+("00"+h).slice(-3)+'.jpg);background-size:'+(1440*k)+'px auto;background-position:-'+x+'px -'+y+'px"></span>';
+}
+function preparar(){
+  R.forEach(function(r,i){
+    r._i=i;
+    r._q=r.pc!=null?r.pq:null;                       // piezas que quedan (solo si hay packing list)
+    // Para SUMAR hacen falta al menos dos publicaciones comparables: una sola es un indicio, no un precio.
+    // Tampoco suma un producto sin SKU cuyo nombre es una o dos palabras («thermos», «headset»):
+    // con eso no se sabe contra qué compararlo. Se muestra como referencia débil, aparte.
+    r._g=r.sin&&String(r.n||r.t).trim().split(/ +/).length<=2;
+    r._vm=r._q!=null&&r.ml&&r.ml.n>=2&&!r._g?r._q*r.ml.m:null;
+    r._va=r._q!=null&&r.az&&r.az.n>=2&&!r._g?r._q*r.az.m:null;
+    r._dm=r._q!=null&&r.ml&&r._vm==null?r._q*r.ml.m:null;
+    r._da=r._q!=null&&r.az&&r._va==null?r._q*r.az.m:null;
+    r._m=r.cm?["foto","texto","foto_odoo","foto_parecida","cantidad","bodega"].filter(function(k){return r.cm.indexOf(k)>=0})[0]:null;
+    r._b=(r.s+" "+r.t+" "+(r.n||"")+" "+Object.keys(r.ct||{}).join(" ")).toLowerCase();
+  });
+}
+function pasa(r){
+  if(E.q&&r._b.indexOf(E.q)<0)return false;
+  if(E.cat&&c1(r)!==E.cat)return false;
+  if(E.sub&&c2(r)!==E.sub)return false;
+  if(E.con&&!(r.ct&&r.ct[E.con]!=null)&&String(r.ec)!==E.con)return false;
+  if(E.est==="queda"&&!(r._q>0))return false;
+  if(E.est==="so"&&!r.so)return false;
+  if(E.est==="sin"&&!r.sin)return false;
+  if(E.est==="est"&&r.pe==null)return false;
+  if(E.est==="nopl"&&(r.pc!=null||r.pe!=null))return false;
+  if(E.est==="dm"&&!r.dm)return false;
+  if(E.est==="noodoo"&&!(r.pc!=null&&!r.sin&&!r.en&&!r.lb&&!r.ps))return false;
+  if(E.pre==="ml"&&!r.ml)return false;
+  if(E.pre==="az"&&!r.az)return false;
+  if(E.pre==="dos"&&!(r.ml&&r.az))return false;
+  if(E.pre==="no"&&(r.ml||r.az))return false;
+  if(E.emp&&r._m!==E.emp)return false;
+  return true;
+}
+function val(r,k){
+  if(k==="mlm")return r.ml?r.ml.m:null;
+  if(k==="azm")return r.az?r.az.m:null;
+  return r[k];
+}
+function ordenar(){
+  var k=E.ord,d=E.dir;
+  VISTA.sort(function(a,b){
+    var x=val(a,k),y=val(b,k);
+    if(x==null&&y==null)return a.s<b.s?-1:1;
+    if(x==null)return 1; if(y==null)return -1;
+    if(typeof x==="string")return d*(x<y?-1:x>y?1:0);
+    return d*(x-y)||(a.s<b.s?-1:1);
+  });
+}
+function filtrar(){VISTA=R.filter(pasa);ordenar();E.pag=0;pintar()}
+function sumar(l){
+  var t={n:0,sk:0,sin:0,pc:0,ps:0,pq:0,so:0,viv:0,lb:0,vm:0,pzm:0,va:0,pza:0,vl:0,pzl:0,psx:0,pe:0,nest:0,nopl:0,lbx:0,dm:0,pdm:0,da:0,pda:0};
+  l.forEach(function(r){
+    t.n++;
+    if(r.pc!=null){
+      t.pc+=r.pc;t.pq+=r.pq;t.ps+=Math.min(r.ps||0,r.pc);
+      if(r.sin)t.sin++;else t.sk++;
+      if(r.so)t.so++;else if(r.pq>0)t.viv++;
+      if(r._vm!=null){t.vm+=r._vm;t.pzm+=r.pq}
+      if(r._va!=null){t.va+=r._va;t.pza+=r.pq}
+      if(r._dm!=null){t.dm+=r._dm;t.pdm+=r.pq}
+      if(r._da!=null){t.da+=r._da;t.pda+=r.pq}
+      if(r.v!=null){t.vl+=r.pq*r.v;t.pzl+=r.pq}
+      t.lb+=r.lb||0;
+    }else{
+      t.psx+=r.ps||0;t.lbx+=r.lb||0;
+      if(r.pe!=null){t.nest++;t.pe+=r.pe}else t.nopl++;
+    }
+  });
+  return t;
+}
+function etEstado(r){
+  if(r.sin)return '<span class="et av">sin SKU</span>';
+  if(r.so)return '<span class="so">SOLD OUT</span>';
+  if(r.pe!=null)return '<span class="et av">renglón no ubicado</span>';
+  if(r.pc==null)return '<span class="et">sin packing list</span>';
+  return "";
+}
+function celdaPrecio(p){
+  if(!p)return '<div class="num tenue">—</div>';
+  return '<div class="num">'+fm(p.m)+'</div><div class="mini">mediana <b>'+fm0(p.d)+'</b> · '+p.n+(p.n===1?" rival":" rivales")+(p.pk?" · ÷"+p.pk:"")+(p.x?" · aprox.":"")+(p.o==="g"?" · del modelo":p.o==="c"?" · catálogo":"")+"</div>";
+}
+function celdaValor(v,debil,r){
+  if(v!=null)return '<div class="num">'+fm0(v)+"</div>";
+  if(debil!=null)return '<div class="num tenue"><s>'+fm0(debil)+'</s></div><div class="mini">'+(r._g?"nombre genérico":"un solo rival")+", no suma</div>";
+  return '<div class="num tenue">—</div>';
+}
+function contenedores(r){
+  var ct=r.ct||{},ks=Object.keys(ct);
+  if(!ks.length)return r.ec!=null?'<span class="mini">costos: cont. '+esc(r.ec)+"</span>":'<span class="mini">—</span>';
+  return '<div class="pl">'+ks.slice(0,3).map(function(k){return "cont. "+esc(k)}).join("<br>")+(ks.length>3?"<br>+"+(ks.length-3):"")+"</div>";
+}
+function fila(r){
+  var ab=!!E.ab[r._i];
+  var comprado=r.pc!=null?'<div class="grande">'+nf(r.pc)+"</div>"+(r.pp!=null?'<div class="mini">proveedor <b>'+nf(r.pp)+"</b></div>":""):(r.pe!=null?'<div class="num tenue">≈ '+nf(r.pe)+'</div><div class="mini">según costos</div>':'<div class="num tenue">—</div>');
+  var salio=r.ps?'<div class="grande">'+nf(r.ps)+"</div>"+'<div class="mini">'+Object.keys(r.cl||{}).slice(0,2).map(function(k){return esc(CORTO[k]||k)+" <b>"+nf(r.cl[k])+"</b>"}).join(" · ")+"</div>":'<div class="num tenue">0</div>';
+  var queda=r.pc==null?'<div class="num tenue">—</div>':(r.so?'<span class="so">SOLD OUT</span>':'<div class="grande">'+nf(r.pq)+"</div>")+(r.dm?'<div class="mini neg">salió '+nf(r.dm)+" de más</div>":"");
+  var h='<tr class="f'+(ab?" ab":"")+'"><td>'+foto(r,48)+"</td>"+
+    '<td><button class="sku" type="button" data-i="'+r._i+'" aria-expanded="'+ab+'">'+esc(r.sin?"Sin SKU":r.s)+"</button>"+
+      '<div style="max-width:40ch">'+esc(r.t)+"</div>"+(r.n?'<div class="nom2">'+esc(r.n)+"</div>":"")+etEstado(r)+(r.td?' <span class="et">título por confirmar</span>':"")+"</td>"+
+    '<td><div class="cat1">'+esc(c1(r))+'</div><div class="cat2">'+esc(c2(r))+(r.kq==="r"?" · predicha":r.kq==="p"?" · estimada":"")+"</div></td>"+
+    '<td class="d">'+comprado+"</td>"+
+    '<td class="d">'+salio+"</td>"+
+    '<td class="d q">'+queda+"</td>"+
+    '<td class="d"><div class="num">'+(r.lb!=null?nf(r.lb):"—")+"</div></td>"+
+    '<td class="d">'+celdaPrecio(r.ml)+"</td>"+
+    '<td class="d'+(r._vm!=null?" oro":"")+'">'+celdaValor(r._vm,r._dm,r)+"</td>"+
+    '<td class="d">'+celdaPrecio(r.az)+"</td>"+
+    '<td class="d'+(r._va!=null?" verde":"")+'">'+celdaValor(r._va,r._da,r)+"</td>"+
+    "<td>"+contenedores(r)+"</td></tr>";
+  if(ab)h+='<tr><td colspan="12" style="padding:0;border-top:1px solid var(--linea2);background:var(--papel2)">'+detalle(r)+"</td></tr>";
+  return h;
+}
+function bloquePrecio(nombre,p,clase){
+  if(!p)return '<div class="blo"><h3>'+nombre+'</h3><div class="tenue" style="font-size:12.5px">Sin precio de referencia: no se encontraron publicaciones del mismo producto.</div></div>';
+  var h='<div class="blo '+clase+'"><h3>'+nombre+'</h3><dl class="kv">'+
+    '<dt>Media (el dato principal)</dt><dd class="num"><b>'+fm(p.m)+"</b></dd>"+
+    '<dt>Mediana</dt><dd class="num">'+fm(p.d)+"</dd>"+
+    '<dt>Rango central (P25–P75)</dt><dd class="num">'+fm0(p.a)+" – "+fm0(p.b)+"</dd>"+
+    '<dt>Mínimo – máximo</dt><dd class="num">'+fm0(p.lo)+" – "+fm0(p.hi)+"</dd>"+
+    '<dt>Publicaciones comparables</dt><dd class="num">'+p.n+"</dd>"+
+    '<dt>De dónde sale</dt><dd>'+esc(ORIGEN[p.o]||"")+(p.q?" «"+esc(p.q)+"»":"")+"</dd></dl>";
+  if(p.pk)h+='<div class="mini" style="margin-top:6px">Las publicaciones venden un paquete de '+p.pk+" y el inventario cuenta piezas sueltas: el precio está partido entre "+p.pk+".</div>";
+  if(p.n<2)h+='<div class="mini" style="margin-top:6px">Una sola publicación comparable: se muestra como indicio y no entra al valor total.</div>';
+  if(p.x)h+='<div class="mini" style="margin-top:6px">Incluye rivales con otro tamaño de paquete, llevados a nuestra unidad: es aproximado.</div>';
+  if(p.ej&&p.ej.length)h+='<ul class="lista" style="margin-top:8px">'+p.ej.map(function(e){return "<li>"+esc(e[0])+' <span class="num">'+fm0(e[1])+"</span></li>"}).join("")+"</ul>";
+  return h+"</div>";
+}
+function detalle(r){
+  var k,cu='<div class="blo"><h3>La cuenta de este producto</h3><dl class="kv">';
+  if(r.pc!=null){
+    cu+='<dt>Comprado (packing list)</dt><dd class="num"><b>'+nf(r.pc)+"</b></dd>";
+    if(r.pp!=null)cu+='<dt>Según el proveedor</dt><dd class="num">'+nf(r.pp)+"</dd>";
+  }else if(r.pe!=null)cu+='<dt>Comprado, según la base de costos</dt><dd class="num">≈ '+nf(r.pe)+"</dd>";
+  cu+='<dt>Salió de bodega (Odoo)</dt><dd class="num"><b>'+nf(r.ps||0)+"</b></dd>";
+  for(k in (r.cl||{}))cu+='<dt style="padding-left:12px">'+esc(k==="proveedor"?"Devuelto al proveedor":(D.rot[k]||k))+'</dt><dd class="num">'+nf(r.cl[k])+"</dd>";
+  if(r.pc!=null)cu+='<dt>Queda</dt><dd class="num"><b>'+(r.so?"0 · SOLD OUT":nf(r.pq))+"</b></dd>";
+  cu+="</dl>";
+  if(r.dm)cu+='<div class="mini neg" style="margin-top:6px">Odoo sacó '+nf(r.dm)+" piezas más de las que dice el packing list: el SKU llegó también en otro embarque, o se cuenta en otra unidad.</div>";
+  if(r.pe!=null)cu+='<div class="mini" style="margin-top:6px">No se ubicó su renglón: sus piezas ya están contadas entre los productos sin SKU del contenedor '+esc(r.ec)+", por eso aquí no suman.</div>";
+  if(r.v1)cu+='<div class="mini" style="margin-top:6px">Primera salida '+esc(r.v1)+" · última "+esc(r.v2)+"</div>";
+  cu+='</div><div class="blo"><h3>Lo que dice Odoo</h3><dl class="kv">'+
+    '<dt>Recibió (proveedor y traslados)</dt><dd class="num">'+nf(r.en||0)+"</dd>"+
+    '<dt>Ajustes de inventario, neto</dt><dd class="num">'+(r.aj?(r.aj>0?"+":"")+nf(r.aj):"0")+"</dd>"+
+    '<dt>Stock libre hoy (free_qty)</dt><dd class="num"><b>'+nf(r.lb||0)+"</b></dd></dl>"+
+    (r.v!=null?'<div class="mini" style="margin-top:6px">Nuestro precio de lista: <b>'+fm(r.v)+"</b></div>":"")+"</div>";
+  var pk='<div class="blo"><h3>Packing list y renglón</h3>';
+  if(r.rn&&r.rn.length){
+    pk+='<ul class="lista">'+r.rn.map(function(x){
+      var t="Contenedor "+esc(x.c);
+      if(x.av!=null)t+=" · validado «"+esc(D.A[x.av]||x.av)+"» renglón "+esc(x.fv);
+      if(x.ao!=null)t+=(x.av!=null?" → ":" · ")+"original «"+esc(D.A[x.ao]||x.ao)+"» renglón "+esc((x.fo||[]).join(", "));
+      if(x.m)t+=' <span class="et'+(x.m==="foto"?" ok":"")+'">'+esc(METODO[x.m]||x.m)+"</span>";
+      else if(x.av!=null&&x.ao==null)t+=' <span class="et">'+esc(METODO.bodega)+"</span>";
+      return "<li>"+t+"</li>"}).join("")+"</ul>";
+    if(r.rm)pk+='<div class="mini">y '+r.rm+" renglones más</div>";
+    if(r.nr>r.rn.length)pk+='<div class="mini">'+nf(r.nr)+" renglones con este mismo nombre</div>";
+  }else pk+='<div class="tenue" style="font-size:12.5px">'+(r.pe!=null?"Renglón no ubicado. La base de costos lo manda al contenedor "+esc(r.ec)+".":"Este SKU no aparece en ningún packing list leído.")+"</div>";
+  if(r.usd)pk+='<div class="mini" style="margin-top:6px">Precio del proveedor: <b>'+r.usd+" USD</b></div>";
+  pk+='</div><div class="blo"><h3>Título</h3><div style="font-size:13px">'+esc(r.t)+'</div><div class="mini" style="margin-top:4px">'+(r.tf==="ml"?"Es el de su publicación en Mercado Libre.":r.tf==="foto"?"Lo escribió la IA viendo la foto del producto.":r.tf==="actual"?"Se dejó el que tenía.":"Lo mejoró la IA a partir del nombre del producto.")+(r.td?" La IA avisó que lo está suponiendo.":"")+"</div>"+(r.n?'<div class="mini" style="margin-top:4px">Nombre original: '+esc(r.n)+"</div>":"")+"</div>";
+  return '<div class="det"><div class="col">'+cu+'</div><div class="col">'+pk+'</div><div class="col">'+bloquePrecio("Mercado Libre · competencia por pieza",r.ml,"of")+bloquePrecio("Amazon México · competencia por pieza",r.az,"pr")+"</div></div>";
+}
+var COLS=[["","Foto"],["s","Producto"],["","Categoría"],["pc","Comprado"],["ps","Salió"],["pq","Queda"],["lb","Odoo libre"],["mlm","Mercado Libre por pieza"],["_vm","Valor a precio de ML"],["azm","Amazon por pieza"],["_va","Valor a precio de Amazon"],["","Contenedor"]];
+function cabecera(){
+  return "<thead><tr>"+COLS.map(function(c,i){
+    var cl=(i>=3&&i<=10?"d":"")+(i===4?" t-s":i===5?" t-q":i===7||i===8?" t-p":i===9||i===10?" t-r":"");
+    return '<th class="'+cl+'"'+(c[0]&&E.ord===c[0]?' aria-sort="'+(E.dir<0?"descending":"ascending")+'"':"")+">"+(c[0]?'<button type="button" data-ord="'+c[0]+'">'+c[1]+(E.ord===c[0]?(E.dir<0?" ▾":" ▴"):"")+"</button>":c[1])+"</th>"}).join("")+"</tr></thead>";
+}
+function pintar(){
+  var t=sumar(VISTA),ini=E.pag*E.por,trozo=VISTA.slice(ini,ini+E.por);
+  $("total").innerHTML="<span><b>"+nf(t.sk)+"</b> SKUs y <b>"+nf(t.sin)+"</b> productos sin SKU</span>"+
+    '<span class="co">Comprado <b>'+nf(t.pc)+"</b></span><span>Salió <b>"+nf(t.ps)+"</b></span><span>Queda <b>"+nf(t.pq)+"</b></span>"+
+    "<span>SOLD OUT <b>"+nf(t.so)+"</b></span>"+
+    '<span class="of">Valor a precio de ML <b>'+fm0(t.vm)+"</b> ("+nf(t.pzm)+" pzas)</span>"+
+    '<span class="pr">Valor a precio de Amazon <b>'+fm0(t.va)+"</b> ("+nf(t.pza)+" pzas)</span>"+
+    (t.nest+t.nopl?'<span class="tenue">'+nf(t.nest+t.nopl)+" SKUs sin renglón, no suman</span>":"");
+  $("libro").innerHTML=cabecera()+"<tbody>"+(trozo.length?trozo.map(fila).join(""):'<tr><td colspan="12" class="vacio">Nada con esos filtros.</td></tr>')+"</tbody>";
+  var pags=Math.max(1,Math.ceil(VISTA.length/E.por));
+  $("pag").innerHTML='<span class="tenue">'+(VISTA.length?nf(ini+1)+"–"+nf(Math.min(ini+E.por,VISTA.length))+" de "+nf(VISTA.length):"0")+'</span><button class="btn" type="button" id="ant"'+(E.pag<=0?" disabled":"")+'>Anterior</button><span class="num">'+(E.pag+1)+" / "+pags+'</span><button class="btn" type="button" id="sig"'+(E.pag>=pags-1?" disabled":"")+">Siguiente</button>";
+}
+function cuenta(){
+  var t=sumar(R),r=D.resumen,rot=D.rot,tot=r.odoo_totales||{};
+  var sal=t.ps+t.psx,queda=t.pc-sal,libre=t.lb+t.lbx,demas=Math.max(0,(r.pz_salio||0)-sal);
+  var clases=[["full",r.sal_full],["parolera",r.sal_parolera],["proveedor",r.sal_proveedor],["directa",r.sal_directa],["fba",r.sal_fba],["canales",r.sal_canales],["wfs",r.sal_wfs]].filter(function(x){return x[1]});
+  $("cuenta").innerHTML=
+    '<div class="paso compra"><span class="tit">Comprado</span><div class="cifra">'+nf(t.pc)+'</div><div class="pie">piezas en los packing lists de <b>'+nf(r.contenedores)+"</b> contenedores.</div>"+
+      '<div class="lin"><span>Validado por bodega ('+nf(r.contenedores_con_validado)+' contenedores)</span><b>'+nf(r.pz_contenido_validado)+"</b><span>Sin validar: lo que declara el proveedor</span><b>"+nf(r.pz_contenido_sin_validar)+"</b></div></div>"+
+    '<div class="op" aria-hidden="true">−</div>'+
+    '<div class="paso salio"><span class="tit">Salió de bodega</span><div class="cifra">'+nf(sal)+'</div><div class="pie">piezas que Odoo movió hacia afuera (movimientos hechos, no pedidos registrados).</div>'+
+      '<div class="lin">'+clases.map(function(x){return "<span>"+esc(x[0]==="proveedor"?"Devuelto al proveedor":rot[x[0]])+"</span><b>"+nf(x[1])+"</b>"}).join("")+(demas>0?"<span>Salió de más que lo comprado (no se resta)</span><b>−"+nf(demas)+"</b>":"")+"</div></div>"+
+    '<div class="op" aria-hidden="true">=</div>'+
+    '<div class="paso queda"><span class="tit">Queda</span><div class="cifra">'+nf(queda)+'</div><div class="pie">piezas que deberían existir: lo comprado menos lo que salió.</div>'+
+      '<div class="lin"><span>SKUs con mercancía</span><b>'+nf(t.viv)+"</b><span>SKUs SOLD OUT</span><b>"+nf(t.so)+"</b><span>Productos sin SKU</span><b>"+nf(t.sin)+"</b></div></div>"+
+    '<div class="paso odoo"><span class="tit">Odoo dice que hay</span><div class="cifra">'+nf(libre)+'</div><div class="pie">piezas libres hoy (<code>free_qty</code>). La diferencia contra lo que queda son <b>'+nf(queda-libre)+"</b> piezas.</div></div>";
+  var nunca=0,nsk=0,sinsku=0;
+  R.forEach(function(x){if(x.sin)sinsku+=x.pq;else if(x.pc!=null&&!x.en&&!x.lb&&!x.ps){nunca+=x.pq;nsk++}});
+  $("porque").innerHTML='<div class="comp"><span><b>Por qué Odoo tiene menos:</b></span>'+
+    "<span><b>"+nf(sinsku)+"</b> piezas son de renglones a los que nadie les ha puesto SKU (casi todas, de los "+nf(r.contenedores-r.contenedores_con_validado)+" contenedores que bodega no ha validado).</span>"+
+    "<span><b>"+nf(nunca)+"</b> piezas son de "+nf(nsk)+" SKUs que están en un packing list y nunca tuvieron entrada, salida ni existencia en Odoo.</span>"+
+    "<span>Odoo además registra <b>"+nf(tot.sale_ajuste||0)+"</b> piezas dadas de baja por ajuste de inventario y <b>"+nf(tot.entra_ajuste||0)+"</b> dadas de alta por ajuste; esas no son ventas y aquí no se restan.</span>"+
+    "<span>La historia de Odoo empieza en diciembre de 2025: lo vendido antes no está en sus movimientos.</span></div>";
+  var m=D.mercado||{},am=m.amazon||{},faltan=am.grupos&&am.juzgados<am.grupos;
+  $("valor").innerHTML=
+    '<div class="gran precio"><span class="tit">Valor de lo que queda, a precio de Mercado Libre</span><span class="que">Piezas que quedan × precio promedio de la competencia en Mercado Libre.</span><div class="cifra">'+fm0(t.vm)+"</div>"+
+      '<p class="pie">Cubre <b>'+nf(t.pzm)+"</b> piezas ("+(t.pq?(100*t.pzm/t.pq).toFixed(1):"0")+"% de lo que queda). Solo suma lo que tiene al menos dos publicaciones del mismo producto; el resto no tiene todavía un rival comparable medido en Mercado Libre.</p>"+
+      (t.dm?'<div class="mas"><span>Aparte, sin sumar: <b>'+fm0(t.dm)+"</b> de referencias débiles ("+nf(t.pdm)+" piezas con una sola publicación comparable o con un nombre demasiado genérico).</span></div>":"")+
+      '<div class="mas"><span>Fuente: los rivales que el juez de Competencia del panel marcó como el mismo producto ('+nf((m.ml||{}).produccion)+" SKUs medidos) y, donde no hay, el catálogo de Mercado Libre.</span></div></div>"+
+    '<div class="gran pror"><span class="tit">Valor de lo que queda, a precio de Amazon</span><span class="que">Piezas que quedan × precio promedio de la competencia en Amazon México.</span><div class="cifra">'+fm0(t.va)+"</div>"+
+      '<p class="pie">Cubre <b>'+nf(t.pza)+"</b> piezas ("+(t.pq?(100*t.pza/t.pq).toFixed(1):"0")+"% de lo que queda), con al menos dos publicaciones del mismo producto."+(faltan?" <b>La captura sigue en curso:</b> van "+nf(am.juzgados)+" de "+nf(am.grupos)+" grupos de productos.":"")+"</p>"+
+      (t.da?'<div class="mas"><span>Aparte, sin sumar: <b>'+fm0(t.da)+"</b> de referencias débiles ("+nf(t.pda)+" piezas con una sola publicación comparable o con un nombre demasiado genérico).</span></div>":"")+
+      '<div class="mas"><span>Fuente: búsqueda por palabra clave en la API de Amazon, precio de la caja de compra, una cifra por familia, y solo las publicaciones que el juez marcó como el mismo producto.</span></div></div>';
+}
+function agrupar(){
+  var g={};
+  R.forEach(function(r){
+    if(r.pc==null)return;
+    var a=c1(r),b=c2(r)||"(sin subcategoría)";
+    var x=g[a]||(g[a]={n:a,subs:{},l:[]});x.l.push(r);
+    var y=x.subs[b]||(x.subs[b]={n:b,l:[]});y.l.push(r);
+  });
+  return Object.keys(g).map(function(k){var x=g[k];x.t=sumar(x.l);x.sub=Object.keys(x.subs).map(function(s){var y=x.subs[s];y.t=sumar(y.l);return y}).sort(function(a,b){return b.t.pq-a.t.pq});return x}).sort(function(a,b){return b.t.pq-a.t.pq});
+}
+var GRUPOS=[];
+function filaCat(nom,t,cls,boton,ver){
+  return '<tr class="'+cls+'"><td>'+boton+'</td><td class="d num">'+nf(t.sk)+(t.sin?' <span class="tenue">+'+nf(t.sin)+" sin SKU</span>":"")+'</td><td class="d num">'+nf(t.viv)+'</td><td class="d num">'+nf(t.so)+'</td><td class="d num">'+nf(t.pc)+'</td><td class="d num">'+nf(t.ps)+'</td><td class="d num"><b>'+nf(t.pq)+'</b></td><td class="d num">'+fm0(t.vm)+'<div class="mini">'+nf(t.pzm)+' pzas</div></td><td class="d num">'+fm0(t.va)+'<div class="mini">'+nf(t.pza)+" pzas</div></td><td>"+ver+"</td></tr>";
+}
+function categorias(){
+  var h='<thead><tr><th>Categoría</th><th class="d">SKUs en packing lists</th><th class="d">Con mercancía hoy</th><th class="d">SOLD OUT</th><th class="d">Comprado</th><th class="d t-s">Salió</th><th class="d t-q">Queda</th><th class="d t-p">Valor a precio de ML</th><th class="d t-r">Valor a precio de Amazon</th><th></th></tr></thead><tbody>';
+  GRUPOS.forEach(function(g,i){
+    var ab=!!E.xc[g.n];
+    h+=filaCat(g.n,g.t,"",'<button class="nom" type="button" data-xc="'+i+'" aria-expanded="'+ab+'"><span class="fl">'+(ab?"▾":"▸")+"</span>"+esc(g.n)+"</button>",'<button class="ver" type="button" data-vc="'+i+'">Ver productos</button>');
+    if(ab)g.sub.forEach(function(s,j){
+      var id=i+":"+j,as=!!E.xs[id];
+      h+=filaCat(s.n,s.t,"sub",'<button class="nom" type="button" data-xs="'+id+'" aria-expanded="'+as+'" style="font-weight:500"><span class="fl">'+(as?"▾":"▸")+"</span>"+esc(s.n)+"</button>",'<button class="ver" type="button" data-vs="'+id+'">Ver productos</button>');
+      if(as){
+        var l=s.l.slice().sort(function(a,b){return (b.pq||0)-(a.pq||0)}),m=l.slice(0,150);
+        h+='<tr class="sub2"><td colspan="10"><table class="sublista"><tbody>'+m.map(function(r){return '<tr><td style="width:44px">'+foto(r,32)+'</td><td><span class="num" style="font-weight:600">'+esc(r.sin?"Sin SKU":r.s)+"</span> "+esc(r.t)+'</td><td class="d num">comprado '+nf(r.pc)+'</td><td class="d num">salió '+nf(r.ps||0)+'</td><td class="d">'+(r.so?'<span class="so">SOLD OUT</span>':'<span class="num"><b>queda '+nf(r.pq)+"</b></span>")+'</td><td class="d num">'+(r.ml?"ML "+fm0(r.ml.m):"")+'</td><td class="d num">'+(r.az?"Amazon "+fm0(r.az.m):"")+"</td></tr>"}).join("")+(l.length>m.length?'<tr><td colspan="7" class="tenue">y '+nf(l.length-m.length)+" más: usa «Ver productos».</td></tr>":"")+"</tbody></table></td></tr>";
+      }
+    });
+  });
+  $("cats").innerHTML=h+"</tbody>";
+}
+function contenedoresTabla(){
+  var h='<thead><tr><th>Contenedor</th><th>Archivos</th><th class="d">Proveedor declaró</th><th class="d">Bodega contó</th><th class="d">Piezas que cuentan</th><th class="d">De productos sin SKU</th><th class="d">SKUs</th><th class="d t-s">Salió</th><th class="d t-q">Queda</th><th></th></tr></thead><tbody>';
+  D.C.forEach(function(c){
+    var arch=(c.val.length?"validado":'<span class="et av">sin validar</span>')+(c.orig.length?"":' <span class="et s">sin original</span>');
+    h+='<tr><td><b>'+(c.n!=null?"Contenedor "+c.n:esc(c.clave))+'</b><div class="mini">'+esc((c.codigos||[]).join(" · "))+"</div></td><td>"+arch+'</td><td class="d num">'+nf(c.pz_orig)+'</td><td class="d num">'+(c.val.length?nf(c.pz_val):"—")+'</td><td class="d num"><b>'+nf(c.pz)+'</b></td><td class="d num">'+nf(c.sin)+'</td><td class="d num">'+nf(c.skus)+'</td><td class="d num">'+nf(c.sal)+'</td><td class="d num"><b>'+nf(c.pz-c.sal)+'</b></td><td><button class="ver" type="button" data-con="'+esc(c.clave)+'">Ver productos</button></td></tr>';
+  });
+  $("conts").innerHTML=h+"</tbody>";
+}
+function empate(){
+  var n={foto:0,texto:0,bodega:0,foto_odoo:0,foto_parecida:0,cantidad:0},pz={foto:0,texto:0,bodega:0,foto_odoo:0,foto_parecida:0,cantidad:0},est=0,nopl=0,sin=0,pzsin=0,nsk=0;
+  var orden=["foto","texto","foto_odoo","cantidad","bodega"];
+  R.forEach(function(r){
+    if(r.sin){sin++;pzsin+=r.pc;return}
+    if(r.pc!=null){nsk++;var m=r._m||"bodega";n[m]++;pz[m]+=r.pc}
+    else if(r.pe!=null)est++;else nopl++;
+  });
+  function caja(v,t,d,f,k){return '<div class="caja"><span class="v">'+v+'</span><b>'+t+'</b><span class="n">'+d+'</span>'+(f?'<button class="ver" type="button" data-'+f+'="'+k+'">Ver la lista</button>':"")+"</div>"}
+  $("empate").innerHTML=
+    caja(nf(n.foto),"SKUs empatados por la foto","El renglón del packing list original trae el mismo archivo de imagen que el renglón donde bodega anotó el SKU. "+nf(pz.foto)+" piezas.","emp","foto")+
+    caja(nf(n.texto),"SKUs empatados por nombre y cantidad","Sin foto en común, pero el original tiene un renglón con el mismo nombre y la misma cantidad. "+nf(pz.texto)+" piezas.","emp","texto")+
+    caja(nf(n.foto_odoo),"SKUs empatados con la foto de Odoo","En contenedores sin validar: la foto del producto en Odoo es la de un renglón de ESE contenedor. "+nf(pz.foto_odoo)+" piezas.","emp","foto_odoo")+
+    caja(nf(n.foto_parecida),"SKUs empatados por foto parecida","La misma imagen de Odoo, vuelta a guardar: casi idéntica a la de un renglón de su contenedor y claramente distinta de las demás. "+nf(pz.foto_parecida)+" piezas.","emp","foto_parecida")+
+    caja(nf(n.cantidad),"SKUs empatados por la orden de compra","Lo recibido en su orden de compra coincide con un solo renglón del contenedor. "+nf(pz.cantidad)+" piezas.","emp","cantidad")+
+    caja(nf(n.bodega),"SKUs solo con el validado de bodega","Bodega anotó el SKU y contó las piezas, pero no se ubicó el renglón en el packing list original. Las piezas son confiables; falta el número de renglón. "+nf(pz.bodega)+" piezas.","emp","bodega")+
+    caja(nf(est),"SKUs sin renglón ubicado","Están en Odoo y la base de costos dice en qué contenedor llegaron, pero ese contenedor no tiene validado de bodega y su foto no aparece en el original. Sus piezas están entre los productos sin SKU.","est","est")+
+    caja(nf(nopl),"SKUs sin packing list","Tienen movimiento o existencia en Odoo y no aparecen en ningún packing list leído.","est","nopl")+
+    caja(nf(sin),"Productos de packing list sin SKU",nf(pzsin)+" piezas en renglones a los que nadie les ha puesto SKU. Es lo que falta empatar: casi todo viene de contenedores que bodega no ha validado.","est","sin");
+}
+function fuentes(){
+  var f=D.fuentes||{},m=D.mercado||{};
+  var l=[["Packing lists",f.pl,nf(D.resumen.archivos_originales)+" originales · "+nf(D.resumen.archivos_validados)+" validados"],["Movimientos de Odoo",f.movimientos,"hechos, desde dic-2025"],["Mercado Libre",(m.ml||{}).produccion_leido,nf((m.ml||{}).produccion)+" SKUs medidos"],["Amazon",(m.amazon||{}).actualizado,nf((m.amazon||{}).palabras)+" palabras clave"]];
+  $("fuentes").innerHTML=l.map(function(x){return '<span class="fte"><span class="pt"></span><b>'+x[0]+"</b> "+esc(x[2])+(x[1]?" · "+hora(x[1]):"")+"</span>"}).join("");
+  $("cuando").textContent="Armado el "+hora(D.generado);
+}
+function metodo(){
+  var r=D.resumen,b=[
+   ["La cuenta","Comprado − salió = queda. <b>Comprado</b> son las piezas de los packing lists de todos los contenedores. <b>Salió</b> son los movimientos HECHOS de Odoo de la bodega hacia afuera. <b>Queda</b> es la resta. Un producto está <b>SOLD OUT</b> cuando salió todo lo que se compró."],
+   ["Qué cuenta como comprado","Cada contenedor tiene el packing list original del proveedor y, si bodega ya lo recibió, el mismo archivo validado: con el SKU de cada renglón y lo que se contó en físico. Cuando hay validado, vale el conteo de bodega, porque esa es la unidad en que Odoo mueve (si el proveedor escribió 100 paquetes y bodega contó 10,000 piezas, Odoo vende piezas). Cuando no lo hay, vale lo que declara el proveedor. Los proveedores declararon "+nf(r.pz_original)+" piezas en total."],
+   ["Qué cuenta como salida","Solo movimientos en estado hecho que cruzan la frontera de la bodega: entregas a cliente (que en Odoo incluyen los envíos a Mercado Libre Full, a Amazon y a Walmart, y las ventas directas), menos lo que el cliente devolvió, más lo devuelto al proveedor. Lo enviado a Full cuenta como salida aunque todavía no se haya vendido ahí. Los ajustes de inventario no se restan: son correcciones, no ventas, y se ven en el detalle de cada producto."],
+   ["Productos sin SKU","El packing list original no trae SKU. En los contenedores que bodega no ha validado, un renglón solo tiene SKU si la foto del producto en Odoo es la de ese renglón, o si lo recibido en su orden de compra coincide con un solo renglón. Lo demás aparece como «Sin SKU», agrupado por nombre: es mercancía comprada y cuenta en el total, pero no se le puede restar ninguna salida."],
+   ["Títulos","Todos los productos llevan un título al estilo de Mercado Libre México. Si el producto está publicado en Mercado Libre, es el de su publicación. Si no, lo escribió la IA (DeepSeek) con las mismas instrucciones del panel; cuando el nombre no describía el producto y no había categoría confiable, la IA lo escribió viendo la foto. Cada fila dice cuál fue su caso."],
+   ["Categoría","La de Mercado Libre. Sale de la publicación o de lo que el panel guardó; si no hay, la da el predictor de categorías de Mercado Libre a partir del título (marcada «predicha»); como último recurso, el prefijo del SKU (marcada «estimada»)."],
+   ["Precio de Mercado Libre","Precio promedio de las publicaciones rivales que son el mismo producto. Primero, las que el juez de Competencia del panel ya midió para ese SKU; si no hay, las de otra variante del mismo modelo; si tampoco, las del catálogo de Mercado Libre juzgadas aquí. El buscador de Mercado Libre no se puede leer por API ni por página, así que la cobertura es la de lo ya medido."],
+   ["Precio de Amazon","Por palabra clave: se busca el término en la API de Amazon México, se lee el precio de la caja de compra de cada publicación, se cuenta una vez cada familia de variantes, y un juez (IA) deja solo las que son el mismo producto. El dato principal es la media; al lado van la mediana y el rango central, porque dos publicaciones caras mueven el promedio. Amazon no da ventas ni visitas de publicaciones ajenas: no se estiman."],
+   ["Valor a precio de mercado","Piezas que quedan × precio promedio de la competencia, por separado para cada canal. Es precio al público, antes de comisiones, envíos e impuestos, y solo suma los productos que tienen precio de referencia: por eso cada total dice cuántas piezas cubre."],
+   ["Lo que NO es esta página","No escribe en ningún sistema. Es una foto: cada fuente dice a qué hora se leyó. «Queda» es lo que debería existir según lo comprado y lo que salió; lo que Odoo dice tener hoy se muestra al lado para comparar."]
+  ];
+  $("metodo").innerHTML=b.map(function(x){return '<div class="blo"><h2>'+x[0]+"</h2><p>"+x[1]+"</p></div>"}).join("");
+}
+function tsv(){
+  var cab=["SKU","Título","Nombre original","Categoría","Subcategoría","Comprado","Salió","Queda","SOLD OUT","Odoo libre","ML media","ML mediana","ML rivales","Valor ML","Amazon media","Amazon mediana","Amazon rivales","Valor Amazon","Contenedores","Empate"];
+  var out=[cab.join("\t")];
+  VISTA.forEach(function(r){out.push([r.sin?"(sin SKU)":r.s,r.t,r.n||"",c1(r),c2(r),r.pc!=null?r.pc:"",r.ps||0,r.pc!=null?r.pq:"",r.so?"sí":"",r.lb||0,r.ml?r.ml.m:"",r.ml?r.ml.d:"",r.ml?r.ml.n:"",r._vm!=null?Math.round(r._vm):"",r.az?r.az.m:"",r.az?r.az.d:"",r.az?r.az.n:"",r._va!=null?Math.round(r._va):"",Object.keys(r.ct||{}).join(" "),(r.cm||[]).join(" ")].map(function(v){return String(v).replace(/[\t\n]/g," ")}).join("\t"))});
+  return out.join("\n");
+}
+function llenarSub(){
+  var s={};R.forEach(function(r){if(!E.cat||c1(r)===E.cat){var x=c2(r);if(x)s[x]=1}});
+  $("f-sub").innerHTML='<option value="">Todas</option>'+Object.keys(s).sort().map(function(x){return '<option'+(x===E.sub?" selected":"")+">"+esc(x)+"</option>"}).join("");
+}
+function sincronizar(){$("q").value=E.q;$("f-cat").value=E.cat;llenarSub();$("f-sub").value=E.sub;$("f-est").value=E.est;$("f-con").value=E.con;$("f-pre").value=E.pre;$("f-emp").value=E.emp}
+function pestana(id){["pro","cat","con","emp","met"].forEach(function(k){var on=k===id;$("t-"+k).setAttribute("aria-selected",on);$("v-"+k).hidden=!on})}
+function irAProductos(c){Object.assign(E,{q:"",cat:"",sub:"",est:"",con:"",pre:"",emp:""},c);sincronizar();pestana("pro");filtrar();$("v-pro").scrollIntoView({block:"start"})}
+function arrancar(d){
+  D=d;R=d.R;preparar();GRUPOS=agrupar();
+  var cs={};R.forEach(function(r){cs[c1(r)]=1});
+  $("f-cat").innerHTML='<option value="">Todas</option>'+Object.keys(cs).sort().map(function(x){return "<option>"+esc(x)+"</option>"}).join("");
+  $("f-con").innerHTML='<option value="">Todos</option>'+D.C.map(function(c){return '<option value="'+esc(c.clave)+'">'+(c.n!=null?"Contenedor "+c.n:esc(c.clave))+"</option>"}).join("");
+  llenarSub();fuentes();cuenta();categorias();contenedoresTabla();empate();metodo();filtrar();
+  $("q").addEventListener("input",function(){E.q=this.value.trim().toLowerCase();filtrar()});
+  [["f-cat","cat"],["f-sub","sub"],["f-est","est"],["f-con","con"],["f-pre","pre"],["f-emp","emp"]].forEach(function(p){$(p[0]).addEventListener("change",function(){E[p[1]]=this.value;if(p[1]==="cat"){E.sub="";llenarSub()}filtrar()})});
+  $("limpiar").addEventListener("click",function(){irAProductos({})});
+  $("copiar").addEventListener("click",function(){var t=tsv(),b=this;function ok(){b.textContent="Copiado ("+nf(VISTA.length)+" filas)";setTimeout(function(){b.textContent="Copiar para Excel"},1800)}
+    if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(t).then(ok,function(){var a=$("copia");a.hidden=false;a.value=t;a.select()});else{var a=$("copia");a.hidden=false;a.value=t;a.select()}});
+  document.addEventListener("click",function(ev){
+    var b=ev.target.closest("button");if(!b)return;
+    if(b.getAttribute("role")==="tab"){pestana(b.id.slice(2));return}
+    if(b.dataset.i!=null){E.ab[b.dataset.i]=!E.ab[b.dataset.i];pintar();return}
+    if(b.dataset.ord){if(E.ord===b.dataset.ord)E.dir=-E.dir;else{E.ord=b.dataset.ord;E.dir=b.dataset.ord==="s"?1:-1}ordenar();E.pag=0;pintar();return}
+    if(b.id==="ant"){E.pag--;pintar();return}
+    if(b.id==="sig"){E.pag++;pintar();return}
+    if(b.dataset.xc!=null){var g=GRUPOS[b.dataset.xc];E.xc[g.n]=!E.xc[g.n];categorias();return}
+    if(b.dataset.xs!=null){E.xs[b.dataset.xs]=!E.xs[b.dataset.xs];categorias();return}
+    if(b.dataset.vc!=null){irAProductos({cat:GRUPOS[b.dataset.vc].n==="Sin categoría"?"Sin categoría":GRUPOS[b.dataset.vc].n});return}
+    if(b.dataset.vs!=null){var p=b.dataset.vs.split(":"),gg=GRUPOS[p[0]],ss=gg.sub[p[1]];irAProductos({cat:gg.n,sub:ss.n==="(sin subcategoría)"?"":ss.n});return}
+    if(b.dataset.con!=null){irAProductos({con:b.dataset.con});return}
+    if(b.dataset.emp!=null){irAProductos({emp:b.dataset.emp});return}
+    if(b.dataset.est!=null){irAProductos({est:b.dataset.est});return}
+  });
+}
+function cargar(){
+  if(window.INVENTARIO){arrancar(window.INVENTARIO);return}
+  fetch("datos_pl.json").then(function(r){if(!r.ok)throw new Error(r.status);return r.json()}).then(arrancar).catch(function(){
+    var s=document.createElement("script");s.src="datos_pl.js";s.onload=function(){if(window.INVENTARIO)arrancar(window.INVENTARIO)};
+    s.onerror=function(){$("cuando").textContent="No se pudieron cargar los datos."};document.head.appendChild(s)});
+}
+cargar();
+})();
+</script>

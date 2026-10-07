@@ -112,6 +112,10 @@ ANFITRIONES_GET = (
     "sellingpartnerapi-na.amazon.com",
     "marketplace.walmartapis.com",
     "open-api.tiktokglobalshop.com",
+    # Los packing lists: carpetas PÚBLICAS de Drive, se bajan sin credenciales.
+    "drive.google.com",
+    "docs.google.com",
+    "drive.usercontent.google.com",
 )
 
 # Lo ÚNICO que sale sin ser GET. Cada renglón es una LECTURA, y dice por qué.
@@ -127,6 +131,8 @@ LECTURAS_QUE_NO_SON_GET = (
      "toda la API de Temu va por este verbo; solo se permite el tipo de LISTADO"),
     ("sellingpartnerapi-na.amazon.com", "/products/fees/v0/feesEstimate",
      "getMyFeesEstimates: Amazon CALCULA la comisión de un precio; no guarda nada"),
+    ("api.deepseek.com", "/chat/completions",
+     "la IA: se le manda un texto y contesta otro; no toca ningún sistema de Kubera"),
 )
 # En Temu el verbo no distingue nada: lo que distingue es el campo `type`.
 TEMU_TIPOS_DE_LECTURA = frozenset({"bg.local.goods.list.query"})

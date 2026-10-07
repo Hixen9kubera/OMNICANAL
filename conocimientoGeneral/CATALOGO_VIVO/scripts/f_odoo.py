@@ -50,10 +50,17 @@ class Odoo:
             raise RuntimeError("Odoo rechazó las credenciales")
 
     def leer(self, modelo: str, dominio: list, campos: list[str], **kw: Any) -> list[dict]:
-        """`search_read` — el único método que esta carpeta le pide a Odoo."""
+        """`search_read` — con `agrupar`, lo único que esta carpeta le pide a Odoo."""
         proxy = xmlrpc.client.ServerProxy(f"{self.url}/xmlrpc/2/object", allow_none=True)
         return proxy.execute_kw(self.db, self.uid, self.pwd, modelo, "search_read",
                                 [dominio], {"fields": campos, **kw})
+
+    def agrupar(self, modelo: str, dominio: list, campos: list[str], por: list[str],
+                **kw: Any) -> list[dict]:
+        """`read_group` — sumas por grupo. También es una lectura: no cambia nada."""
+        proxy = xmlrpc.client.ServerProxy(f"{self.url}/xmlrpc/2/object", allow_none=True)
+        return proxy.execute_kw(self.db, self.uid, self.pwd, modelo, "read_group",
+                                [dominio], {"fields": campos, "groupby": por, "lazy": False, **kw})
 
 
 def _miniatura(b64: str) -> bytes | None:
