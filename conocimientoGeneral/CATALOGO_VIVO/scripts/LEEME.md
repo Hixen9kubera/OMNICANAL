@@ -118,6 +118,26 @@ Lógica de lectura de packing lists: la de `kubera-exit` de José
 (github.com/joseKubera/kubera-exit), copiada en `pl_leer.py`; el lector de originales
 es `pl_parser.py`, copia literal del de producción.
 
+### El precio de Mercado Libre viene de un archivo, no de una etapa
+
+`pagina_pl` busca en `<salida>/datos/eduardo_ml/` el paquete «valor de los contenedores a
+precio de Mercado Libre» (la cotización por API de la sesión de COMPETENCIA de Eduardo:
+`contenedores_v2.csv`, `valor_lineas.csv`, `pm_precios_full.csv`, `pm_precios_sd.csv`,
+`correcciones_top50.json`, `valor_resumen.json`). Lo lee `ml_contenedores.py`. Si la carpeta
+no está, la página sale como antes, con lo de `mercado_ml`.
+
+**Ese paquete NO se sube**: trae precios de compra de proveedores, y este repositorio es
+público. Se copia a mano a la carpeta de salida.
+
+Cómo se une: por SKU; lo que no tiene SKU, por archivo (el `sha256` es el mismo de
+`pl_indice.json`) y número de renglón, que es el mismo en los dos lados. Cada fila dice de
+cuál de sus cuatro fuentes salió el precio (exacto, nuestro precio publicado, revisado a
+mano, banda de categoría), y en la página se ven el mínimo, la media y el máximo.
+
+Hay también una etapa que no estaba en la tabla: `empate_ia` (DeepSeek empareja, dentro de
+un contenedor sin validar, los renglones sueltos con los SKUs sueltos; solo cuenta lo que
+marca con confianza alta).
+
 ---
 
 ## Temu: la única etapa que no corre desde una laptop

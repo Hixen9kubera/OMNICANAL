@@ -36,7 +36,7 @@ td.q .grande{color:var(--bien)}
   <header class="cab">
     <div>
       <h1>Inventario Kubera, contado desde los packing lists</h1>
-      <p class="sub">Lo que se compró según los packing lists de todos los contenedores, menos lo que Odoo movió hacia afuera. Lo que queda se valúa al precio promedio de la competencia en Mercado Libre y en Amazon.</p>
+      <p class="sub">Lo que se compró según los packing lists de todos los contenedores, menos lo que Odoo movió hacia afuera. Lo que queda se valúa a precio de Mercado Libre (la cotización por API de Eduardo, línea por línea) y a precio de la competencia en Amazon.</p>
     </div>
     <div class="cuando" id="cuando">Cargando…</div>
   </header>
@@ -60,7 +60,7 @@ td.q .grande{color:var(--bien)}
       <label>Subcategoría<select id="f-sub"><option value="">Todas</option></select></label>
       <label>Estado<select id="f-est"><option value="">Todo</option><option value="queda">Queda mercancía</option><option value="so">SOLD OUT</option><option value="sin">Sin SKU en el packing list</option><option value="est">SKU sin renglón ubicado</option><option value="nopl">SKU sin packing list</option><option value="dm">Salió más de lo comprado</option><option value="noodoo">Comprado y nunca entró a Odoo</option><option value="uf">Odoo cuenta en otra unidad</option></select></label>
       <label>Contenedor<select id="f-con"><option value="">Todos</option></select></label>
-      <label>Precio de mercado<select id="f-pre"><option value="">Todos</option><option value="ml">Con precio de Mercado Libre</option><option value="az">Con precio de Amazon</option><option value="dos">Con los dos</option><option value="no">Sin ninguno</option></select></label>
+      <label>Precio de mercado<select id="f-pre"><option value="">Todos</option><option value="ml">Con precio de Mercado Libre</option><option value="az">Con precio de Amazon</option><option value="dos">Con los dos</option><option value="no">Sin ninguno</option><option value="c-f">ML: exacto (mismo producto)</option><option value="c-n">ML: nuestro precio publicado</option><option value="c-r">ML: revisado a mano</option><option value="c-b">ML: banda de categoría</option><option value="c-e">ML: estimado aquí</option><option value="az4">Amazon medido a más de 4× su precio de ML</option><option value="c-u">ML: bodega contó distinto al proveedor</option></select></label>
       <label>Empate<select id="f-emp"><option value="">Todos</option><option value="foto">Misma foto</option><option value="texto">Mismo nombre y cantidad</option><option value="bodega">Solo validado de bodega</option><option value="foto_odoo">Foto de Odoo</option><option value="foto_parecida">Foto de Odoo parecida</option><option value="cantidad">Cantidad de la compra</option><option value="ia">Inferido por IA</option></select></label>
       <button class="btn" id="limpiar" type="button">Quitar filtros</button>
       <button class="btn" id="copiar" type="button">Copiar para Excel</button>
@@ -105,6 +105,8 @@ function c2(r){return r.k==null?"":(D.K[r.k][1]||"")}
 function c3(r){return r.k==null?"":(D.K[r.k][2]||"")}
 var METODO={foto:"misma foto en el original",texto:"mismo nombre y cantidad",bodega:"bodega lo anotó en el validado",foto_odoo:"la foto de Odoo es la del renglón",foto_parecida:"foto de Odoo casi idéntica a la del renglón",cantidad:"lo recibido en la compra coincide con el renglón",ia:"inferido por IA con el nombre, sin foto"};
 var CORTO={full:"Full",fba:"Amazon",wfs:"Walmart",parolera:"Parolera",canales:"canales",directa:"directa",proveedor:"devuelto"};
+var FML={f:"exacto",n:"nuestro precio en ML",r:"revisado a mano",b:"banda de categoría",p:"medido por Competencia del panel"};
+var FML_L={f:"Exacto: publicaciones del mismo producto",n:"Nuestro precio publicado en Mercado Libre",r:"Revisado a mano (las líneas de mayor valor)",b:"Banda de categoría: los más vendidos de su categoría, no el mismo producto",p:"Medido antes por Competencia del panel (lo que su archivo no trae)"};
 var ORIGEN={p:"rivales del mismo producto (Competencia del panel)",g:"rivales de otra variante del mismo modelo",c:"catálogo de Mercado Libre",k:"búsqueda por palabra clave"};
 
 function foto(r,s){
@@ -121,8 +123,12 @@ function preparar(){
     // Mercado Libre, además, que no salgan del catálogo de marca) y que el producto tenga SKU.
     // Lo demás lleva un precio ESTIMADO (`em` / `ea`, calculado al armar los datos), para que el
     // valor cubra TODAS las piezas. Las dos cosas se suman, y siempre se dice cuánto es de cada una.
-    r._fm=!r.sin&&r.ml&&r.ml.n>=2&&!r.ml.x&&r.ml.o!=="c";
-    r._fa=!r.sin&&r.az&&r.az.n>=2&&!r.az.x;
+    // Mercado Libre: si la fila trae precio del archivo de Eduardo (`o: "e"`), ese manda, y `_cm` dice
+    // su fuente: f exacto · n nuestro precio · r revisado · b banda de categoría. `p` es lo medido antes.
+    var edu=!!(r.ml&&r.ml.o==="e");
+    r._fm=edu||!!(!r.sin&&r.ml&&r.ml.n>=2&&!r.ml.x&&r.ml.o!=="c");
+    r._cm=r._fm?(edu?r.ml.f:"p"):null;
+    r._fa=!r.sin&&r.az&&r.az.n>=2&&!r.az.x&&!r.az.dz;
     r._pm=r._fm?r.ml.m:(r.em?r.em[0]:null);          // precio por pieza que se usa
     r._pa=r._fa?r.az.m:(r.ea?r.ea[0]:null);
     r._vm=r._q!=null&&r._fm?r._q*r.ml.m:null;        // valor medido
@@ -152,6 +158,8 @@ function pasa(r){
   if(E.pre==="az"&&!r.az)return false;
   if(E.pre==="dos"&&!(r.ml&&r.az))return false;
   if(E.pre==="no"&&(r.ml||r.az))return false;
+  if(E.pre==="az4"&&!(r._fa&&r.ml&&r.ml.o==="e"&&r.az.m>4*r.ml.m))return false;
+  if(E.pre.slice(0,2)==="c-"){var kf=E.pre.slice(2);if(kf==="e"?!(r._cm==null&&r.em):kf==="u"?!(r.ml&&r.ml.ue):r._cm!==kf)return false}
   if(E.emp&&r._m!==E.emp)return false;
   return true;
 }
@@ -175,9 +183,11 @@ function sumar(l){
   var t={n:0,sk:0,sin:0,pc:0,ps:0,pq:0,so:0,viv:0,lb:0,psx:0,pe:0,nest:0,nopl:0,lbx:0,
     vm:0,pzm:0,em:0,pem:0,emc:0,emt:0,emp:0,emi:0,pmc:0,pmt:0,pmp:0,pmi:0,nm:0,
     va:0,pza:0,ea:0,pea:0,eac:0,eat:0,eap:0,eai:0,pac:0,pat:0,pap:0,pai:0,na:0,
-    xm:{n:0,s:0,lo:Infinity,hi:-Infinity},xa:{n:0,s:0,lo:Infinity,hi:-Infinity}};
+    xm:{n:0,s:0,lo:Infinity,hi:-Infinity},xa:{n:0,s:0,lo:Infinity,hi:-Infinity},
+    emm:0,pmm:0,eam:0,pam:0,vmp:0,vmb:0,tcm:0,cm:{f:{v:0,pz:0,n:0},n:{v:0,pz:0,n:0},r:{v:0,pz:0,n:0},b:{v:0,pz:0,n:0},p:{v:0,pz:0,n:0}}};
   function canal(r,c,v,e,est){
-    if(v!=null){t["v"+c]+=v;t["pz"+c]+=r.pq;var px=c==="m"?r.ml.m:r.az.m,x=t["x"+c];x.n++;x.s+=px;if(px<x.lo)x.lo=px;if(px>x.hi)x.hi=px}
+    if(v!=null){t["v"+c]+=v;t["pz"+c]+=r.pq;var px=c==="m"?r.ml.m:r.az.m,x=t["x"+c];x.n++;x.s+=px;if(px<x.lo)x.lo=px;if(px>x.hi)x.hi=px;
+      if(c==="m"){var f=t.cm[r._cm];f.v+=v;f.pz+=r.pq;f.n++;if(r._cm==="b")t.vmb+=v;else t.vmp+=v}}
     else if(e!=null){t["e"+c]+=e;t["pe"+c]+=r.pq;t["e"+c+est[1]]+=e;t["p"+c+est[1]]+=r.pq}
     else t["n"+c]+=r.pq;
   }
@@ -188,6 +198,7 @@ function sumar(l){
       if(r.sin)t.sin++;else t.sk++;
       if(r.so)t.so++;else if(r.pq>0)t.viv++;
       canal(r,"m",r._vm,r._em,r.em);
+      if(r._pm!=null&&!r.nv)t.tcm+=r.pc*r._pm;      // todo lo comprado, al mismo precio
       canal(r,"a",r._va,r._ea,r.ea);
       t.lb+=r.lb||0;
     }else{
@@ -206,10 +217,11 @@ function etEstado(r){
   if(r.pc==null)return '<span class="et">sin packing list</span>';
   return "";
 }
-var NIVEL={s:"su subcategoría",r:"su categoría",g:"todo el inventario"};
+var NIVEL={h:"su tipo de producto",s:"su subcategoría",r:"su categoría",g:"todo el inventario"};
 function comoSeEstimo(e){
   if(!e)return "";
   var tope=e[4]?"; topado al precio del 90% más caro de lo medido en su subcategoría":"";
+  if(e[1]==="m")return "su precio de Mercado Libre × "+e[2]+" (lo que Amazon cobra de más por lo mismo en "+NIVEL[e[3]]+")"+tope;
   if(e[1]==="c")return "su costo × "+e[2]+" (lo que se vende contra su costo en "+NIVEL[e[3]]+")"+tope;
   if(e[1]==="i")return "su propio indicio (una sola publicación, otro tamaño de paquete o catálogo)"+tope;
   if(e[1]==="t")return "el precio de ese tipo de producto"+tope;
@@ -218,18 +230,24 @@ function comoSeEstimo(e){
 function tri(a,b,c){return '<div class="tri"><span class="num">'+a+'</span><span class="num"><b>'+b+'</b></span><span class="num">'+c+"</span></div>"}
 var TRI_CAB='<div class="tri cab"><span>mín</span><span>media</span><span>máx</span></div>';
 function celdaPrecio(p,firme,est){
+  if(p&&p.o==="e"){
+    // Archivo de Eduardo: mínimo, media y máximo de las publicaciones (del producto o de su categoría).
+    var que=p.f==="r"?"rango revisado a mano":p.nv==="e"?"exacto":p.nv==="x"?"exacto (del modelo)":p.nv?"banda"+(p.cg?" «"+esc(p.cg)+"»":""):"sin publicaciones";
+    return (p.lo!=null?tri(fm0(p.lo),fm(p.me),fm0(p.hi)):tri("—","—","—"))+'<div class="mini">'+que+(p.n?" · "+p.n+" publ.":"")+(p.pk?" · paquete de "+p.pk:"")+"</div>";
+  }
   // Medido: el mínimo, la media y el máximo de las publicaciones del mismo producto.
   if(firme)return tri(fm0(p.lo),fm(p.m),fm0(p.hi))+'<div class="mini">'+p.n+" publicaciones"+(p.pk?" · ÷"+p.pk:"")+(p.o==="g"?" · del modelo":"")+"</div>";
   if(!est)return tri("—","—","—")+(p?'<div class="mini">indicio: '+fm0(p.m)+"</div>":"");
   var propio=est[1]==="t"||est[1]==="i";
   var h=tri(propio&&p?fm0(p.lo):"—",fm(est[0]),propio&&p?fm0(p.hi):"—")+
-    '<div class="mini">estimado: '+(est[1]==="c"?"costo × "+est[2]:est[1]==="i"?"su indicio":est[1]==="t"?"tipo de producto":"promedio de "+NIVEL[est[3]])+(est[4]?" · topado":"")+"</div>";
-  if(p&&!propio)h+='<div class="mini">indicio: '+fm0(p.m)+" ("+(p.o==="c"?"catálogo":p.x?"otro paquete":p.n===1?"1 publicación":"sin SKU")+")</div>";
+    '<div class="mini">estimado: '+(est[1]==="m"?"precio de ML × "+est[2]:est[1]==="c"?"costo × "+est[2]:est[1]==="i"?"su indicio":est[1]==="t"?"tipo de producto":"promedio de "+NIVEL[est[3]])+(est[4]?" · topado":"")+"</div>";
+  if(p&&!propio)h+='<div class="mini">indicio: '+fm0(p.m)+" ("+(p.dz?p.dz+"× su precio de ML":p.o==="c"?"catálogo":p.x?"otro paquete":p.n===1?"1 publicación":"sin SKU")+")</div>";
   return h;
 }
-function celdaValor(medido,estimado,r,precio){
-  // Siempre se ve la cuenta: piezas que quedan × precio por pieza.
+function celdaValor(medido,estimado,r,precio,p){
+  // Siempre se ve la cuenta: piezas que quedan × precio por pieza. En Mercado Libre, además, qué precio es.
   var cuenta=precio!=null&&r._q!=null?'<div class="mini">'+nf(r._q)+" pzas × "+fm(precio)+"</div>":"";
+  if(p&&p.o==="e"&&medido!=null)cuenta+='<div class="mini">'+esc(FML[p.f])+(p.tp?" · topado a 10× FOB":p.aj?" · ajustado por su regla":"")+"</div>";
   if(medido!=null)return '<div class="num">'+fm0(medido)+"</div>"+cuenta;
   if(estimado!=null)return '<div class="num">'+fm0(estimado)+"</div>"+cuenta+'<div class="mini">estimado</div>';
   if(r.nv)return '<div class="num tenue">—</div><div class="mini">insumo: no se valúa</div>';
@@ -254,18 +272,46 @@ function fila(r){
     '<td class="d q">'+queda+"</td>"+
     '<td class="d"><div class="num">'+(r.lb!=null?nf(r.lb):"—")+"</div></td>"+
     '<td class="d">'+celdaPrecio(r.ml,r._fm,r.em)+"</td>"+
-    '<td class="d'+(r._tm!=null?" oro":"")+'">'+celdaValor(r._vm,r._em,r,r._pm)+"</td>"+
+    '<td class="d'+(r._tm!=null?" oro":"")+'">'+celdaValor(r._vm,r._em,r,r._pm,r.ml)+"</td>"+
     '<td class="d">'+celdaPrecio(r.az,r._fa,r.ea)+"</td>"+
     '<td class="d'+(r._ta!=null?" verde":"")+'">'+celdaValor(r._va,r._ea,r,r._pa)+"</td>"+
     "<td>"+contenedores(r)+"</td></tr>";
   if(ab)h+='<tr><td colspan="12" style="padding:0;border-top:1px solid var(--linea2);background:var(--papel2)">'+detalle(r)+"</td></tr>";
   return h;
 }
+function bloqueML(r){
+  var p=r.ml,h='<div class="blo of"><h3>Mercado Libre · precio por pieza</h3><dl class="kv">'+
+    '<dt>Precio usado</dt><dd class="num"><b>'+fm(p.m)+"</b></dd>"+
+    "<dt>De dónde sale</dt><dd>"+esc(FML_L[p.f])+"</dd>"+
+    '<dt>Valor de lo que queda</dt><dd class="num"><b>'+(r._tm!=null?fm0(r._tm):"—")+"</b></dd>";
+  if(p.lo!=null){
+    h+='<dt>Mínimo · media · máximo</dt><dd class="num">'+fm0(p.lo)+" · "+fm(p.me)+" · "+fm0(p.hi)+"</dd>";
+    if(p.d!=null)h+='<dt>Mediana</dt><dd class="num">'+fm(p.d)+'</dd><dt>Rango central (P25–P75)</dt><dd class="num">'+fm0(p.a)+" – "+fm0(p.b)+"</dd>";
+    if(p.n)h+='<dt>Publicaciones</dt><dd class="num">'+p.n+(p.vd?" de "+p.vd+" vendedores":"")+"</dd>";
+  }
+  if(p.cg)h+="<dt>Categoría de Mercado Libre</dt><dd>"+esc(p.cg)+"</dd>";
+  if(p.pn)h+='<dt>Nuestro precio publicado</dt><dd class="num">'+fm(p.pn)+"</dd>";
+  h+="</dl>";
+  var exacto=p.nv==="e"||p.nv==="x",notas=[];
+  if(p.f==="f")notas.push("El precio usado es la mediana de las publicaciones que el juez marcó como el mismo producto"+(p.nv==="x"?" (las de una variante hermana del mismo modelo)":"")+".");
+  if(p.f==="b")notas.push("El mínimo, la media y el máximo son de los más vendidos de su categoría"+(p.nv==="a"?" (una categoría más amplia)":"")+": una referencia, no publicaciones del mismo producto. El precio usado es la mediana de esa banda.");
+  if(p.f==="n")notas.push("Se usa nuestro propio precio publicado en Mercado Libre"+(exacto?": el exacto de la competencia difería más de 2× del nuestro y se tomó el menor":": es más firme que la banda de su categoría, que es lo que muestran el mínimo, la media y el máximo")+".");
+  if(p.f==="r")notas.push("Revisado a mano entre las líneas de banda de mayor valor"+(p.rq?": "+esc(p.rq):"")+".");
+  if(p.aj)notas.push("Bajado por la regla de Eduardo: ninguna línea vale más de 10 veces su FOB a 19 pesos; sin FOB, se usa el cuartil bajo de la banda.");
+  if(p.pk)notas.push("El precio de Mercado Libre es de un paquete de "+p.pk+" y aquí se cuentan piezas sueltas: está partido entre "+p.pk+".");
+  if(p.ue)notas.push("El packing list del proveedor cuenta "+nf(p.ue)+" unidades y aquí se cuentan "+nf(r.pc)+" (bodega). Se usa el conteo de bodega con el precio por unidad"+(p.tp?", topado: el producto no vale más de 10 veces el FOB de sus renglones":"")+".");
+  if(p.pa)notas.push(r.sin?"Sus renglones están en el validado de bodega: el precio es el de un renglón con el mismo nombre en su contenedor.":"El archivo de Eduardo no trae este SKU: el precio es el del renglón del packing list que aquí se le empató, cotizado por la descripción de ese renglón.");
+  if(p.ni)notas.push("Esta fila junta "+p.ni+" productos que Eduardo cotizó por separado (renglones con el mismo nombre): la media es su promedio por unidades; el mínimo y el máximo, los extremos.");
+  if(p.sg)notas.push("Cotizado en la segunda pasada, con la descripción del packing list traducida, porque el SKU no tenía título en el catálogo.");
+  if(p.rz&&p.f!=="n")notas.push("Para revisar: el precio de mercado difiere más de 2× de nuestro precio publicado.");
+  return h+notas.map(function(x){return '<div class="mini" style="margin-top:6px">'+x+"</div>"}).join("")+"</div>";
+}
 function bloquePrecio(nombre,p,clase,firme,est,valor,r){
+  if(p&&p.o==="e")return bloqueML(r);
   var cabeza="";
-  if(!firme&&est)cabeza='<div class="blo '+clase+'" style="margin-bottom:8px"><h3>'+nombre.split(" · ")[0]+' · precio estimado</h3><dl class="kv"><dt>Precio por pieza</dt><dd class="num"><b>'+fm(est[0])+'</b></dd><dt>Valor de lo que queda</dt><dd class="num"><b>'+fm0(valor)+'</b></dd></dl><div class="mini" style="margin-top:6px">No tiene dos publicaciones del mismo producto, así que se estima con '+comoSeEstimo(est)+"."+(r.co&&est[1]==="c"?" Su costo: "+fm(r.co)+".":"")+"</div></div>";
+  if(!firme&&est)cabeza='<div class="blo '+clase+'" style="margin-bottom:8px"><h3>'+nombre.split(" · ")[0]+' · precio estimado</h3><dl class="kv"><dt>Precio por pieza</dt><dd class="num"><b>'+fm(est[0])+'</b></dd><dt>Valor de lo que queda</dt><dd class="num"><b>'+fm0(valor)+'</b></dd></dl><div class="mini" style="margin-top:6px">No tiene precio medido, así que se estima con '+comoSeEstimo(est)+"."+(r.co&&est[1]==="c"?" Su costo: "+fm(r.co)+".":"")+"</div></div>";
   else if(firme)cabeza='<div class="mini" style="margin:0 0 6px">Precio medido. Valor de lo que queda: <b>'+fm0(valor)+"</b></div>";
-  else if(r.nv)cabeza='<div class="mini" style="margin:0 0 6px">No se valúa: su contenedor parece material de tienda, no mercancía (por confirmar).</div>';
+  else if(r.nv)cabeza='<div class="mini" style="margin:0 0 6px">No se valúa: es un insumo (empaque de otro producto o material de tienda), no mercancía para vender.</div>';
   return cabeza+bloqueReferencia(nombre,p,clase);
 }
 function bloqueReferencia(nombre,p,clase){
@@ -278,6 +324,7 @@ function bloqueReferencia(nombre,p,clase){
     '<dt>Publicaciones comparables</dt><dd class="num">'+p.n+"</dd>"+
     '<dt>De dónde sale</dt><dd>'+esc(ORIGEN[p.o]||"")+(p.q?" «"+esc(p.q)+"»":"")+"</dd></dl>";
   if(p.pk)h+='<div class="mini" style="margin-top:6px">Las publicaciones venden un paquete de '+p.pk+" y el inventario cuenta piezas sueltas: el precio está partido entre "+p.pk+".</div>";
+  if(p.dz)h+='<div class="mini" style="margin-top:6px">No cuenta como precio medido: está a '+p.dz+" veces su precio de Mercado Libre. Casi siempre es otro producto con el mismo nombre, o un paquete contra una pieza.</div>";
   if(p.n<2)h+='<div class="mini" style="margin-top:6px">Una sola publicación comparable: es un indicio, no cuenta como precio medido.</div>';
   if(p.o==="c")h+='<div class="mini" style="margin-top:6px">Sale del catálogo de Mercado Libre, que es de productos de marca: es una referencia, no cuenta como precio medido.</div>';
   if(p.x)h+='<div class="mini" style="margin-top:6px">No cuenta como precio medido: no hubo dos publicaciones con el mismo tamaño de paquete.</div>';
@@ -332,7 +379,7 @@ function pintar(){
   $("total").innerHTML="<span><b>"+nf(t.sk)+"</b> SKUs y <b>"+nf(t.sin)+"</b> productos sin SKU</span>"+
     '<span class="co">Comprado <b>'+nf(t.pc)+"</b></span><span>Salió <b>"+nf(t.ps)+"</b></span><span>Queda <b>"+nf(t.pq)+"</b></span>"+
     "<span>SOLD OUT <b>"+nf(t.so)+"</b></span>"+
-    '<span class="of">Valor a precio de ML <b>'+fm0(t.tm)+"</b> (medido "+mill(t.vm)+" + estimado "+mill(t.em)+")</span>"+
+    '<span class="of">Valor a precio de ML <b>'+fm0(t.tm)+"</b> (del producto "+mill(t.vmp)+" + banda "+mill(t.vmb)+" + estimado "+mill(t.em)+")</span>"+
     '<span class="pr">Valor a precio de Amazon <b>'+fm0(t.ta)+"</b> (medido "+mill(t.va)+" + estimado "+mill(t.ea)+")</span>"+
     (t.nest+t.nopl?'<span class="tenue">'+nf(t.nest+t.nopl)+" SKUs sin renglón, no suman</span>":"");
   $("libro").innerHTML=cabecera()+"<tbody>"+(trozo.length?trozo.map(fila).join(""):'<tr><td colspan="12" class="vacio">Nada con esos filtros.</td></tr>')+"</tbody>";
@@ -362,11 +409,26 @@ function cuenta(){
     "<span>La historia de Odoo empieza en diciembre de 2025: lo vendido antes no está en sus movimientos.</span></div>";
   var m=D.mercado||{},am=m.amazon||{},faltan=am.grupos&&am.juzgados<am.grupos;
   $("valor").innerHTML=
-    bloqueValor("precio","Valor de lo que queda, a precio de Mercado Libre","en Mercado Libre",t,"m",
-      "Medido: los rivales que el juez de Competencia del panel marcó como el mismo producto ("+nf((m.ml||{}).produccion)+" SKUs medidos), para ese SKU o para otra variante de su modelo.","")+
+    ((m.ml||{}).edu?bloqueValorML(t,m.ml.edu):bloqueValor("precio","Valor de lo que queda, a precio de Mercado Libre","en Mercado Libre",t,"m",
+      "Medido: los rivales que el juez de Competencia del panel marcó como el mismo producto ("+nf((m.ml||{}).produccion)+" SKUs medidos), para ese SKU o para otra variante de su modelo.",""))+
     bloqueValor("pror","Valor de lo que queda, a precio de Amazon","en Amazon México",t,"a",
       "Medido: búsqueda por palabra clave en la API de Amazon, precio de la caja de compra, una cifra por familia, y solo las publicaciones que el juez marcó como el mismo producto.",
-      faltan?" <b>La captura sigue en curso:</b> van "+nf(am.juzgados)+" de "+nf(am.grupos)+" grupos de productos; conforme avance, más piezas pasan de estimado a medido.":"");
+      (faltan?" <b>La captura sigue en curso:</b> van "+nf(am.juzgados)+" de "+nf(am.grupos)+" grupos de productos; conforme avance, más piezas pasan de estimado a medido.":"")+
+      ((D.estimacion||{}).az_descartados?" "+nf(D.estimacion.az_descartados)+" precios de Amazon no se tomaron como medidos por estar a más de 8 veces el precio de Mercado Libre del mismo producto.":""));
+}
+function bloqueValorML(t,ed){
+  var P=t.pq||1,ref=ed.ref||{},pz=t.pzm+t.pem,c=t.cm,T=t.tm||1;
+  function ren(rot,x){return x.v?"<span>"+rot+": <b>"+fm0(x.v)+"</b> · "+nf(x.pz)+" piezas · "+(100*x.v/T).toFixed(0)+"% del valor</span>":""}
+  return '<div class="gran precio"><span class="tit">Valor de lo que queda, a precio de Mercado Libre</span>'+
+    '<span class="que">Piezas que quedan × el precio de Mercado Libre de cada producto: la cotización por API del 6 y 7 de octubre (archivo de Eduardo), línea por línea de los packing lists.</span>'+
+    '<div class="cifra">'+fm0(t.tm)+"</div>"+
+    '<p class="pie">Sobre <b>'+nf(pz)+"</b> de las "+nf(t.pq)+" piezas que quedan ("+(100*pz/P).toFixed(1)+"%). Con precio <b>del producto</b> (exacto, nuestro o revisado): <b>"+fm0(t.vmp)+"</b>. Con <b>banda de categoría</b>: <b>"+fm0(t.vmb)+"</b>."+(t.em?" Estimado aquí, para lo que su archivo no trae: <b>"+fm0(t.em)+"</b>.":"")+"</p>"+
+    '<div class="mas">'+ren(FML_L.f,c.f)+ren(FML_L.n,c.n)+ren(FML_L.r,c.r)+ren(FML_L.b,c.b)+ren(FML_L.p,c.p)+
+      (t.em?"<span>Estimado aquí con su costo y su subcategoría (lo que su archivo no trae): <b>"+fm0(t.em)+"</b> · "+nf(t.pem)+" piezas · "+(100*t.em/T).toFixed(0)+"% del valor</span>":"")+
+      (t.nm?"<span>Sin valuar: <b>"+nf(t.nm)+"</b> piezas: los insumos que Eduardo excluyó (empaque y material de tienda) y lo que no tiene precio ni costo</span>":"")+
+      "<span>Todo lo <b>comprado</b>, a estos mismos precios, valdría <b>"+fm0(t.tcm)+"</b>. La cifra de Eduardo para sus "+nf(ref.contenedores)+" contenedores es <b>"+fm0(ref.valor_depurado_mxn)+"</b> (entre "+mill(ref.valor_depurado_bajo_mxn)+" y "+mill(ref.valor_depurado_alto_mxn)+"). La diferencia: aquí se cuenta con el conteo de bodega cuando existe, y hay contenedores que solo tienen validado.</span>"+
+      "<span><b>Ojo con la banda:</b> no está calibrada."+(ed.rev&&ed.rev.lineas?" Eduardo revisó a mano las "+nf(ed.rev.lineas)+" líneas de banda de mayor valor: pasaron de "+mill(ed.rev.antes)+" a "+mill(ed.rev.despues)+" (−"+ed.rev.baja+"%).":"")+" Es precio al público con IVA, antes de comisión y envío.</span>"+
+    "</div></div>";
 }
 function bloqueValor(clase,titulo,donde,t,c,fuente,extra){
   var tot=t["t"+c],med=t["v"+c],pzMed=t["pz"+c],est=t["e"+c],pzEst=t["pe"+c],sinV=t["n"+c],P=t.pq||1;
@@ -374,11 +436,12 @@ function bloqueValor(clase,titulo,donde,t,c,fuente,extra){
   return '<div class="gran '+clase+'"><span class="tit">'+titulo+'</span><span class="que">Todas las piezas que quedan × el precio promedio de la competencia '+donde+".</span>"+
     '<div class="cifra">'+fm0(tot)+"</div>"+
     '<p class="pie">Sobre <b>'+nf(pzMed+pzEst)+"</b> de las "+nf(t.pq)+" piezas que quedan ("+(100*(pzMed+pzEst)/P).toFixed(1)+"%). <b>Medido</b> con publicaciones del mismo producto: <b>"+fm0(med)+"</b> en "+nf(pzMed)+" piezas ("+(100*pzMed/P).toFixed(1)+"%). <b>Estimado</b>: <b>"+fm0(est)+"</b> en "+nf(pzEst)+" piezas."+extra+"</p>"+
-    '<div class="mas">'+renglon("Estimado con su costo × lo que se vende contra su costo en su subcategoría",t["e"+c+"c"],t["p"+c+"c"])+
+    '<div class="mas">'+renglon("Estimado con su precio de Mercado Libre × lo que Amazon cobra de más por lo mismo",t["e"+c+"m"],t["p"+c+"m"])+
+      renglon("Estimado con su costo × lo que se vende contra su costo en su subcategoría",t["e"+c+"c"],t["p"+c+"c"])+
       renglon("Estimado con su propio indicio (una sola publicación u otro tamaño de paquete)",t["e"+c+"i"],t["p"+c+"i"])+
       renglon("Estimado con el precio promedio por pieza de su subcategoría",t["e"+c+"p"],t["p"+c+"p"])+
       renglon("Productos sin SKU, al precio de ese tipo de producto",t["e"+c+"t"],t["p"+c+"t"])+
-      (sinV?"<span>Sin valuar: <b>"+nf(sinV)+"</b> piezas: insumos (empaque de otros productos y el contenedor "+esc((D.sin_valor||[]).join(", "))+", que parece material de tienda), y granel sin costo ni precio de referencia</span>":"")+
+      (sinV?"<span>Sin valuar: <b>"+nf(sinV)+"</b> piezas: insumos (empaque de otros productos y material de tienda), y granel sin costo ni precio de referencia</span>":"")+
       "<span>"+fuente+"</span></div></div>";
 }
 function agrupar(){
@@ -391,19 +454,22 @@ function agrupar(){
   });
   return Object.keys(g).map(function(k){var x=g[k];x.t=sumar(x.l);x.sub=Object.keys(x.subs).map(function(s){var y=x.subs[s];y.t=sumar(y.l);return y}).sort(function(a,b){return b.t.pq-a.t.pq});return x}).sort(function(a,b){return b.t.pq-a.t.pq});
 }
-var GRUPOS=[];
+var GRUPOS=[],EDU=null;
 function celdaTotal(tot,med,pzTot){
   return '<td class="d num"><b>'+fm0(tot)+'</b><div class="mini">'+nf(pzTot)+" pzas · medido "+mill(med)+"</div></td>";
 }
-function celdaRango(x){
-  return x.n?'<td class="d">'+tri(fm0(x.lo),fm0(x.s/x.n),fm0(x.hi))+'<div class="mini">'+nf(x.n)+" productos con precio medido</div></td>":'<td class="d num tenue">—</td>';
+function celdaRango(x,que){
+  return x.n?'<td class="d">'+tri(fm0(x.lo),fm0(x.s/x.n),fm0(x.hi))+'<div class="mini">'+nf(x.n)+" productos con precio"+(que||" medido")+"</div></td>":'<td class="d num tenue">—</td>';
+}
+function celdaTotalML(t){
+  return '<td class="d num"><b>'+fm0(t.tm)+'</b><div class="mini">'+nf(t.pzm+t.pem)+" pzas · del producto "+mill(t.vmp)+" · banda "+mill(t.vmb)+(t.em?" · estimado "+mill(t.em):"")+"</div></td>";
 }
 function filaCat(nom,t,cls,boton,ver){
-  return '<tr class="'+cls+'"><td>'+boton+'</td><td class="d num">'+nf(t.sk)+(t.sin?' <span class="tenue">+'+nf(t.sin)+" sin SKU</span>":"")+'</td><td class="d num">'+nf(t.viv)+'</td><td class="d num">'+nf(t.so)+'</td><td class="d num">'+nf(t.pc)+'</td><td class="d num">'+nf(t.ps)+'</td><td class="d num"><b>'+nf(t.pq)+"</b></td>"+celdaRango(t.xm)+celdaTotal(t.tm,t.vm,t.pzm+t.pem)+celdaRango(t.xa)+celdaTotal(t.ta,t.va,t.pza+t.pea)+"<td>"+ver+"</td></tr>";
+  return '<tr class="'+cls+'"><td>'+boton+'</td><td class="d num">'+nf(t.sk)+(t.sin?' <span class="tenue">+'+nf(t.sin)+" sin SKU</span>":"")+'</td><td class="d num">'+nf(t.viv)+'</td><td class="d num">'+nf(t.so)+'</td><td class="d num">'+nf(t.pc)+'</td><td class="d num">'+nf(t.ps)+'</td><td class="d num"><b>'+nf(t.pq)+"</b></td>"+(EDU?celdaRango(t.xm," de ML")+celdaTotalML(t):celdaRango(t.xm)+celdaTotal(t.tm,t.vm,t.pzm+t.pem))+celdaRango(t.xa)+celdaTotal(t.ta,t.va,t.pza+t.pea)+"<td>"+ver+"</td></tr>";
 }
-function valorEnLinea(canal,precio,valor,firme){
+function valorEnLinea(canal,precio,valor,marca){
   if(precio==null)return '<td class="d num tenue">'+canal+" —</td>";
-  return '<td class="d num">'+canal+" "+fm0(precio)+" c/u"+(firme?"":" <span class=\"tenue\">(est.)</span>")+'<div style="font-weight:600">'+(valor!=null?fm0(valor):"—")+"</div></td>";
+  return '<td class="d num">'+canal+" "+fm0(precio)+" c/u"+(marca?" <span class=\"tenue\">("+marca+")</span>":"")+'<div style="font-weight:600">'+(valor!=null?fm0(valor):"—")+"</div></td>";
 }
 function categorias(){
   var h='<thead><tr><th>Categoría</th><th class="d">SKUs en packing lists</th><th class="d">Con mercancía hoy</th><th class="d">SOLD OUT</th><th class="d">Comprado</th><th class="d t-s">Salió</th><th class="d t-q">Queda</th><th class="d t-p">Mercado Libre por pieza'+TRI_CAB+'</th><th class="d t-p">Valor a precio de ML</th><th class="d t-r">Amazon por pieza'+TRI_CAB+'</th><th class="d t-r">Valor a precio de Amazon</th><th></th></tr></thead><tbody>';
@@ -415,7 +481,7 @@ function categorias(){
       h+=filaCat(s.n,s.t,"sub",'<button class="nom" type="button" data-xs="'+id+'" aria-expanded="'+as+'" style="font-weight:500"><span class="fl">'+(as?"▾":"▸")+"</span>"+esc(s.n)+"</button>",'<button class="ver" type="button" data-vs="'+id+'">Ver productos</button>');
       if(as){
         var l=s.l.slice().sort(function(a,b){return (b.pq||0)-(a.pq||0)}),m=l.slice(0,150);
-        h+='<tr class="sub2"><td colspan="12"><table class="sublista"><tbody>'+m.map(function(r){return '<tr><td style="width:44px">'+foto(r,32)+'</td><td><span class="num" style="font-weight:600">'+esc(r.sin?"Sin SKU":r.s)+"</span> "+esc(r.t)+'</td><td class="d num">comprado '+nf(r.pc)+'</td><td class="d num">salió '+nf(r.ps||0)+'</td><td class="d">'+(r.so?'<span class="so">SOLD OUT</span>':'<span class="num"><b>queda '+nf(r.pq)+"</b></span>")+"</td>"+valorEnLinea("ML",r._pm,r._tm,r._fm)+valorEnLinea("Amazon",r._pa,r._ta,r._fa)+"</tr>"}).join("")+(l.length>m.length?'<tr><td colspan="7" class="tenue">y '+nf(l.length-m.length)+" más: usa «Ver productos».</td></tr>":"")+"</tbody></table></td></tr>";
+        h+='<tr class="sub2"><td colspan="12"><table class="sublista"><tbody>'+m.map(function(r){return '<tr><td style="width:44px">'+foto(r,32)+'</td><td><span class="num" style="font-weight:600">'+esc(r.sin?"Sin SKU":r.s)+"</span> "+esc(r.t)+'</td><td class="d num">comprado '+nf(r.pc)+'</td><td class="d num">salió '+nf(r.ps||0)+'</td><td class="d">'+(r.so?'<span class="so">SOLD OUT</span>':'<span class="num"><b>queda '+nf(r.pq)+"</b></span>")+"</td>"+valorEnLinea("ML",r._pm,r._tm,r._cm==="b"?"banda":r._cm?"":"est.")+valorEnLinea("Amazon",r._pa,r._ta,r._fa?"":"est.")+"</tr>"}).join("")+(l.length>m.length?'<tr><td colspan="7" class="tenue">y '+nf(l.length-m.length)+" más: usa «Ver productos».</td></tr>":"")+"</tbody></table></td></tr>";
       }
     });
   });
@@ -452,37 +518,43 @@ function empate(){
 }
 function fuentes(){
   var f=D.fuentes||{},m=D.mercado||{};
-  var l=[["Packing lists",f.pl,nf(D.resumen.archivos_originales)+" originales · "+nf(D.resumen.archivos_validados)+" validados"],["Movimientos de Odoo",f.movimientos,"hechos, desde dic-2025"],["Mercado Libre",(m.ml||{}).produccion_leido,nf((m.ml||{}).produccion)+" SKUs medidos"],["Amazon",(m.amazon||{}).actualizado,nf((m.amazon||{}).palabras)+" palabras clave"]];
+  var l=[["Packing lists",f.pl,nf(D.resumen.archivos_originales)+" originales · "+nf(D.resumen.archivos_validados)+" validados"],["Movimientos de Odoo",f.movimientos,"hechos, desde dic-2025"],(EDU?["Mercado Libre",null,"API, 6 y 7 de oct (Eduardo) · "+nf(EDU.sku+EDU.sku_renglon)+" SKUs y "+nf(EDU.sin+EDU.sin_nombre)+" productos sin SKU"]:["Mercado Libre",(m.ml||{}).produccion_leido,nf((m.ml||{}).produccion)+" SKUs medidos"]),["Amazon",(m.amazon||{}).actualizado,nf((m.amazon||{}).palabras)+" palabras clave"]];
   $("fuentes").innerHTML=l.map(function(x){return '<span class="fte"><span class="pt"></span><b>'+x[0]+"</b> "+esc(x[2])+(x[1]?" · "+hora(x[1]):"")+"</span>"}).join("");
   $("cuando").textContent="Armado el "+hora(D.generado);
 }
 function metodo(){
-  var r=D.resumen,b=[
+  var r=D.resumen,RZ=((D.estimacion||{}).az||{}).razon_ml||{},b=[
    ["La cuenta","Comprado − salió = queda. <b>Comprado</b> son las piezas de los packing lists de todos los contenedores. <b>Salió</b> son los movimientos HECHOS de Odoo de la bodega hacia afuera. <b>Queda</b> es la resta. Un producto está <b>SOLD OUT</b> cuando salió todo lo que se compró."],
    ["Qué cuenta como comprado","Cada contenedor tiene el packing list original del proveedor y, si bodega ya lo recibió, el mismo archivo validado: con el SKU de cada renglón y lo que se contó en físico. Cuando hay validado, vale el conteo de bodega, porque esa es la unidad en que Odoo mueve (si el proveedor escribió 100 paquetes y bodega contó 10,000 piezas, Odoo vende piezas). Cuando no lo hay, vale lo que declara el proveedor. Los proveedores declararon "+nf(r.pz_original)+" piezas en total."],
    ["Qué cuenta como salida","Solo movimientos en estado hecho que cruzan la frontera de la bodega: entregas a cliente (que en Odoo incluyen los envíos a Mercado Libre Full, a Amazon y a Walmart, y las ventas directas), menos lo que el cliente devolvió, más lo devuelto al proveedor. Lo enviado a Full cuenta como salida aunque todavía no se haya vendido ahí. Los ajustes de inventario no se restan: son correcciones, no ventas, y se ven en el detalle de cada producto."],
    ["Productos sin SKU","El packing list original no trae SKU. En los contenedores que bodega no ha validado, un renglón solo tiene SKU si la foto del producto en Odoo es la de ese renglón, o si lo recibido en su orden de compra coincide con un solo renglón. Lo demás aparece como «Sin SKU», agrupado por nombre: es mercancía comprada y cuenta en el total, pero no se le puede restar ninguna salida."],
    ["Títulos","Todos los productos llevan un título al estilo de Mercado Libre México. Si el producto está publicado en Mercado Libre, es el de su publicación. Si no, lo escribió la IA (DeepSeek) con las mismas instrucciones del panel; cuando el nombre no describía el producto y no había categoría confiable, la IA lo escribió viendo la foto. Cada fila dice cuál fue su caso."],
    ["Categoría","La de Mercado Libre. Sale de la publicación o de lo que el panel guardó; si no hay, la da el predictor de categorías de Mercado Libre a partir del título (marcada «predicha»); como último recurso, el prefijo del SKU (marcada «estimada»)."],
-   ["Precio de Mercado Libre","Precio promedio de las publicaciones rivales que son el mismo producto. Primero, las que el juez de Competencia del panel ya midió para ese SKU; si no hay, las de otra variante del mismo modelo; si tampoco, se muestra como referencia el catálogo de Mercado Libre, que no suma porque es de productos de marca. El buscador de Mercado Libre no se puede leer por API ni por página, así que la cobertura es la de lo ya medido."],
+   ["Precio de Mercado Libre","Viene del archivo de Eduardo (corte 7-oct-2026): cada línea de los packing lists originales, cotizada por la API de Mercado Libre. Cada producto dice cuál de cuatro fuentes le tocó. <b>Exacto</b>: las publicaciones que el juez marcó como el mismo producto. <b>Nuestro precio</b>: el que tenemos publicado en Mercado Libre, cuando la línea solo tenía banda, o cuando el exacto difería más de 2× del nuestro y el nuestro era menor. <b>Revisado a mano</b>: las líneas de banda de mayor valor. <b>Banda de categoría</b>: la mediana de los más vendidos de su categoría, que es una referencia y NO el mismo producto. Con FOB, ninguna línea vale más de 10 veces su FOB a 19 pesos. Por producto se ven el mínimo, la media y el máximo de sus publicaciones; el precio que se multiplica es el de su regla, y la celda de valor dice cuál fue."],
+   ["Cómo se une su archivo con esta página","Por SKU. Lo que no tiene SKU, por archivo y número de renglón del packing list, que son los mismos en los dos lados. Su precio es el de NUESTRO paquete y sus unidades son paquetes, así que no se multiplican piezas por precio de paquete: si bodega contó lo mismo que el proveedor, el valor del producto es el suyo; si el paquete trae varias piezas, el precio se parte entre ellas. Cuando bodega contó otra cantidad que el proveedor se usa el conteo de bodega con su precio por unidad y su mismo tope: el producto no vale más de 10 veces el FOB de sus renglones. Esos casos se pueden filtrar («ML: bodega contó distinto al proveedor»). Los SKUs que su archivo no trae toman el precio del renglón que aquí se les empató; lo que queda sin precio se estima con su costo."],
    ["Precio de Amazon","Por palabra clave: se busca el término en la API de Amazon México, se lee el precio de la caja de compra de cada publicación, se cuenta una vez cada familia de variantes, y un juez (IA) deja solo las que son el mismo producto. El dato principal es la media; al lado van la mediana y el rango central, porque dos publicaciones caras mueven el promedio. Amazon no da ventas ni visitas de publicaciones ajenas: no se estiman."],
    ["Valor a precio de mercado","Todas las piezas que quedan × un precio por pieza, por separado para cada canal. Es precio al público, antes de comisiones, envíos e impuestos. Cada producto dice si su precio es <b>medido</b> o <b>estimado</b>, y cada total dice cuánto es de cada uno."],
-   ["Precio medido","Al menos dos publicaciones del mismo producto y del mismo tamaño de paquete, en un SKU identificado. Cuando la publicación vende un paquete y el inventario cuenta piezas sueltas, el precio se parte entre las piezas del paquete."],
-   ["Precio estimado","Para lo que no tiene precio medido, en este orden: (1) su costo × el múltiplo al que se venden contra su costo los productos de su subcategoría que sí tienen precio medido (el costo es el de la base de costos o el precio en dólares de su renglón del packing list, a "+((D.estimacion||{}).tc||19)+" pesos); (2) en productos sin SKU, el precio de ese tipo de producto; (3) su propio indicio, si tiene una sola publicación comparable o solo paquetes de otro tamaño; (4) el precio promedio por pieza de su subcategoría. Ningún precio estimado pasa del 90% más caro de lo medido en su subcategoría, y a una fila de 10,000 piezas o más sin costo ni indicio no se le pone precio. Si la subcategoría no tiene base suficiente se usa la categoría, y si tampoco, todo el inventario. Es una estimación para que el valor cubra todas las piezas: una pieza estimada no vale lo mismo que una medida, y por eso se muestran separadas."],
+   ["Precio medido (Amazon)","Al menos dos publicaciones del mismo producto y del mismo tamaño de paquete, en un SKU identificado. Cuando la publicación vende un paquete y el inventario cuenta piezas sueltas, el precio se parte entre las piezas del paquete. Un precio de Amazon a más de 8 veces el precio de Mercado Libre del mismo producto no se toma como medido: casi siempre es otro producto con el mismo nombre (una batería de litio para casa contra la de una herramienta) o un paquete contra una pieza."],
+   ["Precio estimado","Para lo que no tiene precio medido en Amazon, y en Mercado Libre para lo poco que el archivo de Eduardo no trae, en este orden: (0) solo en Amazon, su precio de Mercado Libre × lo que Amazon cobra de más por lo mismo en su subcategoría: la mediana entre los productos con los dos precios, que hoy es "+(RZ.p||"—")+" veces cuando el precio de Mercado Libre es del producto y "+(RZ.b||"—")+" cuando es banda; (1) su costo × el múltiplo al que se venden contra su costo los productos de su subcategoría que sí tienen precio medido (el costo es el de la base de costos o el precio en dólares de su renglón del packing list, a "+((D.estimacion||{}).tc||19)+" pesos); (2) en productos sin SKU, el precio de ese tipo de producto; (3) su propio indicio, si tiene una sola publicación comparable o solo paquetes de otro tamaño; (4) el precio promedio por pieza de su subcategoría. Ningún precio estimado pasa del 90% más caro de lo medido en su subcategoría, y a una fila de 10,000 piezas o más sin costo ni indicio no se le pone precio. Si la subcategoría no tiene base suficiente se usa la categoría, y si tampoco, todo el inventario. Es una estimación para que el valor cubra todas las piezas: una pieza estimada no vale lo mismo que una medida, y por eso se muestran separadas."],
    ["Lo que NO es esta página","No escribe en ningún sistema. Es una foto: cada fuente dice a qué hora se leyó. «Queda» es lo que debería existir según lo comprado y lo que salió; lo que Odoo dice tener hoy se muestra al lado para comparar."]
   ];
   $("metodo").innerHTML=b.map(function(x){return '<div class="blo"><h2>'+x[0]+"</h2><p>"+x[1]+"</p></div>"}).join("");
 }
 function tsv(){
   var cab=["SKU","Título","Nombre original","Categoría","Subcategoría","Comprado","Salió","Queda","SOLD OUT","Odoo libre",
-    "min_meli","media_meli","max_meli","publicaciones_meli","precio_meli_usado","meli_medido_o_estimado","valor_meli",
+    "min_meli","media_meli","mediana_meli","max_meli","publicaciones_meli","precio_meli_usado","fuente_meli","valor_meli",
     "min_amz","media_amz","max_amz","publicaciones_amz","precio_amz_usado","amz_medido_o_estimado","valor_amz",
     "Costo por pieza","Contenedores","Empate"];
   var out=[cab.join("\t")];
   function tipo(f,e,r){return f?"medido":e?"estimado: "+comoSeEstimo(e):r.nv?"insumo, no se valúa":""}
   function canal(p,f,e,usado,valor,r){return [p?p.lo:"",p?p.m:"",p?p.hi:"",p?p.n:"",usado!=null?usado:"",tipo(f,e,r),valor!=null?Math.round(valor):""]}
+  function meli(r){
+    var p=r.ml,e=p&&p.o==="e";
+    if(!e)return [p?p.lo:"",p?p.m:"",p?p.d:"",p?p.hi:"",p?p.n:"",r._pm!=null?r._pm:"",r._cm?FML[r._cm]:tipo(false,r.em,r),r._tm!=null?Math.round(r._tm):""];
+    return [p.lo!=null?p.lo:"",p.me!=null?p.me:"",p.d!=null?p.d:"",p.hi!=null?p.hi:"",p.n||"",p.m,FML[p.f]+(p.tp?" · topado a 10x FOB":p.aj?" · ajustado por su regla":"")+(p.pk?" · paquete de "+p.pk:""),r._tm!=null?Math.round(r._tm):""];
+  }
   VISTA.forEach(function(r){out.push([r.sin?"(sin SKU)":r.s,r.t,r.n||"",c1(r),c2(r),r.pc!=null?r.pc:"",r.pz||r.ps||0,r.pc!=null?r.pq:"",r.so?"sí":"",r.lb||0]
-    .concat(canal(r.ml,r._fm,r.em,r._pm,r._tm,r),canal(r.az,r._fa,r.ea,r._pa,r._ta,r),[r.co||"",Object.keys(r.ct||{}).join(" "),(r.cm||[]).join(" ")])
+    .concat(meli(r),canal(r.az,r._fa,r.ea,r._pa,r._ta,r),[r.co||"",Object.keys(r.ct||{}).join(" "),(r.cm||[]).join(" ")])
     .map(function(v){return String(v).replace(/[\t\n]/g," ")}).join("\t"))});
   return out.join("\n");
 }
@@ -494,7 +566,7 @@ function sincronizar(){$("q").value=E.q;$("f-cat").value=E.cat;llenarSub();$("f-
 function pestana(id){["pro","cat","con","emp","met"].forEach(function(k){var on=k===id;$("t-"+k).setAttribute("aria-selected",on);$("v-"+k).hidden=!on})}
 function irAProductos(c){Object.assign(E,{q:"",cat:"",sub:"",est:"",con:"",pre:"",emp:""},c);sincronizar();pestana("pro");filtrar();$("v-pro").scrollIntoView({block:"start"})}
 function arrancar(d){
-  D=d;R=d.R;preparar();GRUPOS=agrupar();
+  D=d;R=d.R;EDU=((d.mercado||{}).ml||{}).edu||null;preparar();GRUPOS=agrupar();
   var cs={};R.forEach(function(r){cs[c1(r)]=1});
   $("f-cat").innerHTML='<option value="">Todas</option>'+Object.keys(cs).sort().map(function(x){return "<option>"+esc(x)+"</option>"}).join("");
   $("f-con").innerHTML='<option value="">Todos</option>'+D.C.map(function(c){return '<option value="'+esc(c.clave)+'">'+(c.n!=null?"Contenedor "+c.n:esc(c.clave))+"</option>"}).join("");

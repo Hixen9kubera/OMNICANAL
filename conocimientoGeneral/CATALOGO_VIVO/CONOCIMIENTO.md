@@ -271,6 +271,54 @@ precio sostenido por UNA sola publicación, o un producto sin SKU cuyo nombre so
 palabras («thermos»), se muestra pero no se suma: sin esas dos reglas, tres renglones
 valían más que todo lo demás junto.
 
+## 2e · Unir el precio de mercado de otro archivo: lo que se midió el 7-oct-2026
+
+Eduardo cotizó en la API de Mercado Libre cada línea de los packing lists originales. Al
+cargar su archivo en esta página salieron cuatro cosas que no eran obvias.
+
+**Sus filas y las nuestras son las mismas.** El `sha256` de sus archivos es el del índice
+de `costing.packing_archivos`, y su «fila de Excel» es nuestro renglón más uno. Casi todas
+sus líneas caen en un renglón con el mismo nombre. Por eso lo que no tiene SKU se une por
+archivo y renglón, sin adivinar por texto. Dos archivos no casan (uno se leyó aquí con el
+lector genérico): esos renglones se quedan sin precio en vez de tomar el de otro.
+
+**Su unidad no es la nuestra, y hay dos casos opuestos que no se distinguen solos.** Él
+cuenta con el packing list del proveedor y en unidades vendibles (un «paquete de 10 focos»
+es una unidad); aquí se cuenta con el conteo de bodega cuando existe. Donde difieren:
+
+- *Otra unidad.* El proveedor anotó paquetes y bodega contó piezas. Su precio × nuestras
+  piezas infla el valor tantas veces como piezas trae el paquete.
+- *Anclaje parcial.* Él ligó al SKU un solo renglón y bodega contó todo lo que llegó de ese
+  SKU (y Odoo lo confirma). Su valor repartido entre nuestras piezas deja el producto en
+  centavos.
+
+Lo que decide entre los dos es el dinero, que no depende de cómo se cuente: **el FOB del
+renglón es el mismo se cuenten paquetes o piezas.** La regla quedó así: si las piezas
+coinciden (±25%), el valor del producto es el suyo; si no, se usa el conteo de bodega con
+su precio por unidad y su mismo tope —el producto no vale más de 10 veces el FOB de sus
+renglones—. El primer caso queda topado; el segundo pasa sin tocarse. Cuando el conteo
+difiere, el COSTO por pieza también hay que rehacerlo con el FOB total entre las piezas de
+bodega: si no, cualquier estimado por costo hereda el mismo error.
+
+**Un insumo no es «todas sus líneas excluidas».** Un SKU puede tener una línea grande
+excluida (el costal, la caja) y otra chica, mal anclada, con precio. Si se pide que TODAS
+estén excluidas, el SKU entero se valúa con el precio de la chica. Es insumo cuando la
+mayor parte de sus piezas lo es.
+
+**Con un precio de Mercado Libre para casi todo, Amazon se estima mejor desde ahí que
+desde el costo.** Lo que no se pudo medir en Amazon se estima con su precio de Mercado
+Libre × la razón entre los dos precios, medida en los productos de su misma categoría que
+tienen los dos (una tabla para cuando el de ML es del producto y otra para cuando es banda
+de categoría: no dan la misma razón). El costo × múltiplo, que era el primer recurso, daba
+disparates justo donde la unidad del costo estaba mal. Y un «medido» de Amazon a muchas
+veces el precio de Mercado Libre del MISMO producto casi siempre es otro producto con el
+mismo nombre —un título de dos palabras no le da al juez con qué rechazar— o un paquete
+contra una pieza: no se toma como medido.
+
+**Antes de fiarse del total, compararlo con el del otro.** Todo lo comprado, valuado con
+estas reglas, da prácticamente su total para sus contenedores. Si no hubiera cuadrado, el
+error habría estado en la unión, no en los precios.
+
 ---
 
 ## 3 · Tres cosas que NO se hacen, aunque el código lo permitiría
