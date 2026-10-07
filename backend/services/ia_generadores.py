@@ -488,8 +488,13 @@ async def _guardar_ml(producto: dict[str, Any], data: dict[str, Any],
         if not channel_content.disponible():
             return {"ok": False, "sku": sku, "motivo": "KUBERA_DB_URL no configurada."}
         try:
+            # CON RESPALDO (7-oct-2026): la misma vista que el Estudio y el
+            # publicador. Crear guarda el título de la variante en la fila SIN
+            # cuenta; leyendo sólo la de la cuenta, ese título no contaba como
+            # "de otro" y un clic en «Mejorar con IA» lo tapaba para BEKURA.
             previo = await asyncio.to_thread(
-                channel_content._leer_sync, sku, "mercado_libre", cuenta or "")  # noqa: SLF001
+                channel_content._leer_con_respaldo_sync,  # noqa: SLF001
+                sku, "mercado_libre", cuenta or "")
         except Exception as exc:  # noqa: BLE001
             log.warning("mejorar ML: no se pudo leer %s, no se guarda: %s", sku, exc)
             return {"ok": False, "sku": sku,

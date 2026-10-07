@@ -100,11 +100,46 @@ _TRADUCIR_CLAUSE = (
     "character must be perfectly legible — never mirrored, garbled, cut off or invented."
 )
 
+# EL MARCO AZUL QUE GEMINI DIBUJA (7-oct-2026).
+#
+# Esta frase pide QUITAR "blue side borders and blue bottom banner", un marco
+# que casi ninguna foto trae — y Gemini a veces lo DIBUJA. Medido en la
+# bitácora, sobre los últimos 504 pares antes/después de «Quitar logos»: 124
+# (24.6%) volvieron con bordes azules o con una franja azul abajo que el
+# original no tenía. TEC-2192-HONDA solo pone 75 (se reprocesó decenas de veces
+# el 8-jul); sin él son 49 de 410 (12.0%), y desde el 15-sep 9 de 99 (9.1%:
+# VEH-0315-RAV, VEH-0316-SEB, VEH-0316-SIL, VEH-0316-HCR-9601, TEC-0469-NEG,
+# TEC-0472-HBM, TEC-1142-ROJ). En esos 504 no hubo un solo original con ese
+# marco: los únicos "azules" eran infografías de FONDO azul.
+#
+# POR QUÉ NO SE QUITÓ LA FRASE, que era el arreglo obvio. Se probó en A/B
+# contra las mismas fotos: sin ella el marco desaparece (0 de 14 contra 3 de 9),
+# pero Gemini se vuelve LENTO — misma foto, mismo instante: 17 s con esta frase
+# y 240 s con tiempo agotado sin ella; 10 de 24 llamadas sin respuesta contra 3
+# de 12. Cambiar un 10% de marcos por un 40% de fotos que no regresan no es
+# arreglo. Por eso la frase se queda como PRIMER intento (rápida) y el marco se
+# ataja en el código: `_marco_agregado` lo detecta y `_editar_sin_marco`
+# reintenta — la última vez con `_LOGOS_CLAUSE_SIN_MARCO`, que es lenta pero no
+# lo dibuja — y, si aun así vuelve con marco, la foto NO se sube.
 _LOGOS_CLAUSE = (
     "Remove any brand logo, watermark, blue side borders and blue bottom banner, filling "
     "those areas with the surrounding background so the result looks natural. Do not alter "
     "any other content of the image."
 )
+
+# La de reserva: no nombra el marco, así que Gemini no lo dibuja (y tarda más).
+_LOGOS_CLAUSE_SIN_MARCO = (
+    "Remove any brand logo and watermark, filling those areas with the surrounding "
+    "background so the result looks natural. Do not add borders, frames, banners or colored "
+    "edges of any kind: the background and the edges of the image must stay exactly as they "
+    "are in the original. Do not alter any other content of the image."
+)
+
+# Intentos EXTRA cuando la editada vuelve con un marco que el original no tenía.
+_REINTENTOS_MARCO = 2
+# Cada intento extra espera menos que el primero (240 s): la foto ocupa su lugar
+# del semáforo mientras reintenta, y sin tope el peor caso pasaba de 488 a 968 s.
+_ESPERA_REINTENTO_MARCO = 150.0
 
 
 def _replacement_for(person_desc: str) -> str:
@@ -140,6 +175,7 @@ def _compose_prompt(
     quitar_logos: bool,
     cambiar_modelo: bool,
     person_desc: Optional[str] = None,
+    sin_marco: bool = False,
 ) -> Optional[str]:
     qf, tt, ql, cm = (
         bool(quitar_fondo), bool(traducir_texto), bool(quitar_logos), bool(cambiar_modelo)
@@ -159,7 +195,7 @@ def _compose_prompt(
     if tt:
         tasks.append(_TRADUCIR_CLAUSE)
     if ql:
-        tasks.append(_LOGOS_CLAUSE)
+        tasks.append(_LOGOS_CLAUSE_SIN_MARCO if sin_marco else _LOGOS_CLAUSE)
     if cm:
         tasks.append(
             f"Replace the person ({desc}) with {replacement}, keeping exactly the same pose, "
@@ -251,7 +287,7 @@ async def _gemini_describe_person(img_b64: str, mime: str) -> Optional[str]:
 
 
 async def _gemini_edit(
-    img_b64: str, mime: str, prompt: str, retries: int = 2,
+    img_b64: str, mime: str, prompt: str, retries: int = 2, espera: float = 240.0,
 ) -> tuple[Optional[bytes], str, Optional[str]]:
     """Edita la imagen con Gemini. Devuelve (bytes|None, mime_salida, error)."""
     if not settings.gemini_api_key:
@@ -268,7 +304,7 @@ async def _gemini_edit(
         if intento > 0:
             await asyncio.sleep(8)
         try:
-            async with httpx.AsyncClient(timeout=240.0) as cli:
+            async with httpx.AsyncClient(timeout=espera) as cli:
                 r = await cli.post(
                     f"{_GEMINI_BASE}/{GEMINI_MODEL}:generateContent",
                     params={"key": settings.gemini_api_key}, json=body,
@@ -292,6 +328,132 @@ async def _gemini_edit(
             last_err = f"{type(exc).__name__}: {exc}"
             log.warning("gemini_edit: %s", last_err)
     return None, mime, last_err
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CANDADO: la editada no puede traer un marco que el original no tenía
+# ══════════════════════════════════════════════════════════════════════════════
+def _azul_por_lado(im: Any, ancho: int = 3, laxo: bool = False) -> list[float]:
+    """
+    Fracción (0-1) de píxeles AZULES en la franja de cada lado —arriba, abajo,
+    izquierda, derecha— de una imagen ya reducida a 200×200. `ancho` son los
+    píxeles de la franja (3 = el 1.5% exterior). Azul y no "cualquier color":
+    el defecto es que Gemini dibuja literalmente los "blue side borders and
+    blue bottom banner" de la instrucción. `laxo` cuenta también el azul pálido
+    (un cielo, un fondo de estudio azulado): se usa para medir el ORIGINAL.
+    """
+    px = im.load()
+
+    def azul(p: tuple[int, int, int]) -> bool:
+        r, g, b = p
+        if laxo:
+            return b > 95 and b > r + 30 and b > g + 12
+        return b > 110 and b > r + 45 and b > g + 25
+
+    def frac(pts: list[tuple[int, int, int]]) -> float:
+        return sum(1 for p in pts if azul(p)) / len(pts)
+
+    f = ancho
+    return [
+        frac([px[x, y] for x in range(200) for y in range(f)]),
+        frac([px[x, y] for x in range(200) for y in range(200 - f, 200)]),
+        frac([px[x, y] for y in range(200) for x in range(f)]),
+        frac([px[x, y] for y in range(200) for x in range(200 - f, 200)]),
+    ]
+
+
+def _reducida(imagen: bytes) -> Any:
+    from io import BytesIO
+    from PIL import Image
+    return Image.open(BytesIO(imagen)).convert("RGB").resize((200, 200))
+
+
+def _marco_agregado(original: bytes, editada: bytes) -> bool:
+    """
+    ¿La editada trae un marco o una franja AZUL que el original no tenía?
+
+    Se mide lado por lado y sólo cuenta el azul GANADO: el de la franja del
+    borde de la editada MENOS el que el original ya tenía por ahí. El original
+    se mide generoso a propósito —con azul pálido incluido y hasta el 7% hacia
+    dentro—, para que no cuenten como marco un cielo o un fondo azulado que
+    cambió dos tonos, ni una banda azul propia de la foto que quedó en el borde
+    porque la IA reencuadró un poco.
+
+    Hay marco si un lado ganó azul en la mitad o más de su franja (bordes y la
+    franja inferior sola, el caso más común), si tres o más lados ganaron al
+    menos un cuarto (el marco delgado), o si lo ganaron dos lados OPUESTOS (los
+    "side borders": en HERR-0146-EST la IA volvió azules los bordes rojos).
+
+    CALIBRADO con los 504 pares reales de «Quitar logos» de la bitácora
+    (7-oct-2026): el azul ganado por lado es bimodal —372 pares en 0-0.2 y 122
+    en 0.6-1.0, con 10 en medio—, y de los marcados que se revisaron a ojo
+    ninguno era una edición buena. Lo que deja pasar son líneas de menos de
+    ~7 px por cada 1000 en un solo lado; se prefiere eso a tirar una edición
+    buena.
+
+    Nunca lanza: si no se puede medir, no bloquea (False).
+    """
+    try:
+        orig = _reducida(original)
+        despues = _azul_por_lado(_reducida(editada))
+        base = [max(a, b) for a, b in zip(_azul_por_lado(orig, laxo=True),
+                                          _azul_por_lado(orig, ancho=14, laxo=True))]
+    except Exception as exc:  # noqa: BLE001
+        log.warning("no se pudo medir el marco de la editada: %s", exc)
+        return False
+    arriba, abajo, izq, der = ganado = [max(0.0, d - a) for d, a in zip(despues, base)]
+    return (max(ganado) >= 0.5
+            or sum(1 for g in ganado if g >= 0.25) >= 3
+            or (izq >= 0.25 and der >= 0.25)
+            or (arriba >= 0.25 and abajo >= 0.25))
+
+
+async def _editar_sin_marco(
+    original: bytes, img_b64: str, mime: str, flags: dict[str, Any],
+    person_desc: Optional[str], prompt: str, avisar: Any = None,
+) -> tuple[Optional[bytes], str, Optional[str], int, str]:
+    """
+    `_gemini_edit` con el candado del marco:
+    (bytes|None, mime, error, reintentos, instrucción_que_produjo_la_foto).
+
+    Vigila siempre que se pidió «Quitar logos» (también con «Quitar fondo»: el
+    fondo nuevo es blanco y el candado sólo cuenta azul nuevo). Si la editada
+    vuelve con un marco que el original no tenía, reintenta hasta
+    `_REINTENTOS_MARCO` veces: primero con la misma instrucción (rápida; casi
+    siempre sale limpia a la segunda) y la última con `_LOGOS_CLAUSE_SIN_MARCO`.
+    Un reintento que no contesta NO cancela los siguientes: el de reserva es
+    justo el que no dibuja el marco. Si ninguno entrega una foto limpia,
+    devuelve None con el motivo: una foto con marco NO se sube.
+    """
+    edited, out_mime, err = await _gemini_edit(img_b64, mime, prompt)
+    if edited is None or not flags.get("quitar_logos"):
+        return edited, out_mime, err, 0, prompt
+    if not await asyncio.to_thread(_marco_agregado, original, edited):
+        return edited, out_mime, err, 0, prompt
+
+    sin_respuesta: Optional[str] = None
+    for n in range(1, _REINTENTOS_MARCO + 1):
+        ultimo = n == _REINTENTOS_MARCO
+        log.warning("la IA devolvió la foto con un marco que el original no tenía; "
+                    "reintento %s de %s%s", n, _REINTENTOS_MARCO,
+                    " (instrucción sin marco)" if ultimo else "")
+        if avisar:
+            avisar(f"La IA agregó un marco; reintento {n} de {_REINTENTOS_MARCO}…")
+        otro = _compose_prompt(
+            flags.get("quitar_fondo", False), flags.get("traducir_texto", False), True,
+            flags.get("cambiar_modelo", False), person_desc, sin_marco=ultimo,
+        ) or prompt
+        nueva, nuevo_mime, nuevo_err = await _gemini_edit(
+            img_b64, mime, otro, retries=1, espera=_ESPERA_REINTENTO_MARCO)
+        if nueva is None:
+            sin_respuesta = nuevo_err
+            continue
+        if not await asyncio.to_thread(_marco_agregado, original, nueva):
+            return nueva, nuevo_mime, None, n, otro
+    motivo = "La IA devolvió la foto con un marco de color que el original no tenía"
+    if sin_respuesta:
+        motivo += f", y un reintento no respondió ({str(sin_respuesta)[:60].strip()})"
+    return None, mime, motivo + ". No se guardó; vuelve a procesarla.", _REINTENTOS_MARCO, prompt
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -510,9 +672,20 @@ async def _run(sku: str, parent_id: int | None, variante: bool = False) -> None:
                 return
 
             _set_img(sku, idx, "procesando", "Editando con IA…")
-            edited, out_mime, gerr = await _gemini_edit(img_b64, mime, prompt)
+            edited, out_mime, gerr, reintentos, prompt_final = await _editar_sin_marco(
+                data, img_b64, mime, f, person_desc, prompt,
+                avisar=lambda paso: _set_img(sku, idx, "procesando", paso))
+            if reintentos:
+                # La bitácora no tiene columna para esto: va en `prompt_used`,
+                # con la instrucción que DE VERDAD produjo la foto (la de reserva
+                # no nombra el marco), para que la próxima medición no le cuente
+                # fotos limpias a la frase que lo dibuja.
+                info["prompt_used"] = (f"{prompt_final}\n[candado del marco: "
+                                       f"{reintentos} reintento(s)]")
             if edited is None:
-                _set_img(sku, idx, "error", "La IA no devolvió imagen", error=gerr)
+                _set_img(sku, idx, "error",
+                         "La IA agregó un marco" if "marco de color" in (gerr or "")
+                         else "La IA no devolvió imagen", error=gerr)
                 info["gemini_error"] = gerr
                 _backlog(sku, parent_id, item, info)
                 _bump(sku)

@@ -136,6 +136,11 @@ interface Props {
 }
 
 const GENERAL = "general";
+
+/** Un título reducido para compararlo: espacios colapsados y sin mayúsculas
+ *  (la misma idea que `wp_db.norma_titulo` del backend). */
+const normaTitulo = (t: unknown): string =>
+  String(t ?? "").replace(/\s+/g, " ").trim().toLowerCase();
 const AMAZON = "amazon";
 const DEFAULT_TC = 18.5; // tipo de cambio USD→MXN por defecto (editable en el bloque COSTOS)
 
@@ -720,6 +725,10 @@ export default function ProductStudio({
   // (el efecto que lo trae vive más abajo: necesita `cuentaSel`, que se declara
   // después de este bloque)
   const [servidor, setServidor] = useState<Record<string, unknown> | null>(null);
+  // Los campos de `servidor` que NO están en la fila de la cuenta abierta y
+  // vinieron de la fila sin cuenta (el título que Crear guarda de una variante).
+  // Al guardar, lo que nadie cambió no se copia a la fila de la cuenta.
+  const [respaldoSrv, setRespaldoSrv] = useState<string[]>([]);
 
   // Lo que la IA produjo en ESTA sesión, para marcar el `origen` al guardar.
   // Es un ref y no estado: cambiarlo no debe repintar nada.
@@ -744,7 +753,26 @@ export default function ProductStudio({
     // PRECEDENCIA: borrador local > servidor > Woo. El local va primero porque
     // es lo que esta persona estaba editando y todavía no sube; pisarlo con lo
     // del servidor le borraría trabajo sin avisar.
-    setTitulo(stored?.titulo || (srv.titulo as string) || data?.nombre || "");
+    //
+    // EL TÍTULO DE UNA VARIANTE NO SE PRECARGA CON EL HEREDADO (7-oct-2026).
+    // WooCommerce no deja que una variación tenga nombre propio: `data.nombre`
+    // es el que DERIVA del padre ("Padre - Negro, M"). Precargarlo lo mandaba al
+    // publicar como si alguien lo hubiera escrito, y le ganaba al título propio
+    // que Crear o la IA ya habían guardado: 326 variantes saldrían con un color
+    // que no es el suyo y 9 anuncios vivos ya lo anunciaban. Fuera de General,
+    // el campo de una variante sólo enseña un título PROPIO: el del borrador o
+    // el del servidor, siempre que no sean ese mismo eco (el autosave dejó el
+    // heredado en muchos borradores, y «Guardar contenido» lo subió en 25).
+    // Vacío = sin título propio; el aviso de abajo del campo lo dice y el
+    // backend aplica la misma regla (`publicar._rellenar_desde_guardado`).
+    const heredado = normaTitulo(data?.nombre);
+    const propio = (t: unknown): string =>
+      typeof t === "string" && t.trim() && normaTitulo(t) !== heredado ? t : "";
+    if ((esVariante || !!meta?.es_variacion) && canal !== GENERAL) {
+      setTitulo(propio(stored?.titulo) || propio(srv.titulo) || "");
+    } else {
+      setTitulo(stored?.titulo || (srv.titulo as string) || data?.nombre || "");
+    }
     setDescripcion(stored?.descripcion || (srv.descripcion as string) || data?.descripcion || "");
     // ⚠️ `srv.atributos` de WALMART es un OBJETO, no un arreglo. Sin este
     // guardia entraba tal cual al estado y el `.map()` del render reventaba en
@@ -828,6 +856,9 @@ export default function ProductStudio({
   // ¿El SKU abierto es una VARIACIÓN de Woo? Por el rail (sku ≠ padre) o, con
   // el rail apagado, porque la metadata del Estudio lo dice.
   const esVariacionWoo = esVariante || !!meta?.es_variacion;
+  // Una variante sin título PROPIO en el canal abierto: el campo va vacío y, si
+  // se publica así, sale el heredado del padre (ver el efecto de carga).
+  const sinTituloPropio = esVariacionWoo && !esGeneral && !titulo.trim();
 
   // Los atributos de Walmart que hay GUARDADOS para este SKU. Vienen del
   // servidor (`enrich.channel_content`), que es la tabla de contenido POR
@@ -1052,10 +1083,16 @@ export default function ProductStudio({
   // ser dos productos según la cuenta (caso EST-0091).
   useEffect(() => {
     setServidor(null);
+    setRespaldoSrv([]);
     if (!sku || canal === GENERAL) return;   // General vive en WooCommerce
     let vivo = true;
     leerContenidoCanal(sku, canal, esML ? cuentaSel || "" : "")
-      .then((r) => { if (vivo && r.existe) setServidor(r.contenido); })
+      .then((r) => {
+        if (vivo && r.existe) {
+          setServidor(r.contenido);
+          setRespaldoSrv(r.respaldo ?? []);
+        }
+      })
       .catch(() => { /* sin guardar todavía o BD caída: se sigue con Woo */ });
     return () => { vivo = false; };
     // `reporteIA` en las dependencias: "Mejorar con IA" GUARDA en el servidor,
@@ -1641,8 +1678,29 @@ export default function ProductStudio({
     if (bullets.some((b) => b.trim())) contenido.bullets = bullets.filter((b) => b.trim());
     if (atributos.length) contenido.atributos = atributos;
 
+    // LO QUE VINO DE LA FILA SIN CUENTA Y NADIE CAMBIÓ NO SE COPIA A LA DE LA
+    // CUENTA. El servidor rellena lo que le falta a BEKURA / SANCORFASHION con
+    // la fila sin cuenta (ahí guarda Crear el título de la variante). Subirlo
+    // tal cual lo dejaba congelado en la cuenta, marcado «manual» sin que nadie
+    // lo escribiera: si Crear regeneraba la variante, esa cuenta ya no lo veía.
+    const sinCambio = (a: unknown, b: unknown) =>
+      JSON.stringify(typeof a === "string" ? a.trim() : a ?? null)
+      === JSON.stringify(typeof b === "string" ? b.trim() : b ?? null);
+    let delRespaldo = 0;
+    for (const k of respaldoSrv) {
+      if (k in contenido && sinCambio(contenido[k], servidor?.[k])) {
+        delete contenido[k];
+        delRespaldo += 1;
+      }
+    }
+
     if (!Object.keys(contenido).length) {
-      setCanalMsg({ ok: false, texto: "No hay contenido que guardar en esta pestaña." });
+      setCanalMsg({
+        ok: false,
+        texto: delRespaldo
+          ? "Nada nuevo que guardar: lo que ves ya está guardado para este producto (sin cuenta) y esta cuenta lo usa tal cual."
+          : "No hay contenido que guardar en esta pestaña.",
+      });
       return;
     }
 
@@ -1700,7 +1758,17 @@ export default function ProductStudio({
     limpiarBorrador(sku);
     // Recarga el contenido desde WooCommerce/postmeta (descarta ediciones locales).
     cargandoCampos.current = true;
-    setTitulo(data?.nombre || "");
+    // Una variante fuera de General NO vuelve al nombre heredado del padre:
+    // vuelve a su título propio del servidor, o queda vacía (misma regla que el
+    // efecto de carga). Con `data.nombre` el campo enseñaba el heredado como si
+    // fuera propio, el aviso desaparecía y «Guardar» lo subía a la cuenta.
+    if (esVariacionWoo && !esGeneral) {
+      const t = servidor?.titulo;
+      setTitulo(typeof t === "string" && t.trim()
+        && normaTitulo(t) !== normaTitulo(data?.nombre) ? t : "");
+    } else {
+      setTitulo(data?.nombre || "");
+    }
     setDescripcion(data?.descripcion || "");
     setAtributos(meta?.atributos ?? []);
     setHighlights("");
@@ -2536,7 +2604,15 @@ export default function ProductStudio({
                   </div>
                 </div>
                 <input value={titulo} onChange={(e) => setTitulo(e.target.value)}
+                  placeholder={sinTituloPropio ? "Sin título propio en este canal" : undefined}
                   className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm text-slate-800 outline-none focus:ring-2" style={{ outlineColor: tema.acento }} />
+                {sinTituloPropio && (
+                  <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                    Esta variante no tiene título propio en {canalInfo?.label ?? canal}. Un anuncio nuevo saldría con el del padre
+                    {data?.nombre ? <>: <strong>«{data.nombre}»</strong></> : null}. Usa <strong>Mejorar con IA</strong>
+                    {esWalmart ? <>, o escríbelo y <strong>guarda el contenido</strong> antes de publicar (Walmart no toma el del formulario).</> : <> o escríbelo aquí.</>}
+                  </p>
+                )}
               </section>
 
               {/* DESCRIPCIÓN */}

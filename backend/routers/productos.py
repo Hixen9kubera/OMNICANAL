@@ -1209,15 +1209,35 @@ async def guardar_contenido_canal(sku: str, canal: str, req: ContenidoCanalReq,
 
 @router.get("/{sku:path}/canal/{canal}/contenido")
 async def leer_contenido_canal(sku: str, canal: str, cuenta: str = Query("")):
-    """El contenido guardado. `existe:false` si nunca se guardó nada."""
+    """
+    El contenido guardado. `existe:false` si nunca se guardó nada.
+
+    Con `cuenta` (sólo Mercado Libre la distingue), lo que su fila no trae se
+    toma de la fila SIN cuenta, y `respaldo` lista esos campos: ahí guarda
+    Crear el título de cada variante, y sin esto el Estudio de BEKURA o
+    SANCORFASHION no lo veía y precargaba el heredado del padre. Es lo mismo
+    que lee el publicador (`publicar._rellenar_desde_guardado`): lo que se ve
+    es lo que sale.
+    """
     from services import channel_content
 
     if not es_canal_valido(canal):
         raise HTTPException(400, f"Canal '{canal}' inválido.")
-    doc = await channel_content.leer(sku, canal, cuenta)
+    # Con cuenta, el título de su fila que sólo sea el eco del heredado no tapa
+    # al propio de la fila sin cuenta: la misma regla que aplica el publicador.
+    ecos = None
+    if cuenta:
+        from services import wp_db
+        try:
+            ecos = {wp_db.norma_titulo(t) for t in
+                    await asyncio.to_thread(wp_db.titulos_heredados, sku)} or None
+        except Exception as exc:  # noqa: BLE001 — sin WordPress se lee como siempre
+            log.warning("contenido(%s,%s): no se pudo leer el título heredado: %s",
+                        sku, canal, exc)
+    doc = await channel_content.leer_con_respaldo(sku, canal, cuenta, ecos=ecos)
     if doc is None:
         return {"existe": False, "sku": sku, "canal": canal, "cuenta": cuenta,
-                "contenido": {}, "origen": {}}
+                "contenido": {}, "origen": {}, "respaldo": []}
     return {"existe": True, **doc}
 
 

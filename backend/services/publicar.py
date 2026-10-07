@@ -302,6 +302,11 @@ async def preview(req: dict[str, Any]) -> dict[str, Any]:
             aviso = await _aviso_imagenes(req)
             if aviso:
                 avisos.insert(0, aviso)
+        # El título heredado SÍ viaja también al actualizar (`_update_ml_una`
+        # manda `title`), así que este aviso no depende del modo.
+        aviso_titulo = _aviso_titulo(req, r.get("modo"))
+        if aviso_titulo:
+            avisos.insert(0, aviso_titulo)
         for a in avisos_padre:
             avisos.insert(0, a)
     return r
@@ -600,31 +605,125 @@ async def _rellenar_desde_guardado(req: dict[str, Any]) -> None:
     elección humana del momento gana sobre cualquier respaldo (regla 2 de la
     casa).
 
+    UNA EXCEPCIÓN, Y SÓLO PARA EL TÍTULO DE UNA VARIANTE (7-oct-2026). El
+    Estudio precargaba el campo con el nombre que WooCommerce DERIVA del padre
+    ("Padre - Negro, M"), y ese eco viajaba aquí como si alguien lo hubiera
+    escrito: le ganaba al título propio que Crear o la IA ya habían guardado.
+    Medido: 326 variaciones saldrían con un COLOR que no es el suyo y 9
+    anuncios vivos ya lo anunciaban. Un título de formulario IGUAL al heredado
+    no es una elección humana: se trata como vacío para que lo guardado lo
+    rellene. Si no hay nada guardado, cada canal hace lo que ya hacía y la
+    vista previa lo dice (`req["_titulo_heredado"]`, ver `_aviso_titulo`):
+      • el formulario TRAÍA el eco → sale el heredado, igual que antes;
+      • el formulario vino VACÍO (el Estudio ya no lo precarga) → en Mercado
+        Libre se queda vacío: al CREAR, `publicar_ready` cae al `post_title`
+        como siempre, y al ACTUALIZAR `_update_ml_una` no manda `title`, así
+        que el título vivo del anuncio no se pisa (un campo en blanco siempre
+        quiso decir "no lo toques"); en los demás canales se pone el heredado
+        explícito, que es lo que recibían con el campo precargado.
+    WALMART no lee el título del formulario (su `productName` sale de lo
+    guardado o de Woo), así que ahí "propio" se mide contra lo GUARDADO.
+
+    LA CUENTA. Lo que la fila de la cuenta no trae se toma de la fila SIN
+    cuenta (`channel_content.leer_con_respaldo`): ahí guarda Crear el título de
+    cada variante, y BEKURA / SANCORFASHION no lo veían.
+
     Nunca lanza: si la BD no contesta se publica con lo que traiga el
     formulario, que es exactamente lo que pasaba antes.
     """
-    from services import channel_content
+    from services import channel_content, wp_db
 
     sku, canal = req.get("sku"), req.get("canal")
-    if not (sku and canal) or not channel_content.disponible():
+    if not (sku and canal):
         return
     campos = req.setdefault("campos", {})
-    cuenta = req.get("cuenta") or "" if canal == "mercado_libre" else ""
-    doc = await channel_content.leer(str(sku), str(canal), cuenta)
-    if not doc:
-        return
-    guardado = doc.get("contenido") or {}
+    crudos = await _titulos_heredados(req)   # [el de la variación, el del padre]
+    heredados = {wp_db.norma_titulo(t) for t in crudos}
+    eco = None
+    if heredados and wp_db.norma_titulo(campos.get("titulo")) in heredados:
+        eco, campos["titulo"] = campos.get("titulo"), ""
+
     usados = []
-    for k, v in guardado.items():
-        # `or` y no `in`: un campo presente pero VACÍO (cadena en blanco, lista
-        # sin elementos) cuenta como ausente — si no, un formulario a medio
-        # llenar bloquearía el respaldo justo cuando más sirve.
-        if v and not campos.get(k):
-            campos[k] = v
-            usados.append(k)
+    guardado: dict[str, Any] = {}
+    if channel_content.disponible():
+        cuenta = req.get("cuenta") or "" if canal == "mercado_libre" else ""
+        doc = await channel_content.leer_con_respaldo(str(sku), str(canal), cuenta,
+                                                      ecos=heredados or None)
+        guardado = (doc or {}).get("contenido") or {}
+        for k, v in guardado.items():
+            # `or` y no `in`: un campo presente pero VACÍO (cadena en blanco,
+            # lista sin elementos) cuenta como ausente — si no, un formulario a
+            # medio llenar bloquearía el respaldo justo cuando más sirve.
+            if v and not campos.get(k):
+                campos[k] = v
+                usados.append(k)
+
+    if heredados:
+        final = wp_db.norma_titulo(campos.get("titulo"))
+        if canal == "walmart":
+            g = wp_db.norma_titulo(guardado.get("titulo"))
+            propio = bool(g) and g not in heredados
+        else:
+            propio = bool(final) and final not in heredados
+        if not propio:
+            req["_titulo_heredado"] = True
+            if not final:
+                if eco:
+                    campos["titulo"] = eco          # lo traía el formulario: como antes
+                elif canal != "mercado_libre":
+                    campos["titulo"] = crudos[0]    # explícito, como con el campo precargado
+        elif eco and canal != "walmart":
+            # El formulario traía el heredado y sale el propio: se dice, para
+            # que nadie crea que se publicó lo que estaba en el campo.
+            req["_titulo_sustituido"] = campos.get("titulo")
+            log.info("publicar(%s,%s): el formulario traía el título heredado del "
+                     "padre; sale el propio de la variante", sku, canal)
     if usados:
         log.info("publicar(%s,%s): %d campo(s) desde channel_content: %s",
                  sku, canal, len(usados), ", ".join(sorted(usados)))
+
+
+async def _titulos_heredados(req: dict[str, Any]) -> list[str]:
+    """
+    Los títulos heredados de la VARIACIÓN que se publica (ver
+    `wp_db.titulos_heredados`); vacío si no es variación. Nunca lanza: sin la
+    base de WordPress no se puede distinguir, y se publica como siempre.
+    """
+    from services import wp_db
+    try:
+        return await asyncio.to_thread(wp_db.titulos_heredados, req.get("sku"),
+                                       req.get("wc_id"))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("publicar(%s): no se pudo leer el título heredado: %s",
+                    req.get("sku"), exc)
+        return []
+
+
+def _aviso_titulo(req: dict[str, Any], modo: str | None = None) -> str | None:
+    """
+    La línea de título de la vista previa de una VARIANTE: que saldría con el
+    heredado del padre, o que el campo traía el heredado y sale el propio.
+    None si no hay nada que decir (producto simple, o título propio sin más).
+    """
+    canal = req.get("canal")
+    titulo = str((req.get("campos") or {}).get("titulo") or "").strip()
+    if req.get("_titulo_sustituido"):
+        return ("Título: el campo traía el nombre heredado del padre; sale el título "
+                f"propio guardado para esta variante («{titulo[:70]}»).")
+    if not req.get("_titulo_heredado"):
+        return None
+    if canal == "walmart":
+        return ("Título: esta variante no tiene título propio GUARDADO para Walmart y "
+                "saldría con el heredado del padre. Walmart no toma el del formulario: "
+                "usa «Mejorar con IA», o escríbelo y guarda el contenido antes de publicar.")
+    if not titulo and canal == "mercado_libre" and modo == "actualizar":
+        return ("Título: esta variante no tiene título propio en este canal; al "
+                "actualizar NO se cambia el título del anuncio. Usa «Mejorar con IA» "
+                "o escríbelo si quieres corregirlo.")
+    cual = f" («{titulo[:70]}»)" if titulo else ""
+    return ("Título: esta variante no tiene título propio en este canal y saldría "
+            f"con el heredado del padre{cual}. Usa «Mejorar con IA» o escríbelo "
+            "antes de publicar.")
 
 
 async def confirmar(req: dict[str, Any]) -> dict[str, Any]:

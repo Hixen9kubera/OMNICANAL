@@ -387,6 +387,74 @@ def padre_de(wc_id: int) -> int | None:
     return int(padre) if padre else None
 
 
+def norma_titulo(texto: Any) -> str:
+    """
+    Un título reducido a lo que importa para compararlo: sin entidades HTML
+    (`&amp;` y `&` son el mismo título: la REST las decodifica, MySQL no), con
+    los espacios colapsados y sin distinguir mayúsculas.
+    """
+    import html
+    import re
+    return re.sub(r"\s+", " ", html.unescape(str(texto or ""))).strip().casefold()
+
+
+def titulos_heredados(sku: str | None, wc_id: int | None = None) -> list[str]:
+    """
+    Los títulos que una VARIACIÓN tiene sin que nadie se los haya puesto, tal
+    cual están en WordPress: primero su propio `post_title` (WooCommerce lo
+    DERIVA del padre y lo regenera en cada guardado: "Padre - Negro, M") y
+    después el del padre. Se comparan con `norma_titulo`. Lista vacía si el par
+    no nombra una variación viva, o si la base de WordPress no está: quien
+    llama sigue como siempre.
+
+    POR QUÉ EXISTE (7-oct-2026). El Estudio precargaba el campo de título con
+    ese nombre y al publicar viajaba como si alguien lo hubiera escrito; como
+    "el formulario manda", le ganaba al título propio que Crear o la IA habían
+    guardado para la variante. Medido: 1,483 variaciones saldrían con el título
+    del padre sin su atributo, 326 con un COLOR que no es el suyo, y 9 anuncios
+    vivos ya anunciaban otro color (ACC-0353-NEG-M como "Azul Claro"). Con esto
+    el publicador puede distinguir "lo escribió una persona" de "es el eco del
+    heredado".
+
+    MANDA EL SKU —igual que `publicar._asegurar_wc_id`—: es la identidad que
+    viaja al canal. El `wc_id` sólo se usa si no hay SKU.
+    """
+    if not disponible():
+        return []
+    P = _prefix()
+    sku = str(sku or "").strip()
+    if sku:
+        rows = _fetch_all(
+            f"""SELECT v.post_title AS titulo, p.post_title AS padre
+                  FROM {P}postmeta m
+                  JOIN {P}posts v ON v.ID = m.post_id
+                  JOIN {P}posts p ON p.ID = v.post_parent
+                 WHERE m.meta_key = '_sku' AND m.meta_value = %s
+                   AND v.post_type = 'product_variation'
+                   AND v.post_status <> 'trash'""",
+            (sku,),
+        )
+    elif wc_id:
+        rows = _fetch_all(
+            f"""SELECT v.post_title AS titulo, p.post_title AS padre
+                  FROM {P}posts v
+                  JOIN {P}posts p ON p.ID = v.post_parent
+                 WHERE v.ID = %s AND v.post_type = 'product_variation'
+                   AND v.post_status <> 'trash'""",
+            (int(wc_id),),
+        )
+    else:
+        return []
+    import html
+    out: list[str] = []
+    for campo in ("titulo", "padre"):
+        for r in rows:
+            t = html.unescape(str(r.get(campo) or "")).strip()
+            if t and t not in out:
+                out.append(t)
+    return out
+
+
 def hijas_vivas(wc_id: int) -> int:
     """
     Cuántas variaciones (no en papelera) cuelgan de este `wc_id`, si es un

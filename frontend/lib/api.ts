@@ -844,6 +844,9 @@ export interface ContenidoCanal {
   categoria?: string | null;
   contenido: Record<string, unknown>;
   origen: Record<string, string>;
+  /** Campos que NO están en la fila de la cuenta pedida y vinieron de la fila
+   *  sin cuenta (p. ej. el título que Crear guarda para una variante). */
+  respaldo?: string[];
   updated_at?: string | null;
 }
 

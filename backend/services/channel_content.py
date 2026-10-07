@@ -164,6 +164,89 @@ async def leer(sku: str, canal: str, cuenta: str = "") -> dict[str, Any] | None:
         return None
 
 
+def _leer_con_respaldo_sync(sku: str, canal: str, cuenta: str,
+                            ecos: set[str] | None = None) -> dict[str, Any] | None:
+    cx = _pool().connection()
+    try:
+        with cx.cursor() as cur:
+            cur.execute(
+                f"""select cuenta, categoria, contenido, origen, spec_version,
+                           hash_base, updated_at
+                      from {TABLA}
+                     where sku = %s and canal = %s and cuenta in (%s, '')""",
+                (sku, canal, cuenta),
+            )
+            filas = {f[0] or "": f for f in cur.fetchall()}
+    finally:
+        cx.close()
+    propia, base = filas.get(cuenta), filas.get("") if cuenta else None
+    if not propia and not base:
+        return None
+    contenido = dict((propia[2] if propia else None) or {})
+    origen = dict((propia[3] if propia else None) or {})
+    respaldo: list[str] = []
+    if ecos and base and contenido.get("titulo"):
+        # El título de la fila de la CUENTA que sólo es el eco del heredado
+        # (lo subía «Guardar contenido» cuando el Estudio precargaba el campo)
+        # no tapa al propio que Crear dejó en la fila sin cuenta.
+        from services import wp_db
+        if wp_db.norma_titulo(contenido["titulo"]) in ecos:
+            contenido.pop("titulo")
+            origen.pop("titulo", None)
+    if base:
+        origen_base = base[3] or {}
+        for k, v in (base[2] or {}).items():
+            # Mismo criterio que `publicar._rellenar_desde_guardado`: un campo
+            # presente pero VACÍO cuenta como ausente.
+            if v and not contenido.get(k):
+                contenido[k] = v
+                respaldo.append(k)
+                if k in origen_base and k not in origen:
+                    origen[k] = origen_base[k]
+    fila = propia or base
+    return {
+        "sku": sku, "canal": canal, "cuenta": cuenta,
+        "categoria": (propia[1] if propia else None) or (base[1] if base else None),
+        "contenido": contenido, "origen": origen,
+        "spec_version": fila[4], "hash_base": fila[5],
+        "updated_at": fila[6].isoformat() if fila[6] else None,
+        "respaldo": sorted(respaldo),
+    }
+
+
+async def leer_con_respaldo(sku: str, canal: str, cuenta: str = "", *,
+                            ecos: set[str] | None = None) -> dict[str, Any] | None:
+    """
+    Como `leer`, pero lo que la fila de la CUENTA no trae se toma de la fila
+    SIN cuenta. `respaldo` lista los campos que salieron de ahí. Con
+    `cuenta=''` es exactamente `leer`.
+
+    POR QUÉ (7-oct-2026). Sólo Mercado Libre distingue cuenta, y el Estudio y
+    el publicador leen por `(sku, canal, cuenta)` exacta — pero Crear guarda el
+    título de cada variante con `cuenta=''` (`crear_producto.
+    _guardar_titulo_variante`), igual que guardaba la IA antes de que viajara
+    la cuenta. Medido en producción: 159 variantes tenían su título de ML sólo
+    en la fila sin cuenta, 154 con un título realmente propio (VEH-0316-TRAV:
+    «Bomba Direccion Hidraulica Enclave Traverse Acadia XL7»), y BEKURA y
+    SANCORFASHION no lo veían: el Estudio precargaba el heredado del padre
+    («Bomba dirección asistida vehículo») y con ése se publicaba.
+
+    La fila de la cuenta MANDA campo por campo; la otra sólo rellena huecos.
+    Guardar sigue yendo a la fila de la cuenta: esto es de lectura.
+
+    `ecos`: títulos (ya con `wp_db.norma_titulo`) que NO cuentan como propios
+    —los heredados de una variación—. Si el título de la fila de la cuenta es
+    uno de ellos, se ignora y gana el de la fila sin cuenta.
+    """
+    if not disponible():
+        return None
+    try:
+        return await asyncio.to_thread(_leer_con_respaldo_sync, sku, canal, cuenta, ecos)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("channel_content.leer_con_respaldo(%s,%s) falló: %s", sku, canal, exc)
+        return None
+
+
 def _resumen_sync(sku: str) -> list[dict[str, Any]]:
     cx = _pool().connection()
     try:
@@ -248,8 +331,17 @@ def _faltantes_sync(sku: str, canal: str, cuenta: str,
                       where canal = %s and categoria_id in ('*', %s)
                       order by campo, (categoria_id <> '*') desc
                    ),
+                   -- El MISMO respaldo que `leer_con_respaldo` (lo que el
+                   -- Estudio carga y lo que el publicador manda): la fila de la
+                   -- cuenta encima de la fila sin cuenta. `||` deja ganar a la
+                   -- derecha; con cuenta='' las dos son la misma fila. Sin
+                   -- esto el semáforo marcaba en rojo atributos que sí viajan.
                    cont as (
                      select coalesce(
+                       (select contenido from enrich.channel_content
+                         where sku = %s and canal = %s and cuenta = ''),
+                       '{}'::jsonb)
+                       || coalesce(
                        (select contenido from enrich.channel_content
                          where sku = %s and canal = %s and cuenta = %s),
                        '{}'::jsonb) as j
@@ -278,7 +370,7 @@ def _faltantes_sync(sku: str, canal: str, cuenta: str,
                         else false
                       end)
                     order by e.campo""",
-                (canal, categoria or _SIN_CATEGORIA, sku, canal, cuenta),
+                (canal, categoria or _SIN_CATEGORIA, sku, canal, sku, canal, cuenta),
             )
             filas = cur.fetchall()
     finally:

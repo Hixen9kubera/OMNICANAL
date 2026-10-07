@@ -1001,6 +1001,134 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.623.0 — Cada variante publica SU título (ya no el heredado del padre), y una foto con el marco azul que dibuja la IA ya no se sube
+
+Brandon, 7-oct-2026, tras la auditoría de variantes: *"dale con las 2 que faltan"*. Eran las
+dos primeras de la lista de limpieza: el título de las variantes —lo único del trabajo de
+variantes que nunca se construyó— y la instrucción que se le manda a la IA al quitar logos.
+
+**1. El título de una variante**
+
+WooCommerce no deja que una variación tenga nombre propio: su `post_title` lo DERIVA del
+padre ("Padre - Negro, M") y lo regenera en cada guardado. El título propio de una variante
+vive en `enrich.channel_content`, donde lo guardan Crear y la IA. Dos fugas hacían que no se
+usara:
+
+- **El Estudio precargaba el campo con el nombre heredado**, y al publicar viajaba como si
+  alguien lo hubiera escrito. Como "el formulario manda", le ganaba al título guardado.
+- **Crear guarda el título de la variante con `cuenta=''`**, y el Estudio y el publicador
+  leían por cuenta exacta: BEKURA y SANCORFASHION no lo veían.
+
+Medido en producción el 7-oct: **159 variantes** tenían su título de Mercado Libre sólo en la
+fila sin cuenta (154 con un título realmente propio — `VEH-0316-TRAV`: heredado «Bomba
+dirección asistida vehículo», guardado «Bomba Direccion Hidraulica Enclave Traverse Acadia
+XL7»), 326 variaciones publicarían un COLOR que no es el suyo y 9 anuncios vivos ya lo
+anunciaban (`ACC-0353-NEG-M` como «Azul Claro»).
+
+Qué cambia:
+
+- **`wp_db.titulos_heredados(sku, wc_id)`** (nuevo): el `post_title` de la variación y el de
+  su padre; lista vacía si no es variación. Con `norma_titulo` (entidades HTML, espacios y
+  mayúsculas) se reconoce el "eco" del heredado.
+- **`channel_content.leer_con_respaldo`** (nuevo): lo que la fila de la cuenta no trae se toma
+  de la fila sin cuenta, campo por campo, y `respaldo` dice cuáles. Con `cuenta=''` es `leer`.
+  Si el título de la fila de la cuenta es sólo el eco del heredado (`ecos`), cede ante el
+  propio de la fila sin cuenta. La usan `GET /api/productos/{sku}/canal/{canal}/contenido` (lo
+  que el Estudio enseña), `publicar._rellenar_desde_guardado` (lo que sale), el candado de
+  «Mejorar con IA» de ML (`ia_generadores._guardar_ml`, para que la IA no tape el título de
+  Crear que ahora sí se ve) y el semáforo de faltantes (mismo respaldo en su SQL): lo que se
+  ve, lo que se mide y lo que se publica salen de la misma lectura.
+- **`publicar._rellenar_desde_guardado`**: un título de formulario IGUAL al heredado no es una
+  elección humana; se trata como vacío para que lo guardado lo rellene, y la vista previa lo
+  dice («el campo traía el nombre heredado del padre; sale el título propio guardado»). Lo
+  que escribe una persona sigue mandando. Si la variante no tiene título propio:
+  - el formulario traía el eco → sale el heredado, igual que antes;
+  - el formulario vino vacío → en Mercado Libre se queda vacío: al CREAR cae al `post_title`
+    como siempre y al ACTUALIZAR no se manda `title`, así que **el título vivo del anuncio no
+    se pisa**; en Amazon, TikTok y Temu se pone el heredado explícito, que es lo que recibían;
+  - Walmart no lee el título del formulario, así que ahí "propio" se mide contra lo guardado.
+
+  En todos los casos la vista previa avisa (`_aviso_titulo`), con el texto de cada caso.
+- **Estudio** (`ProductStudio.tsx`): fuera de General, el campo de título de una variante ya
+  no se precarga con el heredado. Enseña el título propio (borrador o servidor) o queda vacío
+  con el aviso «Un anuncio nuevo saldría con el del padre: «…». Usa Mejorar con IA o
+  escríbelo aquí» (en Walmart: «…y guarda el contenido antes de publicar»). Un borrador o un
+  guardado que sólo eran el eco del heredado no cuentan como propios. «Descartar borrador»
+  aplica la misma regla (antes devolvía el heredado al campo). Al guardar, lo que vino de la
+  fila sin cuenta y nadie cambió no se copia a la fila de la cuenta: antes quedaba congelado
+  ahí, marcado «manual». Productos simples y el canal General no cambian.
+
+Probado en sólo lectura contra producción: 38 comprobaciones en dos rondas, todas pasan, con
+`channel_content.guardar` sustituido por un doble (cero escrituras). De las **318**
+publicaciones posibles de esas 159 variantes (dos cuentas), **antes 318 saldrían con el
+título del padre; ahora 308 salen con el propio** y 10 siguen heredado, avisadas. Visto en el
+Estudio local contra datos reales: `VEH-0316-TRAV` en Mercado Libre (BEKURA) enseña su
+título propio; `MASC-1022-ROS`, que no tiene, enseña el campo vacío con su aviso en Mercado
+Libre y en Walmart, sigue vacío tras «Descartar borrador», y en General conserva su nombre.
+
+Revisado por cuatro lentes con dos verificadores por hallazgo (uno reproduce, otro refuta):
+8 defectos distintos confirmados y 1 dudoso. Siete y el dudoso quedaron corregidos en esta
+misma versión; el octavo (WordPress caído) queda anotado abajo. El más serio: en el primer
+intento, un campo vacío al ACTUALIZAR en Mercado Libre pisaba el título vivo del anuncio
+con el heredado.
+
+Lo que NO hace: no inventa títulos. Las variantes sin título propio (la gran mayoría del
+catálogo) siguen saliendo con el heredado hasta que alguien use «Mejorar con IA» o lo
+escriba; la diferencia es que ahora se ve antes de publicar. Tampoco corrige los 9 anuncios
+vivos con otro color: eso es volver a publicar su título.
+
+**2. «Quitar logos»: una foto con marco azul ya no se sube**
+
+La instrucción dice *"Remove any brand logo, watermark, blue side borders and blue bottom
+banner"*. Pide quitar un marco azul que casi ninguna foto trae, y Gemini a veces lo DIBUJA.
+Medido en `ml_image_edit_backlog`, sobre los últimos **504** pares antes/después de «Quitar
+logos»: **125 (24.8%)** volvieron con bordes azules o con una franja azul abajo que el
+original no tenía. `TEC-2192-HONDA` solo pone 75 (se reprocesó decenas de veces el 8-jul);
+sin él son 50 de 410 (**12.2%**), y desde el 15-sep 9 de 99 (**9.1%**: `VEH-0315-RAV`,
+`VEH-0316-SEB`, `VEH-0316-SIL`, `VEH-0316-HCR-9601`, `TEC-0469-NEG`, `TEC-0472-HBM`,
+`TEC-1142-ROJ`). En esos 504 no hubo un solo original con ese marco. (La primera medida,
+que sólo miraba el anillo completo, daba 10.5%: no contaba la franja inferior sola, que es
+el caso más común.)
+
+**Por qué no se quitó la frase**, que era el arreglo obvio y lo primero que se probó. En A/B
+contra las mismas fotos, sin la frase el marco desaparece (0 de 19 respondidas contra 5 de
+16), pero Gemini se vuelve lento: en 8 pares simultáneos, mediana de 18 s con la frase y 41 s
+sin ella, y sin respuesta 13 de 32 llamadas contra 4 de 20. Cambiar un 10% de marcos por un
+40% de fotos que no regresan no es arreglo.
+
+Lo que se hizo (`services/imagenes_editor.py`):
+
+- **`_marco_agregado(original, editada)`**: mide el azul GANADO en la franja de cada lado
+  (el de la editada menos el que el original ya tenía por ahí, medido generoso: azul pálido
+  incluido y hasta el 7% hacia dentro, para que un cielo o un reencuadre no cuenten). Hay
+  marco si un lado ganó la mitad o más de su franja, si tres lados ganaron al menos un
+  cuarto, o si lo ganaron dos lados opuestos. Calibrado con los 504 pares: el azul ganado es
+  bimodal (372 pares en 0–0.2, 122 en 0.6–1.0) y, de los marcados revisados a ojo, ninguno
+  era una edición buena.
+- **`_editar_sin_marco`**: si la editada vuelve con marco, reintenta hasta dos veces —la
+  primera con la misma instrucción, que es rápida y casi siempre sale limpia; la última con
+  una instrucción que no nombra el marco, lenta pero que no lo dibuja—, cada una con espera
+  acotada a 150 s. Un reintento sin respuesta no cancela el siguiente. Si ninguno entrega
+  una foto limpia, **no se sube** y el Estudio lo dice: «La IA agregó un marco». Vigila
+  siempre que se pidió «Quitar logos». La bitácora guarda la instrucción que de verdad
+  produjo la foto y cuántos reintentos hubo.
+
+Probado: 32 comprobaciones (detector con fotos reales y con los casos límite de la revisión,
+flujo con Gemini de doble, y los 504 pares reales). Contra Gemini real, sin subir nada, sobre
+las cinco fotos donde más aparece el marco: 9 de 10 entregadas, **ninguna con marco**; en una
+el candado actuó (marco dos veces, limpia al tercer intento, 77 s) y la décima fue un tiempo
+agotado común. Revisado por dos lentes con verificador: 8 hallazgos confirmados (1 medio, 7
+bajos), los ocho aplicados.
+
+Sigue abierto: la IA de imagen devuelve 1024 px como máximo y sus tiempos agotados (240 s
+por intento) hacen esperar hasta 8 minutos por foto, y con el candado una foto que además
+dibuje el marco puede llegar a ~13; «Quitar logos» a veces borra también el estampado del
+propio producto (la bocina `JUGU-0261` perdió su «PARTY FIESTA»); el candado sólo ve marcos
+AZULES y deja pasar líneas de menos de ~7 px por cada 1000 en un solo lado; con la base de
+WordPress caída no se puede distinguir el heredado y una variante sin título propio
+viajaría con el campo vacío; y los 9 anuncios vivos con otro color hay que volver a
+publicarlos.
+
 ### v0.622.0 — Walmart: las fotos salen de un host que Walmart sí descarga, `screenSize`, candado contra reenvíos, variantes completas — y el backend deja de quedarse sin logs
 
 Cuatro reportes del equipo (2 al 7-oct). Medido contra los feeds de Walmart: del 17-sep al 7-oct el botón mandó 49 altas
