@@ -145,6 +145,11 @@ renglón aunque esté en chino, o su foto). Después de correrla hay que volver 
 cada renglon sin SKU sacada otra vez del Excel a tamano completo; con esas `pagina_pl` arma
 `img/qNNN.jpg`. Va antes de `pagina_pl` y se reanuda sola.
 
+`pagina_pl` aplica al final lo que haya en `<salida>/datos/agregados/*.json`: campos que OTRA sesión agregó a los
+datos ya publicados (precios para lo que no tenía, títulos propuestos viendo la foto). Cada archivo trae
+`{"filas": {SKU: {campo: valor}}, "arriba": {...}}` y cada campo se pone SOLO si la fila no lo tiene: lo que el
+generador ya sabe manda. Así nadie pierde el trabajo de otro al regenerar. Esos archivos traen precios: no se suben aquí.
+
 Hay también una etapa que no estaba en la tabla: `empate_ia` (DeepSeek empareja, dentro de
 un contenedor sin validar, los renglones sueltos con los SKUs sueltos; solo cuenta lo que
 marca con confianza alta).

@@ -308,10 +308,10 @@ function celdaPrecio(p,firme,est){
 function celdaValor(medido,estimado,r,precio,p){
   // Siempre se ve la cuenta: piezas que quedan × precio por pieza. En Mercado Libre, además, qué precio es.
   var cuenta=precio!=null&&r._q!=null?'<div class="mini">'+nf(r._q)+" pzas × "+fm(precio)+"</div>":"";
-  if(p&&p.o==="e"&&medido!=null)cuenta+='<div class="mini">'+esc(FML[p.cl])+(p.tp?" · topado a 10× FOB":"")+"</div>";
+  if(p&&p.o==="e"&&medido!=null)cuenta+='<div class="mini">'+esc(FML[p.cl])+(p.tp?" · topado a 10× FOB":"")+(p.sr?" · sin revisar":"")+"</div>";
   if(medido!=null)return '<div class="num">'+fm0(medido)+"</div>"+cuenta;
   if(estimado!=null)return '<div class="num">'+fm0(estimado)+"</div>"+cuenta+'<div class="mini">estimado</div>';
-  if(r.nv)return '<div class="num tenue">—</div><div class="mini">insumo: no se valúa</div>';
+  if(r.nv)return '<div class="num tenue">—</div><div class="mini">insumo: no se valúa</div>'+(r.mr&&arguments.length>4?'<div class="mini">ref. por pieza '+fm(r.mr.lo)+" · "+fm(r.mr.me)+" · "+fm(r.mr.hi)+"</div>":"");
   return '<div class="num tenue">—</div>';
 }
 function contenedores(r){
@@ -372,7 +372,7 @@ function bloquePrecio(nombre,p,clase,firme,est,valor,r){
   var cabeza="";
   if(!firme&&est)cabeza='<div class="blo '+clase+'" style="margin-bottom:8px"><h3>'+nombre.split(" · ")[0]+' · precio estimado</h3><dl class="kv"><dt>Precio por pieza</dt><dd class="num"><b>'+fm(est[0])+'</b></dd><dt>Valor de lo que queda</dt><dd class="num"><b>'+fm0(valor)+'</b></dd></dl><div class="mini" style="margin-top:6px">No tiene precio medido, así que se estima con '+comoSeEstimo(est)+"."+(r.co&&est[1]==="c"?" Su costo: "+fm(r.co)+".":"")+"</div></div>";
   else if(firme)cabeza='<div class="mini" style="margin:0 0 6px">Precio medido. Valor de lo que queda: <b>'+fm0(valor)+"</b></div>";
-  else if(r.nv)cabeza='<div class="mini" style="margin:0 0 6px">No se valúa: es un insumo (empaque de otro producto o material de tienda), no mercancía para vender.</div>';
+  else if(r.nv)cabeza='<div class="mini" style="margin:0 0 6px">No se valúa: es un insumo (empaque de otro producto o material de tienda), no mercancía para vender.</div>'+(r.mr&&nombre.indexOf("Mercado Libre")===0?'<div class="mini" style="margin:0 0 6px">Referencia por pieza en Mercado Libre (revisada a mano el 7-oct; no se suma al valor): mínimo '+fm(r.mr.lo)+' · media '+fm(r.mr.me)+' · máximo '+fm(r.mr.hi)+'. '+esc(r.mr.rq||"")+'</div>':"");
   return cabeza+bloqueReferencia(nombre,p,clase);
 }
 function bloqueReferencia(nombre,p,clase){
@@ -426,7 +426,7 @@ function detalle(r){
     if(r.nr>r.rn.length)pk+='<div class="mini">'+nf(r.nr)+" renglones con este mismo nombre</div>";
   }else pk+='<div class="tenue" style="font-size:12.5px">'+(r.pe!=null?"Renglón no ubicado. La base de costos lo manda al contenedor "+esc(r.ec)+".":"Este SKU no aparece en ningún packing list leído.")+"</div>";
   if(r.usd)pk+='<div class="mini" style="margin-top:6px">Precio del proveedor: <b>'+r.usd+" USD</b></div>";
-  pk+='</div><div class="blo"><h3>Título</h3><div style="font-size:13px">'+esc(r.t)+'</div><div class="mini" style="margin-top:4px">'+(r.tf==="ml"?"Es el de su publicación en Mercado Libre.":r.tf==="foto"?"Lo escribió la IA viendo la foto del producto.":r.tf==="actual"?"Se dejó el que tenía.":"Lo mejoró la IA a partir del nombre del producto.")+(r.td?" La IA avisó que lo está suponiendo.":"")+"</div>"+(r.n?'<div class="mini" style="margin-top:4px">Nombre original: '+esc(r.n)+"</div>":"")+"</div>";
+  pk+='</div><div class="blo"><h3>Título</h3><div style="font-size:13px">'+esc(r.t)+'</div><div class="mini" style="margin-top:4px">'+(r.tf==="ml"?"Es el de su publicación en Mercado Libre.":r.tf==="foto"?"Lo escribió la IA viendo la foto del producto.":r.tf==="actual"?"Se dejó el que tenía.":"Lo mejoró la IA a partir del nombre del producto.")+(r.td?" La IA avisó que lo está suponiendo.":"")+"</div>"+(r.n?'<div class="mini" style="margin-top:4px">Nombre original: '+esc(r.n)+"</div>":"")+(r.tg?'<div class="mini" style="margin-top:6px"><b>Título propuesto</b> (Gemini viendo la foto; el color sale de la foto): '+esc(r.tg)+(r.tv==="n"?' · <b>la foto no corresponde al título actual</b>':r.tv==="p"?" · el título actual no alcanza":"")+(r.tfm==="n"?" · la foto del catálogo y la del packing list son productos distintos":"")+(r.trv?" · revisar con una persona"+(r.trm?": "+esc(r.trm):""):"")+"</div>":"")+"</div>";
   return '<div class="det"><div class="col">'+cu+'</div><div class="col">'+pk+'</div><div class="col">'+bloquePrecio("Mercado Libre · competencia por pieza",r.ml,"of",r._fm,r.em,r._tm,r)+bloquePrecio("Amazon México · competencia por pieza",r.az,"pr",r._fa,r.ea,r._ta,r)+"</div></div>";
 }
 var COLS=[["","Foto"],["s","Producto"],["","Categoría"],["pc","Comprado"],["ps","Salió"],["pq","Queda"],["lb","Odoo libre"],["mlm","Mercado Libre por pieza"],["_tm","Valor a precio de ML"],["azm","Amazon por pieza"],["_ta","Valor a precio de Amazon"],["","Contenedor"]];

@@ -614,6 +614,20 @@ def construir(salida: Path) -> dict[str, Any]:
         },
         "R": filas,
     }
+    # Lo que otras sesiones AGREGARON a los datos ya publicados (precios para lo que no tenía, títulos
+    # propuestos…): cada archivo de `datos/agregados/` trae, por fila, campos que se ponen SOLO si la fila
+    # no los tiene. Así volver a correr esta etapa no pierde ese trabajo, y lo que el generador ya sabe manda.
+    agregados = 0
+    for archivo in sorted((d / "agregados").glob("*.json")) if (d / "agregados").exists() else []:
+        extra = leer_json(archivo) or {}
+        por_fila = extra.get("filas") or {}
+        for f in filas:
+            for campo, valor in (por_fila.get(f["s"]) or {}).items():
+                if campo not in f:
+                    f[campo] = valor
+                    agregados += 1
+        for campo, valor in (extra.get("arriba") or {}).items():
+            doc.setdefault(campo, valor)
     escribir_json(salida / "datos_pl.json", _limpio(doc))
     (salida / "datos_pl.js").write_text(
         "window.INVENTARIO=" + (salida / "datos_pl.json").read_text(encoding="utf-8") + ";", encoding="utf-8")
@@ -631,6 +645,7 @@ def construir(salida: Path) -> dict[str, Any]:
     aviso(f"página PL: {len(filas)} filas ({sum(1 for f in filas if f.get('sin'))} sin SKU) · "
           f"con precio ML {con('ml')} · con precio Amazon {con('az')} · {len(lista_rutas)} categorías · "
           f"{hojas_pl} hojas de fotos de packing list"
-          + (f" · precio de ML de Eduardo: {cuenta_edu}" if edu else " · SIN el paquete de Eduardo"))
+          + (f" · precio de ML de Eduardo: {cuenta_edu}" if edu else " · SIN el paquete de Eduardo")
+          + (f" · {agregados} campos agregados por otras sesiones" if agregados else ""))
     return {"filas": len(filas), "sin_sku": sum(1 for f in filas if f.get("sin")), "con_precio_ml": con("ml"),
             "con_precio_amazon": con("az"), "categorias": len(lista_rutas), "hojas_pl": hojas_pl}
