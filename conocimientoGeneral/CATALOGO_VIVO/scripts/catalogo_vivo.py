@@ -31,7 +31,7 @@ ETAPAS = ("odoo", "costos", "woo", "amazon", "walmart", "ml", "tiktok", "temu", 
 # que el sistema dice que queda). Son etapas largas: se piden por nombre, no entran
 # en `todo`, y cada una guarda su avance para poder reanudarse.
 ETAPAS_PL = ("pl_bajar", "pl_leer", "movimientos", "inventario", "empate_ia", "titulos", "categorias_ml",
-             "mercado_ml", "mercado_amazon", "fotos_grandes", "pagina_pl")
+             "mercado_ml", "mercado_amazon", "fotos_grandes", "pagina_pl", "excel_pl")
 
 
 def _correr_pl(nombre: str, cfg: Cfg, salida: Path, args: argparse.Namespace) -> dict:
@@ -60,6 +60,9 @@ def _correr_pl(nombre: str, cfg: Cfg, salida: Path, args: argparse.Namespace) ->
     if nombre == "mercado_amazon":
         import mercado_amazon
         return mercado_amazon.extraer(cfg, salida, limite=args.limite)
+    if nombre == "excel_pl":
+        import excel_pl
+        return excel_pl.construir(salida)
     if nombre == "fotos_grandes":
         import fotos_grandes
         return fotos_grandes.construir(cfg, salida)

@@ -90,6 +90,19 @@ def del_packing_list(salida: Path, procesos: int = 4) -> dict[str, Any]:
     destino = cache / "fotos"
     destino.mkdir(parents=True, exist_ok=True)
     quiero = {f"{r.get('o', 'o')}_{r['a']}_{r['f'] - 1}.jpg" for r in inv.get("renglones_sin_sku") or [] if r.get("foto")}
+    # …y las de los SKUs que no tienen foto en Odoo: la página les pone la de su renglón.
+    cat = leer_json(salida / "datos.json") or {"P": []}
+    con_odoo = {sku_norm(r["s"]) for r in cat["P"] if r.get("i") is not None}
+    for sku, x in (inv.get("skus") or {}).items():
+        if sku in con_odoo:
+            continue
+        for ren in x.get("ren") or []:
+            if ren.get("av") is not None and ren.get("fv"):
+                quiero.add(f"v_{ren['av']}_{ren['fv'] - 1}.jpg")
+            for fo in ren.get("fo") or []:
+                if ren.get("ao") is not None:
+                    quiero.add(f"o_{ren['ao']}_{fo - 1}.jpg")
+    quiero = {n for n in quiero if (cache / "thumbs" / n).exists()}      # solo renglones que si traen foto
     faltan = {n for n in quiero if not (destino / n).exists()}
     if faltan:
         (destino / "_quiero.json").write_text(json.dumps(sorted(faltan)), encoding="utf-8")
@@ -107,7 +120,8 @@ def del_packing_list(salida: Path, procesos: int = 4) -> dict[str, Any]:
         (destino / "_quiero.json").unlink(missing_ok=True)
         aviso(f"fotos grandes: {hechos} de {len(metas)} packing lists releídos")
     listas = sum(1 for n in quiero if (destino / n).exists())
-    aviso(f"fotos grandes: {listas} de {len(quiero)} fotos de renglón a tamaño completo")
+    aviso(f"fotos grandes: {listas} de {len(quiero)} fotos de renglón a tamaño completo "
+          "(las que faltan son renglones sin foto en el Excel)")
     return {"pedidas": len(quiero), "listas": listas}
 
 

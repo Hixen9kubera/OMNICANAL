@@ -415,6 +415,9 @@ def construir(salida: Path) -> dict[str, Any]:
                 if f.get("precio_usd"):
                     precio_pl[(tipo, a["id"], f["fila"] + 1)] = f["precio_usd"]
     filas: list[dict[str, Any]] = []
+    cache_pl = Path(indice.get("cache") or "__no_hay__")
+    fotos_pl: list[Path] = []                    # las fotos de renglón que usa la página, en el orden de su índice `j`
+    indice_pl: dict[Path, int] = {}
     for sku, x in inv["skus"].items():
         c = de_cat.get(sku)
         t = titulos.get(sku) or {}
@@ -431,6 +434,19 @@ def construir(salida: Path) -> dict[str, Any]:
             fila["k"], fila["kq"] = k, kq
         if c and "i" in c:
             fila["i"] = c["i"]
+        elif cache_pl.exists():
+            # Sin foto en Odoo: la de su renglón del packing list (el validado primero, luego el original).
+            for ren in x.get("ren") or []:
+                lugares = [("v", ren.get("av"), ren.get("fv"))] if ren.get("av") is not None else []
+                lugares += [("o", ren.get("ao"), fo) for fo in ren.get("fo") or []]
+                mini = next((m for m in (cache_pl / "thumbs" / f"{tp}_{ar}_{fi - 1}.jpg"
+                                         for tp, ar, fi in lugares if ar is not None and fi) if m.exists()), None)
+                if mini is not None:
+                    if mini not in indice_pl:
+                        indice_pl[mini] = len(fotos_pl)
+                        fotos_pl.append(mini)
+                    fila["j"] = indice_pl[mini]
+                    break
         if "pl" in x:
             fila["pc"] = x["pl"]
             if "prov" in x:
@@ -495,7 +511,6 @@ def construir(salida: Path) -> dict[str, Any]:
             ruta = cache / "thumbs" / f"{r.get('o', 'o')}_{r['a']}_{r['f'] - 1}.jpg"
             if ruta.exists():
                 j["foto"] = ruta
-    fotos_pl: list[Path] = []
     for llave, j in juntos.items():
         t = titulos.get(llave) or {}
         fila = {"s": llave, "t": t.get("t") or j["n"], "sin": 1, "pc": j["pc"], "pq": j["pc"], "ct": j["ct"],
