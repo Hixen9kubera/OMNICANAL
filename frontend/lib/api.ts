@@ -2134,6 +2134,102 @@ export function investigarTemu(
   return postJSON<InvestigacionTemuResp>("/api/investigacion/temu", { type, params });
 }
 
+// ── Investigación: LECTURAS a la API de TikTok Shop desde producción ───────
+// (7-oct-2026) Para sondear en vivo qué permite TikTok antes de automatizar el
+// agendado de envíos. A diferencia de Temu, aquí NO se escribe la ruta: se
+// elige una consulta de un catálogo cerrado que vive en el backend, y sólo se
+// mandan `consulta` (el nombre) y `params` (los que esa consulta declara). El
+// método, la ruta, la versión y el `shop_cipher` los pone el servidor. Ver
+// backend/routers/investigacion.py y backend/services/investigacion_tiktok.py.
+
+export type InvestigacionTikTokTipo =
+  | "id"         // texto de 6 a 24 dígitos
+  | "ids"        // lista de ids
+  | "entero"
+  | "epoch"      // fecha y hora → segundos Unix
+  | "opcion"     // una de `opciones`
+  | "opciones"   // varias de `opciones`
+  | "cursor"     // el `next_page_token` de la respuesta anterior
+  | "region"     // país en dos letras
+  | "decimal"    // número como texto
+  | "booleano";
+
+export interface InvestigacionTikTokCampo {
+  nombre: string;
+  donde: "ruta" | "query" | "cuerpo";
+  tipo: InvestigacionTikTokTipo;
+  etiqueta: string;
+  requerido: boolean;
+  opciones: string[];
+  minimo: number | null;
+  maximo: number | null;
+  ejemplo: string | number | boolean | string[] | null;
+  ayuda: string;
+}
+
+export interface InvestigacionTikTokConsulta {
+  nombre: string;
+  grupo: string;
+  titulo: string;
+  pregunta: string;
+  metodo: "GET" | "POST";
+  ruta: string;
+  estado: string;
+  nota: string;
+  en_cuarentena: boolean;
+  /** Grupos de parámetros que van todos o ninguno (largo, ancho, alto y unidad). */
+  juntos: string[][];
+  campos: InvestigacionTikTokCampo[];
+}
+
+export interface InvestigacionTikTokCatalogo {
+  tiktok_configurado: boolean;
+  aviso: string;
+  limite: { llamadas: number; por_segundos: number; alcance: string };
+  pagina_max: number;
+  ids_max: number;
+  timeout_s: number;
+  codigos: Record<string, string>;
+  consultas: InvestigacionTikTokConsulta[];
+  /** Las consultas que hoy están cerradas (la cuarentena efectiva). */
+  cuarentena: string[];
+  /** Nombres mal escritos en INVESTIGACION_TIKTOK_ABIERTAS: con uno, no se abre ninguna. */
+  abiertas_descartadas: number;
+  vetadas: { metodo: string; ruta: string; que_hace: string }[];
+  regla: Record<string, unknown>;
+}
+
+export type InvestigacionTikTokValor = string | number | boolean | string[];
+
+export interface InvestigacionTikTokResp {
+  ok: boolean;
+  canal: "tiktok";
+  consulta: string;
+  metodo: string;
+  ruta: string;
+  params: Record<string, unknown>;
+  ms: number;
+  codigo: string | null;
+  lectura?: string | null;
+  error?: string | null;
+  campos_redactados?: number;
+  llaves_redactadas?: string[];
+  result?: unknown;
+}
+
+export function catalogoInvestigacionTikTok(
+  signal?: AbortSignal,
+): Promise<InvestigacionTikTokCatalogo> {
+  return getJSON<InvestigacionTikTokCatalogo>("/api/investigacion/tiktok/consultas", signal);
+}
+
+export function investigarTikTok(
+  consulta: string,
+  params: Record<string, InvestigacionTikTokValor>,
+): Promise<InvestigacionTikTokResp> {
+  return postJSON<InvestigacionTikTokResp>("/api/investigacion/tiktok", { consulta, params });
+}
+
 // ── Radar de precios (F1: solo Mercado Libre, solo lectura) ─────────────────
 //
 // Las dos llamadas son GET y pasan por `getJSON` (o sea, por `fetchSesion`,

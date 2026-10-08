@@ -1468,6 +1468,32 @@ class Settings(BaseSettings):
     # vuelve a procesar. Es idempotente —channel.orders es el candado—, pero es
     # una escritura que nadie pidió esa vez.
     tiktok_recuperar_ids: str = ""
+    # INVESTIGACIÓN DE TIKTOK (7-oct-2026): LECTURAS a la Open API de TikTok
+    # desde producción, para sondear qué permite antes de automatizar el
+    # agendado. Ver routers/investigacion.py y services/investigacion_tiktok.py.
+    # No hay bandera de encendido a propósito: es SOLO LECTURA —un catálogo
+    # cerrado de consultas, sólo para admin con sesión— y la regla 3 es para lo
+    # que enciende flujos, no para lo que sólo mira.
+    #   · POR_MINUTO: tope GLOBAL (no por persona): la cuota de TikTok es de la
+    #     app y la tienda, la misma del aviso de pedidos, las guías y el stock.
+    #     Se acota a 1..120.
+    #   · PAGINA_MAX: tope de `page_size` aunque TikTok acepte 50 o 100. 1..50.
+    #   · TIMEOUT_S: cuánto se espera a TikTok. 3..30.
+    #     Las tres son TEXTO a propósito: declaradas como número, un valor mal
+    #     escrito (`abc`) no caía a la omisión — pydantic tiraba el arranque del
+    #     backend ENTERO. El router las convierte y, si no son un número o se
+    #     salen del rango, usa la omisión.
+    #   · ABIERTAS: consultas EN CUARENTENA que se abren, por nombre exacto y
+    #     separadas por coma. La cuarentena vive en el catálogo (hoy sólo
+    #     `paquetes.combinables`: su documentación llama «pre-generados» a los
+    #     ids que devuelve, y hasta confirmar que no deja nada vivo en TikTok no
+    #     se abre). Vacía = todo lo que está en cuarentena sigue cerrado. Un
+    #     nombre que no esté en el catálogo NO abre ninguna y deja un error en
+    #     el log. Cambiarla reinicia el contenedor (regla 12).
+    investigacion_tiktok_por_minuto: str = "30"
+    investigacion_tiktok_pagina_max: str = "20"
+    investigacion_tiktok_timeout_s: str = "15"
+    investigacion_tiktok_abiertas: str = ""
     # Censo gemelo para Temu (temu_censo.py). Intervalo más laxo a propósito:
     # el presupuesto de API de Temu es más estricto y su catálogo cambia menos.
     temu_censo_enabled: bool = False

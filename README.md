@@ -1001,6 +1001,42 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.625.0 — Investigación · TikTok: lecturas a la API de TikTok Shop desde producción (sólo admin, sólo lectura)
+
+Brandon, 7-oct: *"vamos a empezar a automatizar tiktok, ¿puedes empezar a hacer el sondeo
+e investigar?"*. La investigación (docs fuera del repo) concluyó que en TikTok lo único
+manual es AGENDAR el envío; antes de automatizarlo hay que sondear en vivo qué devuelve la
+API (bodegas, modo de entrega, fecha límite, franjas, división por pieza). Esta página es
+el vehículo: gemela de la de Temu (v0.562.0), desde la IP de producción y sin exponer llaves.
+
+**`services/investigacion_tiktok.py`** (puro, sin red) + **`routers/investigacion.py`**
+(`GET /api/investigacion/tiktok/consultas`, `POST /api/investigacion/tiktok`) +
+**`/investigacion`** con selector Temu | TikTok.
+
+- **Sólo lectura por construcción.** No hay campo de ruta ni de método: se elige de un
+  catálogo cerrado de 18 consultas (tienda, avisos, bodegas, opciones de entrega y
+  paqueterías, buscar/detalle de pedidos y paquetes, franjas, atributos de división,
+  rastreo, finanzas de un pedido, documento, cancelaciones). Además una lista negra por
+  patrón (≈95 verbos, dominios enteros de producto/promoción/afiliados) que se valida AL
+  IMPORTAR: con una ruta de escritura en el catálogo el módulo no carga. Un POST sólo entra
+  si termina en `search` o `query`.
+- **Sin llaves a la vista.** Token, app secret, firma, `shop_cipher` y ligas firmadas no
+  salen en respuesta, errores ni log; la página NO renueva el token (un `105002` contesta
+  "token vencido: lo renueva producción"). El `request_id` de un error sólo sale si no
+  contiene ningún trozo de una llave.
+- **Datos del comprador fuera**, por lista blanca de campos y de forma; el mensaje de error
+  de TikTok pasa además por una lista blanca de palabras. Excepción pedida: de NUESTRAS
+  bodegas sí salen ciudad, estado y código postal (para distinguir TEXCO de TEXCO II).
+- **Sólo admin**, límite por minuto, timeout, auditoría por log sin cuerpo.
+- `paquetes.combinables` nace en cuarentena (su doc habla de ids "pre-generados"): la
+  variable `INVESTIGACION_TIKTOK_ABIERTAS` sólo la abre por nombre exacto.
+- Variables: `INVESTIGACION_TIKTOK_POR_MINUTO` (30), `_PAGINA_MAX` (20), `_TIMEOUT_S` (15),
+  `_ABIERTAS` (""). Un valor ilegible cae a la omisión; no tira el arranque.
+
+No toca `services/tiktok.py` ni la página de Temu (misma lógica, comprobada nodo por nodo).
+Probado sin red: 2,010 comprobaciones de TikTok, 781 de Temu, 139 mutaciones atrapadas,
+`compileall` y `tsc` limpios. Nada se probó contra TikTok: el primer sondeo real es lo que sigue.
+
 ### v0.624.0 — Fan-out: seguro «stock 0 ⇒ fuera de la venta» en Temu y TikTok (nace APAGADO y en ensayo)
 
 Brandon, 7-oct: *"esas ocasiones de que mandemos 0 de stock en un sku a temu deberíamos
