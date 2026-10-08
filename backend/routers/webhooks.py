@@ -544,10 +544,16 @@ async def _procesar_ml(evento_id: int | None, payload: dict[str, Any]) -> None:
             #    históricos, 771 son `returns`—, y además llega dos veces por
             #    caso: una con `actions:["claims"]` (el reclamo) y otra con
             #    `["claims_actions"]` (su historial). El filtro por tipo vive
-            #    dentro de `devoluciones_ml.sincronizar`, que consulta y
-            #    descarta lo que no es devolución; aquí solo se filtra la
-            #    segunda copia, que apunta al MISMO claim y solo duplicaría la
-            #    consulta.
+            #    dentro de `devoluciones_ml.sincronizar` (`clasificar`), que
+            #    consulta y descarta lo que no es devolución; aquí solo se
+            #    filtra la segunda copia, que apunta al MISMO claim y solo
+            #    duplicaría la consulta.
+            #
+            #    ⚠ Una MEDIACIÓN sí puede ser devolución (5-oct-2026: 7 de 9
+            #    traían su objeto de devolución). Con
+            #    DEVOLUCIONES_ML_MEDIACIONES se guardan las que la traen, y las
+            #    que todavía no la traen quedan «sin acción» SIN memorizar el
+            #    «no»: el próximo aviso vuelve a preguntar.
             claim_id = resource.split("/claims/", 1)[1].split("/", 1)[0]
             if not settings.devoluciones_ml_enabled:
                 sin_accion = True
@@ -563,9 +569,20 @@ async def _procesar_ml(evento_id: int | None, payload: dict[str, Any]) -> None:
                 if not rd.get("ok"):
                     fallo = True
                     resultado = f"devolución {claim_id} falló: {rd.get('motivo')}"
+                elif rd.get("accion") == "ignorado" and rd.get("decision") in (
+                        "esperar", "duplicada"):
+                    # Mediación sin devolución (todavía), o devolución ya
+                    # guardada con otro claim.
+                    sin_accion = True
+                    resultado = f"claim {claim_id}: {rd.get('motivo')}"
                 elif rd.get("accion") == "ignorado":
                     sin_accion = True
                     resultado = f"claim {claim_id} no es devolución ({rd.get('motivo')})"
+                elif rd.get("accion") == "conservado":
+                    # `/returns` falló y la fila guardada ya es mejor que la
+                    # lectura nueva: no se escribe (candado de F3).
+                    sin_accion = True
+                    resultado = f"devolución {claim_id} conservada: {rd.get('motivo')}"
                 else:
                     sku = None
                     resultado = (f"devolución {rd['devolucion']} · orden "

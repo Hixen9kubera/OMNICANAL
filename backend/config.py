@@ -719,6 +719,46 @@ class Settings(BaseSettings):
     devoluciones_ml_enabled: bool = False
     devoluciones_ml_min: int = 60      # cada cuánto corre el barrido
     devoluciones_ml_dias: int = 2      # cuánto mira hacia atrás cada pasada
+    # F1 (5-oct-2026): ML también abre devoluciones dentro de reclamos
+    # `mediations` (1,970 en 90 días, 0 capturadas). Con `true`, el webhook las
+    # guarda cuando traen devolución y el barrido busca también
+    # `type=mediations`. Nace APAGADO (regla 3): cambia el número, las piezas y
+    # el valor de Rentabilidad → Devoluciones y la tasa del Radar de precios,
+    # cifras que ven Brandon y José. Se enciende tras enseñar el antes y el
+    # después del sandbox.
+    devoluciones_ml_mediaciones: bool = False
+    # F3 (5-oct-2026): cada pasada relee hasta `tope` devoluciones NO terminales
+    # ya guardadas (abierta, en tránsito, recibida, y reembolsadas con la caja
+    # en camino), sin tocar en `horas` y abiertas hace a lo más `dias`. 0 =
+    # apagado (nace así: gasta llamadas a ML). Sugerido al encender: 40.
+    devoluciones_ml_refresco_tope: int = 0
+    devoluciones_ml_refresco_horas: int = 6
+    devoluciones_ml_refresco_dias: int = 120
+    # Red de seguridad de F1 (R2 del SPEC): una vez al día, a esta hora UTC,
+    # las mediaciones creadas en los últimos `dias` que todavía NO tienen fila
+    # (las que ganan su devolución después de las 48 h del barrido y cuyo aviso
+    # se perdió). 0 = apagado (nace así); exige DEVOLUCIONES_ML_MEDIACIONES.
+    # Sugerido al encender: 21 (~300 GET/día). Tope interno: 31.
+    devoluciones_ml_mediaciones_amplio_dias: int = 0
+    # Una hora ilegible o fuera de rango no tumba el arranque: se registra y se
+    # usa 10:20 (`devoluciones_ml.hora_amplio_utc`).
+    devoluciones_ml_mediaciones_amplio_hora_utc: str = "10:20"
+    # Freno de los barridos (revisión del 7-oct): GET por segundo a ML del
+    # barrido horario, el amplio, el refresco y el reintento de avisos. ML ya
+    # contestó 429 por debajo de 2 GET/s; ≤0 o inválido = 1.5. El webhook no
+    # se frena (un claim por aviso).
+    devoluciones_ml_ritmo: float = 1.5
+    # Avisos post_purchase que fallaron (o se quedaron sin procesar >10 min) en
+    # `ops.webhook_events`: cada hora se reintentan hasta este número de claims
+    # (cada uno ≤3 veces por aviso). 0 = apagado. 30 por omisión: ~90 GET a lo
+    # más, ~1 min al ritmo de arriba; el 2–5-oct fallaron 31 en tres días.
+    devoluciones_ml_reintento_tope: int = 30
+    # La sexta falla (revisión del 7-oct): cada pasada pone `venta_contaba` =
+    # estado vivo de la orden en `channel.orders` (sin ML). Corrige un doble
+    # conteo, pero CAMBIA el «restable» de Rentabilidad desde la primera hora:
+    # nace APAGADO (Eduardo, 8-oct; regla 3) y se enciende con el dale de
+    # Brandon. El valor de antes de cada fila cambiada queda en el log.
+    devoluciones_ml_recalculo: bool = False
     # ¿El fan-out ESCRIBE stock en TikTok? Interruptor propio, aparte de
     # `FANOUT_CANALES`, y a propósito: el valor de esa lista no se puede leer
     # desde fuera de Railway, así que si TikTok dependiera solo de ella un deploy

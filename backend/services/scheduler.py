@@ -594,6 +594,12 @@ def iniciar() -> None:
     # avisa de lo que no llegó— y ML deshabilita un topic al que se le contesta
     # mal. Este barrido revisa las últimas 48 h y repone lo que falte. Escribir
     # dos veces la misma devolución no cuesta nada: el upsert es idempotente.
+    # Desde el 5-oct-2026 el mismo job puede barrer también las mediaciones
+    # (DEVOLUCIONES_ML_MEDIACIONES) y refrescar lo que sigue abierto aunque sea
+    # viejo (DEVOLUCIONES_ML_REFRESCO_TOPE > 0); los dos nacen apagados. Desde
+    # v0.626.0, además, reintenta los avisos post_purchase que fallaron
+    # (DEVOLUCIONES_ML_REINTENTO_TOPE, 30) y recalcula `venta_contaba` contra el
+    # estado vivo de las órdenes (sin ML); todo a DEVOLUCIONES_ML_RITMO GET/s.
     #
     # Arranca a los 4 min para no competir con el sync de inventario en el
     # despertar del contenedor.
@@ -608,8 +614,22 @@ def iniciar() -> None:
             max_instances=1,
             coalesce=True,
         )
-        log.info("Devoluciones ML: barrido cada %s min sobre %s días.",
-                 settings.devoluciones_ml_min, settings.devoluciones_ml_dias)
+        log.info("Devoluciones ML: barrido cada %s min sobre %s días "
+                 "(mediaciones %s · refresco de abiertas tope %s · reintento de "
+                 "avisos tope %s · %s GET/s · recálculo de venta_contaba %s).",
+                 settings.devoluciones_ml_min, settings.devoluciones_ml_dias,
+                 "sí" if settings.devoluciones_ml_mediaciones else "no",
+                 settings.devoluciones_ml_refresco_tope,
+                 settings.devoluciones_ml_reintento_tope, settings.devoluciones_ml_ritmo,
+                 "sí" if getattr(settings, "devoluciones_ml_recalculo", True) else "no")
+        # La red de seguridad de las mediaciones que ganan su devolución
+        # después de las 48 h (R2 de F1): una vez al día, solo las que todavía
+        # no tienen fila. Nace apagada (DEVOLUCIONES_ML_MEDIACIONES_AMPLIO_DIAS=0).
+        # Una hora mal escrita o un alta que truena NO tumban el arranque (y
+        # con él todos los jobs que se registran después): la función valida
+        # la hora, atrapa el error y lo deja en el log. Vive en el servicio para
+        # poder probarla con un scheduler de mentira.
+        devoluciones_ml.programar_barrido_amplio(_scheduler)
 
     # F2 — Espejo del DROP: stock_watch_foto (Woo) → channel.listings 'general'.
     # Job propio y NO un gancho al final de stock_watch: si el vigilante está

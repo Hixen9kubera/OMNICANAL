@@ -1001,6 +1001,118 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.626.0 — Devoluciones de ML: las 5 fallas de la captura, la sexta (`venta_contaba` congelada), reintento de avisos y freno de ritmo
+
+Revisión de devoluciones del 5-oct: `channel.returns` (0049) captura las devoluciones de Mercado Libre, pero con
+cinco fallas; una revisión posterior (7-oct, 92 agentes, 80 hallazgos) encontró una sexta y varios huecos de
+publicación. Esta entrada es la rama `fix/devoluciones-ml-5-fallas` (nació como v0.619.0, número que main ya usó)
+rebasada sobre v0.625.0 y con lo que la revisión pidió antes de publicar. **Nada de esto se probó contra
+producción**: ML simulado en las pruebas y SQL dentro de transacciones con ROLLBACK en el sandbox.
+
+**Entra con el deploy** (sin tocar ninguna variable). F2, F4, F5 y los candados viven en `sincronizar`, que usan
+el webhook y el job; lo demás corre dentro del job horario, que solo existe con `DEVOLUCIONES_ML_ENABLED=true`.
+Una de estas cosas **cambia cifras que ven Brandon y José sin que nadie encienda nada**: F4, poco a poco. El
+recálculo de `venta_contaba` viene en el código pero **nace apagado** (abajo, y en «Espera el dale de Brandon»).
+- **F2 · Cliente cerrado:** el cliente HTTP del webhook vive hasta pedir el motivo. Del 2 al 5-oct fallaron 31
+  avisos con «Cannot send a request, as the client has been closed» y la devolución no se guardaba; un motivo
+  que falla ya no borra el guardado (`motivo_texto` con coalesce).
+- **F4 · `expired`** → `rechazada` (o `reembolsada` si ML devolvió el dinero: el dinero manda). Los estados
+  desconocidos se registran en el log. **Cambia cifras sin bandera**, poco a poco: solo en las filas que se
+  vuelven a leer.
+- **F5 · `destino`:** `seller_address` si algún tramo viene a nuestra dirección, si no el del último tramo; nunca
+  se borra un destino conocido (coalesce). `_destino` ya no truena si `destination` no es un objeto.
+- **Candado de degradación:** si `/returns` contesta un error raro y la fila guardada ya tiene su devolución, no
+  se escribe ('conservado'): una lectura fallida no regresa una 'reembolsada' a 'abierta'.
+- **Candado de duplicados, SIN borrar.** Si la misma devolución (`payload->'returns'->>'id'`) ya está guardada con
+  otro claim de la misma orden, no se escribe una segunda fila. El BORRADO de la fila perdedora (el único DELETE
+  del flujo vivo) solo corre con `DEVOLUCIONES_ML_MEDIACIONES` encendida; apagada, nunca se borra ni se crea una
+  segunda fila (`log.warning` + resultado 'duplicada'). Pero si el claim que llega YA tiene su fila (un par que
+  existiera de antes del candado), esa fila se sigue actualizando con el upsert: no escribir la congelaba para
+  siempre —los dos claims contestaban 'duplicada' y una devolución abierta nunca pasaba a 'reembolsada'—. Es lo
+  que hacía la v0.625.0 con las dos filas. La v0.619.0 original borraba desde el deploy. **Medido en producción el
+  8-oct (solo lectura): 0 devoluciones repetidas en dos claims**; hoy el candado no se dispara.
+- **Sexta falla: `venta_contaba` se recalcula contra el estado VIVO de la orden.** `armar` la fijaba al
+  capturar; ML cancela la orden cuando reembolsa y la fila se quedaba en `true`: «restable» contaba dos veces lo
+  que ya salió de `sales_daily` por cancelado ($35.8k medidos el 5-oct con el estado vivo). Ahora
+  `recalcular_venta_contaba()` —un solo UPDATE contra `channel.orders`, sin llamar a ML, con la MISMA lista de
+  cancelados que la 0030 y solo donde el valor cambia (`is distinct from`)— corre al final de cada pasada
+  horaria (`asyncio.to_thread`). **Nace APAGADO** (`DEVOLUCIONES_ML_RECALCULO=false`; Eduardo, 8-oct, regla 3):
+  encendido cambia el «restable» de Rentabilidad desde la primera pasada (`routers/fulfillment.py` suma
+  `venta_contaba` desde `returns_daily`), así que se enciende con el dale de Brandon, sin deploy; `false` lo
+  vuelve a apagar sin apagar el barrido. Como ni la historia ni la fila guardan el valor anterior, cada pasada deja en el log cada claim
+  cambiado con `antes→después` (hasta 50 nombrados; el resto, contado). **Medido en producción el 8-oct (solo
+  lectura, el mismo filtro que el UPDATE):** la primera pasada cambiaría **56 de 540 filas, todas de `true` a
+  `false` y todas de los últimos 90 días, $39,281.81** en sus líneas; el «restable» a 90 días pasaría de
+  **$72,567.35 a $33,285.54** (bruto $277,103.33). Más de la mitad del «restable» de hoy es doble conteo. Triggers de la 0049 revisados: `returns_history` solo escribe si cambia
+  `estado`, así que el recálculo no mete historia (decisión a propósito: que la orden se cancele no es una
+  transición de la devolución); `abierta_at` no se toca (solo se sella en INSERT); `actualizado_at` sí se mueve,
+  así que el refresco de F3 pospone esa fila a lo más `DEVOLUCIONES_ML_REFRESCO_HORAS`, una vez. Una fila sin
+  orden (NULL) toma valor cuando su orden aparece en `channel.orders`.
+  **Sandbox (ROLLBACK):** cambiaría 10 de 1,725 filas (6 de `true` a `false`, $4,222.06 en sus líneas; 4 de
+  `false` a `true`, $2,234.38); una segunda pasada cambia 0; `return_history` 2,071 → 2,071; ninguna
+  `abierta_at` en NULL. Ojo: el `channel.orders` del sandbox está atrasado (la siembra no lo refrescó), así que
+  el número de producción será otro. La medición quedó en el repo como prueba saltable,
+  `tests/test_devoluciones_ml_sandbox.py` (`OMNI_PRUEBAS_SANDBOX=1`; se niega a correr fuera de yvootpbz): primera
+  pasada 10 de 1,725 y segunda 0, historia sin crecer, `abierta_at` intactas, y una fila puesta en NULL toma el
+  estado vivo de su orden, todo en una transacción con ROLLBACK.
+- **Reintento de avisos post_purchase fallidos** (`DEVOLUCIONES_ML_REINTENTO_TOPE`, 30 por omisión; 0 = apagado).
+  **Medido en producción el 8-oct:** en los 3 días que guarda la bitácora llegaron 1,277 avisos post_purchase y
+  **32 fallaron** (30 por el cliente cerrado de F2, que sigue pasando en producción, y 2 por 429 tras 3
+  reintentos), de **7 claims**; 0 sin procesar. Es lo que levantaría la primera hora.
+  Un aviso que fallaba (429, timeout, deploy) quedaba procesado con `resultado = 'devolución N falló: …'` y nadie
+  lo reintentaba: el reproceso de `ml_webhook_reintentos` es solo de ventas, y para un claim de más de 48 h el
+  barrido ya no lo ve. Cada hora se releen de `ops.webhook_events` SOLO los id de claim (nunca el payload) de los
+  avisos de los últimos 7 días que fallaron o siguen sin procesar a los 10 min, y pasan por `sincronizar` con la
+  cuenta del aviso. Memoria en proceso: un aviso resuelto no se repite y uno que sigue fallando se intenta a lo
+  más 3 veces (un aviso NUEVO del mismo claim reabre la cuenta). La bitácora de ML se purga a los 3 días (0050):
+  la ventana real es de 3. En el sandbox la consulta corre, pero no hay avisos post_purchase que releer.
+- **Freno de ritmo** (`DEVOLUCIONES_ML_RITMO`, 1.5 GET/s por omisión; ≤0 o ilegible = 1.5). El barrido horario y
+  el amplio llamaban a ML sin freno (concurrencia 4 y 2) y ML ya contestó 429 por debajo de 2 GET/s. Ahora el
+  barrido, el refresco y el reintento de avisos de cada hora comparten UN cliente frenado por GET (`_Ritmo`); el
+  barrido amplio y el refresco suelto usan el mismo valor (el refresco bajó de 2.0 a 1.5). El webhook no se
+  frena: es un claim por aviso.
+- **Una búsqueda cortada ya no se calla.** `claims/search` pasa por `_pedir` (reintenta 429/5xx); si aun así no
+  contesta, el barrido usa lo leído y lo cuenta como fallo (`busquedas_incompletas`, y `busqueda_incompleta` por
+  cuenta). Hasta v0.625.0 hacía `break` y reportaba «0 fallos» con media ventana leída.
+- **Robustez:** una excepción del barrido ya no se salta el refresco, el reintento ni el recálculo de esa hora;
+  una hora fuera de rango en `DEVOLUCIONES_ML_MEDIACIONES_AMPLIO_HORA_UTC` ('25:00') ya no tumba el arranque del
+  backend (se registra y se usa 10:20). El alta del job vive en `devoluciones_ml.programar_barrido_amplio`, que
+  nunca lanza: si `add_job` truena, lo registra y `scheduler.iniciar` sigue dando de alta los jobs siguientes.
+
+**Espera el dale de Brandon** (regla 3: cambian cifras que ven Brandon y José; las cuatro nacen apagadas):
+- `DEVOLUCIONES_ML_RECALCULO` (**sexta falla**, arriba): corrige el doble conteo del «restable»; la primera pasada
+  lo baja de $72,567.35 a $33,285.54 a 90 días (medido el 8-oct).
+- `DEVOLUCIONES_ML_MEDIACIONES` (**F1**): guarda las devoluciones que ML abre dentro de reclamos `mediations`
+  (1,970 mediaciones en 90 días, 0 capturadas); las que todavía no traen devolución no se memorizan como «no»;
+  `barrer` busca también `type=mediations`. Con ella se enciende el borrado de duplicadas («se queda el menor id»).
+- `DEVOLUCIONES_ML_REFRESCO_TOPE` (**F3**, sugerido 40): relee lo no terminal, la más olvidada primero; una lectura
+  fallida no pisa una fila buena. Mientras siga en 0, F3 NO queda corregida.
+- `DEVOLUCIONES_ML_MEDIACIONES_AMPLIO_DIAS` (sugerido 21, tope 31): una vez al día, las mediaciones sin fila. Exige
+  MEDIACIONES. Conviene encender las tres juntas: con MEDIACIONES sola, una mediación que gana su devolución tarde
+  y pierde su aviso no la vuelve a buscar nadie.
+
+**Lo que el deploy NO hace, dicho sin rodeos:**
+- **La historia de 90 días NO llega a producción con el deploy.** El «antes y después» del sandbox (525 → 1,725
+  filas con mediaciones) salió de `scripts/recuperar_devoluciones_ml.py`, que solo escribe en el sandbox
+  (`--aplicar` exige su DSN). En producción, encender MEDIACIONES captura de ahí en adelante: habrá un escalón y
+  no se deben comparar periodos que lo crucen. Traer la historia exige una corrida con su propia acta (doble
+  candado) y un cambio de código revisado aparte.
+- **Las 54 `expired` viejas de producción solo se corrigen con el refresco** (`DEVOLUCIONES_ML_REFRESCO_TOPE > 0`,
+  ~40/h) o con un acta para la fase local del script en producción: F4 corrige lo que se vuelve a leer, no lo ya
+  guardado. Lo mismo F5: las filas existentes de producción siguen con `destino` NULL hasta que se relean.
+- Pendientes de la revisión que NO entran aquí (cambian cifras o vistas: regla 3): Rentabilidad → DROP cuenta las
+  'rechazada' y lo cancelado-y-devuelto dos veces; `returns_rate_sku` y «% de ingresos» mezclan universos; las
+  mediaciones sin orden caen como DROP; `abierta_at` de una mediación es la fecha del reclamo; la siembra del
+  sandbox no refrescó `channel.orders`.
+
+Otros archivos: `scripts/recuperar_devoluciones_ml.py` (nuevo): dry-run por omisión, `--aplicar` solo contra el
+sandbox; lee el token una vez sin renovarlo, solo GET a ML, ≤3/s, se detiene ante 401/403; fases
+`local → abiertas → mediaciones`. `scripts/backfill_devoluciones_ml.py` queda retirado (aborta y apunta al nuevo).
+Variables nuevas: `DEVOLUCIONES_ML_RITMO` (1.5), `DEVOLUCIONES_ML_REINTENTO_TOPE` (30) y
+`DEVOLUCIONES_ML_RECALCULO` (false).
+
+**Verificado.** `test_devoluciones_ml.py` 99 pruebas en verde (41 nuevas: candado sin bandera en los dos sentidos y con el script; 429 en el claim, en `/returns` cuatro veces, 429 y luego 200, búsqueda cortada en la página 2; `venta_contaba` en `armar`, el UPDATE y la lista contra la 0030; el trigger de historia; reintento de avisos: SQL, cuenta del aviso, sin bucle, tope de intentos y por corrida; ritmo, hora y `_destino`; y de la segunda revisión: un par de duplicadas que ya existe se sigue actualizando sin borrar, 403/401/400 en la página 2 también es búsqueda incompleta, el recálculo y la bitácora corren fuera del hilo del loop, `revisar` sigue si truenan los avisos o el recálculo, `DEVOLUCIONES_ML_RECALCULO` apagado y el rastro antes→después en el log, el filtro por entorno y el tope por variable del reintento, lo que salta la memoria no se come el tope, y el alta del barrido amplio con un scheduler de mentira que truena) y `test_recuperar_devoluciones_ml.py` 40 en verde. `test_devoluciones_ml_sandbox.py` (2, saltadas sin `OMNI_PRUEBAS_SANDBOX=1`) en verde contra el sandbox. Suite completa del backend: 2,367 pruebas, 110 saltadas, 1 falla que ya trae main (`test_regla_11_productos`: `leer_contenido_canal` de v0.623.0, fuera de esta rama). En el sandbox: el UPDATE del recálculo y la consulta de avisos, ambos dentro de transacciones con ROLLBACK.
+
 ### v0.625.0 — Investigación · TikTok: lecturas a la API de TikTok Shop desde producción (sólo admin, sólo lectura)
 
 Brandon, 7-oct: *"vamos a empezar a automatizar tiktok, ¿puedes empezar a hacer el sondeo
