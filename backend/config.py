@@ -1393,6 +1393,12 @@ class Settings(BaseSettings):
     # regresarla: reactivar iría contra la decisión de pausar. «En bloque» = al menos estas
     # publicaciones apagadas a mano en la misma hora. 0 = sin esta guarda.
     fanout_cero_bloque_n: int = 10
+    # Trazabilidad de un SKU (services/fanout_vivo.historia): cuántos días después de
+    # que una devolución LLEGA a nuestra bodega se busca la subida de Odoo que
+    # probablemente es su reingreso. Bodega recibe en Odoo sin ligarlo a la venta, así
+    # que la liga es por fecha: una ventana larga liga entradas de contenedor, una
+    # corta pierde lo que Bodega registra tarde. Sólo lectura; se ajusta sin deploy.
+    fanout_devol_liga_dias: int = 10
 
     # ── Movimientos de bodega FULL / FBA → Woo ────────────────────
     # Cuando se manda mercancía a FULL, esas piezas SALEN del almacén propio y

@@ -20,7 +20,7 @@ fanout.py — Monitoreo y simulación del fan-out de stock DROP.
   GET  /api/fanout/vivo?desde_id=   → la página en vivo: veredicto, cadena y cambios.
   GET  /api/fanout/matriz           → SKUs × canales contra Woo.
   GET  /api/fanout/rastro?sku=&fin= → un cambio salto por salto.
-  GET  /api/fanout/historia?sku=&dias= → la línea de trazabilidad de un SKU.
+  GET  /api/fanout/historia?sku=&dias=&liga= → la línea de trazabilidad de un SKU (con sus devoluciones).
   GET  /api/fanout/full             → la pestaña FULL (stock, avisos, cuadre, salud).
   GET  /api/fanout/full/camino      → las salidas de Odoo a FULL (caché de envíos).
   GET  /api/fanout/bodegas          → la pestaña Bodegas: kubera (0064/0065) contra
@@ -179,11 +179,16 @@ def rastro(sku: str = Query(..., description="SKU del cambio"),
 
 @router.get("/historia")
 def historia(sku: str = Query(..., min_length=2, description="SKU"),
-             dias: int = Query(14, ge=1, le=60, description="Días hacia atrás")):
+             dias: int = Query(14, ge=1, le=60, description="Días hacia atrás"),
+             liga: int | None = Query(None, ge=0, le=30,
+                                      description="Días tras la llegada de una devolución en que se "
+                                                  "busca su reingreso en Odoo (default FANOUT_DEVOL_LIGA_DIAS)")):
     """La línea de trazabilidad de un SKU: cada cambio de stock en Woo, cada reparto
-    con lo que contestó cada canal y lo que cada canal reportó después. Solo lee."""
+    con lo que contestó cada canal, lo que cada canal reportó después y sus
+    devoluciones, ligadas por fecha con la subida de Odoo que probablemente es su
+    reingreso. Solo lee."""
     from services import fanout_vivo
-    return fanout_vivo.historia(sku, dias)
+    return fanout_vivo.historia(sku, dias, liga_dias=liga)
 
 
 @router.get("/simular")

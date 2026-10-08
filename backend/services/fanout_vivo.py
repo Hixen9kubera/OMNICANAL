@@ -25,6 +25,7 @@ import logging
 import re
 import threading
 import time
+from datetime import datetime, timedelta
 from typing import Any
 
 from services import fanout_full, full_publicaciones
@@ -1345,7 +1346,404 @@ def _estado_traza(canal: str, valor: str | None) -> str:
     return _ESTADO_TXT.get(canal, {}).get(str(valor), str(valor).lower())
 
 
-def historia(sku: str, dias: int = 14, limite: int = 400) -> dict[str, Any]:
+# ── Devoluciones en la trazabilidad ──────────────────────────────────────────
+# Lo esencial de cada devolución del SKU, para contestar «¿esta subida de stock fue
+# una devolución?». Las de ML viven en `channel.returns` (+ `return_items`, con las
+# piezas por SKU, y `return_history`, con sus estados); las de Temu son ventas que el
+# canal canceló con la mercancía YA enviada (`ops.odoo_sale_orders`, del vigilante
+# de cancelaciones de Temu).
+
+_DESTINO_TXT = {"seller_address": "a nuestra bodega", "warehouse": "al almacén de ML"}
+_DEVOL_ESTADO_TXT = {"abierta": "abierta", "en_transito": "en tránsito", "recibida": "entregada",
+                     "reembolsada": "reembolsada", "cerrada": "cerrada", "rechazada": "rechazada",
+                     # Temu: la cancelación con la mercancía fuera (ver odoo_ventas_log)
+                     "cancelada_revisar": "posible devolución", "cancelada_devuelta": "devuelta en Odoo"}
+# Los avisos de ML que no son una devolución terminada con la caja de vuelta: ML los
+# deja en `estado='rechazada'` y el crudo dice por qué.
+_DEVOL_RECHAZO_TXT = {"expired": "venció", "cancelled": "cancelada", "failed": "falló el envío",
+                      "not_delivered": "no se entregó"}
+_ACC_TEMU_DEVOL = ["cancelada_revisar", "cancelada_devuelta"]
+# Ventana ANTES de la llegada en la que también vale una subida de Odoo.
+#   · ML con la llegada vista en vivo (paso `recibida` de return_history): cero, la
+#     caja no puede reingresar antes de llegar.
+#   · ML con la llegada tomada del CIERRE (`payload.returns.date_closed`): ML cierra
+#     entre 0 y 77 h DESPUÉS de la entrega real (medido en el sandbox contra los pasos
+#     `recibida` en vivo, mediana ~20 h en las que van a su almacén). Si Bodega la
+#     registra el día que llega, sin holgura ese reingreso queda fuera de la ventana.
+#   · Temu: la fecha es `actualizado_at`, la ÚLTIMA vez que kubera tocó la venta (el
+#     vigilante, la guía, el prefijo del motivo…), siempre después del reingreso y a
+#     veces días después. No hay un sello propio del cambio de `accion`.
+# Nunca antes de que se abrió la devolución (`no_antes`).
+_HOLGURA_CIERRE_ML_H = 72
+_HOLGURA_TEMU_H = 72
+_NOTA_LIGA = ("Coincidencia probable por fecha, no una liga dura: Bodega recibe en Odoo "
+              "sin ligarlo a la venta.")
+# El cambio de ODOO de un `odoo_delta` va en el motivo («delta de Odoo (foto A -> B)»);
+# el resultado («Woo X -> Y») es lo que se le escribió a Woo, que también sube cuando
+# stock_watch le devuelve a Woo lo que Odoo ya tenía tras una venta en Woo (foto
+# 134 -> 134, Woo 132 -> 134). Una subida de Odoo es la de la foto.
+_FOTO_ODOO = re.compile(r"foto (-?\d+)\s*->\s*(-?\d+)")
+# `payload.returns` es el crudo de ML; su destino es `shipments[].destination.name`, con
+# la misma regla que `devoluciones_ml._destino` (v0.619.0): si algún tramo va a nuestra
+# dirección es 'seller_address', si no el último tramo. Hasta que esa captura llegue a
+# producción la columna `destino` viene NULL, pero el crudo ya lo trae (en el sandbox el
+# derivado coincide con la columna en las 1,672 que la tienen).
+_SQL_DESTINO = """coalesce(r.destino, (
+             with s as (select v, n from jsonb_array_elements(
+                          case when jsonb_typeof(r.payload->'returns'->'shipments') = 'array'
+                               then r.payload->'returns'->'shipments' else '[]'::jsonb end)
+                          with ordinality as t(v, n)
+                         where coalesce(v->'destination'->>'name', '') <> '')
+             select case when bool_or(v->'destination'->>'name' = 'seller_address') then 'seller_address'
+                         else (array_agg(v->'destination'->>'name' order by n desc))[1] end from s))"""
+
+
+def _hora_dt(local: str | None) -> datetime | None:
+    """'2026-09-24 10:15:00' (hora de CDMX) → datetime sin zona. Todas las horas de
+    la trazabilidad están en la misma zona, así que se comparan entre sí sin más."""
+    if not local:
+        return None
+    try:
+        return datetime.strptime(local[:19], "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+
+
+def _foto_odoo(motivo: str) -> tuple[int | None, int | None]:
+    """(antes, después) de Odoo en el motivo de un `odoo_delta`; (None, None) si no viene
+    (la primera foto de un SKU dice «foto None -> N»: no hay antes con qué comparar)."""
+    m = _FOTO_ODOO.search(motivo or "")
+    return (int(m.group(1)), int(m.group(2))) if m else (None, None)
+
+
+def _pasos_devolucion(d: dict) -> list[dict]:
+    """Los pasos de UNA devolución de ML con su fecha, del más viejo al más nuevo.
+
+    `return_history` es la fuente de los tiempos, pero solo sus TRANSICIONES: la fila
+    que el trigger escribe al insertar (`estado_anterior` NULL) lleva la hora en que
+    kubera vio la devolución por primera vez, no la del hecho —en el backfill, la de
+    la carga (0049, §3); por webhook, a veces semanas después del reembolso—. Esas no
+    son paso. Las transiciones sí, vengan por donde vengan: `detectado_via` se congela
+    con el valor de la primera captura, así que un cambio real que vio el barrido días
+    después también dice 'backfill'. Lo que falte se completa con los hitos de la
+    cabecera —apertura, cierre de ML (`payload.returns.date_closed`) y reembolso—,
+    marcados como tales."""
+    pasos: list[dict] = []
+    if d.get("abierta"):
+        pasos.append({"estado": "abierta", "texto": "abierta", "hora": d["abierta"], "de": "apertura"})
+    for h in d.get("historia") or []:
+        if not h.get("antes"):
+            continue           # primera vez que se vio, no un hecho
+        texto = ("reabierta" if h["estado"] == "abierta" else _DEVOL_ESTADO_TXT.get(h["estado"], h["estado"]))
+        if h["estado"] == "rechazada" and d.get("estado_canal") in _DEVOL_RECHAZO_TXT:
+            texto = f"rechazada ({_DEVOL_RECHAZO_TXT[d['estado_canal']]})"
+        pasos.append({"estado": h["estado"], "texto": texto, "hora": h["hora"], "de": h.get("via") or "sondeo"})
+    vistos = {p["estado"] for p in pasos}
+    if "recibida" not in vistos and d.get("estado_canal") == "delivered" and d.get("cerrada"):
+        pasos.append({"estado": "recibida", "texto": "entregada", "hora": d["cerrada"], "de": "cierre de ML"})
+    if "reembolsada" not in vistos and d.get("reembolsada"):
+        pasos.append({"estado": "reembolsada", "texto": "reembolsada", "hora": d["reembolsada"], "de": "reembolso"})
+    if "rechazada" not in vistos and d.get("estado") == "rechazada" and d.get("cerrada"):
+        crudo = _DEVOL_RECHAZO_TXT.get(d.get("estado_canal") or "")
+        pasos.append({"estado": "rechazada", "texto": f"rechazada ({crudo})" if crudo else "rechazada",
+                      "hora": d["cerrada"], "de": "cierre de ML"})
+    pasos.sort(key=lambda p: p["hora"])
+    return pasos
+
+
+def _llegada(d: dict, pasos: list[dict]) -> tuple[bool, str | None]:
+    """¿La caja ya llegó a su destino, y cuándo? Llegó si ML la da por entregada
+    (`delivered`) o si la historia en vivo la vio `recibida`. La hora es la del paso
+    «entregada» (en vivo o, si no, la del cierre de ML); sin ninguna, la del reembolso
+    —ML reembolsa al entregar o antes, nunca mucho después—."""
+    recibida = next((p for p in pasos if p["estado"] == "recibida"), None)
+    llego = bool(recibida) or d.get("estado_canal") == "delivered"
+    if not llego:
+        return False, None
+    return True, (recibida["hora"] if recibida else d.get("reembolsada"))
+
+
+def _holgura_ml(pasos: list[dict]) -> int:
+    """Horas antes de la llegada en que vale una subida (ver `_HOLGURA_CIERRE_ML_H`):
+    solo cuando la llegada salió del cierre de ML y no de un paso visto en vivo."""
+    recibida = next((p for p in pasos if p["estado"] == "recibida"), None)
+    return _HOLGURA_CIERRE_ML_H if recibida and recibida["de"] == "cierre de ML" else 0
+
+
+def _tras(n_dias: int) -> str:
+    """Días entre la llegada y el reingreso: «el mismo día», «+2 d» o «−1 d»."""
+    return "el mismo día" if n_dias == 0 else f"{'+' if n_dias > 0 else '−'}{abs(n_dias)} d"
+
+
+def _subidas_odoo(woo: list[dict]) -> list[tuple[int, datetime | None, int]]:
+    """Las subidas de ODOO entre los renglones «woo»: [(índice, hora, cuánto sube)], de
+    la más vieja a la más nueva. Se mide con la foto de Odoo (`odoo_de`/`odoo_a`), no
+    con lo escrito en Woo. Un delta cuya escritura a Woo FALLÓ conserva la foto y la
+    pasada siguiente lo vuelve a anotar idéntico: es el mismo movimiento de Odoo y
+    cuenta una vez, en la hora en que se vio primero."""
+    odoo = sorted(((i, _hora_dt(w.get("hora")), w) for i, w in enumerate(woo) if w.get("origen") == "odoo"),
+                  key=lambda s: (s[1] or datetime.min, s[0]))
+    subidas, previa = [], None
+    for i, t, w in odoo:
+        de, a = w.get("odoo_de"), w.get("odoo_a")
+        reintento = (previa is not None and previa.get("fallo")
+                     and (previa.get("odoo_de"), previa.get("odoo_a")) == (de, a))
+        previa = w
+        if reintento or de is None or a is None or int(a) <= int(de):
+            continue
+        subidas.append((i, t, int(a) - int(de)))
+    return subidas
+
+
+def ligar_devoluciones(devs: list[dict], woo: list[dict], ahora: str,
+                       dias: int = 10, desde_datos: str | None = None
+                       ) -> tuple[dict[str, dict], dict[int, list[dict]]]:
+    """Liga cada devolución que LLEGÓ A NUESTRA BODEGA con la primera subida de Odoo
+    que viene después. FUNCIÓN PURA: no lee nada.
+
+    `devs`: [{id, nombre, destino, llego, llegada ('YYYY-MM-DD HH:MM:SS' local o None),
+              piezas, holgura_h, no_antes}]
+    `woo`:  los renglones «woo» de la historia ({hora, origen, odoo_de, odoo_a, fallo});
+            vale el índice.
+    `desde_datos`: desde cuándo hay renglones cargados (el inicio del periodo, o el más
+            viejo si la bitácora llegó a su tope). Una ventana que empieza antes no se
+            puede juzgar: se dice «fuera del periodo», no «no se ve reingreso».
+    Devuelve ({id de devolución: liga}, {índice en `woo`: [devoluciones que explica]}).
+
+    Una subida es un renglón de origen Odoo cuya foto de Odoo SUBE (`_subidas_odoo`).
+    Va de la más vieja a la más nueva y cada devolución toma la primera subida dentro de
+    [llegada − holgura, llegada + `dias`] a la que todavía le quepan piezas: una subida
+    de +3 alcanza para tres devoluciones de 1, y una de +1 no se cuenta dos veces. Una
+    subida grande (una entrada de contenedor) sí puede tomarse para una devolución de 1:
+    el texto lo dice («la subida es de +200»). Es una coincidencia por fecha y cantidad
+    —Bodega recibe en Odoo sin ligarlo a la venta—, no una liga dura."""
+    subidas = _subidas_odoo(woo)
+    resto = {i: sube for i, _, sube in subidas}
+    hoy = _hora_dt(ahora)
+    cargado = _hora_dt(desde_datos)
+    por_dev: dict[str, dict] = {}
+    por_sub: dict[int, list[dict]] = {}
+    candidatas = sorted((d for d in devs if d.get("destino") == "seller_address" and d.get("llego")),
+                        key=lambda d: (d.get("llegada") or "9999", str(d["id"])))
+    for d in candidatas:
+        llega = _hora_dt(d.get("llegada"))
+        if llega is None:
+            por_dev[d["id"]] = {"k": "sin_fecha",
+                                "texto": "Ya llegó a nuestra bodega, pero sin fecha de entrega: no se puede buscar su reingreso en Odoo."}
+            continue
+        desde = llega - timedelta(hours=int(d.get("holgura_h") or 0))
+        no_antes = _hora_dt(d.get("no_antes"))
+        if no_antes is not None and no_antes > desde:
+            desde = no_antes
+        hasta = llega + timedelta(days=dias)
+        if cargado is not None and desde < cargado:
+            por_dev[d["id"]] = {
+                "k": "fuera_periodo",
+                "texto": (f"Llegó a nuestra bodega el {_dia(d['llegada'])}, antes de lo que abarca este "
+                          "periodo: amplía los días para buscar su reingreso en Odoo.")}
+            continue
+        sub = next(((i, t, sube) for i, t, sube in subidas
+                    if t is not None and desde <= t <= hasta and resto[i] > 0), None)
+        if sub is None:
+            espera = hoy is not None and hoy < hasta
+            por_dev[d["id"]] = {
+                "k": "espera" if espera else "sin_reingreso",
+                "texto": (f"Llegó a nuestra bodega el {_dia(d['llegada'])} y "
+                          + ("todavía no se ve reingreso en Odoo." if espera
+                             else f"no se ve reingreso en Odoo en los {dias} días siguientes."))}
+            continue
+        i, t, sube = sub
+        toma = min(int(d.get("piezas") or 1), resto[i])
+        resto[i] -= toma
+        n_dias = (t.date() - llega.date()).days
+        w = woo[i]
+        por_dev[d["id"]] = {
+            "k": "reingreso", "hora": w["hora"], "dias": n_dias, "sube": sube,
+            "texto": (f"Reingresó a Odoo el {_dia(w['hora'])} ({_tras(n_dias)}): "
+                      f"Odoo {int(w['odoo_de']):,} → {int(w['odoo_a']):,}"
+                      + (f"; la subida es de +{sube:,} y la devolución trae {int(d.get('piezas') or 1):,}"
+                         if sube != int(d.get("piezas") or 1) else "") + ".")}
+        por_sub.setdefault(i, []).append({"id": d["id"], "nombre": d.get("nombre") or "", "piezas": toma})
+    return por_dev, por_sub
+
+
+def _devoluciones_ml(sku: str, dias: int) -> list[dict]:
+    """Las devoluciones de ML con piezas de este SKU que se movieron en la ventana
+    (se abrieron, se cerraron o se reembolsaron dentro de ella). Solo lee."""
+    return sdb.fetch_all(
+        f"""with r as (
+             select r.canal, r.cuenta, r.external_return_id as id, r.estado, r.estado_canal,
+                    {_SQL_DESTINO} as destino,
+                    r.es_fulfillment, r.venta_contaba, r.estado_dinero, r.external_order_id as pedido,
+                    coalesce(r.motivo_texto, r.motivo, r.motivo_canal) as motivo,
+                    r.abierta_at, r.reembolsada_at,
+                    case when coalesce(r.payload->'returns'->>'date_closed', '') ~ '^\\d{{4}}-\\d{{2}}-\\d{{2}}T'
+                         then (r.payload->'returns'->>'date_closed')::timestamptz end as cerrada_at,
+                    sum(i.cantidad)::int as piezas
+               from channel.returns r
+               join channel.return_items i using (canal, cuenta, external_return_id)
+              where i.sku = %(s)s
+              group by r.canal, r.cuenta, r.external_return_id)
+           select r.cuenta, r.id, r.estado, r.estado_canal, r.destino, r.es_fulfillment, r.venta_contaba,
+                  r.estado_dinero, r.pedido, r.motivo, r.piezas,
+                  coalesce(r.abierta_at, r.cerrada_at, r.reembolsada_at) as ts,
+                  to_char(r.abierta_at at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as abierta,
+                  to_char(r.cerrada_at at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as cerrada,
+                  to_char(r.reembolsada_at at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as reembolsada,
+                  (select coalesce(json_agg(json_build_object(
+                            'estado', h.estado_nuevo, 'antes', h.estado_anterior, 'via', h.detectado_via,
+                            'hora', to_char(h.changed_at at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS'))
+                          order by h.changed_at, h.id), '[]'::json)
+                     from channel.return_history h
+                    where h.canal = r.canal and h.cuenta = r.cuenta and h.external_return_id = r.id) as historia
+             from r
+            where greatest(r.abierta_at, r.cerrada_at, r.reembolsada_at) > now() - make_interval(days => %(d)s)
+            order by ts desc limit 200""", {"s": sku, "d": dias, "z": _ZONA})
+
+
+def _devoluciones_temu(sku: str, dias: int) -> list[dict]:
+    """Ventas que Temu canceló con la mercancía YA fuera del almacén: `cancelada_revisar`
+    (posible devolución: nadie ha visto regresar la caja) y `cancelada_devuelta` (la
+    devolución ya está validada en Odoo). Solo lee.
+
+    OJO con la fecha: no hay un sello del cambio de `accion`, y `actualizado_at` se mueve
+    con CUALQUIER escritura posterior a la venta (la guía, el prefijo del motivo, el
+    trigger de la 0065). Se usa como «la última vez que kubera tocó la venta», con una
+    holgura amplia hacia atrás (`_HOLGURA_TEMU_H`)."""
+    return sdb.fetch_all(
+        """select o.canal, o.cuenta, o.external_order_id as id, o.accion, o.odoo_name,
+                  sum(i.cantidad)::int as piezas, o.actualizado_at as ts,
+                  to_char(o.creado_at at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as vendida,
+                  to_char(o.actualizado_at at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as vista
+             from ops.odoo_sale_orders o
+             join ops.odoo_sale_order_items i
+               on i.canal = o.canal and i.cuenta = o.cuenta and i.external_order_id = o.external_order_id
+            where o.accion = any(%(a)s) and i.sku::text = %(s)s
+              and o.actualizado_at > now() - make_interval(days => %(d)s)
+            group by o.canal, o.cuenta, o.external_order_id
+            order by o.actualizado_at desc limit 100""",
+        {"s": sku, "d": dias, "z": _ZONA, "a": _ACC_TEMU_DEVOL})
+
+
+def _liga_inicial(estado: str, estado_canal: str | None, destino: str | None,
+                  llego: bool) -> dict | None:
+    """Lo que se dice de una devolución de ML ANTES de buscar su reingreso. None = la
+    que llegó a nuestra bodega: esa la resuelve `ligar_devoluciones`."""
+    if destino == "warehouse":
+        return {"k": "full", "texto": "Va al almacén de ML: regresa a FULL, no a Odoo ni a Woo."}
+    if not destino:
+        # Ni la columna ni el crudo de ML traen un envío de regreso (o no se pudo leer).
+        return {"k": "sin_destino", "texto": "ML no trae el envío de regreso: no se sabe a dónde va la caja ni se puede ligar con Odoo."}
+    if llego:
+        return None
+    crudo = _DEVOL_RECHAZO_TXT.get(estado_canal or "")
+    if estado == "reembolsada" and crudo:
+        # ML reembolsa también cuando la caja nunca vuelve (venció, se perdió).
+        return {"k": "no_regresa", "texto": f"Se reembolsó sin que la caja regresara ({crudo})."}
+    if estado in ("rechazada", "cerrada") or crudo:
+        return {"k": "no_regresa", "texto": "La devolución no siguió: la caja no regresó."}
+    return {"k": "camino", "texto": "Todavía no llega a nuestra bodega."}
+
+
+def _armar_devoluciones(ml: list[dict], temu: list[dict]) -> list[dict]:
+    """Los renglones «devolucion» de la historia (sin la liga con Odoo, que va después).
+    FUNCIÓN PURA."""
+    items: list[dict] = []
+    for d in ml:
+        pasos = _pasos_devolucion(d)
+        llego, llegada = _llegada(d, pasos)
+        cuenta = (d.get("cuenta") or "").upper()
+        destino = d.get("destino")
+        vc = d.get("venta_contaba")
+        items.append({
+            "tipo": "devolucion", "_t": d["ts"], "ts": d["ts"].isoformat(),
+            "hora": d.get("abierta") or (pasos[0]["hora"] if pasos else ""),
+            "fuente": "ml", "id": str(d["id"]), "cuenta": cuenta, "nombre": _nombre_destino("mercado_libre", cuenta),
+            "pedido": d.get("pedido"), "piezas": int(d.get("piezas") or 0), "motivo": d.get("motivo") or "",
+            "estado": d.get("estado") or "", "estado_txt": _DEVOL_ESTADO_TXT.get(d.get("estado") or "", d.get("estado") or "—"),
+            "estado_canal": d.get("estado_canal"), "dinero": d.get("estado_dinero"),
+            "destino": destino, "destino_txt": _DESTINO_TXT.get(destino or "", "sin dato"),
+            "es_full": bool(d.get("es_fulfillment")),
+            "venta_contaba": vc,
+            "venta_txt": ("la venta contaba en las ventas" if vc is True
+                          else "la venta ya estaba cancelada: no se resta dos veces" if vc is False
+                          else "no se sabe si la venta contaba"),
+            "pasos": pasos, "llego": llego, "llegada": llegada,
+            "holgura_h": _holgura_ml(pasos), "no_antes": d.get("abierta"),
+            "liga": _liga_inicial(d.get("estado") or "", d.get("estado_canal"), destino, llego),
+        })
+    for t in temu:
+        devuelta = t["accion"] == "cancelada_devuelta"
+        canal = _NOMBRE.get(t["canal"], t["canal"])
+        pasos = [{"estado": "venta", "texto": "vendida", "hora": t["vendida"], "de": "venta"},
+                 {"estado": t["accion"], "texto": ("devolución validada en Odoo" if devuelta
+                                                   else "cancelada con la mercancía ya enviada"),
+                  "hora": t["vista"], "de": "última vez que kubera tocó la venta"}]
+        items.append({
+            "tipo": "devolucion", "_t": t["ts"], "ts": t["ts"].isoformat(), "hora": t["vista"],
+            "fuente": t["canal"], "id": str(t["id"]), "cuenta": (t.get("cuenta") or "").upper(), "nombre": canal,
+            "pedido": t.get("odoo_name") or t["id"], "piezas": int(t.get("piezas") or 0),
+            "motivo": f"{canal} canceló la venta con la mercancía ya enviada",
+            "estado": t["accion"], "estado_txt": _DEVOL_ESTADO_TXT[t["accion"]], "estado_canal": None, "dinero": None,
+            # Lo que regresa de una venta propia regresa a nuestra bodega (no hay FULL de Temu).
+            "destino": "seller_address", "destino_txt": "a nuestra bodega", "es_full": False,
+            "venta_contaba": None, "venta_txt": "",
+            "pasos": pasos, "llego": devuelta, "llegada": t["vista"] if devuelta else None,
+            "holgura_h": _HOLGURA_TEMU_H, "no_antes": t["vendida"],
+            "liga": None if devuelta else {"k": "revisar", "texto": "Nadie ha visto regresar la caja: revisar si volvió al anaquel."},
+        })
+    return items
+
+
+def _devoluciones(sku: str, dias: int) -> tuple[list[dict], list[str]]:
+    """Los renglones de devoluciones de la historia y las fuentes que NO se pudieron
+    leer ('ml', 'temu'). Cada fuente va por su lado: una falla en la de Temu (que
+    depende de columnas que no todos los entornos tienen) no tira las de ML. Si falla
+    alguna, la trazabilidad sigue sin ella (no es la pieza central de la página)."""
+    fallas: list[str] = []
+    try:
+        ml = _devoluciones_ml(sku, dias)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("fanout_vivo: devoluciones de ML de %s: %s", sku, exc)
+        ml, fallas = [], fallas + ["ml"]
+    try:
+        temu = _devoluciones_temu(sku, dias)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("fanout_vivo: cancelaciones de Temu de %s: %s", sku, exc)
+        temu, fallas = [], fallas + ["temu"]
+    return _armar_devoluciones(ml, temu), fallas
+
+
+def _aplicar_liga(devs: list[dict], woo: list[dict], ahora: str, dias: int,
+                  desde_datos: str | None = None) -> None:
+    """Escribe la liga en los dos lados: en la devolución, si reingresó a Odoo; en la
+    subida de Odoo, a qué devolución(es) se parece."""
+    por_dev, por_sub = ligar_devoluciones(devs, woo, ahora, dias, desde_datos)
+    for d in devs:
+        if d["id"] in por_dev:
+            d["liga"] = {**por_dev[d["id"]], "nota": _NOTA_LIGA}
+    for i, explica in por_sub.items():
+        piezas = sum(e["piezas"] for e in explica)
+        nombres = ", ".join(f"{e['id']} de {e['nombre']} ({e['piezas']:,} {'pza' if e['piezas'] == 1 else 'pzs'})"
+                            for e in explica)
+        sube = int(woo[i]["odoo_a"]) - int(woo[i]["odoo_de"])
+        woo[i]["devoluciones"] = explica
+        woo[i]["liga_txt"] = (f"Coincide con {'la devolución' if len(explica) == 1 else 'las devoluciones'} "
+                              f"{nombres}" + (f": explica {piezas:,} de +{sube:,}" if piezas != sube else "") + ".")
+        woo[i]["liga_nota"] = _NOTA_LIGA
+
+
+def _resumen_devoluciones(devs: list[dict]) -> dict[str, int]:
+    """Lo de arriba del carril: cuántas, cuántas piezas, cuántas a nuestra bodega (ya
+    llegadas) y cuántas de ésas reingresaron a Odoo. FUNCIÓN PURA."""
+    bodega = [d for d in devs if d["destino"] == "seller_address" and d["llego"]]
+    return {"n": len(devs), "piezas": sum(d["piezas"] for d in devs), "a_bodega": len(bodega),
+            "reingresaron": sum(1 for d in bodega if (d.get("liga") or {}).get("k") == "reingreso"),
+            "a_full": sum(1 for d in devs if d["destino"] == "warehouse"),
+            "en_camino": sum(1 for d in devs if (d.get("liga") or {}).get("k") == "camino")}
+
+
+def historia(sku: str, dias: int = 14, limite: int = 400, liga_dias: int | None = None) -> dict[str, Any]:
     """La línea de trazabilidad de UN SKU: lo que le pasó en los últimos `dias`.
 
     Junta tres fuentes de kubera (solo lee):
@@ -1357,7 +1755,11 @@ def historia(sku: str, dias: int = 14, limite: int = 400) -> dict[str, Any]:
         (censo de TikTok y Temu, lectura de ML): stock, estado y situación;
       · el carril FULL: cada aviso de la bodega de ML (`full_*` en la bitácora,
         uno por operación) y la foto del stock FULL que lee el sync. FULL no toca
-        Woo: va aparte para no confundirse con el reparto.
+        Woo: va aparte para no confundirse con el reparto;
+      · el carril de devoluciones: las de ML (`channel.returns`) y las ventas que Temu
+        canceló con la mercancía ya enviada. Cada una que llegó a nuestra bodega se
+        liga, por fecha, con la subida de Odoo que probablemente es su reingreso
+        (`ligar_devoluciones`): así se ve si un aumento de stock fue una devolución.
     Cada lectura de stock se compara con lo último que el fan-out le dejó a ese
     canal (escrito, o ya igual): si coincide fue nuestro; si no, cambió en el
     canal —una venta ahí, una cancelación, alguien en el Seller Center o un dato
@@ -1421,14 +1823,35 @@ def historia(sku: str, dias: int = 14, limite: int = 400) -> dict[str, Any]:
 
     items: list[dict] = []
     # 1) Cada cambio de stock en Woo.
+    woo_items: list[dict] = []
     for f in log:
         if f["canal"] != "woocommerce" or f["accion"] not in ("odoo_delta", "woo_cambio"):
             continue
         m = _FLECHA.search(f["resultado"])
-        items.append({"tipo": "woo", "_t": f["ts"], "ts": f["ts"].isoformat(), "hora": f["hora"],
-                      "origen": "odoo" if f["accion"] == "odoo_delta" else "woo",
-                      "de": int(m.group(1)) if m else None, "a": int(m.group(2)) if m else None,
-                      "fallo": "FALLÓ" in f["resultado"], "motivo": f["motivo"][:140]})
+        # `de`/`a` es lo que quedó en Woo; `odoo_de`/`odoo_a`, la foto de Odoo del motivo
+        # (antes de recortarlo): con ésa se mide si ODOO subió (ver `_FOTO_ODOO`).
+        odoo_de, odoo_a = _foto_odoo(f["motivo"]) if f["accion"] == "odoo_delta" else (None, None)
+        woo_items.append({"tipo": "woo", "_t": f["ts"], "ts": f["ts"].isoformat(), "hora": f["hora"],
+                          "origen": "odoo" if f["accion"] == "odoo_delta" else "woo",
+                          "de": int(m.group(1)) if m else None, "a": int(m.group(2)) if m else None,
+                          "odoo_de": odoo_de, "odoo_a": odoo_a,
+                          "fallo": "FALLÓ" in f["resultado"], "motivo": f["motivo"][:140]})
+    items.extend(woo_items)
+
+    # 1b) Las devoluciones, y su liga con las subidas de Odoo de arriba.
+    devs, devs_fallas = _devoluciones(sku, dias)
+    if devs:
+        from config import settings
+        ventana = int(liga_dias if liga_dias is not None else settings.fanout_devol_liga_dias)
+        # Desde cuándo hay subidas cargadas: el inicio del periodo o, si la bitácora
+        # llegó a su tope, su renglón más viejo. Antes de eso no se puede decir «no se
+        # ve reingreso».
+        inicio = _hora_dt(ahora)
+        desde_datos = (inicio - timedelta(days=dias)).strftime("%Y-%m-%d %H:%M:%S") if inicio else None
+        if len(log) >= 3000 and log[-1].get("hora"):
+            desde_datos = max(desde_datos or "", log[-1]["hora"])
+        _aplicar_liga(devs, woo_items, ahora, max(0, min(ventana, 30)), desde_datos)
+    items.extend(devs)
 
     # 2) Cada reparto: sus filas comparten `ts` (el fin del cambio).
     grupos: dict[Any, list[dict]] = {}
@@ -1523,13 +1946,17 @@ def historia(sku: str, dias: int = 14, limite: int = 400) -> dict[str, Any]:
         "con_rechazo": sum(1 for x in items if x["tipo"] == "reparto" and x["tono"] == "mal"),
         "su_cuenta": sum(1 for x in items if x.get("relacion") == "su_cuenta"),
         "full": len(full_items),
+        "devoluciones": _resumen_devoluciones(devs),
     }
     total = len(items)
     for x in items:
         x.pop("_t", None)
+        x.pop("holgura_h", None)
+        x.pop("no_antes", None)
     sx = _sin_orden([sku]).get(sku) if sku else None
     return {"ok": True, "sku": sku, "dias": dias, "hoy": hoy, "ahora": _fecha(ahora, hoy),
-            "existe": bool(foto or lst or log or hist), "odoo": _n(foto.get("stock_odoo")), "woo": _n(woo), "woo_de": woo_de,
+            "existe": bool(foto or lst or log or hist or devs),
+            "devoluciones_ok": not devs_fallas, "devoluciones_fallas": devs_fallas, "odoo": _n(foto.get("stock_odoo")), "woo": _n(woo), "woo_de": woo_de,
             "sin_orden": ({**sx, "explica": _explicado(foto.get("stock_odoo"), woo, sx)} if sx else None),
             "columnas": cols, "celdas": celdas, "resumen": resumen, "full": full,
             "items": items[:limite], "total": total, "truncado": total > limite}

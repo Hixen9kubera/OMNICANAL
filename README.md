@@ -1001,6 +1001,135 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.627.0 — Fan-out: las devoluciones en la trazabilidad del SKU, ligadas con el reingreso en Odoo (sólo lectura)
+
+Eduardo, 8-oct: *"me gustaría poder verlo como parte del fanout lo esencial de las
+devoluciones para comprender si por eso hubo aumento de stock o qué pasó con la
+trazabilidad de esos movimientos"*. Hasta hoy la línea de un SKU mostraba «Odoo movió Woo:
+127 → 129» sin decir de dónde salían esas dos piezas; las devoluciones de ML vivían sólo en
+Análisis › Rentabilidad. Ahora la trazabilidad tiene un carril **Devoluciones** y cada
+subida de Odoo que coincide con una devolución lo dice.
+
+**Backend** (`services/fanout_vivo.py`, dentro de `historia()`; `GET /api/fanout/historia`
+acepta además `liga=`):
+
+- **Qué entra.** Las devoluciones de ML con piezas del SKU (`channel.returns` +
+  `return_items` + `return_history`, 0049) que se abrieron, cerraron o reembolsaron dentro
+  de la ventana, y las ventas que Temu canceló con la mercancía YA enviada
+  (`ops.odoo_sale_orders`: `cancelada_revisar` = posible devolución, `cancelada_devuelta` =
+  devolución validada en Odoo). Por cada una: cuenta (ML Kubera / ML San Corpe / Temu),
+  cuándo se abrió, piezas, motivo, a dónde va la caja (`seller_address` = «a nuestra
+  bodega», `warehouse` = «al almacén de ML», vacío = «sin dato»), su estado y si la venta
+  contaba (`venta_contaba`: si ya estaba cancelada, no se resta dos veces).
+- **El destino sale también del crudo de ML.** En main y en producción la captura escribe
+  `destino = NULL` siempre (`devoluciones_ml.armar`, y cada upsert lo vuelve a poner en
+  NULL); el cálculo vive en `fix/devoluciones-ml-5-fallas` (v0.619.0, `_destino`), que NO
+  está en main. Sin destino, ninguna devolución se ligaría. Por eso la consulta toma
+  `coalesce(destino, <derivado del payload>)`: `payload.returns.shipments[].destination.name`
+  con la MISMA regla que `_destino` (si algún tramo va a nuestra dirección es
+  `seller_address`; si no, el último tramo). En el sandbox el derivado coincide con la
+  columna en las 1,672 devoluciones que la tienen (1,392 `warehouse`, 280 `seller_address`)
+  y las 53 restantes no traen envío. **Confirmado en producción el 8-oct (solo lectura):**
+  la columna está vacía en las 540 devoluciones y el destino se deriva del crudo en 492
+  (76 a nuestra bodega, 416 al almacén de ML); las 48 restantes saldrán «sin dato».
+- **Los pasos con fecha** (abierta, en tránsito, entregada, reembolsada, rechazada con su
+  porqué: venció / cancelada / no se entregó). De `return_history` sólo valen las
+  TRANSICIONES (`estado_anterior` no nulo): la fila que el trigger escribe al insertar
+  lleva la hora en que kubera vio la devolución por primera vez —en el backfill, la de la
+  carga; por webhook, a veces semanas después del reembolso (38 en el sandbox, +69 días en
+  promedio)— y como paso mentiría. Las transiciones sí valen aunque digan `backfill`:
+  `detectado_via` se congela con la primera captura, y el cambio que vio el barrido días
+  después es real (131 en el sandbox, repartidas en el tiempo, no amontonadas en la carga).
+  Lo que falte sale de la cabecera: apertura, cierre de ML (`payload.returns.date_closed`) y
+  reembolso. Cada paso dice de dónde salió su fecha.
+- **La liga con el stock** (`ligar_devoluciones`, función PURA). Para cada devolución que
+  ya LLEGÓ A NUESTRA BODEGA busca, en la misma historia, la primera **subida de Odoo**
+  dentro de `[llegada − holgura, llegada + N días]` y la marca en los dos lados: en la
+  devolución «Reingresó a Odoo el 14-sep (+4 d): Odoo 127 → 129» o «Llegó a nuestra bodega
+  el 1-sep y no se ve reingreso en Odoo en los 10 días siguientes» (o «todavía no se ve», si
+  la ventana sigue abierta); en la subida, «Coincide con la devolución 5574456697 de ML San
+  Corpe (2 pzs)». **Es una coincidencia probable por fecha, no una liga dura** —Bodega
+  recibe en Odoo sin ligarlo a la venta— y el texto lo dice así.
+  - **La subida es la de la FOTO de Odoo**, no la de Woo. En un `odoo_delta` el resultado
+    («Woo 132 -> 134») es lo que se le escribió a Woo; el cambio de Odoo va en el motivo
+    («delta de Odoo (foto 134 -> 134)»). Woo también sube cuando stock_watch le devuelve lo
+    que Odoo ya tenía tras una venta en Woo: en el sandbox, de 2,966 `odoo_delta` desde el
+    20-ago, 1,594 suben en Woo y en 167 de ésas Odoo no cambió (en 5, bajó). La primera
+    versión de este cambio medía Woo y ligaba MUE-0218-VIN-L con el «132 → 134» del 13-sep,
+    que Odoo nunca tuvo. Ahora cada renglón `woo` lleva `odoo_de`/`odoo_a` y la pantalla dice
+    «Odoo no cambió (134): Woo vuelve a lo que ya tenía Odoo» cuando es el caso.
+  - **Un delta que falló y su reintento son UNA subida.** Si la escritura a Woo falla,
+    stock_watch conserva la foto y la pasada siguiente anota el mismo `foto A -> B`: cuenta
+    una vez, a la hora en que se vio primero (en el sandbox, 29 subidas de Odoo cuya
+    escritura falló).
+  - Una subida de +3 alcanza para tres devoluciones de 1 y una de +1 no se cuenta dos
+    veces; si la subida es mayor que lo devuelto, lo dice («la subida es de +30 y la
+    devolución trae 1»). Una entrada de contenedor dentro de la ventana SÍ se liga (con ese
+    aviso): no hay tope por tamaño.
+  - **Holgura antes de la llegada.** Si la llegada sale de un paso `recibida` visto en vivo,
+    cero. Si sale del cierre de ML, **72 h**: ML cierra entre 0 y 77 h DESPUÉS de la entrega
+    real (medido en el sandbox contra los `recibida` en vivo; mediana ~20 h en las que van a
+    su almacén), y sin holgura se perdía el reingreso que Bodega registra el día que llega.
+    Temu, también 72 h (ver limitaciones). Nunca antes de abrirse la devolución (o de la
+    venta, en Temu).
+  - **Fuera del periodo.** Si la ventana de una devolución empieza antes de lo cargado (el
+    inicio del periodo, o el renglón más viejo si la bitácora llegó a su tope de 3,000),
+    dice «antes de lo que abarca este periodo: amplía los días» en vez de afirmar que no hubo
+    reingreso.
+  - Las que van al almacén de ML no se ligan con Odoo: «regresa a FULL». Sin destino: «ML no
+    trae el envío de regreso».
+- **La ventana** es `FANOUT_DEVOL_LIGA_DIAS` (10 días por omisión, tope 30) o `?liga=` en
+  la petición. Larga liga entradas de contenedor; corta pierde lo que Bodega registra tarde.
+- **Resumen del carril**: devoluciones de la ventana, piezas, cuántas ya en nuestra bodega,
+  cuántas reingresaron, cuántas en camino y cuántas al almacén de ML.
+- **Cada fuente por su lado.** Si no se leen las de ML o las de Temu, la trazabilidad sigue
+  sin esa fuente: `devoluciones_ok=false` y `devoluciones_fallas` dice cuál (`ml`/`temu`),
+  con un aviso en el log. La de Temu depende de `ops.odoo_sale_orders.cuenta`, que las
+  migraciones de main no traen (deriva anotada en la 0065): en un entorno armado desde main
+  falla sola sin tirar las de ML.
+
+**Limitaciones conocidas.**
+- **Temu no tiene la fecha del cambio de `accion`.** Se usa `actualizado_at`, que se mueve
+  con CUALQUIER escritura posterior (la guía, el prefijo del motivo, `temu_guias_auto`, el
+  trigger de la 0065): es «la última vez que kubera tocó la venta» y el paso lo dice así. Un
+  toque días después corre la ventana de la liga y hace reaparecer filas viejas en el
+  periodo. El sandbox tiene 0 cancelaciones de Temu: su consulta y su armado no se han visto
+  con datos reales.
+- **Sobre-liga.** Una subida grande se reparte entre todas las devoluciones que caben: en
+  TEC-0573-MET la subida de +12 del 8-sep quedó ligada a 12 devoluciones que llegaron hasta
+  8 días antes. El texto lo avisa («la subida es de +12…») pero no lo filtra.
+- La línea se recorta en 400 movimientos y el resumen del carril cuenta todos: cuando se
+  recorta, el carril lo dice.
+
+**Frontend** (`components/fanout/TrazabilidadSku.tsx`, `tipos.ts`): filtro de carril
+«Devoluciones» (aparece sólo si el SKU tiene); cada devolución en rombo rosa con su estado
+como pastilla, destino, piezas, motivo, los pasos con su fecha y la liga con Odoo; la subida
+de Odoo ligada lleva su nota debajo y también aparece en el carril de devoluciones. Cada
+renglón de Odoo dice además qué hizo la foto de Odoo. Arriba del carril, el resumen y la
+advertencia de que la liga es por fecha.
+
+**Verificado contra el sandbox** (sólo lectura; 1,725 devoluciones del 13-jun al 6-oct,
+`fanout_log` hasta el 3-oct), `historia(sku, 60)` con el módulo apuntando al sandbox y sin
+MySQL. SKUs para la demo:
+- **MUE-0218-VIN-L**: 5574456697 (2 pzs, llegó el 10-sep) → Odoo 127 → 129 el 14-sep
+  (+4 d); 5578838360 (1 pza, 21-sep) → Odoo 120 → 122 el 23-sep (+2 d, «explica 1 de +2»;
+  el reintento de las 13:10 no cuenta otra vez). El «Woo 132 → 134» del 13-sep ya no se liga.
+- **HERR-0037-VER**: 8 a nuestra bodega, 6 con reingreso de una pieza cada una (p. ej.
+  5563158520 → Odoo 0 → 1 el 25-ago, el mismo día); 2 de agosto sin reingreso.
+- **DEP-0016-PLA**: 6 de 6 reingresaron, cada una con su +1 (p. ej. 5577263151 → Odoo
+  4 → 5 el 24-sep, +6 d).
+- **TEC-0519-NAR-GRI**: 3 devoluciones de 1 pza explican juntas la subida 412 → 415 del
+  29-sep; 2 llegadas el 29-sep todavía «sin reingreso» (ventana abierta).
+- **OFI-0085-BLN**: muestra el aviso de tamaño (5570501570 → Odoo 20 → 50 el 3-sep, «la
+  subida es de +30 y la devolución trae 1»).
+
+Pruebas: `tests/test_fanout_devoluciones.py` (35: la liga —foto de Odoo contra Woo, reintento,
+holgura del cierre, tope de la apertura, fuera del periodo, subida grande—, los pasos —primera
+inserción, transición `backfill`—, el armado, `historia` con la BD simulada —ventana de
+settings, `liga_dias`, tope de 30, falla de una sola fuente, SKU sólo con devoluciones—, el
+router y las columnas y parámetros de las dos consultas); `tsc` y `npm run build` limpios. Visto en el
+navegador contra el sandbox el 8-oct (MUE-0218-VIN-L, 30 días: dos reingresos ligados y dos devoluciones en camino).
+
 ### v0.626.0 — Devoluciones de ML: las 5 fallas de la captura, la sexta (`venta_contaba` congelada), reintento de avisos y freno de ritmo
 
 Revisión de devoluciones del 5-oct: `channel.returns` (0049) captura las devoluciones de Mercado Libre, pero con
@@ -1112,6 +1241,7 @@ Variables nuevas: `DEVOLUCIONES_ML_RITMO` (1.5), `DEVOLUCIONES_ML_REINTENTO_TOPE
 `DEVOLUCIONES_ML_RECALCULO` (false).
 
 **Verificado.** `test_devoluciones_ml.py` 99 pruebas en verde (41 nuevas: candado sin bandera en los dos sentidos y con el script; 429 en el claim, en `/returns` cuatro veces, 429 y luego 200, búsqueda cortada en la página 2; `venta_contaba` en `armar`, el UPDATE y la lista contra la 0030; el trigger de historia; reintento de avisos: SQL, cuenta del aviso, sin bucle, tope de intentos y por corrida; ritmo, hora y `_destino`; y de la segunda revisión: un par de duplicadas que ya existe se sigue actualizando sin borrar, 403/401/400 en la página 2 también es búsqueda incompleta, el recálculo y la bitácora corren fuera del hilo del loop, `revisar` sigue si truenan los avisos o el recálculo, `DEVOLUCIONES_ML_RECALCULO` apagado y el rastro antes→después en el log, el filtro por entorno y el tope por variable del reintento, lo que salta la memoria no se come el tope, y el alta del barrido amplio con un scheduler de mentira que truena) y `test_recuperar_devoluciones_ml.py` 40 en verde. `test_devoluciones_ml_sandbox.py` (2, saltadas sin `OMNI_PRUEBAS_SANDBOX=1`) en verde contra el sandbox. Suite completa del backend: 2,367 pruebas, 110 saltadas, 1 falla que ya trae main (`test_regla_11_productos`: `leer_contenido_canal` de v0.623.0, fuera de esta rama). En el sandbox: el UPDATE del recálculo y la consulta de avisos, ambos dentro de transacciones con ROLLBACK.
+
 
 ### v0.625.0 — Investigación · TikTok: lecturas a la API de TikTok Shop desde producción (sólo admin, sólo lectura)
 

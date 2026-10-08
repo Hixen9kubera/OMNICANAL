@@ -7,21 +7,25 @@
  * reportó después. Una lectura del canal que no es lo último que el fan-out le
  * dejó se marca «cambió en el canal». Si el SKU vive en FULL, un carril aparte
  * trae cada aviso de la bodega de ML y la foto de su stock FULL (marcados en
- * cuadro, no en círculo: FULL no toca Woo). La arma `GET /api/fanout/historia` (solo lee).
+ * cuadro, no en círculo: FULL no toca Woo). El carril de devoluciones trae las de ML y
+ * las ventas que Temu canceló con la mercancía ya enviada (en rombo), y liga cada una que
+ * llegó a nuestra bodega con la subida de Odoo que probablemente es su reingreso: una
+ * coincidencia por fecha, no una liga dura. La arma `GET /api/fanout/historia` (solo lee).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { API_BASE, fetchSesion } from "@/lib/api";
-import type { GrupoFull, Historia, ItemTraza } from "./tipos";
-import { CAUSA_CLS, CELDA_CLS, CELDA_MATRIZ_PUNTEADO, CELDA_MATRIZ_SOLIDO, GRUPO_FULL, TONO_COLOR, conSigno } from "./tipos";
+import type { GrupoFull, Historia, ItemDevolucion, ItemTraza, LigaDevolucion } from "./tipos";
+import { CAUSA_CLS, CELDA_CLS, CELDA_MATRIZ_PUNTEADO, CELDA_MATRIZ_SOLIDO, DEVOL_ESTADO_CLS, GRUPO_FULL, TONO_COLOR, conSigno } from "./tipos";
 
-/** Qué parte de la línea se ve: todo, la bodega y Woo, los canales del reparto o la bodega FULL de ML. */
-export type Carril = "todo" | "bodega" | "canales" | "full";
+/** Qué parte de la línea se ve: todo, la bodega y Woo, los canales del reparto, la bodega FULL de ML o las devoluciones. */
+export type Carril = "todo" | "bodega" | "canales" | "full" | "devoluciones";
 const CARRILES: { id: Carril; texto: string }[] = [
   { id: "todo", texto: "Todo" },
   { id: "bodega", texto: "Bodega y Woo" },
   { id: "canales", texto: "Canales" },
   { id: "full", texto: "FULL" },
+  { id: "devoluciones", texto: "Devoluciones" },
 ];
 const ORDEN_FULL: GrupoFull[] = ["vendido", "ajuste", "cancelado", "llego", "retiro", "traslado", "cuarentena", "otro"];
 
@@ -29,6 +33,8 @@ function enCarril(it: ItemTraza, c: Carril): boolean {
   if (c === "todo") return true;
   if (c === "full") return it.tipo === "full";
   if (c === "bodega") return it.tipo === "woo";
+  // Con las devoluciones van las subidas de Odoo que coinciden con su reingreso.
+  if (c === "devoluciones") return it.tipo === "devolucion" || (it.tipo === "woo" && !!it.devoluciones?.length);
   return it.tipo === "reparto" || it.tipo === "canal";
 }
 
@@ -38,7 +44,13 @@ const CANAL_VENTA: Record<string, string> = {
   TEMU: "Temu", TIKTOK: "TikTok", ML: "Mercado Libre", MELI: "Mercado Libre", BEKURA: "ML Kubera",
   SANCORFASHION: "ML San Corpe", AMAZON: "Amazon", WALMART: "Walmart", WOO: "la tienda", WC: "la tienda",
 };
-const COLOR = { woo: "#4f46e5", coincide: "#0ea5e9", su_cuenta: "#f59e0b", sin_escritura: "#94a3b8", estado: "#64748b" };
+const COLOR = { woo: "#4f46e5", coincide: "#0ea5e9", su_cuenta: "#f59e0b", sin_escritura: "#94a3b8", estado: "#64748b",
+  devolucion: "#db2777" };
+/** El tono del texto de la liga de una devolución con Odoo. */
+const LIGA_CLS: Partial<Record<LigaDevolucion, string>> = {
+  reingreso: "text-emerald-800", sin_reingreso: "text-amber-800", sin_fecha: "text-amber-800",
+  fuera_periodo: "text-slate-600", full: "text-sky-800", revisar: "text-amber-800",
+};
 
 const n = (v: number | null | undefined) => (v == null ? "—" : v.toLocaleString("es-MX"));
 const pl = (k: number, uno: string, varios: string) => `${k.toLocaleString("es-MX")} ${k === 1 ? uno : varios}`;
@@ -67,6 +79,7 @@ function cuando(hora: string, delDia: string): string {
 function color(it: ItemTraza): string {
   if (it.tipo === "full") return GRUPO_FULL[it.grupo].color;
   if (it.tipo === "woo") return it.fallo ? TONO_COLOR.mal : COLOR.woo;
+  if (it.tipo === "devolucion") return COLOR.devolucion;
   if (it.tipo === "reparto") return TONO_COLOR[it.tono];
   return COLOR[it.relacion];
 }
@@ -77,11 +90,53 @@ function venta(motivo: string): { canal: string; pedido: string } {
   return { canal: CANAL_VENTA[m[1].toUpperCase()] ?? m[1], pedido: m[2] };
 }
 
+function Devolucion({ it }: { it: ItemDevolucion }) {
+  const liga = it.liga;
+  return (
+    <>
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+        <span className="text-[13px] font-semibold leading-5 text-slate-900">
+          Devolución en {it.nombre} · {pl(it.piezas, "pieza", "piezas")}
+        </span>
+        <span className={`rounded px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide ${DEVOL_ESTADO_CLS[it.estado] ?? "bg-slate-100 text-slate-700"}`}>
+          {it.estado_txt}
+        </span>
+        <span className="break-all font-mono text-[11px] text-slate-500">{it.id}</span>
+      </div>
+      <div className="text-xs leading-[18px] text-slate-600">
+        {it.destino ? `Va ${it.destino_txt}` : "Destino: sin dato"}
+        {it.motivo ? ` · ${it.motivo}` : ""}
+        {it.venta_txt ? ` · ${it.venta_txt}` : ""}
+      </div>
+      {it.pasos.length > 0 && (
+        <ol className="mt-1 flex flex-wrap items-center gap-x-1 gap-y-0.5 text-[11px] leading-4 text-slate-600" aria-label="Pasos de la devolución">
+          {it.pasos.map((p, i) => (
+            <li key={`${p.estado}-${p.hora}-${i}`} className="flex items-center gap-1" title={`Fecha según: ${p.de}`}>
+              {i > 0 && <span aria-hidden className="text-slate-400">→</span>}
+              <span className="font-semibold text-slate-700">{p.texto}</span>
+              <span className="tabular-nums">{corto(p.hora.slice(0, 10))} {p.hora.slice(11, 16)}</span>
+            </li>
+          ))}
+        </ol>
+      )}
+      {liga && (
+        <div className={`mt-0.5 text-xs leading-[18px] ${LIGA_CLS[liga.k] ?? "text-slate-600"}`}>
+          {liga.texto} {liga.nota && <span className="text-slate-500">{liga.nota}</span>}
+        </div>
+      )}
+    </>
+  );
+}
+
 function Renglon({ it, dia, onRastro, sku }: {
   it: ItemTraza; dia: string; sku: string; onRastro?: (sku: string, fin: string) => void;
 }) {
   if (it.tipo === "woo") {
     const cambio = it.de != null && it.a != null ? `: ${n(it.de)} → ${n(it.a)}` : "";
+    // Lo que hizo ODOO (la foto del delta), que no siempre es lo que se movió en Woo.
+    const odoo = it.origen !== "odoo" || it.odoo_de == null || it.odoo_a == null ? ""
+      : it.odoo_de === it.odoo_a ? ` Odoo no cambió (${n(it.odoo_a)}): Woo vuelve a lo que ya tenía Odoo.`
+      : ` Odoo ${n(it.odoo_de)} → ${n(it.odoo_a)}.`;
     return (
       <>
         <div className="text-[13px] font-semibold leading-5 text-slate-900">
@@ -89,11 +144,17 @@ function Renglon({ it, dia, onRastro, sku }: {
         </div>
         <div className="text-xs leading-[18px] text-slate-600">
           {it.fallo ? <span className="font-semibold text-rose-700">La escritura en Woo falló. </span> : null}
-          {it.origen === "odoo" ? "stock_watch copió lo que dice Odoo." : "stock_watch lo vio en Woo: una venta, una cancelación o una edición."}
+          {it.origen === "odoo" ? `stock_watch copió lo que dice Odoo.${odoo}` : "stock_watch lo vio en Woo: una venta, una cancelación o una edición."}
         </div>
+        {it.liga_txt && (
+          <div className="mt-0.5 text-xs leading-[18px] text-pink-800">
+            {it.liga_txt} {it.liga_nota && <span className="text-slate-500">{it.liga_nota}</span>}
+          </div>
+        )}
       </>
     );
   }
+  if (it.tipo === "devolucion") return <Devolucion it={it} />;
   if (it.tipo === "full") {
     if (it.grupo === "foto") {
       return (
@@ -215,7 +276,10 @@ export default function TrazabilidadSku({ sku, onCerrar, onRastro, carrilInicial
   }, [sku, carrilInicial]);
 
   const tieneFull = !!h?.full || (h?.resumen.full ?? 0) > 0;
-  const carrilVisto: Carril = tieneFull ? carril : "todo";
+  const dv = h?.resumen.devoluciones;
+  const tieneDevol = (dv?.n ?? 0) > 0;
+  const carriles = CARRILES.filter((c) => (c.id !== "full" || tieneFull) && (c.id !== "devoluciones" || tieneDevol));
+  const carrilVisto: Carril = carriles.some((c) => c.id === carril) ? carril : "todo";
   const porDia = useMemo(() => {
     const grupos: [string, ItemTraza[]][] = [];
     for (const it of (h?.items ?? []).filter((x) => enCarril(x, carrilVisto))) {
@@ -304,9 +368,9 @@ export default function TrazabilidadSku({ sku, onCerrar, onRastro, carrilInicial
                 ))}
               </section>
 
-              {tieneFull && (
-                <div className="flex w-fit gap-1 rounded-xl bg-slate-100 p-1" role="group" aria-label="Carril">
-                  {CARRILES.map((c) => (
+              {(tieneFull || tieneDevol) && (
+                <div className="flex w-fit flex-wrap gap-1 rounded-xl bg-slate-100 p-1" role="group" aria-label="Carril">
+                  {carriles.map((c) => (
                     <button key={c.id} type="button" aria-pressed={carril === c.id} onClick={() => setCarril(c.id)}
                       className={`h-8 rounded-lg px-3 text-xs font-semibold ${carril === c.id ? "bg-indigo-600 text-white shadow-sm" : "text-slate-600 hover:bg-white"}`}>
                       {c.texto}
@@ -344,6 +408,35 @@ export default function TrazabilidadSku({ sku, onCerrar, onRastro, carrilInicial
                 </section>
               )}
 
+              {carrilVisto === "devoluciones" && dv && (
+                <section aria-label="Devoluciones en el periodo" className="flex flex-col gap-1 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                  <span className="text-[13px] font-bold text-slate-900">Devoluciones, últimos {h.dias} días</span>
+                  <span className="text-xs leading-[18px] text-slate-700">
+                    {pl(dv.n, "devolución", "devoluciones")} · {pl(dv.piezas, "pieza", "piezas")}
+                    {" · "}{dv.a_bodega.toLocaleString("es-MX")} ya en nuestra bodega
+                    {dv.a_bodega ? `, ${dv.reingresaron.toLocaleString("es-MX")} con reingreso en Odoo` : ""}
+                    {dv.en_camino ? ` · ${dv.en_camino.toLocaleString("es-MX")} en camino` : ""}
+                    {dv.a_full ? ` · ${dv.a_full.toLocaleString("es-MX")} al almacén de ML (regresan a FULL)` : ""}
+                  </span>
+                  <span className="text-xs leading-[18px] text-slate-600">
+                    El reingreso es la primera subida de Odoo (su foto, no lo escrito en Woo) en los días siguientes a que
+                    la caja llega: una coincidencia probable por fecha, no una liga dura (Bodega recibe en Odoo sin ligarlo
+                    a la venta).
+                  </span>
+                  {h.truncado && (
+                    <span className="text-xs leading-[18px] text-amber-800">
+                      El resumen cuenta todas las del periodo; la línea muestra solo los {h.items.length} movimientos más recientes.
+                    </span>
+                  )}
+                </section>
+              )}
+              {h.devoluciones_ok === false && (
+                <p className="text-xs leading-[18px] text-amber-800">
+                  No se pudieron leer {(h.devoluciones_fallas ?? ["ml", "temu"]).map((f) => (f === "ml" ? "las devoluciones de ML" : "las cancelaciones de Temu")).join(" ni ")} de
+                  este SKU; el resto de la línea está completo.
+                </p>
+              )}
+
               <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-4">
                 <div className="flex items-center gap-1.5" role="group" aria-label="Periodo">
                   {PERIODOS.map((p) => (
@@ -359,6 +452,7 @@ export default function TrazabilidadSku({ sku, onCerrar, onRastro, carrilInicial
                   {h.resumen.con_rechazo ? ` (${h.resumen.con_rechazo} con rechazo)` : ""}
                   {" · "}{pl(h.resumen.su_cuenta, "vez", "veces")} el canal reportó algo que no le escribimos
                   {h.resumen.full ? ` · ${pl(h.resumen.full, "aviso", "avisos")} de FULL` : ""}
+                  {dv?.n ? ` · ${pl(dv.n, "devolución", "devoluciones")}` : ""}
                 </p>
               </div>
 
@@ -381,7 +475,7 @@ export default function TrazabilidadSku({ sku, onCerrar, onRastro, carrilInicial
                             <time dateTime={it.ts} className="pt-[3px] text-right text-xs tabular-nums text-slate-500">{it.hora.slice(11, 16)}</time>
                             <span className="relative flex justify-center">
                               {i < its.length - 1 && <span className="absolute bottom-0 top-3 w-0.5 bg-slate-200" aria-hidden />}
-                              <span className={`relative mt-[5px] h-3 w-3 ${it.tipo === "full" ? "rounded-[3px]" : "rounded-full"} ${it.tipo === "canal" && it.relacion === "estado" ? "border-2 bg-white" : ""}`}
+                              <span className={`relative mt-[5px] h-3 w-3 ${it.tipo === "full" ? "rounded-[3px]" : it.tipo === "devolucion" ? "rotate-45 rounded-[2px]" : "rounded-full"} ${it.tipo === "canal" && it.relacion === "estado" ? "border-2 bg-white" : ""}`}
                                 style={it.tipo === "canal" && it.relacion === "estado" ? { borderColor: color(it) } : { background: color(it) }} aria-hidden />
                             </span>
                             <div className="min-w-0 pb-3">
@@ -406,6 +500,9 @@ export default function TrazabilidadSku({ sku, onCerrar, onRastro, carrilInicial
                 <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full" style={{ background: COLOR.coincide }} />el canal reporta lo que le escribimos</span>
                 <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full" style={{ background: COLOR.su_cuenta }} />cambió en el canal</span>
                 <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full border-2 bg-white" style={{ borderColor: COLOR.estado }} />cambio de estado</span>
+                {tieneDevol && (
+                  <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rotate-45 rounded-[2px]" style={{ background: COLOR.devolucion }} />devolución</span>
+                )}
                 {tieneFull && (["vendido", "llego", "ajuste", "retiro", "foto"] as const).map((g) => (
                   <span key={g} className="flex items-center gap-1.5">
                     <span className="h-2.5 w-2.5 rounded-[3px]" style={{ background: GRUPO_FULL[g].color }} />FULL: {GRUPO_FULL[g].texto.toLowerCase()}

@@ -268,7 +268,12 @@ export const CELDA_MATRIZ_PUNTEADO: Partial<Record<CeldaMatriz["k"], string>> = 
 /** Un renglón de la línea de trazabilidad (lo arma `fanout_vivo.historia`). */
 export type ItemTraza =
   | { tipo: "woo"; ts: string; hora: string; origen: "odoo" | "woo"; de: number | null; a: number | null;
-      fallo: boolean; motivo: string }
+      fallo: boolean; motivo: string;
+      /** La foto de Odoo del `odoo_delta` (`de`/`a` es lo que quedó en Woo). Con ésta se mide
+       *  si Odoo subió: Woo también sube cuando stock_watch le devuelve lo que Odoo ya tenía. */
+      odoo_de?: number | null; odoo_a?: number | null;
+      /** Subida de Odoo que coincide (por fecha, no liga dura) con el reingreso de devoluciones. */
+      devoluciones?: { id: string; nombre: string; piezas: number }[]; liga_txt?: string; liga_nota?: string }
   | { tipo: "reparto"; ts: string; fin: string; hora: string; motivo: string;
       origen: "venta" | "recuperado" | "excedente" | "seguro" | "reenvio" | "cambio"; tono: Tono; destinos: Destino[]; sin_destinos: boolean }
   | { tipo: "canal"; ts: string; hora: string; canal: string; nombre: string; campo: string; via: string;
@@ -276,7 +281,39 @@ export type ItemTraza =
       de?: number | null; a?: number | null; ref?: { valor: number | null; hora: string } | null;
       de_txt?: string; a_txt?: string }
   | { tipo: "full"; ts: string; hora: string; cuenta: string; nombre: string; ml_tipo: string; texto: string;
-      grupo: GrupoFull | "foto"; sig: string; x?: number; de?: number | null; a?: number | null };
+      grupo: GrupoFull | "foto"; sig: string; x?: number; de?: number | null; a?: number | null }
+  | ItemDevolucion;
+
+/** Una devolución del SKU: de ML (`channel.returns`) o una venta que Temu canceló con la
+ *  mercancía ya enviada. `liga` dice si reingresó a Odoo (coincidencia por fecha). */
+export interface ItemDevolucion {
+  tipo: "devolucion"; ts: string; hora: string;
+  fuente: string; id: string; cuenta: string; nombre: string; pedido: string | null;
+  piezas: number; motivo: string;
+  estado: EstadoDevolucion; estado_txt: string; estado_canal: string | null; dinero: string | null;
+  destino: "seller_address" | "warehouse" | null; destino_txt: string; es_full: boolean;
+  venta_contaba: boolean | null; venta_txt: string;
+  pasos: { estado: string; texto: string; hora: string; de: string }[];
+  llego: boolean; llegada: string | null;
+  liga: { k: LigaDevolucion; texto: string; nota?: string; hora?: string; dias?: number; sube?: number } | null;
+}
+
+export type EstadoDevolucion = "abierta" | "en_transito" | "recibida" | "reembolsada" | "cerrada" | "rechazada"
+  | "cancelada_revisar" | "cancelada_devuelta";
+export type LigaDevolucion = "reingreso" | "espera" | "sin_reingreso" | "sin_fecha" | "fuera_periodo" | "full"
+  | "sin_destino" | "no_regresa" | "camino" | "revisar";
+
+/** La pastilla del estado de una devolución (contraste ≥ 4.5:1 sobre su fondo). */
+export const DEVOL_ESTADO_CLS: Record<EstadoDevolucion, string> = {
+  abierta: "bg-amber-100 text-amber-900",
+  en_transito: "bg-indigo-100 text-indigo-900",
+  recibida: "bg-sky-100 text-sky-900",
+  reembolsada: "bg-rose-100 text-rose-900",
+  cerrada: "bg-slate-200 text-slate-800",
+  rechazada: "bg-slate-100 text-slate-700",
+  cancelada_revisar: "bg-amber-100 text-amber-900",
+  cancelada_devuelta: "bg-emerald-100 text-emerald-900",
+};
 
 /** El carril FULL de un SKU en su trazabilidad. */
 export interface FullSku {
@@ -285,6 +322,10 @@ export interface FullSku {
              /** La publicación FULL de esta fila la declara OTRO SKU: el número de aquí es viejo. */
              de_otro?: { sku: string; stock: number; listing: string } | null }[];
   grupos: Partial<Record<GrupoFull, { avisos: number; piezas: number }>>;
+}
+
+export interface ResumenDevoluciones {
+  n: number; piezas: number; a_bodega: number; reingresaron: number; a_full: number; en_camino: number;
 }
 
 export interface Historia {
@@ -300,7 +341,12 @@ export interface Historia {
   sin_orden?: SinOrden | null;
   columnas: Columna[];
   celdas: Record<string, CeldaMatriz>;
-  resumen: { cambios_woo: number; repartos: number; con_rechazo: number; su_cuenta: number; full?: number };
+  resumen: { cambios_woo: number; repartos: number; con_rechazo: number; su_cuenta: number; full?: number;
+             devoluciones?: ResumenDevoluciones };
+  /** false = no se pudo leer alguna fuente de devoluciones (la línea sigue sin ella). */
+  devoluciones_ok?: boolean;
+  /** Las fuentes que fallaron: "ml" (channel.returns) o "temu" (cancelaciones de Temu). */
+  devoluciones_fallas?: ("ml" | "temu")[];
   full?: FullSku | null;
   items: ItemTraza[];
   total: number;
