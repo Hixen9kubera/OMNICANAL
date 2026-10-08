@@ -150,11 +150,13 @@ datos ya publicados (precios para lo que no tenía, títulos propuestos viendo l
 `{"filas": {SKU: {campo: valor}}, "arriba": {...}}` y cada campo se pone SOLO si la fila no lo tiene: lo que el
 generador ya sabe manda. Así nadie pierde el trabajo de otro al regenerar. Esos archivos traen precios: no se suben aquí.
 
-`excel_pl` arma `inventario_kubera_skus.xlsx`: una fila por cada fila de la página, con la FOTO anclada a su celda
-(se esconde con la fila al filtrar), SKU, título, categoría, subcategoría, piezas, la media de Mercado Libre tal como la
-pinta la página y el valor. Solo lee `datos_pl.json` y las hojas de fotos grandes. Al terminar vuelve a leer el Excel y lo
-compara fila por fila contra los datos: si no cuadra al 100%, la etapa falla. Un SKU sin foto en Odoo usa la de su
-renglón del packing list (en la página y en el Excel).
+`excel_pl` arma `inventario_kubera_skus.xlsx`: el inventario como catálogo, en UNA hoja. Cada categoría se abre en sus
+subcategorías y cada subcategoría en sus productos (esquema de Excel, botones + y −), con la FOTO anclada a su celda,
+SKU, título, piezas, la media de Mercado Libre tal como la pinta la página, el valor y el estado; arriba y al final,
+los totales. Solo lee `datos_pl.json` y las hojas de fotos grandes. Al terminar vuelve a leer el Excel y lo compara contra
+los datos (cada fila en su categoría, y los totales de cada grupo): si no cuadra al 100%, la etapa falla. Un SKU sin foto
+en Odoo usa la de su renglón del packing list (en la página y en el Excel). Si el archivo está abierto en Excel, no se
+puede sobrescribir: hay que cerrarlo antes.
 
 Hay también una etapa que no estaba en la tabla: `empate_ia` (DeepSeek empareja, dentro de
 un contenedor sin validar, los renglones sueltos con los SKUs sueltos; solo cuenta lo que
