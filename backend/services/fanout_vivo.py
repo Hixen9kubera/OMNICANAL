@@ -34,6 +34,31 @@ log = logging.getLogger("omnicanal.fanout_vivo")
 
 _ZONA = "America/Mexico_City"
 _ACC_FANOUT = ["escribir", "omitir", "sin_cambio", "sin_destinos"]
+# Las filas del seguro «stock 0 ⇒ fuera de la venta» (`fanout_seguro`). Llevan el
+# mismo `ts` del cambio que las produjo, así que se juntan con él por (sku, ts);
+# las del barrido de después del censo forman su propio renglón. NO cuentan como
+# «el fan-out ya procesó el cambio»: para eso sigue valiendo sólo `_ACC_FANOUT`.
+_ACC_CERO = ["cero_inactivar", "cero_reactivar", "cero_sin_cambio", "cero_omitir",
+             "cero_soltar", "cero_error"]
+_ACC_EVENTO = _ACC_FANOUT + _ACC_CERO
+_CERO_TXT = {"cero_inactivar": "apagaría (ensayo)", "cero_reactivar": "reactivaría (ensayo)",
+             "cero_sin_cambio": "seguro: espera", "cero_omitir": "seguro: no la toca",
+             "cero_soltar": "seguro: la soltó", "cero_error": "seguro: error"}
+# Las `cero_sin_cambio` que NO son una espera, por el prefijo de su resultado (los
+# mismos textos de `fanout_seguro.CON_STOCK` y `.MOVIDA`; aquí van escritos para no
+# importar ese módulo con el seguro apagado — una prueba los amarra).
+_CERO_PREFIJO = {"con stock y apagada": "apagada y ya con stock",
+                 "movida por el canal": "seguro: la movió el canal"}
+
+
+def _texto_cero(f: dict) -> str:
+    """El rótulo corto de una fila del seguro."""
+    if f["accion"] == "cero_sin_cambio":
+        r = str(f.get("resultado") or "")
+        for prefijo, texto in _CERO_PREFIJO.items():
+            if r.startswith(prefijo):
+                return texto
+    return _CERO_TXT.get(f["accion"], "seguro")
 _NOMBRE = {"tiktok": "TikTok", "temu": "Temu", "mercado_libre": "Mercado Libre",
            "amazon": "Amazon", "walmart": "Walmart"}
 # Columnas del horario y de la matriz. ML va por cuenta porque cada cuenta
@@ -120,6 +145,36 @@ def _motivo_omision(r: str) -> tuple[str, str]:
 
 
 def _celda_evento(filas: list[dict]) -> dict[str, Any]:
+    """Lo que pasó en UN canal/cuenta durante un cambio: el reparto de stock y,
+    si el seguro de stock 0 habló de esa publicación, lo que hizo."""
+    cero = [f for f in filas if f["accion"] in _ACC_CERO]
+    base = _celda_reparto([f for f in filas if f["accion"] not in _ACC_CERO])
+    if not cero:
+        return base
+
+    def res(f: dict) -> str:
+        return str(f.get("resultado") or "")
+
+    reales = [f for f in cero if not f.get("dry_run")]
+    apago = next((f for f in reales if f["accion"] == "cero_inactivar" and res(f).startswith("ok")), None)
+    prendio = next((f for f in reales if f["accion"] == "cero_reactivar" and res(f).startswith("ok")), None)
+    if apago and base["k"] != "mal":
+        stock = "" if base["k"] == "nopub" else f" · stock: {base['texto']}"
+        return {"k": "apag", "texto": "apagada por stock 0", "detalle": (res(apago) + stock)[:240],
+                "escrito": base["k"] == "ok"}     # el 0 quedó escrito: el rastro no debe decir «no se escribe»
+    if prendio and base["k"] != "mal":
+        texto = f"reactivada · {base['texto']}" if base["k"] in ("ok", "igual") else "reactivada"
+        return {"k": "ok", "texto": texto, "detalle": res(prendio)[:240]}
+    f = apago or prendio or cero[0]
+    nota = (f"seguro: {res(f)}" if (apago or prendio)
+            else f"{_texto_cero(f)}: {res(f)}")
+    if base["k"] == "nopub":      # de este canal sólo habló el seguro
+        return {"k": "sim" if f.get("dry_run") else "omit",
+                "texto": _texto_cero(f), "detalle": res(f)[:240]}
+    return {**base, "detalle": (f"{base['detalle']} · {nota}" if base.get("detalle") else nota)[:240]}
+
+
+def _celda_reparto(filas: list[dict]) -> dict[str, Any]:
     """Lo que pasó en UN canal/cuenta durante un cambio. Varias filas = varias
     publicaciones del mismo SKU en esa cuenta: manda la peor."""
     if not filas:
@@ -152,7 +207,7 @@ def _tono(celdas: dict[str, dict]) -> str:
     ks = [c["k"] for c in celdas.values() if c["k"] != "nopub"]
     if "mal" in ks:
         return "mal"
-    if "ok" in ks:
+    if "ok" in ks or "apag" in ks:     # apagarla por stock 0 es un cambio que SÍ se hizo
         return "ok"
     if ks and all(k == "full" for k in ks):
         return "full"
@@ -176,6 +231,8 @@ def _origen(motivo: str, woo: dict | None) -> tuple[str, str, int | None, int | 
     if mot.startswith("excedente:"):
         canal = {"tiktok": "TikTok", "temu": "Temu"}.get(mot.split(":", 1)[1], mot.split(":", 1)[1])
         return "otro", f"{canal} ofrecía de más", None, None
+    if mot.startswith("seguro:"):
+        return "otro", f"seguro stock 0 · {mot.split(':', 1)[1].strip()}"[:60], None, None
     if mot.lower().startswith("venta"):
         partes = mot.split()
         cuenta = partes[1] if len(partes) > 1 else ""
@@ -248,22 +305,26 @@ def eventos(desde_id: int = 0, limite: int = 14) -> list[dict]:
              from ops.fanout_log
             where accion = any(%(a)s) and coalesce(canal, '') <> 'woocommerce'
               and id > %(d)s and ts > now() - interval '3 days'
+              -- del seguro, sólo lo REAL abre renglón: sus ensayos y avisos se ven
+              -- dentro del cambio que los produjo y en /api/fanout/seguro
+              and (accion = any(%(f)s) or (dry_run = false and resultado like 'ok%%'))
             group by sku, ts
             -- Solo los que tocan algún canal del reparto: los que no tenían a
             -- quién escribirle se cuentan aparte (`sin_reparto_1h`).
            having bool_or(canal = any(%(r)s))
             order by max(id) desc
             limit %(n)s""",
-        {"z": _ZONA, "a": _ACC_FANOUT, "d": int(desde_id), "n": int(limite), "r": reparto()})
+        {"z": _ZONA, "a": _ACC_EVENTO, "f": _ACC_FANOUT, "d": int(desde_id), "n": int(limite),
+         "r": reparto()})
     if not ev:
         return []
     filas = sdb.fetch_all(
-        """select sku::text as sku, ts, canal, cuenta, accion, stock_canal, objetivo, resultado
+        """select sku::text as sku, ts, canal, cuenta, accion, stock_canal, objetivo, resultado, dry_run
              from ops.fanout_log
             where sku::text = any(%(s)s) and ts = any(%(t)s::timestamptz[])
               and accion = any(%(a)s)
             order by id""",
-        {"s": list({e["sku"] for e in ev}), "t": list({e["ts"] for e in ev}), "a": _ACC_FANOUT})
+        {"s": list({e["sku"] for e in ev}), "t": list({e["ts"] for e in ev}), "a": _ACC_EVENTO})
     return _armar_eventos(ev, filas)
 
 
@@ -545,6 +606,68 @@ def _fanout_estado() -> dict[str, Any]:
             "cola": cola, "debounce_s": fanout_stock.DEBOUNCE_S, "reserva": fanout_stock._reserva()}
 
 
+def _seguro_cero() -> dict[str, Any] | None:
+    """El pie del seguro «stock 0 ⇒ fuera de la venta»: apagado / ensayo / encendido,
+    cuántas tiene apagadas y lo usado hoy. Si no se puede leer, la página sigue."""
+    try:
+        from services import fanout_seguro
+        return fanout_seguro.resumen_panel()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("fanout_vivo: seguro stock 0: %s", exc)
+        return None
+
+
+def _atender_seguro(seg: dict[str, Any] | None) -> list[dict]:
+    """«Qué atender» del seguro: lo que dejó fuera de la venta y YA tiene stock, y
+    lo que soltó y sigue fuera con stock. Sin esto esas publicaciones no vendían
+    hasta que alguien las buscara a mano. Con el seguro sin marcas no agrega nada."""
+    if not seg:
+        return []
+    salida: list[dict] = []
+
+    def muestra(lista: list[dict]) -> str:
+        m = lista[0]
+        resto = len(lista) - 1
+        return (f"{_NOMBRE.get(m['canal'], m['canal'])} · {m['sku']}: Woo tiene {int(m['woo']):,}"
+                + (f", y {resto} más" if resto > 0 else "") + ".")
+
+    con_stock = seg.get("con_stock") or []
+    if con_stock:
+        n = len(con_stock)
+        salida.append({
+            "nivel": "hoy",
+            "titulo": (f"{n} {'publicación apagada' if n == 1 else 'publicaciones apagadas'} por el seguro "
+                       f"de stock 0 ya {'tiene' if n == 1 else 'tienen'} stock"),
+            "texto": muestra(con_stock) + (
+                " El seguro las regresa solo cuando el stock se sostiene; si llevan horas así, "
+                "algo se lo impide." if seg.get("reactivar")
+                else " La reactivación automática está apagada: hay que reactivarlas a mano."),
+            "matriz": True})
+    soltadas = seg.get("soltadas") or []
+    if soltadas:
+        n = len(soltadas)
+        salida.append({
+            "nivel": "hoy",
+            "titulo": (f"{n} {'publicación que el seguro soltó sigue' if n == 1 else 'publicaciones que el seguro soltó siguen'} "
+                       "fuera de la venta con stock"),
+            "texto": muestra(soltadas) + " El seguro ya no las reactiva: reactivarlas a mano.",
+            "matriz": True})
+    return salida
+
+
+def _marcas_seguro(skus: list[str] | None = None) -> dict[tuple[str, str], dict]:
+    """{(SKU, canal): marca} de lo que el seguro tiene apagado HOY (marca vigente
+    y la publicación sigue fuera de la venta). Vacío si no hay o no se pudo leer."""
+    try:
+        from services import fanout_seguro
+        quiero = {s.upper() for s in skus} if skus is not None else None
+        return {(str(m["sku"]).upper(), m["canal"]): m for m in fanout_seguro.apagadas()
+                if m.get("fuera") and (quiero is None or str(m["sku"]).upper() in quiero)}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("fanout_vivo: marcas del seguro: %s", exc)
+        return {}
+
+
 def _full_sin_regla() -> list[dict]:
     try:
         from services import fanout_read, stock_full
@@ -656,6 +779,8 @@ def _resumen() -> dict[str, Any]:
                         "titulo": f"{nombre} ofrece {f['valor']:,} de {f['sku']} con Woo en {f['stock_woo']:,}",
                         "texto": ("Está a la venta." + (f" Hay {extra} más que ofrecen de más." if extra > 0 else "")),
                         "matriz": True})
+    seguro = _seguro_cero()
+    atender.extend(_atender_seguro(seguro))
     por_ventas = int(foto.get("distintos_por_ventas") or 0)
     sin_explicar = int(foto.get("distintos") or 0) - por_ventas
     if sin_explicar > 0:
@@ -705,7 +830,7 @@ def _resumen() -> dict[str, Any]:
                       "detalle": " ".join(partes), "grave": bool(rechazan)},
         "canales": canales, "foto": foto, "stock_watch": sw,
         "atender": atender, "bien": bien, "serie": _serie(rep), "pulso": _pulso_24h(rep),
-        "full_sin_regla": full,
+        "full_sin_regla": full, "seguro": seguro,
         "columnas": [c for c in COLUMNAS if c["canal"] in rep],
     }
 
@@ -760,7 +885,8 @@ def _estado_listing(l: dict) -> str:
     return _ESTADO_TXT.get(l["canal"], {}).get(clave or "", (clave or "sin estado").lower())
 
 
-def _celda_matriz(l: dict | None, w: dict | None, woo: int | None, hoy: str) -> dict[str, Any]:
+def _celda_matriz(l: dict | None, w: dict | None, woo: int | None, hoy: str,
+                  marca: dict | None = None) -> dict[str, Any]:
     if l is None:
         return {"k": "nopub", "v": "—", "d": "", "s": "no publicada", "p": False}
     estado = _estado_listing(l)
@@ -779,6 +905,17 @@ def _celda_matriz(l: dict | None, w: dict | None, woo: int | None, hoy: str) -> 
             cod = "403" if "403" in str(w.get("resultado")) else "error"
             return {"k": "rech", "v": _n(valor), "d": f"· {cod}",
                     "s": f"{estado} · intento {_fecha(w.get('hora'), hoy)}", "p": False}
+    if marca and not vend:
+        # La sacó de la venta el seguro de stock 0. Va DESPUÉS del rechazo: una
+        # escritura que el canal rechazó se tiene que ver aunque esté apagada.
+        if woo is not None and int(woo) > 0:
+            # …y Woo YA tiene stock. Mientras no regrese a la venta es una tarea
+            # pendiente, no un estado en reposo: con la reactivación apagada se
+            # quedaba así, gris y callada, con 50 piezas en Woo.
+            return {"k": "apagpend", "v": _n(valor), "d": "",
+                    "s": f"apagada por el seguro · Woo ya tiene {_n(woo)}", "p": True}
+        return {"k": "apag", "v": _n(valor), "d": "",
+                "s": f"apagada por stock 0 · {_fecha(marca.get('desde'), hoy)}", "p": True}
     if valor is None or woo is None:
         return {"k": "nopub", "v": _n(valor), "d": "", "s": f"{estado} · {fresc}", "p": not vend}
     v, wv = int(valor), int(woo)
@@ -1024,6 +1161,7 @@ def matriz() -> dict[str, Any]:
             order by sku, canal, cuenta, ts desc, id desc""", {"z": _ZONA, "s": skus})
     L = {(f["sku"], f["canal"], (f.get("cuenta") or "").upper()): f for f in lst}
     W = {(f["sku"], f["canal"], f["cuenta"]): f for f in esc}
+    M = _marcas_seguro()
 
     celdas_por_sku: dict[str, dict[str, dict]] = {}
     pendientes: list[dict] = []
@@ -1032,7 +1170,7 @@ def matriz() -> dict[str, Any]:
         celdas = {}
         for col in cols:
             clave = (s, col["canal"], col["cuenta"])
-            c = _celda_matriz(L.get(clave), W.get(clave), woo, hoy)
+            c = _celda_matriz(L.get(clave), W.get(clave), woo, hoy, M.get((s.upper(), col["canal"])))
             celdas[col["id"]] = c
             if c["k"] in ("mas", "menos", "rech"):
                 pendientes.append({"sku": s, "canal": col["canal"], "cuenta": col["cuenta"],
@@ -1062,7 +1200,11 @@ def matriz() -> dict[str, Any]:
                 resumen = resumen or f"{col['nombre']} ofrece menos de lo que hay en Woo"
             elif c["k"] in ("mas", "menos"):
                 peso = max(peso, 20)
-            if c["k"] in ("mas", "menos", "rech"):
+            elif c["k"] == "apagpend":
+                peso = max(peso, 70)
+                resumen = resumen or (f"{col['nombre']} sigue apagada por el seguro de stock 0 "
+                                      f"y en Woo ya hay {_n(woo)}")
+            if c["k"] in ("mas", "menos", "rech", "apagpend"):
                 tags.add("distinto")
             if c["k"] == "mas":
                 tags.add("demas")
@@ -1108,15 +1250,15 @@ def rastro(sku: str, fin: str) -> dict[str, Any]:
                   to_char(ts at time zone %(z)s, 'HH24:MI:SS') as hora
              from ops.fanout_log
             where sku::text = %(s)s and ts = %(t)s::timestamptz and accion = any(%(a)s)
-            group by sku, ts""", {"z": _ZONA, "s": sku, "t": fin, "a": _ACC_FANOUT})
+            group by sku, ts""", {"z": _ZONA, "s": sku, "t": fin, "a": _ACC_EVENTO})
     if not ev:
         return {"ok": False, "motivo": "no encontré ese cambio"}
     filas = sdb.fetch_all(
         """select sku::text as sku, ts, canal, cuenta, accion, stock_canal, objetivo,
-                  left(resultado, 300) as resultado
+                  left(resultado, 300) as resultado, dry_run
              from ops.fanout_log
             where sku::text = %(s)s and ts = %(t)s::timestamptz and accion = any(%(a)s)
-            order by id""", {"s": sku, "t": fin, "a": _ACC_FANOUT})
+            order by id""", {"s": sku, "t": fin, "a": _ACC_EVENTO})
     e = _armar_eventos(ev, filas)[0]
     # Todos los destinos, incluidos los que quedan fuera del reparto.
     destinos = []
@@ -1234,7 +1376,7 @@ def historia(sku: str, dias: int = 14, limite: int = 400) -> dict[str, Any]:
                   coalesce(motivo, '') as motivo, coalesce(canal, '') as canal,
                   upper(coalesce(cuenta, '')) as cuenta, accion, left(coalesce(resultado, ''), 300) as resultado,
                   stock_canal, objetivo, stock_drop, (ts > now() - interval '3 days') as reciente,
-                  coalesce(item_id, '') as item_id
+                  coalesce(item_id, '') as item_id, dry_run
              from ops.fanout_log
             where sku = %(s)s and ts > now() - make_interval(days => %(d)s)
             order by ts desc, id desc limit 3000""", {"z": _ZONA, "s": sku, "d": dias})
@@ -1264,10 +1406,11 @@ def historia(sku: str, dias: int = 14, limite: int = 400) -> dict[str, Any]:
     for f in log:
         if f["accion"] == "escribir" and f["canal"] not in ("", "woocommerce") and f["reciente"]:
             W.setdefault((f["canal"], f["cuenta"]), f)
+    M = _marcas_seguro([sku])
     celdas, pendientes = {}, []
     for col in cols:
         clave = (col["canal"], col["cuenta"])
-        c = _celda_matriz(L.get(clave), W.get(clave), woo, hoy)
+        c = _celda_matriz(L.get(clave), W.get(clave), woo, hoy, M.get((sku.upper(), col["canal"])))
         celdas[col["id"]] = c
         if c["k"] in ("mas", "menos", "rech"):
             pendientes.append({"sku": sku, "canal": col["canal"], "cuenta": col["cuenta"],
@@ -1290,7 +1433,7 @@ def historia(sku: str, dias: int = 14, limite: int = 400) -> dict[str, Any]:
     # 2) Cada reparto: sus filas comparten `ts` (el fin del cambio).
     grupos: dict[Any, list[dict]] = {}
     for f in log:
-        if f["canal"] != "woocommerce" and f["accion"] in _ACC_FANOUT:
+        if f["canal"] != "woocommerce" and f["accion"] in _ACC_EVENTO:
             grupos.setdefault(f["ts"], []).append(f)
     orden = {(c["canal"], c["cuenta"] if c["canal"] == "mercado_libre" else ""): i for i, c in enumerate(COLUMNAS)}
     for ts, filas in grupos.items():
@@ -1309,12 +1452,13 @@ def historia(sku: str, dias: int = 14, limite: int = 400) -> dict[str, Any]:
         for d in destinos:
             del d["_o"]
         ks = [d["k"] for d in destinos if not d["fuera"]]
-        tono = "mal" if "mal" in ks else ("ok" if "ok" in ks else ("full" if ks and set(ks) <= {"full"} else "omit"))
+        tono = ("mal" if "mal" in ks else "ok" if ("ok" in ks or "apag" in ks)
+                else "full" if ks and set(ks) <= {"full"} else "omit")
         motivo = filas[0]["motivo"]
         bajo = motivo.lower()
         origen = ("venta" if bajo.startswith("venta") else "recuperado" if bajo.startswith("recuperado")
-                  else "excedente" if bajo.startswith("excedente") else "reenvio" if "reenv" in bajo
-                  else "cambio")
+                  else "excedente" if bajo.startswith("excedente") else "seguro" if bajo.startswith("seguro:")
+                  else "reenvio" if "reenv" in bajo else "cambio")
         items.append({"tipo": "reparto", "_t": ts, "ts": ts.isoformat(), "fin": ts.isoformat(),
                       "hora": filas[0]["hora"], "motivo": motivo[:140], "origen": origen, "tono": tono,
                       "destinos": destinos, "sin_destinos": any(f["accion"] == "sin_destinos" for f in filas)})

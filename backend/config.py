@@ -1315,6 +1315,44 @@ class Settings(BaseSettings):
     # APAGADO: escribe stock en los canales (regla 3 de CLAUDE.md — dale de Brandon).
     fanout_excedentes_enabled: bool = False
     fanout_excedentes_tope: int = 100       # publicaciones por censo
+    # Seguro «stock 0 ⇒ fuera de la venta» en Temu y TikTok (services/fanout_seguro.py).
+    # Escribirle 0 a Temu no basta: ACC-0574-LIL recibió 0 el 1-oct y aun así vendió 23,
+    # 10 y 1 piezas, porque el canal sube su número solo y vuelve a «a la venta». Cuando
+    # el objetivo de un SKU es 0, el seguro SACA la publicación de la venta (antes de
+    # escribir el 0) y la regresa sólo si la apagó él mismo y el stock volvió y se
+    # sostuvo. Nace APAGADO y en ENSAYO: sacar y regresar publicaciones de un
+    # marketplace vivo lo enciende Brandon, variable por variable (regla 3 de CLAUDE.md).
+    fanout_cero_enabled: bool = False       # interruptor general: apagado no lee ni anota nada
+    fanout_cero_ensayo: bool = True         # lee en vivo y anota lo que haría (dry_run); no apaga ni prende
+    fanout_cero_temu: bool = False          # por canal
+    fanout_cero_tiktok: bool = False
+    fanout_cero_reactivar: bool = False     # sin ella el seguro sólo apaga
+    # INTENTOS de apagar por censo (barrido + sus excedentes), por canal. El mismo
+    # número vale POR HORA para los eventos sueltos del fan-out (fuera de un censo).
+    fanout_cero_tope_vuelta: int = 5
+    # INTENTOS de apagar por día (CDMX), por canal. Cuenta la LLAMADA al canal, salga
+    # bien o no. 5 y no 20: de lo que está a la venta, el peor día de 30 fueron 2 caídas
+    # a 0 por canal; llegar al tope es la señal de que algo masivo vació Woo, y avisa en rojo.
+    fanout_cero_tope_dia: int = 5
+    fanout_cero_tope_reactivar_dia: int = 20   # INTENTOS de reactivar por día (CDMX), por canal
+    fanout_cero_excluir: str = ""           # CSV de SKUs que el seguro nunca toca
+    # A QUIÉN se le aplica DE VERDAD. Vacío = a nadie: todo el catálogo corre en ENSAYO
+    # FORZADO, aunque FANOUT_CERO_ENSAYO esté en false (así el canario no depende del
+    # orden en que se cambien dos variables). CSV de SKUs = sólo esos (canario). `*` = todos.
+    fanout_cero_solo_skus: str = ""
+    fanout_cero_espera_min: int = 30        # el stock debe sostenerse > 0 este rato antes de reactivar
+    fanout_cero_temu_estados: str = "2/8"   # CSV de estados de Temu que se pueden apagar (3/1 espera su sondeo)
+    fanout_cero_temu_nivel_sku: bool = False   # apagar sólo la variante (operationType=2); sin sondear
+    # Tras apagar o prender se espera y se RELEE el canal: `espera_s` × `relecturas`.
+    # Nadie ha medido cuánto tarda Temu en enseñar el cambio de estado (su lectura de
+    # stock va ~5 s atrás): se ajusta con lo que mida el sondeo 1, sin deploy.
+    fanout_cero_espera_s: float = 8.0
+    fanout_cero_relecturas: int = 3
+    # Si DESPUÉS de que el seguro apagó una publicación alguien apaga el canal EN BLOQUE
+    # (el 21-ago: 280 de TikTok y 306 de Temu en un minuto), el seguro la SUELTA en vez de
+    # regresarla: reactivar iría contra la decisión de pausar. «En bloque» = al menos estas
+    # publicaciones apagadas a mano en la misma hora. 0 = sin esta guarda.
+    fanout_cero_bloque_n: int = 10
 
     # ── Movimientos de bodega FULL / FBA → Woo ────────────────────
     # Cuando se manda mercancía a FULL, esas piezas SALEN del almacén propio y

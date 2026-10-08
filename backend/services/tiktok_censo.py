@@ -190,6 +190,17 @@ async def censar() -> dict[str, Any]:
     salida = {"ok": True, "productos": len(productos), "escritas": escritas,
               "activate": activate, "ilegibles": ilegibles, "paginas": paginas,
               "huerfanos": len(huerfanos), "huerfanos_skus": huerfanos[:20]}
+    # Seguro «stock 0 ⇒ fuera de la venta» (`fanout_seguro`, nace apagado): lo que
+    # está a la venta con Woo en 0 se saca de la venta. Va ANTES de los excedentes
+    # para que primero se apague y después se baje. En un hilo: lee la base y Woo
+    # y llama al canal (regla 11). Apagado, ni se menciona en la salida.
+    try:
+        from config import settings
+        if getattr(settings, "fanout_cero_enabled", False):
+            from services import fanout_seguro
+            salida["seguro"] = await asyncio.to_thread(fanout_seguro.barrer, CANAL)
+    except Exception as exc:  # noqa: BLE001 — el censo ya quedó escrito
+        log.warning("censo %s: seguro stock 0: %s", CANAL, exc)
     # Lo que el canal ofrece de MÁS (subió solo: un pedido sin pagar que se canceló)
     # se baja al número de Woo ya, no hasta el siguiente movimiento del SKU.
     try:

@@ -122,7 +122,8 @@ function Renglon({ it, dia, onRastro, sku }: {
     const v = it.origen === "venta" ? venta(it.motivo) : null;
     const titulo = v ? (v.canal ? `Venta en ${v.canal}` : "Venta")
       : it.origen === "recuperado" ? "Reparto recuperado"
-      : it.origen === "excedente" ? "Bajada: el canal ofrecía de más" : it.origen === "reenvio" ? "Reenvío manual" : "Reparto a los canales";
+      : it.origen === "excedente" ? "Bajada: el canal ofrecía de más"
+      : it.origen === "seguro" ? "Seguro de stock 0" : it.origen === "reenvio" ? "Reenvío manual" : "Reparto a los canales";
     const sub = v ? v.pedido : it.origen === "cambio" ? "" : it.motivo;
     return (
       <>

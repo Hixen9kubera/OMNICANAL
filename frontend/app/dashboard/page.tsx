@@ -27,7 +27,7 @@ import RastroCambio from "@/components/fanout/RastroCambio";
 import PulsoCanales from "@/components/fanout/PulsoCanales";
 import SerieDias from "@/components/fanout/SerieDias";
 import TrazabilidadSku from "@/components/fanout/TrazabilidadSku";
-import type { Atender, Evento, Vivo } from "@/components/fanout/tipos";
+import type { Atender, Evento, SeguroCero, Vivo } from "@/components/fanout/tipos";
 
 const SONDEO_MS = 4000;
 const clave = (e: { sku: string; fin: string }) => `${e.sku}|${e.fin}`;
@@ -101,6 +101,25 @@ function ObservacionFull({ abierto }: { abierto: boolean }) {
       </div>
     </div>
   );
+}
+
+/**
+ * «Temu en ensayo (FANOUT_TEMU apagado) · TikTok encendido · 2 apagadas (Temu 1 · TikTok 1),
+ * 1 ya con stock · intentos hoy Temu 1/5 · TikTok 0/5 · sólo apaga».
+ * El modo va POR CANAL y, si el ensayo es forzado, dice el primer porqué.
+ */
+function textoSeguro(s: SeguroCero): string {
+  const canales = Object.values(s.canales);
+  const activos = canales.filter((c) => c.encendido);
+  const porque = (f: string[]) => (f.length ? ` (${f[0].split(" (")[0]}${f.length > 1 ? ` y ${f.length - 1} más` : ""})` : "");
+  const modo = activos.length
+    ? activos.map((c) => `${c.nombre} ${c.ensayo ? `en ensayo${porque(c.forzado)}` : "encendido"}`).join(" · ")
+    : "apagado";
+  const conStock = s.con_stock?.length ?? 0;
+  const apagadas = `${s.apagadas} ${s.apagadas === 1 ? "apagada" : "apagadas"} (${canales.map((c) => `${c.nombre} ${c.apagadas}`).join(" · ")})`
+    + (conStock ? `, ${conStock} ya con stock` : "");
+  const hoy = activos.length ? ` · intentos hoy ${activos.map((c) => `${c.nombre} ${c.hoy}/${s.tope_dia}`).join(" · ")}` : "";
+  return `${modo} · ${apagadas}${hoy}${s.modo !== "apagado" && !s.reactivar ? " · sólo apaga" : ""}`;
 }
 
 export default function SincronizacionInventario() {
@@ -354,6 +373,7 @@ export default function SincronizacionInventario() {
                   {" · "}reserva {datos.fanout.reserva} · espera {datos.fanout.debounce_s} s
                   {datos.stock_watch.modo ? ` · stock_watch en modo ${datos.stock_watch.modo}` : ""}
                   {" · "}actualizado {datos.ahora}
+                  {datos.seguro && <span className="block">Seguro stock 0: {textoSeguro(datos.seguro)}</span>}
                 </span>
               </p>
               <Link href="/dashboard/matriz" className="flex items-center gap-1 text-[13px] font-semibold text-indigo-700 hover:text-indigo-800">

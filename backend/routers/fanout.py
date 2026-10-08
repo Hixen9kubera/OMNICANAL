@@ -8,6 +8,15 @@ fanout.py — Monitoreo y simulación del fan-out de stock DROP.
   GET  /api/fanout/excedentes       → TikTok/Temu por ENCIMA de Woo: configuración,
                                       última vuelta y qué bajaría ahora (solo lee).
   POST /api/fanout/excedentes?canal= → corre una vuelta ya (respeta sus banderas).
+  GET  /api/fanout/seguro           → seguro «stock 0 ⇒ fuera de la venta»: banderas
+                                      efectivas, ensayo forzado, marcas, topes, las
+                                      APAGADAS QUE YA TIENEN STOCK, las soltadas que
+                                      siguen fuera de la venta y lo que quedó a medias
+                                      (solo lee).
+  POST /api/fanout/seguro/soltar    → {sku, canal}: suelta la marca (no toca el canal;
+                                      con el seguro apagado no hace nada).
+  POST /api/fanout/seguro/aplicar   → {sku, canal, accion}: la vía del canario, sólo
+                                      para SKUs en FANOUT_CERO_SOLO_SKUS.
   GET  /api/fanout/vivo?desde_id=   → la página en vivo: veredicto, cadena y cambios.
   GET  /api/fanout/matriz           → SKUs × canales contra Woo.
   GET  /api/fanout/rastro?sku=&fin= → un cambio salto por salto.
@@ -24,6 +33,7 @@ fanout.py — Monitoreo y simulación del fan-out de stock DROP.
 from __future__ import annotations
 
 from fastapi import APIRouter, Query, Request, Response
+from pydantic import BaseModel
 
 from config import settings
 
@@ -86,6 +96,56 @@ def excedentes(canal: str = Query(..., description="tiktok | temu")):
     FANOUT_ENABLED y FANOUT_DRY_RUN: con cualquiera apagada, dice por qué no hizo nada."""
     from services import fanout_excedentes
     return fanout_excedentes.revisar(canal)
+
+
+class SeguroSoltar(BaseModel):
+    sku: str
+    canal: str
+
+
+class SeguroAplicar(BaseModel):
+    sku: str
+    canal: str
+    accion: str
+
+
+@router.get("/seguro")
+def seguro_estado():
+    """
+    El seguro «stock 0 ⇒ fuera de la venta» (services/fanout_seguro.py): sus
+    banderas efectivas, si corre en ensayo FORZADO y por qué, las publicaciones
+    que tiene apagadas (su marca), lo usado contra el tope de hoy (cuenta
+    LLAMADAS al canal, no éxitos), la última vuelta y qué apagaría ahora mismo.
+
+    Las listas que no deben quedar en silencio: `con_stock` (apagadas por el
+    seguro que YA tienen stock en Woo y siguen fuera de la venta), `soltadas` (las
+    que el seguro dejó de considerar suyas y siguen fuera), `a_medias` por canal
+    (intentos que nadie cerró: los mira el siguiente censo) y, en TikTok,
+    `en_auditoria`. Solo lee: no llama a ningún canal.
+    """
+    from services import fanout_seguro
+    return fanout_seguro.estado()
+
+
+@router.post("/seguro/soltar")
+def seguro_soltar(datos: SeguroSoltar):
+    """Suelta la marca del seguro para un SKU en un canal: deja de considerarla
+    suya (no la reactivará) y destraba el corte de «3 errores». No toca el canal:
+    la publicación se queda como esté. Con FANOUT_CERO_ENABLED apagado no hace
+    nada, y sólo anota donde hay algo que soltar (una marca vigente o un corte)."""
+    from services import fanout_seguro
+    return fanout_seguro.soltar(datos.sku, datos.canal)
+
+
+@router.post("/seguro/aplicar")
+def seguro_aplicar(datos: SeguroAplicar):
+    """La vía del canario: aplica el seguro a UN SKU a mano (`accion`: inactivar |
+    reactivar). Sólo para SKUs NOMBRADOS en FANOUT_CERO_SOLO_SKUS (`*` no cuenta) y
+    con el seguro y su canal encendidos; en ensayo sólo anota lo que haría. También
+    gasta el tope del día. Devuelve lo que contestó el canal y el estado antes y
+    después."""
+    from services import fanout_seguro
+    return fanout_seguro.aplicar(datos.sku, datos.canal, datos.accion)
 
 
 @router.get("/vivo")

@@ -1001,6 +1001,55 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.624.0 — Fan-out: seguro «stock 0 ⇒ fuera de la venta» en Temu y TikTok (nace APAGADO y en ensayo)
+
+Brandon, 7-oct: *"esas ocasiones de que mandemos 0 de stock en un sku a temu deberíamos
+de poder inactivarlo como un sistema de seguridad… cuando un sku tenga 0 de stock tanto
+tiktok como temu inactivará la publicación"*. El caso que lo motivó es ACC-0574-LIL:
+con Woo en 0 el anaquel de Temu volvió a subir solo (14 el 5-oct, 10 el 6-oct) y siguieron
+entrando ventas; escribir 0 no basta.
+
+**Nuevo `services/fanout_seguro.py`** (síncrono; corre en el hilo del fan-out o bajo
+`to_thread`), enganchado en `fanout_stock._aplicar` y `bajar`, y en el barrido que sigue
+a cada censo de Temu y TikTok:
+
+- **Apagar.** Con objetivo 0: primero saca la publicación de la venta y después escribe
+  el 0 (que se escribe siempre, falle o no el seguro). Decide con el estado VIVO del
+  canal, no con el censo. Temu sólo desde `2/8` (`FANOUT_CERO_TEMU_ESTADOS`), TikTok sólo
+  desde `ACTIVATE`. Nunca un padre, FULL, un excluido ni una publicación con una variante
+  hermana con stock (TikTok: todas las hermanas en 0 y legibles; Temu multi-variante no se
+  apaga salvo `FANOUT_CERO_TEMU_NIVEL_SKU`).
+- **Reactivar** (bandera aparte, `FANOUT_CERO_REACTIVAR`, se enciende al final): sólo lo
+  que apagó el seguro, si sigue en el estado en que lo dejó, con stock sostenido 30 min y
+  ya escrito; la marca sólo se cierra si quedó de verdad a la venta (TikTok en `PENDING`
+  se vigila 7 días). Lo que apagó una persona, el canal o un apagado en bloque NO se
+  reactiva: se "suelta" con aviso.
+- **La marca vive en `ops.fanout_log`** (acciones `cero_intento`, `cero_inactivar`,
+  `cero_reactivar`, `cero_soltar`, `cero_omitir`, `cero_error`), sin migración. El intento
+  se sella ANTES de llamar al canal (si no entra en la bitácora, no se llama) y el barrido
+  reconcilia lo que un reinicio dejó a medias.
+- **Topes** que cuentan llamadas: 5 por censo y canal, 5 por hora en eventos, 5 por día;
+  llegar al del día avisa. Dos "no convergió" seguidas pausan el canal una hora.
+- **Avisos** agrupados por canal (apagó / regresó / pidió regresar / apagada con stock de
+  vuelta / soltó / tope) y panel: pie del dashboard, celda y lista en la matriz, rastro.
+- Clientes: `temu.cambiar_venta` (`bg.local.goods.sale.status.set`) y
+  `tiktok.desactivar` / `activar` (`/product/202309/products/{deactivate|activate}`).
+
+**Banderas** (todas en `config.py`): `FANOUT_CERO_ENABLED=false`, `FANOUT_CERO_ENSAYO=true`,
+`FANOUT_CERO_TEMU/TIKTOK=false`, `FANOUT_CERO_REACTIVAR=false`, `FANOUT_CERO_SOLO_SKUS=""`
+(vacío = a nadie; lista = canario; `*` = todos), topes y esperas. **Con las banderas por
+omisión el fan-out hace exactamente lo mismo que antes**: el módulo ni se importa (probado
+con trazas idénticas contra v0.623.0). Lo único visible apagado: una línea nueva en el pie
+de `/dashboard` y la llave `seguro` en `/api/fanout/vivo`.
+
+**Plan de encendido** (lo decide Brandon): 1) ensayo; 2) canario con 2-3 SKUs; 3) apagar en
+general (`SOLO_SKUS=*`); 4) reactivación. Antes del paso 2 hay que sondear en vivo, con un
+SKU de prueba, que `sale.status.set` y `deactivate/activate` responden como dice la
+documentación.
+
+Probado sin red: 200 pruebas del seguro + 119 del fan-out existentes, 108 mutaciones
+atrapadas, `compileall` y `tsc` limpios.
+
 ### v0.623.0 — Cada variante publica SU título (ya no el heredado del padre), y una foto con el marco azul que dibuja la IA ya no se sube
 
 Brandon, 7-oct-2026, tras la auditoría de variantes: *"dale con las 2 que faltan"*. Eran las

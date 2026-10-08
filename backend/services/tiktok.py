@@ -655,6 +655,57 @@ def access_token(shop_id: str | None = None) -> str | None:
         return None
 
 
+# ── Sacar de la venta / regresar a la venta ───────────────────────────────────
+#
+# `POST /product/202309/products/deactivate` y `/activate`, cuerpo
+# `{product_ids: [...]}` (hasta 20; aquí va UNO). Actúan sobre el PRODUCTO
+# completo: la API no tiene baja por variante. `deactivate` sólo aplica a lo que
+# está en ACTIVATE (queda SELLER_DEACTIVATED, oculto al comprador); `activate`
+# sólo a lo desactivado, y lo manda a auditoría (PENDING) antes de volver.
+#
+# ⚠️ AL 7-oct-2026 NADIE LOS HA LLAMADO DESDE EL PROYECTO: la forma sale de la
+# documentación del Partner Center y falta sondear en vivo (forma real de
+# `data.errors`, tiempo en PENDING, si reactivar cuenta contra las 300 diarias).
+# Los usa sólo `services/fanout_seguro.py`, que nace apagado y en ensayo.
+
+async def _cambiar_venta(product_id: str, activar: bool, token: str | None = None,
+                         shop_cipher: str | None = None) -> dict[str, Any]:
+    # Token y cipher se leen de la base: en un hilo, por si quien llama está en
+    # el event loop (regla 11). Quien ya los tenga, que los pase.
+    token = token or await asyncio.to_thread(access_token)
+    shop_cipher = shop_cipher or await asyncio.to_thread(cipher)
+    if not (token and shop_cipher):
+        raise RuntimeError("TikTok sin token o sin shop_cipher")
+    pid = str(product_id or "").strip()
+    if not pid:
+        raise RuntimeError("sin product_id de TikTok")
+    ruta = "/product/202309/products/" + ("activate" if activar else "deactivate")
+    data = await llamar(ruta, token, {"shop_cipher": shop_cipher},
+                        {"product_ids": [pid]}, "POST")
+    # TikTok contesta `code: 0` aunque el producto NO haya cambiado: el veredicto
+    # por producto viene en `data.errors`, y su doc lo pide con todas las letras
+    # («check this list even when the top-level code is 0»).
+    errores = (data or {}).get("errors") or []
+    if errores:
+        raise RuntimeError(f"TikTok {ruta} → code=0 pero data.errors trae: "
+                           f"{json.dumps(errores, ensure_ascii=False)[:300]}")
+    return data
+
+
+async def desactivar(product_id: str, token: str | None = None,
+                     shop_cipher: str | None = None) -> dict[str, Any]:
+    """Saca UN producto de la venta (ACTIVATE → SELLER_DEACTIVATED). Levanta
+    RuntimeError si `data.errors` trae algo, aunque `code` sea 0."""
+    return await _cambiar_venta(product_id, False, token, shop_cipher)
+
+
+async def activar(product_id: str, token: str | None = None,
+                  shop_cipher: str | None = None) -> dict[str, Any]:
+    """Regresa UN producto desactivado a la venta (pasa por auditoría: PENDING).
+    Levanta RuntimeError si `data.errors` trae algo, aunque `code` sea 0."""
+    return await _cambiar_venta(product_id, True, token, shop_cipher)
+
+
 # ── Etiqueta de envío (PDF) ───────────────────────────────────────────────────
 #
 # POR QUÉ (14-sep-2026). Las ventas de TikTok con `shipping_type=TIKTOK` llevan

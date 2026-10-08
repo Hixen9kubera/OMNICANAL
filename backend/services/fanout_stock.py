@@ -361,6 +361,15 @@ def _destinos(sku: str) -> list[dict[str, Any]]:
             "stock_actual_canal": stock_canal,       # None = DESCONOCIDO (≠ 0)
             "omitido_por": motivo,
         })
+        if getattr(settings, "fanout_cero_enabled", False):
+            # Para el seguro «stock 0 ⇒ fuera de la venta» (`fanout_seguro`): el
+            # estado que vio el censo (su prefiltro sin red) y si el descarte es
+            # de ESTE nivel (FULL, borrada, borrador), que es lo único que el
+            # seguro no mira. `plan()` reusa `omitido_por` para sus propias
+            # guardas, así que sin esta bandera no se distinguen. Con el seguro
+            # APAGADO (así nace) el destino sale EXACTAMENTE como antes: ni una
+            # llave de más en `/simular`, en `/estado` ni en la respuesta de `bajar`.
+            salida[-1].update(estado_canal=f.get("estado_canal"), fuera=bool(motivo))
     return salida
 
 
@@ -859,27 +868,59 @@ def _persistir(evento: dict[str, Any]) -> None:
         log.warning("fanout_log: no se pudo persistir %s: %s", evento.get("sku"), exc)
 
 
+def _seguro(paso: str, *args):
+    """
+    El seguro «stock 0 ⇒ fuera de la venta» (`services/fanout_seguro.py`): con el
+    objetivo en 0 saca la publicación de la venta en Temu/TikTok ANTES de
+    escribirle el 0, y la regresa cuando el stock vuelve, si la apagó él.
+
+    Con FANOUT_CERO_ENABLED apagado (así nace) esto no hace NADA: ni importa el
+    módulo (tampoco lo importan los censos ni `pedidos_ml`, que preguntan primero
+    por la bandera). Y cada paso va en su propio `try`: una excepción del seguro
+    nunca impide escribir el stock ni llegar a `_persistir`.
+    """
+    if not getattr(settings, "fanout_cero_enabled", False):
+        return None
+    if paso != "abrir" and (not args or args[0] is None):
+        return None
+    try:
+        from services import fanout_seguro
+        return getattr(fanout_seguro, paso)(*args)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("seguro stock 0 (%s): %s", paso, exc)
+        return None
+
+
 def _aplicar(sku: str, motivo: str) -> None:
     """Calcula el plan y (si no es dry-run) lo ejecuta. Registra siempre."""
     inicio = time.time()
     p = plan(sku)
     simulacion = dry_run()
+    seg = _seguro("abrir", sku, motivo, p)
     resultados: list[dict[str, Any]] = []
     for a in p.get("acciones", []):
+        # Objetivo 0 ⇒ primero fuera de la venta, después el 0 (que se escribe
+        # SIEMPRE, falle o no el seguro). No depende de `accion`: también vale
+        # para `sin_cambio`.
+        _seguro("antes", seg, a)
         if a["accion"] != "escribir":
             _contadores["sin_cambio" if a["accion"] == "sin_cambio" else (
                 "omitidos_full" if "FULL" in (a.get("omitido_por") or "")
                 else "omitidos_pausados")] += 1
             resultados.append(a)
+            _seguro("despues", seg, a, None)
             continue
         if simulacion:
             _contadores["simuladas"] += 1
             resultados.append({**a, "resultado": "DRY-RUN (no se escribió)"})
+            _seguro("despues", seg, a, None)
             continue
         escritor = _ESCRITORES[(a["canal"] or "").lower()]
         ok, det = escritor(a["cuenta"], a["item_id"], a["objetivo"])
         _contadores["escrituras" if ok else "errores"] += 1
         resultados.append({**a, "resultado": ("ok" if ok else f"ERROR: {det}")})
+        # Stock de vuelta ⇒ PRIMERO el stock (ya quedó escrito), luego la venta.
+        _seguro("despues", seg, a, ok)
 
     _contadores["procesados"] += 1
     ahora = datetime.now(timezone.utc)
@@ -893,6 +934,8 @@ def _aplicar(sku: str, motivo: str) -> None:
     }
     _eventos.appendleft({k: v for k, v in evento.items() if k != "ts_dt"})
     _persistir(evento)   # sobrevive a los deploys (el ring buffer no)
+    # Las filas del seguro se sellan aparte y verificadas, con el MISMO `ts`.
+    _seguro("cerrar", seg, evento["ts_dt"], evento["ms"])
     escrituras = sum(1 for r in resultados if r.get("accion") == "escribir")
     log.info("fan-out %s%s: stock=%s objetivo=%s → %d destino(s) a escribir",
              sku, " [DRY-RUN]" if simulacion else "", p.get("stock_drop"),
@@ -926,16 +969,22 @@ def bajar(sku: str, canal: str, motivo: str) -> dict[str, Any]:
     if not arriba:
         return {"sku": sku, "resultado": "sin_excedente", "objetivo": p.get("objetivo")}
     simulacion = dry_run()
+    seg = _seguro("abrir", sku, motivo, p)
     resultados: list[dict[str, Any]] = []
     salida = "omitido"
     for a in arriba:
+        # El canal ofrece piezas con Woo en 0: primero fuera de la venta
+        # (`fanout_seguro`), después se baja. Con el seguro apagado no hace nada.
+        _seguro("antes", seg, a)
         if a["accion"] != "escribir":
             resultados.append(a)
+            _seguro("despues", seg, a, None)
             continue
         if simulacion:
             _contadores["simuladas"] += 1
             resultados.append({**a, "resultado": "DRY-RUN (no se escribió)"})
             salida = "simulado"
+            _seguro("despues", seg, a, None)
             continue
         ok, det = escritor(a["cuenta"], a["item_id"], a["objetivo"], solo_bajar=True)
         if ok and det.startswith(NO_BAJA):
@@ -943,10 +992,12 @@ def bajar(sku: str, canal: str, motivo: str) -> dict[str, Any]:
             resultados.append({**a, "accion": "sin_cambio", "omitido_por": det})
             if salida == "omitido":
                 salida = "sin_cambio"
+            _seguro("despues", seg, a, None)
         else:
             _contadores["escrituras" if ok else "errores"] += 1
             resultados.append({**a, "resultado": "ok" if ok else f"ERROR: {det}"})
             salida = "bajado" if ok else "error"
+            _seguro("despues", seg, a, ok)
     if salida in ("bajado", "simulado", "error"):
         ahora = datetime.now(timezone.utc)
         evento = {
@@ -958,8 +1009,11 @@ def bajar(sku: str, canal: str, motivo: str) -> dict[str, Any]:
         }
         _eventos.appendleft({k: v for k, v in evento.items() if k != "ts_dt"})
         _persistir(evento)
+        _seguro("cerrar", seg, evento["ts_dt"], evento["ms"])
         log.info("fan-out %s: %s ofrecía %s, objetivo %s → %s", sku, canal,
                  arriba[0]["stock_actual_canal"], p.get("objetivo"), salida)
+    else:
+        _seguro("cerrar", seg)      # sin evento del fan-out: sus filas llevan su propia hora
     return {"sku": sku, "resultado": salida, "antes": arriba[0]["stock_actual_canal"],
             "objetivo": p.get("objetivo"), "acciones": resultados}
 
@@ -984,6 +1038,12 @@ def _worker() -> None:
                 except Exception as exc:  # noqa: BLE001
                     _contadores["errores"] += 1
                     log.warning("fan-out %s falló: %s", sku, exc)
+            # Seguro stock 0: las esperas anti-parpadeo que ya vencieron vuelven
+            # a la cola y `_aplicar` reevalúa todo. Apagado (así nace) no hace nada.
+            if getattr(settings, "fanout_cero_enabled", False):
+                from services import fanout_seguro
+                for sku in fanout_seguro.esperas_vencidas():
+                    encolar(sku, fanout_seguro.MOTIVO_ESPERA)
         except Exception as exc:  # noqa: BLE001 — el worker NUNCA muere
             log.warning("worker de fan-out: %s", exc)
 

@@ -196,10 +196,11 @@ export default function RastroCambio({ sel, onCerrar, onIr, onTrazabilidad }: {
                     {escritura.toLocaleString("es-MX", { maximumFractionDigits: 1 })} s
                   </span>)}
                 {r.destinos.map((d) => {
-                  const escribe = d.k === "ok" || d.k === "mal";
+                  // `apag` = el seguro de stock 0 la sacó de la venta; el 0 pudo quedar escrito igual.
+                  const escribe = d.k === "ok" || d.k === "mal" || (d.k === "apag" && d.escrito === true);
                   return (
                     <div key={`${d.canal}-${d.nombre}`}>
-                      {fila(d.nombre, d.fuera ? "fuera del reparto" : escribe ? (d.k === "ok" ? "escrito" : "rechazado") : "no se escribe",
+                      {fila(d.nombre, d.fuera ? "fuera del reparto" : escribe ? (d.k === "mal" ? "rechazado" : "escrito") : "no se escribe",
                         escribe
                           ? <span className="absolute top-[13px] h-4 min-w-1 rounded border" style={{ left: pct(espera), width: pct(escritura),
                               background: d.k === "mal" ? RAYA_MAL : RAYA, borderColor: d.k === "mal" ? "#e11d48" : "#818cf8" }} />

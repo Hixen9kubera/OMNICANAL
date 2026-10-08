@@ -181,6 +181,31 @@ async def llamar(tipo: str, datos: dict[str, Any] | None = None,
     return res
 
 
+async def cambiar_venta(goods_id: int | str, en_venta: bool,
+                        sku_ids: list[int] | None = None) -> dict[str, Any]:
+    """
+    Saca de la venta (`en_venta=False`) o regresa a la venta (`True`) UN goods.
+
+    `bg.local.goods.sale.status.set {goodsId, onsale: 0|1}`: un goods por llamada,
+    no hay lote. Con `sku_ids` actúa sólo sobre esas variantes (`skuIdList` +
+    `operationType=2`); sin ellos, sobre el goods completo.
+
+    El veredicto real viene anidado en `result.success`, y `llamar` ya levanta
+    RuntimeError cuando viene en falso: aquí no se revisa dos veces.
+
+    ⚠️ AL 7-oct-2026 NADIE HA LLAMADO ESTE ENDPOINT DESDE EL PROYECTO. La forma
+    sale de la documentación (guía 26 de Temu) y falta sondear en vivo: si el
+    token tiene permiso (otros tipos contestan `3000032`), qué par de estado deja
+    (¿`3/2`?) y si regresar pasa por revisión. Lo usa sólo
+    `services/fanout_seguro.py`, que nace apagado y en ensayo.
+    """
+    datos: dict[str, Any] = {"goodsId": int(str(goods_id)), "onsale": 1 if en_venta else 0}
+    if sku_ids:
+        datos["skuIdList"] = [int(s) for s in sku_ids]
+        datos["operationType"] = 2
+    return await llamar("bg.local.goods.sale.status.set", datos)
+
+
 def _toa_cabeceras() -> dict[str, str]:
     """
     Las cinco cabeceras para BAJAR un archivo firmado de Temu (la etiqueta).

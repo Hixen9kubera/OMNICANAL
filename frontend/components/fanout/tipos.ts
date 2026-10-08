@@ -5,12 +5,14 @@
  */
 
 export type Tono = "mal" | "ok" | "full" | "omit";
-export type Kind = "ok" | "mal" | "full" | "omit" | "nopub" | "igual" | "sim";
+export type Kind = "ok" | "mal" | "full" | "omit" | "nopub" | "igual" | "sim" | "apag";
 
 export interface Celda {
   k: Kind;
   texto: string;
   detalle?: string;
+  /** Sólo en `apag`: además de apagarla, el 0 SÍ quedó escrito en el canal. */
+  escrito?: boolean;
 }
 
 export interface Columna {
@@ -110,6 +112,8 @@ export interface Vivo {
     mas_vieja_h: number | null;
   };
   fanout: { habilitado: boolean; dry_run: boolean; cola: number; debounce_s: number; reserva: number };
+  /** El seguro «stock 0 ⇒ fuera de la venta». null si el backend no pudo leerlo. */
+  seguro?: SeguroCero | null;
   atender: Atender[];
   bien: string[];
   serie: { dias: string[]; canales: { canal: string; nombre: string; ok: number[]; mal: number[] }[] };
@@ -120,6 +124,27 @@ export interface Vivo {
   eventos: Evento[];
   sin_reparto_1h: number;
   ultimo_id: number;
+}
+
+/** El pie del seguro «stock 0 ⇒ fuera de la venta» (`fanout_seguro.resumen_panel`). */
+export interface SeguroCero {
+  modo: "apagado" | "ensayo" | "encendido";
+  apagadas: number; // publicaciones que el seguro tiene fuera de la venta
+  tope_dia: number; // INTENTOS de apagar por día, por canal (cuenta la llamada, salga bien o no)
+  reactivar: boolean;
+  /** Apagadas por el seguro que YA tienen stock en Woo y siguen fuera de la venta. */
+  con_stock?: { canal: string; sku: string; woo: number; desde?: string | null }[];
+  /** Las que el seguro soltó solo, siguen fuera de la venta y tienen stock. */
+  soltadas?: { canal: string; sku: string; woo: number; por: string }[];
+  canales: Record<string, {
+    nombre: string;
+    encendido: boolean;
+    ensayo: boolean;
+    forzado: string[]; // por qué corre en ensayo aunque no se haya pedido
+    apagadas: number;
+    con_stock?: number; // de las apagadas, las que ya tienen stock en Woo
+    hoy: number; // intentos de apagar de hoy
+  }>;
 }
 
 export interface Destino extends Celda {
@@ -136,7 +161,8 @@ export interface Rastro extends Evento {
 }
 
 export interface CeldaMatriz {
-  k: "igual" | "mas" | "menos" | "rech" | "full" | "nopub";
+  // apag = apagada por el seguro de stock 0; apagpend = apagada por el seguro y Woo YA tiene stock (pendiente)
+  k: "igual" | "mas" | "menos" | "rech" | "full" | "nopub" | "apag" | "apagpend";
   v: string;
   d: string;
   s: string;
@@ -181,6 +207,7 @@ export const CELDA_CLS: Record<Kind, string> = {
   omit: "bg-slate-100 text-slate-700",
   igual: "bg-white text-slate-700 ring-1 ring-inset ring-slate-200",
   sim: "bg-violet-50 text-violet-800 ring-1 ring-inset ring-violet-200",
+  apag: "bg-slate-700 text-white",
   nopub: "text-slate-500",
 };
 
@@ -228,6 +255,8 @@ export const CELDA_MATRIZ_SOLIDO: Record<CeldaMatriz["k"], string> = {
   menos: "border border-amber-400 bg-amber-50 text-amber-800",
   rech: "border border-rose-600 bg-rose-600 text-white",
   full: "border border-sky-300 bg-sky-50 text-sky-800",
+  apag: "border border-slate-500 bg-slate-100 text-slate-800",
+  apagpend: "border border-amber-500 bg-amber-100 text-amber-900",
   nopub: "border border-transparent text-slate-500",
 };
 export const CELDA_MATRIZ_PUNTEADO: Partial<Record<CeldaMatriz["k"], string>> = {
@@ -241,7 +270,7 @@ export type ItemTraza =
   | { tipo: "woo"; ts: string; hora: string; origen: "odoo" | "woo"; de: number | null; a: number | null;
       fallo: boolean; motivo: string }
   | { tipo: "reparto"; ts: string; fin: string; hora: string; motivo: string;
-      origen: "venta" | "recuperado" | "excedente" | "reenvio" | "cambio"; tono: Tono; destinos: Destino[]; sin_destinos: boolean }
+      origen: "venta" | "recuperado" | "excedente" | "seguro" | "reenvio" | "cambio"; tono: Tono; destinos: Destino[]; sin_destinos: boolean }
   | { tipo: "canal"; ts: string; hora: string; canal: string; nombre: string; campo: string; via: string;
       relacion: "coincide" | "su_cuenta" | "sin_escritura" | "estado";
       de?: number | null; a?: number | null; ref?: { valor: number | null; hora: string } | null;
