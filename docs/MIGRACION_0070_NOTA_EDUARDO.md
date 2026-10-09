@@ -72,8 +72,10 @@ Probada antes en local (Postgres 16) sobre `ov_fixture → 0064 → 0065 → 006
 - **No se trajeron 290 líneas de 110 productos archivados.** En 86 de ellos
   Odoo borró la existencia sin dejar movimiento (11,501 piezas que el historial
   decía que seguían ahí).
-- **21 SKUs perdieron su rack en la foto**: lo tenía sólo el producto archivado
-  gemelo; el activo está en la raíz y quedó como `SIN UBICAR`.
+- **19 SKUs perdieron su rack en la foto**: lo tenía sólo el producto archivado
+  gemelo; el activo está en la raíz y quedó como `SIN UBICAR`. Otros **3 SKUs**
+  sólo existían archivados (`EST-0087-NEG`, `HIG-0128-EST`, `MASC-1022-ROS`) y
+  ya no están en la foto.
 - Toda salida a un socio que es canal (FULL, AMAZON, temu, tiktokshop) sale con
   causa `envio_full`, también las ventas de Temu y TikTok: así clasifica el panel.
   El canal está en `contraparte`.

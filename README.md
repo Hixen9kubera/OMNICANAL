@@ -1042,8 +1042,9 @@ archivados no los traigas ya que archivados pueden ser error"*.
 
 **Sin archivados, en las dos tablas.** Ni la existencia ni los movimientos de un producto archivado en Odoo se
 traen. La 0070 borró de `almacen.locations` los 37 renglones que la v0.629.0 había traído marcados (22,250 piezas)
-y quitó la columna `archivado_odoo`. Consecuencia que hay que saber: 21 SKUs tenían su rack sólo en el producto
-archivado gemelo, así que ahora aparecen como `SIN UBICAR`.
+y quitó la columna `archivado_odoo`. Consecuencias que hay que saber, medidas: **19 SKUs** tenían su rack sólo en el
+producto archivado gemelo (el activo está en la raíz), así que ahora aparecen como `SIN UBICAR`; y **3 SKUs** sólo
+existían archivados (`EST-0087-NEG`, `HIG-0128-EST`, `MASC-1022-ROS`) y ya no están en la foto.
 
 **A mano.** `backend/scripts/copiar_almacen_odoo.py` hace exactamente la pasada del vigilante (mismas funciones),
 con ensayo por omisión, `--delta` y `--forzar`. Reemplaza a `cargar_locations_tex2.py`, que se borró.
