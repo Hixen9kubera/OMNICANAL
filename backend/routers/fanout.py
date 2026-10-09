@@ -23,7 +23,7 @@ fanout.py — Monitoreo y simulación del fan-out de stock DROP.
   GET  /api/fanout/full/camino      → las salidas de Odoo a FULL (caché de envíos).
   GET  /api/fanout/bodegas          → la pestaña Bodegas: kubera (0064/0065) contra
                                       Odoo por bodega y contra lo que copia stock_watch.
-  GET  /api/fanout/bodegas/sku?sku= → el cajón de un SKU: su fila, libro, formatos y OV.
+  GET  /api/fanout/bodegas/sku?sku= → el cajón de un SKU: su fila, libro y OV.
   GET  /api/fanout/devoluciones?dias=&cuenta= → la pestaña Devoluciones: las cajas de ML
                                       que regresan a nuestra bodega y si ya entraron a
                                       Odoo, ligadas por la guía de la nota (solo lee).
@@ -224,9 +224,9 @@ async def full_camino():
 @router.get("/bodegas")
 async def bodegas(request: Request):
     """La pestaña Bodegas: por SKU, Odoo por bodega (TEXCO, TEX2, DROP), kubera
-    por bodega (`ops.stock_almacen`), el «Woo esperado» tal como lo calcula hoy
-    stock_watch, el Woo de su foto y la puerta de los formatos; más el estado de
-    TEX3, las banderas de la 0064/0065 y la última pasada de stock_watch.
+    por bodega (`almacen.stock_almacen`), el «Woo esperado» tal como lo calcula
+    hoy stock_watch y el Woo de su foto; más las bodegas de kubera, las banderas
+    de la 0064/0065, la vigía y la última pasada de stock_watch.
     Odoo con caché de 10 min: si no contesta, la pestaña sigue con kubera y Woo.
     Sin las tablas de la 0064/0065 responde 200 y lo dice. Solo lee."""
     import asyncio
@@ -246,8 +246,8 @@ async def bodegas(request: Request):
 @router.get("/bodegas/sku")
 async def bodegas_sku(sku: str = Query(..., min_length=2, max_length=80, description="SKU")):
     """El cajón de un SKU (esté o no en la tabla): su fila, sus últimos
-    movimientos en el libro (`ops.stock_mov`), sus renglones de formato y sus
-    órdenes de venta. Solo lee."""
+    movimientos en el libro (`almacen.stock_mov`) y sus órdenes de venta. Solo
+    lee."""
     import asyncio
 
     from services import fanout_bodegas

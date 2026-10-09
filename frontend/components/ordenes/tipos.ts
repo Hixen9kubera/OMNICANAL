@@ -290,7 +290,7 @@ export interface EstadoModulo {
   habilitado: boolean;
   banderas: {
     ordenes_venta: Bandera;
-    /** Que el planeador genere órdenes solas en TEX3 (fase B). Sólo lectura aquí. */
+    /** Que el planeador genere órdenes solas (todavía no las genera). Sólo lectura aquí. */
     ov_generacion_auto: Bandera;
   };
   /** Catálogo de bodegas. Las elegibles en un renglón son las de kubera con `admite_ov`. */

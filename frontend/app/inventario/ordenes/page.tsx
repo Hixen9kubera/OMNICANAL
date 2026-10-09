@@ -128,7 +128,7 @@ const plural = (n: number, uno: string, varios: string) => `${num(n)} ${n === 1 
 /**
  * Las bodegas donde se puede CAPTURAR una orden: de kubera y con `admite_ov`.
  * Es la misma regla que la base vuelve a exigir al confirmar; aquí sólo se
- * enseña. (Hoy es la de ensayo; TEXCO III nace apagada y la enciende un acta.)
+ * enseña. (Hoy es sólo la de ensayo: TEX3 no existirá, decisión del 8-oct-2026.)
  *
  * Ni ésta ni `avisoConciliar` se exportan: Next sólo admite en un `page.tsx`
  * sus exportaciones de página, y una de más rompe el build.
@@ -904,7 +904,7 @@ function Hero({
  * Antes aquí había un interruptor que un admin movía desde la pantalla. Ya no:
  * `ordenes_venta` y `ov_generacion_auto` son filas de `ops.automatizacion_flags`
  * que enciende un ACTA (con su motivo y sus firmas), porque lo que gobiernan
- * —apartar stock, y que el planeador genere órdenes solas en TEXCO III— es un
+ * —apartar stock, y que el planeador genere órdenes solas— es un
  * flujo de negocio vivo. La pantalla dice cómo están, quién las movió y cuándo;
  * no ofrece nada que apretar, y por eso no parece un control.
  */
@@ -928,7 +928,7 @@ function Banderas({ estado }: { estado: EstadoModulo }) {
         </FilaBandera>
         <FilaBandera
           icono={Zap} activa={autoEncendida}
-          titulo="Generación automática (TEXCO III)"
+          titulo="Generación automática"
           chip={autoEncendida ? "ENCENDIDA" : "apagada"}
           tono={autoEncendida ? "ok" : "apagada"}>
           {autoEncendida ? huellaBandera(auto, true) : (

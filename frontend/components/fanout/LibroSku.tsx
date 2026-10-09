@@ -3,20 +3,19 @@
 /**
  * LibroSku — panel lateral de la pestaña Bodegas para UN SKU (esté o no en la
  * tabla): cómo está hoy en Odoo por bodega, en kubera por bodega y contra Woo; su
- * libro (`ops.stock_mov`, los últimos movimientos, en línea de tiempo), sus
- * renglones de formato con la puerta, y sus órdenes de venta (`ov_lineas` +
- * `ov_ordenes`, sin datos del comprador). Lo arma `GET /api/fanout/bodegas/sku`.
+ * libro (`almacen.stock_mov`, los últimos movimientos, en línea de tiempo) y sus
+ * órdenes de venta (`ventas.ov_lineas` + `ventas.ov_ordenes`, sin datos del
+ * comprador). Lo arma `GET /api/fanout/bodegas/sku`.
  * Solo lee. Mismo molde que `TrazabilidadSku`, que se puede abrir desde aquí.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Route, X } from "lucide-react";
 import { API_BASE, fetchSesion } from "@/lib/api";
 import type { DetalleBodega, MovLibro } from "./tipos";
-import { COINCIDE_BODEGA, MOTIVO_MOV, PUERTA_CLS, conSigno, horaCorta } from "./tipos";
+import { COINCIDE_BODEGA, MOTIVO_MOV, conSigno, horaCorta } from "./tipos";
 
 const MESES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
 const n = (v: number | null | undefined) => (v == null ? "—" : v.toLocaleString("es-MX"));
-const pl = (k: number, uno: string, varios: string) => `${k.toLocaleString("es-MX")} ${k === 1 ? uno : varios}`;
 
 function corto(dia: string): string {
   const [, m, d] = dia.split("-").map(Number);
@@ -36,11 +35,6 @@ const ESTADO_OV: Record<string, string> = {
   entregada: "bg-emerald-50 text-emerald-800",
   cancelada: "bg-slate-200 text-slate-800",
   entregada_cancelada: "bg-amber-100 text-amber-900",
-};
-const ESTADO_FMT: Record<string, string> = {
-  por_confirmar: "bg-amber-100 text-amber-900",
-  confirmado: "bg-indigo-100 text-indigo-900",
-  descartado: "bg-slate-200 text-slate-800",
 };
 
 function Cifra({ titulo, valor, linea, cls = "bg-slate-50 text-slate-900" }: {
@@ -156,7 +150,7 @@ export default function LibroSku({ sku, onCerrar, onTrazabilidad }: {
           )}
           {d && !d.tablas.ok && (
             <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">
-              Faltan las tablas de la 0064/0065 ({d.tablas.faltan.join(", ")}): no hay libro, formatos ni OV que leer.
+              Faltan las tablas de la 0064/0065 ({d.tablas.faltan.join(", ")}): no hay libro ni OV que leer.
             </p>
           )}
 
@@ -188,16 +182,15 @@ export default function LibroSku({ sku, onCerrar, onTrazabilidad }: {
                     valor={f.dif ? conSigno(f.dif) : COINCIDE_BODEGA[f.coincide].texto} linea={f.coincide_t} />
                 </div>
                 <p className="text-xs leading-[18px] text-slate-700">{f.esperado_d}</p>
-                <div className="flex flex-wrap items-center gap-2 text-xs text-slate-700">
-                  <span className={`rounded px-1.5 py-px text-[11px] font-semibold ${PUERTA_CLS[f.puerta.estado]}`}>{f.puerta.texto}</span>
-                  {f.puerta.estado === "esperando" && <span>{pl(f.puerta.piezas ?? 0, "pieza", "piezas")} en {f.puerta.folios}</span>}
-                  {f.puerta.estado === "abierta" && f.puerta.abierta && <span>la última, {horaCorta(f.puerta.abierta, d.hoy)}</span>}
-                  {f.avisos.map((a) => <span key={a} className="rounded bg-amber-50 px-1.5 py-px text-amber-900">{a}</span>)}
-                </div>
+                {f.avisos.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-700">
+                    {f.avisos.map((a) => <span key={a} className="rounded bg-amber-50 px-1.5 py-px text-amber-900">{a}</span>)}
+                  </div>
+                )}
                 {!d.odoo.ok && d.odoo.motivo && <p className="text-xs text-amber-900">{d.odoo.motivo}</p>}
               </section>
 
-              {/* Sin las tablas de la 0064/0065 no hay libro, formatos ni OV que leer: no se afirma que estén vacíos. */}
+              {/* Sin las tablas de la 0064/0065 no hay libro ni OV que leer: no se afirma que estén vacíos. */}
               {d.tablas.ok && (<>
               <section aria-labelledby="t-libro-sku" className="flex flex-col gap-2">
                 <h3 id="t-libro-sku" className="text-xs font-semibold uppercase tracking-wide text-slate-500">
@@ -233,40 +226,6 @@ export default function LibroSku({ sku, onCerrar, onTrazabilidad }: {
                       </section>
                     ))}
                   </div>
-                )}
-              </section>
-
-              <section aria-labelledby="t-formatos-sku" className="flex flex-col gap-2">
-                <h3 id="t-formatos-sku" className="text-xs font-semibold uppercase tracking-wide text-slate-500">Renglones de formato</h3>
-                {d.renglones.length === 0 ? (
-                  <p className="rounded-lg bg-slate-50 px-4 py-3 text-sm text-slate-700">Ningún formato de Bodega trae este SKU.</p>
-                ) : (
-                  <ul className="flex flex-col divide-y divide-slate-100 rounded-lg ring-1 ring-slate-200">
-                    {d.renglones.map((r) => (
-                      <li key={`${r.folio}-${r.fila}`} className="flex flex-col gap-0.5 px-3 py-2 text-[13px] text-slate-800">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-mono font-semibold">{r.folio}</span>
-                          <span className={`rounded px-1.5 py-px text-[11px] font-semibold ${ESTADO_FMT[r.estado] ?? "bg-slate-100 text-slate-700"}`}>{r.estado.replace("_", " ")}</span>
-                          <span>fila {r.fila} · {r.almacen} · <span className="font-semibold tabular-nums">{n(r.cantidad)}</span> pzs
-                            {r.cantidad !== r.cantidad_archivo ? ` (el archivo decía ${n(r.cantidad_archivo)})` : ""}</span>
-                          {r.estado === "confirmado" && (
-                            <span className={`rounded px-1.5 py-px text-[11px] font-semibold ${PUERTA_CLS[r.abierta ? "abierta" : "esperando"]}`}>
-                              {r.abierta ? `Puerta abierta · ${r.via_t ?? r.via}` : "Esperando puerta"}
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-xs text-slate-600">
-                          {[r.cargado && `cargado ${horaCorta(r.cargado, d.hoy)}`, r.confirmado && `confirmado ${horaCorta(r.confirmado, d.hoy)}`,
-                            r.abierta && `puerta ${horaCorta(r.abierta, d.hoy)}`,
-                            r.odoo_tex2_al_cargar != null && `TEX2 al cargar ${n(r.odoo_tex2_al_cargar)}`,
-                            r.odoo_tex2_al_confirmar != null && `al confirmar ${n(r.odoo_tex2_al_confirmar)}`,
-                            r.odoo_tex2_al_abrir != null && `al abrir ${n(r.odoo_tex2_al_abrir)}`,
-                            r.sku_archivo.toUpperCase() !== (d.sku ?? "").toUpperCase() && `en el archivo: ${r.sku_archivo}`,
-                            r.ubicacion, r.nota, r.aviso].filter(Boolean).join(" · ")}
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
                 )}
               </section>
 

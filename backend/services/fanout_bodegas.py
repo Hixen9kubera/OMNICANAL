@@ -1,6 +1,7 @@
 """
 fanout_bodegas.py — La pestaña «Bodegas» de Operaciones: ¿cuadra el inventario
-propio de kubera (0064/0065) con Odoo y con lo que stock_watch copia a Woo?
+propio de kubera (0064/0065, mudado a `almacen.*` y `ventas.*` por la 0068) con
+Odoo y con lo que stock_watch copia a Woo?
 
 SOLO LEE. No escribe en kubera, ni en Odoo, ni en Woo, ni en ningún canal.
 
@@ -17,10 +18,14 @@ DE DÓNDE SALE CADA COLUMNA
     en otras bodegas (SCRAP y CUARENTENA no: Odoo ya las deja fuera del total).
   · Odoo de la foto: `ops.stock_watch_photo.stock_odoo`, lo que leyó (y absorbió)
     la última pasada de stock_watch, ya con max(0).
-  · kubera por bodega: `ops.stock_almacen` (físico, apartado, libre).
+  · kubera por bodega: `almacen.stock_almacen` (físico, apartado, libre).
   · Woo hoy: `ops.stock_watch_photo.stock_woo` (la misma pasada).
-  · Puerta: `ops.stock_formato_linea` (sin formato · por confirmar · esperando ·
-    abierta con su vía).
+  · Ya no hay «puerta» ni formatos de Bodega: eran de la mudanza de TEX2 a TEX3,
+    que no existirá (Eduardo, 8-oct-2026; la limpieza de la Fase 1 los borra).
+    Por UNA versión la respuesta sigue llevando `formatos` en ceros,
+    `que_falta: []`, una `puerta` neutra por fila y `renglones: []` en el cajón,
+    para que una pestaña abierta con el frontend anterior no truene; se quitan en
+    la versión siguiente, con los dos servicios ya desplegados y 24 h después.
 
 «WOO ESPERADO» — EXACTAMENTE lo que hoy calcula `stock_watch._deltas_odoo`
   · Modo ABSOLUTO (`STOCK_WATCH_ABSOLUTO`): `max(0, stock_odoo − pend)` si
@@ -61,8 +66,10 @@ DE DÓNDE SALE CADA COLUMNA
   `por_copiar` en lugar de un falso «de más / de menos».
 
 TOLERANCIAS
-  · Sin las tablas de la 0064/0065 (`to_regclass`, guía §4.8): responde 200 con
-    `tablas.ok = false`, y la tabla igual se llena con Odoo y la foto.
+  · Sin las tablas de la 0064/0065 en su casa de la 0068 (`almacen.*`, `ventas.*`;
+    `to_regclass`, guía §4.8): responde 200 con `tablas.ok = false` y en `faltan`
+    el nombre calificado real, y la tabla igual se llena con Odoo y la foto. Nada
+    aquí nombra los puentes `ops.<tabla>` de la 0068 (lo fija una prueba).
   · Odoo caído: `odoo.ok = false` (o la última lectura buena con `viejo`); kubera
     y Woo se siguen mostrando. Nunca un 500 por Odoo. Tras una falla no se vuelve
     a Odoo antes de un minuto, tampoco desde el cajón.
@@ -106,7 +113,7 @@ ODOO_TIMEOUT_CAJON = 15.0   # el cajón de un SKU: alguien está esperando con l
 _VISTAS_TTL = 86400.0       # almacén → ubicación raíz: cambia nunca
 _RESUMEN_TTL = 20.0         # la página pregunta cada minuto y puede haber varias abiertas
 _TABLAS_TTL = 60.0          # guía §4.8
-_LENTO_TTL = 300.0          # conteos de formatos y vigía: crecen con el libro, sin tope
+_LENTO_TTL = 300.0          # conteos del libro y vigía: crecen con el libro, sin tope
 _UNO_MAX = 256              # SKUs sueltos del cajón en caché
 
 METODOS_ODOO = frozenset({"search_read", "read_group"})
@@ -120,12 +127,16 @@ BANDERAS: list[dict[str, Any]] = [
     {"flag": "stock_watch_lee_kubera", "variable": "STOCK_WATCH_LEE_KUBERA",
      "que": "stock_watch suma a Woo el libre de kubera"},
     {"flag": "ov_generacion_auto", "variable": None,
-     "que": "OV automáticas y que el planeador asigne a TEX3"},
+     "que": "OV automáticas (crear_auto); el planeador todavía no las genera"},
     {"flag": "inventario_libro", "variable": None,
-     "que": "Formatos de Bodega, puerta, conteos y devoluciones"},
+     "que": "Libro de kubera: entradas, conteos y correcciones (es del corte)"},
 ]
 
-VIAS = {"tex2_bajo": "TEX2 bajó", "tex2_cero": "TEX2 en cero", "movimiento": "movimiento en Odoo"}
+# Compatibilidad por UNA versión (ver el encabezado): lo que el frontend anterior
+# lee sin guardas. Se quitan en la versión siguiente.
+FORMATOS_COMPAT = {"por_confirmar": 0, "confirmados": 0, "esperando": 0, "abiertas_hoy": 0, "abiertas": 0,
+                   "renglones": 0}
+PUERTA_COMPAT = {"estado": "sin_formato", "texto": "Sin formato"}
 
 # ── SQL ──────────────────────────────────────────────────────────────────────
 # Cada sentencia lleva su marca `/* bodegas:… */`: las pruebas la usan para
@@ -133,14 +144,17 @@ VIAS = {"tex2_bajo": "TEX2 bajó", "tex2_cero": "TEX2 en cero", "movimiento": "m
 # nunca `sku::text = any(…)`, que anula el índice. TODAS son `select`: lo
 # comprueba `tests/test_fanout_bodegas.py::SqlSoloLectura`.
 
+# El núcleo de la pestaña, con su nombre calificado real (la 0068 los mudó de
+# `ops`; la vigía se quedó en `ops`). `_tablas` lo usa para decir qué falta.
+NUCLEO = {"almacenes": "almacen.almacenes", "stock_almacen": "almacen.stock_almacen",
+          "stock_mov": "almacen.stock_mov", "ov_ordenes": "ventas.ov_ordenes", "ov_lineas": "ventas.ov_lineas"}
+
 _SQL_TABLAS = """/* bodegas:tablas */
-select to_regclass('ops.almacenes') is not null as almacenes,
-       to_regclass('ops.stock_almacen') is not null as stock_almacen,
-       to_regclass('ops.stock_formato') is not null as stock_formato,
-       to_regclass('ops.stock_formato_linea') is not null as stock_formato_linea,
-       to_regclass('ops.stock_mov') is not null as stock_mov,
-       to_regclass('ops.ov_ordenes') is not null as ov_ordenes,
-       to_regclass('ops.ov_lineas') is not null as ov_lineas,
+select to_regclass('almacen.almacenes') is not null as almacenes,
+       to_regclass('almacen.stock_almacen') is not null as stock_almacen,
+       to_regclass('almacen.stock_mov') is not null as stock_mov,
+       to_regclass('ventas.ov_ordenes') is not null as ov_ordenes,
+       to_regclass('ventas.ov_lineas') is not null as ov_lineas,
        to_regclass('ops.stock_apartado_descuadre_v') is not null as vigia,
        exists (select 1 from pg_catalog.pg_attribute a
                 where a.attrelid = to_regclass('ops.stock_watch_photo')
@@ -159,7 +173,7 @@ _SQL_ALMACENES = """/* bodegas:almacenes */
 select codigo, nombre, fuente, odoo_warehouse_id, preferencia, surte_ventas, admite_ov,
        cuenta_para_woo, motivo,
        to_char(actualizado_at at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as actualizado
-  from ops.almacenes
+  from almacen.almacenes
  order by (fuente = 'kubera'), preferencia nulls last, codigo"""
 
 _SQL_BANDERAS = """/* bodegas:banderas */
@@ -168,52 +182,25 @@ select flag, valor, motivo, actualizado_por,
   from ops.automatizacion_flags
  where flag = any(%(f)s)"""
 
-# Toda fila de `stock_almacen` entra (un SKU que se vendió hasta 0 en TEX3 sigue
-# siendo de kubera); sólo se dejan fuera las filas en 0 de ENSAYO, que son ruido.
+# Toda fila de `stock_almacen` entra (un SKU que se vendió hasta 0 en una bodega
+# de kubera sigue siendo de kubera); sólo se dejan fuera las filas en 0 de ENSAYO,
+# que son ruido.
 _SQL_SALDOS = """/* bodegas:saldos */
 select sku::text as sku, almacen, fisico, apartado, libre, ubicacion
-  from ops.stock_almacen
+  from almacen.stock_almacen
  where almacen <> 'ENSAYO' or fisico <> 0 or apartado <> 0"""
 
 _SQL_SALDOS_SKU = """/* bodegas:saldos_sku */
 select sku::text as sku, almacen, fisico, apartado, libre, ubicacion,
        to_char(actualizado_at at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as actualizado
-  from ops.stock_almacen
+  from almacen.stock_almacen
  where sku = %(s)s::citext"""
 
-# La puerta por SKU, agregada en la base (los renglones crecen con cada formato).
-# Los descartados no cuentan; uno de `por_confirmar` todavía no espera.
-_SQL_PUERTAS = """/* bodegas:puertas */
-select l.sku::text as sku,
-       count(*) filter (where f.estado = 'por_confirmar') as por_confirmar,
-       count(*) filter (where f.estado = 'confirmado' and l.salida_odoo_at is null) as esperando,
-       coalesce(sum(l.cantidad) filter (where f.estado = 'confirmado' and l.salida_odoo_at is null), 0)
-         as piezas_esperando,
-       count(*) filter (where l.salida_odoo_at is not null) as abiertas,
-       (array_agg(l.salida_odoo_via order by l.salida_odoo_at desc)
-          filter (where l.salida_odoo_at is not null))[1] as via,
-       to_char(max(l.salida_odoo_at) at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as abierta,
-       string_agg(distinct f.folio, ', ') filter (where f.estado = 'confirmado' and l.salida_odoo_at is null)
-         as folios_esperando
-  from ops.stock_formato_linea l
-  join ops.stock_formato f on f.id = l.formato_id
- where f.estado <> 'descartado' {donde}
- group by l.sku"""
-
-# Conteos del encabezado. Varios recorren tablas que sólo crecen (el libro, los
-# renglones), así que van con su propia caché de 5 min (`_lentos`); lo que la
-# tabla necesita fresco (renglones esperando, puertas abiertas) sale de `puertas`.
-_SQL_FORMATOS = """/* bodegas:formatos */
-select (select count(*) from ops.stock_formato where estado = 'por_confirmar') as por_confirmar,
-       (select count(*) from ops.stock_formato where estado = 'confirmado') as confirmados,
-       (select count(*) from ops.stock_formato_linea l join ops.stock_formato f on f.id = l.formato_id
-         where f.estado = 'confirmado' and l.salida_odoo_at is null) as esperando,
-       (select count(*) from ops.stock_formato_linea
-         where salida_odoo_at >= ((now() at time zone %(z)s)::date)::timestamp at time zone %(z)s)
-         as abiertas_hoy,
-       (select count(*) from ops.stock_formato_linea where salida_odoo_at is not null) as abiertas,
-       (select count(*) from ops.stock_mov) as movimientos,
-       (select count(*) from ops.ov_ordenes
+# Conteos del encabezado. Recorren tablas que sólo crecen (el libro), así que van
+# con su propia caché de 5 min (`_lentos`).
+_SQL_CONTEOS = """/* bodegas:conteos */
+select (select count(*) from almacen.stock_mov) as movimientos,
+       (select count(*) from ventas.ov_ordenes
          where borrada_at is null and estado in ('borrador', 'confirmada')) as ov_abiertas"""
 
 _SQL_VIGIA = """/* bodegas:vigia */
@@ -245,23 +232,10 @@ _SQL_LIBRO = """/* bodegas:libro */
 select id, almacen, delta, saldo_despues, motivo, ref, nota, coalesce(quien_nombre, quien) as quien, via,
        to_char(creado_at at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as hora,
        count(*) over () as total
-  from ops.stock_mov
+  from almacen.stock_mov
  where sku = %(s)s::citext
  order by id desc
  limit %(n)s"""
-
-_SQL_RENGLONES_SKU = """/* bodegas:renglones_sku */
-select f.folio, f.estado, f.almacen, l.fila, l.cantidad, l.cantidad_archivo, l.sku_archivo,
-       l.ubicacion, l.nota, l.aviso, l.salida_odoo_via as via, l.salida_odoo_ref as ref_odoo,
-       l.odoo_tex2_al_cargar, l.odoo_tex2_al_confirmar, l.odoo_tex2_al_abrir,
-       to_char(l.salida_odoo_at at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as abierta,
-       to_char(f.cargado_at at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as cargado,
-       to_char(f.confirmado_at at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as confirmado
-  from ops.stock_formato_linea l
-  join ops.stock_formato f on f.id = l.formato_id
- where l.sku = %(s)s::citext
- order by f.id desc, l.fila
- limit 100"""
 
 # Sin `cliente` ni nada del comprador: el repo es público y la pantalla no lo necesita.
 _SQL_OV_SKU = """/* bodegas:ov_sku */
@@ -271,8 +245,8 @@ select o.folio, o.estado, o.tipo, o.canal, o.full_tienda, (o.borrada_at is not n
        to_char(o.confirmada_at at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as confirmada,
        to_char(o.entregada_at at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as entregada,
        to_char(o.cancelada_at at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as cancelada
-  from ops.ov_lineas l
-  join ops.ov_ordenes o on o.id = l.orden_id
+  from ventas.ov_lineas l
+  join ventas.ov_ordenes o on o.id = l.orden_id
  where l.sku = %(s)s::citext
  order by o.id desc, l.linea
  limit 50"""
@@ -423,27 +397,6 @@ def coincide(esperado: int | None, woo: int | None, motivo: str) -> tuple[str, i
     return ("mas", dif, "Woo ofrece de más") if dif > 0 else ("menos", dif, "Woo ofrece de menos")
 
 
-def estado_puerta(p: dict[str, Any] | None) -> dict[str, Any]:
-    """La puerta del SKU desde su agregado de renglones (sin descartados).
-
-    Esperando gana: un renglón confirmado con la puerta cerrada es lo que hay que
-    mirar aunque otro formato ya se haya abierto."""
-    if not p:
-        return {"estado": "sin_formato", "texto": "Sin formato"}
-    if int(p.get("esperando") or 0):
-        return {"estado": "esperando", "texto": "Esperando puerta",
-                "renglones": int(p["esperando"]), "piezas": int(p.get("piezas_esperando") or 0),
-                "folios": p.get("folios_esperando") or ""}
-    if int(p.get("abiertas") or 0):
-        via = p.get("via") or ""
-        return {"estado": "abierta", "texto": f"Abierta · {VIAS.get(via, via)}", "via": via,
-                "abierta": p.get("abierta")}
-    if int(p.get("por_confirmar") or 0):
-        return {"estado": "por_confirmar", "texto": "Formato por confirmar",
-                "renglones": int(p["por_confirmar"])}
-    return {"estado": "sin_formato", "texto": "Sin formato"}
-
-
 def odoo_por_sku(productos: list[dict[str, Any]],
                  grupos: dict[str, list[dict[str, Any]]]) -> dict[str, dict[str, Any]]:
     """Cruza `product.product` con los `read_group` por bodega → {SKU MAYÚS: …}.
@@ -497,13 +450,12 @@ def _cuenta_kubera(s: dict[str, Any]) -> bool:
 
 
 def universo(odoo: dict[str, dict[str, Any]] | None, saldos: Iterable[dict[str, Any]],
-             puertas: dict[str, Any], buscado: str | None = None) -> list[str]:
+             buscado: str | None = None) -> list[str]:
     """SKUs (mayúsculas) de la tabla: algo en TEX2 en Odoo, o fila en
-    `stock_almacen` (las filas en 0 de ENSAYO no entran), o renglón de un formato
-    no descartado; más el que se busque."""
+    `almacen.stock_almacen` (las filas en 0 de ENSAYO no entran); más el que se
+    busque."""
     u = {k for k, o in (odoo or {}).items() if o.get("en_tex2")}
     u |= {_llave(s.get("sku")) for s in saldos if _cuenta_kubera(s)}
-    u |= {_llave(k) for k in puertas}
     if buscado:
         u.add(_llave(buscado))
     u.discard("")
@@ -512,7 +464,7 @@ def universo(odoo: dict[str, dict[str, Any]] | None, saldos: Iterable[dict[str, 
 
 def armar_fila(k: str, *, od: dict[str, Any] | None, odoo_ok: bool, foto: dict[str, Any] | None,
                saldos: list[dict[str, Any]], almacenes: dict[str, dict[str, Any]],
-               puerta: dict[str, Any] | None, pend: int, modo: dict[str, Any],
+               pend: int, modo: dict[str, Any],
                odoo_tras_pasada: bool = False, reciente: bool = False) -> dict[str, Any]:
     """Una fila de la tabla. `modo`: absoluto, resta, ciega, lee_kubera.
 
@@ -599,18 +551,14 @@ def armar_fila(k: str, *, od: dict[str, Any] | None, odoo_ok: bool, foto: dict[s
     if foto is None:
         avisos.append("No está en la foto de stock_watch (ni Odoo activo ni Woo lo listan)")
 
-    pu = estado_puerta(puerta)
     tags = []
-    if kub or pu["estado"] != "sin_formato":
+    if kub:
         tags.append("kubera")
-    if pu["estado"] == "esperando":
-        tags.append("esperando")
     if k_c in ("mas", "menos"):
         tags.append("no_coincide")
     if k_c == "por_copiar":
         tags.append("por_copiar")
-    rango = {"mas": 0, "menos": 1, "por_copiar": 2}.get(
-        k_c, 3 if pu["estado"] == "esperando" else 4 if kub else 5)
+    rango = {"mas": 0, "menos": 1, "por_copiar": 2}.get(k_c, 3 if kub else 4)
     return {
         "sku": str(sku), "nombre": (od or {}).get("nombre") or "",
         "odoo": odoo, "odoo_existe": bool(od), "odoo_total": stock_odoo, "odoo_hoy": odoo_hoy,
@@ -621,30 +569,14 @@ def armar_fila(k: str, *, od: dict[str, Any] | None, odoo_ok: bool, foto: dict[s
         "woo": woo, "woo_de": f.get("hora"),
         "stock_kubera_foto": k_foto,
         "coincide": k_c, "dif": dif, "coincide_t": texto_c,
-        "puerta": pu, "tags": tags, "peso": [rango, -abs(dif or 0)],
+        "puerta": dict(PUERTA_COMPAT),       # compat: el frontend anterior la pinta; se quita después
+        "tags": tags, "peso": [rango, -abs(dif or 0)],
     }
 
 
-def que_falta(almacenes: dict[str, dict[str, Any]], formatos: dict[str, Any],
-              bandera_kubera: bool, suma_kubera: bool | None) -> list[dict[str, Any]]:
-    """Los pasos para que TEX3 cuente, con lo que ya está hecho."""
-    tex3 = almacenes.get("TEX3") or {}
-    return [
-        {"paso": "Bodega carga su primer formato (lote de TEX2 a TEX3)",
-         "hecho": int(formatos.get("por_confirmar") or 0) + int(formatos.get("confirmados") or 0)
-         + int(formatos.get("renglones") or 0) > 0},
-        {"paso": "Se confirma y se abre la puerta: Odoo ya no lo tiene en TEX2",
-         "hecho": int(formatos.get("abiertas") or 0) > 0},
-        {"paso": "Acta: encender TEX3 (admite_ov, surte_ventas y cuenta_para_woo)",
-         "hecho": bool(tex3.get("admite_ov") and tex3.get("surte_ventas") and tex3.get("cuenta_para_woo"))},
-        {"paso": "Acta: encender stock_watch_lee_kubera (y que stock_watch la sepa leer)",
-         "hecho": bool(bandera_kubera and suma_kubera)},
-    ]
-
-
 def ordenar(filas: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Los peores primero: Woo de más, de menos, por copiar, esperando puerta, con
-    kubera, el resto."""
+    """Los peores primero: Woo de más, de menos, por copiar, con saldo en kubera,
+    el resto."""
     return sorted(filas, key=lambda f: (f["peso"][0], f["peso"][1], f["sku"]))
 
 
@@ -655,15 +587,14 @@ _lento_cache: dict[str, Any] = {"t": 0.0, "v": None}
 
 
 def _tablas() -> dict[str, Any]:
-    """¿Existen las tablas de la 0064/0065? Caché de 60 s (guía §4.8). Las
-    pruebas simulan su ausencia reemplazando esta función."""
+    """¿Existen las tablas de la 0064/0065 (en `almacen.*` y `ventas.*` desde la
+    0068)? Caché de 60 s (guía §4.8). `faltan` lleva el nombre calificado real.
+    Las pruebas simulan su ausencia reemplazando esta función."""
     ahora = time.monotonic()
     if _tablas_cache["v"] is not None and ahora - _tablas_cache["t"] < _TABLAS_TTL:
         return _tablas_cache["v"]
     fila = sdb.fetch_one(_SQL_TABLAS) or {}
-    nucleo = ("almacenes", "stock_almacen", "stock_formato", "stock_formato_linea", "stock_mov",
-              "ov_ordenes", "ov_lineas")
-    faltan = [f"ops.{t}" for t in nucleo if not fila.get(t)]
+    faltan = [nombre for clave, nombre in NUCLEO.items() if not fila.get(clave)]
     v = {"ok": not faltan, "faltan": faltan, "vigia": bool(fila.get("vigia")),
          "stock_kubera": bool(fila.get("stock_kubera"))}
     if faltan:
@@ -673,15 +604,16 @@ def _tablas() -> dict[str, Any]:
 
 
 def _lentos(tablas: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Conteos de formatos y la vigía, con caché de 5 min: recorren el libro y los
-    renglones, que sólo crecen. Corre bajo `_cache_lock` (lo llama `_resumen`)."""
+    """Conteos del libro y de las OV abiertas, y la vigía, con caché de 5 min:
+    recorren el libro, que sólo crece. Corre bajo `_cache_lock` (lo llama
+    `_resumen`)."""
     ahora = time.monotonic()
     if _lento_cache["v"] is not None and ahora - _lento_cache["t"] < _LENTO_TTL:
         return _lento_cache["v"]
-    formatos = sdb.fetch_one(_SQL_FORMATOS, {"z": ZONA}) or {}
+    conteos = sdb.fetch_one(_SQL_CONTEOS) or {}
     vigia = sdb.fetch_all(_SQL_VIGIA) if tablas["vigia"] else []
-    _lento_cache.update(t=ahora, v=(formatos, vigia))
-    return formatos, vigia
+    _lento_cache.update(t=ahora, v=(conteos, vigia))
+    return conteos, vigia
 
 
 def _config_stock_watch() -> dict[str, Any]:
@@ -994,13 +926,12 @@ def _contexto(tablas: dict[str, Any]) -> dict[str, Any]:
 
 
 def _fila(k: str, ctx: dict[str, Any], *, od: dict[str, Any] | None, odoo_ok: bool,
-          odoo_tras_pasada: bool, foto: dict[str, Any] | None, saldos: list[dict[str, Any]],
-          puerta: dict[str, Any] | None) -> dict[str, Any]:
+          odoo_tras_pasada: bool, foto: dict[str, Any] | None, saldos: list[dict[str, Any]]) -> dict[str, Any]:
     # El SKU EXACTO con que stock_watch resta: el de la foto (es el código de Odoo
     # y de Woo a la vez cuando hay `stock_odoo`), si no el de Odoo o el de kubera.
     clave = str((foto or {}).get("sku") or (od or {}).get("sku") or (saldos[0]["sku"] if saldos else k))
     return armar_fila(k, od=od, odoo_ok=odoo_ok, foto=foto, saldos=saldos, almacenes=ctx["almacenes"],
-                      puerta=puerta, pend=ctx["pend"].get(clave, 0), modo=ctx["modo"],
+                      pend=ctx["pend"].get(clave, 0), modo=ctx["modo"],
                       odoo_tras_pasada=odoo_tras_pasada, reciente=clave in ctx["recientes"])
 
 
@@ -1036,23 +967,16 @@ def _resumen() -> dict[str, Any]:
     almacenes = ctx["almacenes"]
     pasada = ctx["pasada"]
     saldos: list[dict[str, Any]] = []
-    puertas: dict[str, dict[str, Any]] = {}
-    formatos: dict[str, Any] = {}
+    conteos: dict[str, Any] = {}
     vigia: list[dict[str, Any]] = []
     if tablas["ok"]:
         saldos = sdb.fetch_all(_SQL_SALDOS)
-        puertas = {_llave(p["sku"]): p for p in sdb.fetch_all(_SQL_PUERTAS.format(donde=""), {"z": ZONA})}
-        formatos, vigia = _lentos(tablas)
-        # Lo que la tabla pinta por fila va fresco, de la misma lectura que las filas.
-        formatos = {**formatos,
-                    "esperando": sum(int(p.get("esperando") or 0) for p in puertas.values()),
-                    "abiertas": sum(int(p.get("abiertas") or 0) for p in puertas.values()),
-                    "renglones": len(puertas)}
-    skus_kubera = {s["sku"] for s in saldos if _cuenta_kubera(s)} | {p["sku"] for p in puertas.values()}
+        conteos, vigia = _lentos(tablas)
+    skus_kubera = {s["sku"] for s in saldos if _cuenta_kubera(s)}
 
     odoo = leer_odoo(skus_kubera, pasada.get("edad_s"))
     por_sku = odoo.get("por_sku") if odoo.get("ok") else None
-    llaves = universo(por_sku, saldos, puertas)
+    llaves = universo(por_sku, saldos)
     foto = _leer_foto(llaves, tablas["stock_kubera"])
     saldos_por: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for s in saldos:
@@ -1060,15 +984,16 @@ def _resumen() -> dict[str, Any]:
 
     filas = ordenar([_fila(k, ctx, od=(por_sku or {}).get(k), odoo_ok=por_sku is not None,
                            odoo_tras_pasada=bool(odoo.get("tras_pasada")), foto=foto.get(k),
-                           saldos=saldos_por.get(k, []), puerta=puertas.get(k))
+                           saldos=saldos_por.get(k, []))
                      for k in llaves])
     for f in filas:
         f.pop("peso", None)
 
-    # Columnas de kubera: TEX3 siempre; las demás de fuente kubera sólo con saldo ≠ 0.
+    # Columnas de kubera: sólo las bodegas de fuente kubera con saldo ≠ 0.
     con_saldo = {str(s["almacen"]) for s in saldos if int(s.get("fisico") or 0) or int(s.get("apartado") or 0)}
     col_kub = [{"codigo": c, "nombre": a["nombre"], "cuenta_para_woo": bool(a.get("cuenta_para_woo"))}
-               for c, a in almacenes.items() if a["fuente"] == "kubera" and (c == "TEX3" or c in con_saldo)]
+               for c, a in almacenes.items() if a["fuente"] == "kubera" and c in con_saldo]
+    conteos = {k: int(v or 0) for k, v in conteos.items()}
 
     arch = [o for o in (por_sku or {}).values() if not o.get("activo") and o.get("en_tex2")]
     return {
@@ -1084,9 +1009,11 @@ def _resumen() -> dict[str, Any]:
                         "filas_foto": int(pasada.get("filas") or 0), "suma_kubera": ctx["suma"],
                         "pendientes": ctx["pend_info"]},
         "formula": _formula(ctx),
-        "formatos": {k: int(v or 0) for k, v in formatos.items()},
+        "conteos": conteos,
         "vigia": vigia,
-        "que_falta": que_falta(almacenes, formatos, ctx["bandera_kubera"], ctx["suma"]) if tablas["ok"] else [],
+        # compat (una versión): el frontend anterior lee estos dos sin guardas.
+        "formatos": {**FORMATOS_COMPAT, **conteos},
+        "que_falta": [],
         "odoo": {"ok": bool(odoo.get("ok")), "motivo": odoo.get("motivo"), "viejo": bool(odoo.get("viejo")),
                  "edad_s": odoo.get("edad_s"), "leido": odoo.get("leido"),
                  "tras_pasada": bool(odoo.get("tras_pasada")),
@@ -1102,7 +1029,6 @@ def _resumen() -> dict[str, Any]:
                    "no_coincide": sum(1 for f in filas if "no_coincide" in f["tags"]),
                    "de_mas": sum(1 for f in filas if f["coincide"] == "mas"),
                    "por_copiar": sum(1 for f in filas if f["coincide"] == "por_copiar"),
-                   "esperando": sum(1 for f in filas if "esperando" in f["tags"]),
                    "kubera": sum(1 for f in filas if "kubera" in f["tags"])},
         "filas": filas,
     }
@@ -1148,20 +1074,17 @@ def resumen_bytes(gz: bool) -> tuple[bytes, bool]:
 
 
 def detalle_sku(sku: str) -> dict[str, Any]:
-    """El cajón de UN SKU: su fila, su libro (`stock_mov`), sus renglones de
-    formato y sus OV. ⚠️ BLOQUEA (la ruta lo llama en un hilo). Solo lee."""
+    """El cajón de UN SKU: su fila, su libro (`almacen.stock_mov`) y sus OV.
+    ⚠️ BLOQUEA (la ruta lo llama en un hilo). Solo lee."""
     s = (sku or "").strip()
     k = _llave(s)
     try:
         tablas = _tablas()
         ctx = _contexto(tablas)
-        saldos, puerta, libro, renglones, ovs = [], None, [], [], []
+        saldos, libro, ovs = [], [], []
         if tablas["ok"]:
             saldos = sdb.fetch_all(_SQL_SALDOS_SKU, {"z": ZONA, "s": s})
-            p = sdb.fetch_all(_SQL_PUERTAS.format(donde="and l.sku = %(s)s::citext"), {"z": ZONA, "s": s})
-            puerta = p[0] if p else None
             libro = sdb.fetch_all(_SQL_LIBRO, {"z": ZONA, "s": s, "n": 200})
-            renglones = sdb.fetch_all(_SQL_RENGLONES_SKU, {"z": ZONA, "s": s})
             ovs = sdb.fetch_all(_SQL_OV_SKU, {"z": ZONA, "s": s})
         foto = _leer_foto([k], tablas["stock_kubera"]).get(k)
     except Exception as exc:  # noqa: BLE001
@@ -1171,16 +1094,12 @@ def detalle_sku(sku: str) -> dict[str, Any]:
     pasada = ctx["pasada"]
     o = _odoo_de_un_sku(s, pasada.get("edad_s"))
     fila = _fila(k, ctx, od=o.get("od"), odoo_ok=bool(o.get("ok")), odoo_tras_pasada=bool(o.get("tras_pasada")),
-                 foto=foto, saldos=saldos, puerta=puerta)
+                 foto=foto, saldos=saldos)
     fila.pop("peso", None)
     total = int(libro[0]["total"]) if libro else 0
     for m in libro:
         m.pop("total", None)
-    for r in renglones:
-        for c in ("odoo_tex2_al_cargar", "odoo_tex2_al_confirmar", "odoo_tex2_al_abrir"):
-            r[c] = float(r[c]) if r.get(c) is not None else None
-        r["via_t"] = VIAS.get(r.get("via") or "", r.get("via"))
-    existe = bool(foto or saldos or renglones or ovs or libro or o.get("od"))
+    existe = bool(foto or saldos or ovs or libro or o.get("od"))
     return {
         "ok": True, "sku": fila["sku"] if existe else s, "existe": existe,
         "hoy": (pasada.get("ahora") or _local_ahora())[:10],
@@ -1188,6 +1107,7 @@ def detalle_sku(sku: str) -> dict[str, Any]:
         "odoo": {"ok": bool(o.get("ok")), "motivo": o.get("motivo"), "edad_s": o.get("edad_s"),
                  "viejo": bool(o.get("viejo"))},
         "columnas_odoo": [{"codigo": c, "nombre": n, "warehouse_id": w} for c, w, n in ODOO_BODEGAS],
-        "libro": libro, "libro_total": total, "renglones": renglones, "ov": ovs,
+        "libro": libro, "libro_total": total, "ov": ovs,
+        "renglones": [],                     # compat: el frontend anterior lo lee sin guarda; se quita después
         "formula": _formula(ctx),
     }

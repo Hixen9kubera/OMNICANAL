@@ -1,17 +1,19 @@
 "use client";
 
 /**
- * /dashboard/bodegas — ¿Cuadra el inventario propio de kubera (TEX3 y las demás
- * bodegas de la 0064/0065) con Odoo y con lo que stock_watch copia a Woo? Una
- * fila por SKU: Odoo por bodega (TEXCO, TEX2, DROP: libre = físico − reservado),
- * kubera por bodega (`ops.stock_almacen`), el «Woo esperado» calculado igual que
- * stock_watch, el Woo de su foto, si coinciden y la puerta de los formatos.
+ * /dashboard/bodegas — ¿Cuadra el inventario propio de kubera (las bodegas de la
+ * 0064/0065, en `almacen.*` desde la 0068) con Odoo y con lo que stock_watch copia
+ * a Woo? Una fila por SKU: Odoo por bodega (TEXCO, TEX2, DROP: libre = físico −
+ * reservado), kubera por bodega (`almacen.stock_almacen`, sólo las que tienen
+ * saldo), el «Woo esperado» calculado igual que stock_watch, el Woo de su foto y
+ * si coinciden.
  *
- * Arriba, el estado de TEX3, las cuatro banderas (sin fila = su variable o apagada), la salud
- * de la sincronización y, mientras falte, qué falta para que TEX3 cuente. Es una
- * FOTO: `GET /api/fanout/bodegas` se pide cada minuto (Odoo lleva caché de 10 min
- * en el backend; si no contesta, la página sigue con kubera y Woo). Tocar un SKU
- * abre su libro (`LibroSku`); la búsqueda abre cualquier SKU. Solo lee.
+ * Arriba, las bodegas de kubera, las cuatro banderas (sin fila = su variable o
+ * apagada) y la salud de la sincronización. Ya no hay formatos ni «puerta»: eran
+ * de la mudanza a TEX3, que no existirá (limpieza de la Fase 1). Es una FOTO:
+ * `GET /api/fanout/bodegas` se pide cada minuto (Odoo lleva caché de 10 min en el
+ * backend; si no contesta, la página sigue con kubera y Woo). Tocar un SKU abre
+ * su libro (`LibroSku`); la búsqueda abre cualquier SKU. Solo lee.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -19,18 +21,17 @@ import { Boxes, CircleX, Clock, Info, Search, TriangleAlert } from "lucide-react
 import { API_BASE, fetchSesion } from "@/lib/api";
 import AppNavbar from "@/components/AppNavbar";
 import BannerFanout, { ACCION_BANNER } from "@/components/fanout/BannerFanout";
-import EstadoBodegas, { QueFalta } from "@/components/fanout/EstadoBodegas";
+import EstadoBodegas from "@/components/fanout/EstadoBodegas";
 import FanoutPestanas from "@/components/fanout/FanoutPestanas";
 import LibroSku from "@/components/fanout/LibroSku";
 import RastroCambio from "@/components/fanout/RastroCambio";
 import TrazabilidadSku from "@/components/fanout/TrazabilidadSku";
 import type { FilaBodega, ResumenBodegas } from "@/components/fanout/tipos";
-import { COINCIDE_BODEGA, PUERTA_CLS, conSigno, haceSegundos, horaCorta } from "@/components/fanout/tipos";
+import { COINCIDE_BODEGA, conSigno, haceSegundos, horaCorta } from "@/components/fanout/tipos";
 
 const FILTROS = [
   { id: "todo", texto: "Todo" },
-  { id: "kubera", texto: "Solo TEX3/kubera" },
-  { id: "esperando", texto: "Esperando puerta" },
+  { id: "kubera", texto: "Con saldo en kubera" },
   { id: "no_coincide", texto: "No coincide con Woo" },
 ];
 
@@ -105,7 +106,7 @@ export default function PaginaBodegas() {
     return d.filas.filter((f) => (filtro === "todo" || f.tags.includes(filtro)) && (!q || f.sku.toUpperCase().includes(q)));
   }, [d, filtro, busca]);
   const nk = d?.columnas_kubera.length ?? 0;
-  const plantilla = `minmax(210px,1.5fr) repeat(3, minmax(84px,0.6fr)) ${nk ? `repeat(${nk}, minmax(96px,0.7fr)) ` : ""}minmax(124px,0.9fr) minmax(96px,0.7fr) minmax(118px,0.8fr) minmax(150px,1fr)`;
+  const plantilla = `minmax(210px,1.5fr) repeat(3, minmax(84px,0.6fr)) ${nk ? `repeat(${nk}, minmax(96px,0.7fr)) ` : ""}minmax(124px,0.9fr) minmax(96px,0.7fr) minmax(118px,0.8fr)`;
   const buscado = busca.trim().toUpperCase();
 
   return (
@@ -116,7 +117,7 @@ export default function PaginaBodegas() {
         <BannerFanout
           icono={<Boxes size={28} aria-hidden />}
           titulo="Bodegas"
-          texto="¿Cuadra el inventario de kubera con Odoo y con lo que stock_watch copia a Woo? Una fila por SKU: Odoo por bodega, kubera por bodega, el Woo esperado contra el de la foto y la puerta de los formatos de Bodega."
+          texto="¿Cuadra el inventario de kubera con Odoo y con lo que stock_watch copia a Woo? Una fila por SKU: Odoo por bodega, kubera por bodega y el Woo esperado contra el de la foto."
           acciones={
             <span className={ACCION_BANNER}>
               <Clock size={14} aria-hidden />
@@ -142,8 +143,8 @@ export default function PaginaBodegas() {
               <p role="status" className="flex items-start gap-2.5 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-[13px] leading-5 text-amber-950">
                 <TriangleAlert size={18} className="mt-px shrink-0 text-amber-700" aria-hidden />
                 <span>
-                  <b>Faltan las tablas de la 0064/0065</b> en esta base ({d.tablas.faltan.join(", ")}). No hay bodegas de kubera, formatos
-                  ni libro que leer; la tabla sigue comparando Odoo con la foto de stock_watch.
+                  <b>Faltan las tablas de la 0064/0065</b> en esta base ({d.tablas.faltan.join(", ")}). No hay bodegas de kubera ni
+                  libro que leer; la tabla sigue comparando Odoo con la foto de stock_watch.
                 </span>
               </p>
             )}
@@ -161,7 +162,6 @@ export default function PaginaBodegas() {
             )}
 
             <EstadoBodegas d={d} />
-            <QueFalta pasos={d.que_falta} />
 
             <section aria-label="Inventario por SKU" className="flex flex-col gap-3 rounded-2xl bg-white pb-2 pt-5 shadow-sm">
               <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 px-6">
@@ -206,19 +206,17 @@ export default function PaginaBodegas() {
                     <Encabezado titulo="Woo esperado" sub="como stock_watch" />
                     <Encabezado titulo="Woo hoy" sub="foto de stock_watch" />
                     <Encabezado titulo="Coincide" />
-                    <Encabezado titulo="Puerta" sub="formatos de Bodega" />
                   </div>
                   {filas.length === 0 && (
                     <p className="px-6 py-6 text-sm text-slate-600">
                       {d.filas.length === 0
                         ? d.universo_parcial
-                          ? "Odoo no respondió y kubera no tiene saldo ni formatos: no hay SKUs que mostrar todavía."
-                          : "Sin SKUs que mostrar: Odoo no trajo nada de TEX2 y kubera no tiene saldo ni formatos."
+                          ? "Odoo no respondió y kubera no tiene saldo: no hay SKUs que mostrar todavía."
+                          : "Sin SKUs que mostrar: Odoo no trajo nada de TEX2 y kubera no tiene saldo."
                         : buscado
                           ? `Ningún SKU con «${buscado}» en este filtro.`
-                          : filtro === "kubera" ? "Kubera todavía no tiene saldo ni formatos de ningún SKU."
-                            : filtro === "esperando" ? "Ningún renglón espera la puerta."
-                              : filtro === "no_coincide" ? "Todo lo que se puede comparar coincide con Woo." : "Nada con ese filtro."}
+                          : filtro === "kubera" ? "Kubera todavía no tiene saldo de ningún SKU."
+                            : filtro === "no_coincide" ? "Todo lo que se puede comparar coincide con Woo." : "Nada con ese filtro."}
                     </p>
                   )}
                   {filas.map((f) => {
@@ -267,15 +265,6 @@ export default function PaginaBodegas() {
                             <span className="truncate text-[11px] leading-[15px]">{f.coincide_t}</span>
                           )}
                         </span>
-                        <span className="flex flex-col items-start gap-0.5">
-                          <span className={`rounded px-1.5 py-px text-[11px] font-semibold ${PUERTA_CLS[f.puerta.estado]}`}>{f.puerta.texto}</span>
-                          {f.puerta.estado === "esperando" && (
-                            <span className="text-[11px] leading-[14px] text-slate-600">{n(f.puerta.piezas)} pzs · {f.puerta.folios}</span>
-                          )}
-                          {f.puerta.estado === "abierta" && f.puerta.abierta && (
-                            <span className="text-[11px] leading-[14px] text-slate-600">{horaCorta(f.puerta.abierta, d.hoy)}</span>
-                          )}
-                        </span>
                       </div>
                     );
                   })}
@@ -288,9 +277,8 @@ export default function PaginaBodegas() {
                 «Woo hoy» sale de la misma foto, y foto contra foto casi siempre coincide: lo que delata una escritura fallida, un
                 freno o el modo solo registro es «Por copiar» —el Odoo de hoy ya no es el de la foto— que sigue ahí después de la
                 próxima pasada. También queda «Por copiar» un SKU con una venta u orden posterior a la foto. «De más» o «de menos»
-                con el Odoo de hoy igual al de la foto es lo que una pasada guardó sin copiar (pendientes sin medir). La puerta abre
-                cuando Odoo ya no tiene la pieza en TEX2; mientras espera, la pieza cuenta sólo en Odoo. Toca un SKU para ver su
-                libro, sus formatos y sus OV.
+                con el Odoo de hoy igual al de la foto es lo que una pasada guardó sin copiar (pendientes sin medir). Las columnas
+                «kubera» sólo aparecen para las bodegas de kubera con saldo. Toca un SKU para ver su libro y sus OV.
               </p>
             </section>
           </>

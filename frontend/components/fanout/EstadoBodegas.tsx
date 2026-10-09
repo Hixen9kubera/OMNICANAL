@@ -1,14 +1,14 @@
 "use client";
 
 /**
- * EstadoBodegas — el encabezado de la pestaña Bodegas: cómo está TEX3 (sus tres
- * banderas de `ops.almacenes`), las cuatro banderas de la 0064/0065 en
- * `ops.automatizacion_flags` (sin fila manda su variable, o apagada), la salud de la sincronización
- * (última pasada de stock_watch, vendidas sin orden, la lectura de Odoo, los
- * formatos de Bodega y la vigía) y, mientras falte algo, los pasos para que TEX3
- * cuente en Woo. Lo arma `GET /api/fanout/bodegas`. Solo lee.
+ * EstadoBodegas — el encabezado de la pestaña Bodegas: las bodegas de kubera (las
+ * de fuente kubera en `almacen.almacenes`, con sus tres banderas), las cuatro
+ * banderas de la 0064/0065 en `ops.automatizacion_flags` (sin fila manda su
+ * variable, o apagada) y la salud de la sincronización (última pasada de
+ * stock_watch, vendidas sin orden, la lectura de Odoo, el libro de kubera y la
+ * vigía). Ya no hay TEX3, REVISION, formatos ni «qué falta» (limpieza de la
+ * Fase 1). Lo arma `GET /api/fanout/bodegas`. Solo lee.
  */
-import { CheckCircle2, Circle } from "lucide-react";
 import { Renglon } from "./SaludFull";
 import type { AlmacenBodega, BanderaBodega, ResumenBodegas } from "./tipos";
 import { haceSegundos, horaCorta } from "./tipos";
@@ -38,41 +38,39 @@ function fuenteBandera(b: BanderaBodega, hoy: string): string {
   return `Fila en ops.automatizacion_flags${quien ? ` (${quien})` : ""}${b.motivo ? `: ${b.motivo}` : ""}.`;
 }
 
-function TarjetaTex3({ almacenes, tablas }: { almacenes: AlmacenBodega[]; tablas: boolean }) {
-  const tex3 = almacenes.find((a) => a.codigo === "TEX3");
-  const otras = almacenes.filter((a) => a.fuente === "kubera" && a.codigo !== "TEX3");
+function TarjetaKubera({ almacenes, tablas }: { almacenes: AlmacenBodega[]; tablas: boolean }) {
+  const propias = almacenes.filter((a) => a.fuente === "kubera");
   return (
-    <section aria-labelledby="t-tex3" className="flex flex-col gap-3 rounded-2xl bg-white p-5 shadow-sm">
+    <section aria-labelledby="t-kubera" className="flex flex-col gap-3 rounded-2xl bg-white p-5 shadow-sm">
       <div className="flex items-baseline justify-between gap-2">
-        <h2 id="t-tex3" className="text-[15px] font-bold text-slate-900">TEX3 · TEXCO III</h2>
-        <span className="text-xs text-slate-600">bodega de kubera</span>
+        <h2 id="t-kubera" className="text-[15px] font-bold text-slate-900">Bodegas de kubera</h2>
+        <span className="text-xs text-slate-600">libro propio, no Odoo</span>
       </div>
-      {!tablas || !tex3 ? (
+      {!tablas ? (
         <p className="text-sm text-slate-600">Sin la migración 0064 no hay bodegas de kubera que leer.</p>
+      ) : propias.length === 0 ? (
+        <p className="text-sm text-slate-600">No hay ninguna bodega de kubera dada de alta.</p>
       ) : (
-        <>
-          <div className="flex flex-wrap gap-1.5">
-            <Chip encendida={tex3.surte_ventas} texto="Surte ventas" />
-            <Chip encendida={tex3.cuenta_para_woo} texto="Cuenta para Woo" />
-            <Chip encendida={tex3.admite_ov} texto="Admite OV" />
-          </div>
-          <p className="text-xs leading-[18px] text-slate-600">
-            {tex3.surte_ventas || tex3.cuenta_para_woo || tex3.admite_ov
-              ? tex3.motivo || "Encendida por acta."
-              : "Nace apagada: se enciende con un acta (fase B), las tres juntas."}
-          </p>
-          {otras.length > 0 && (
-            <ul className="flex flex-col gap-1 border-t border-slate-100 pt-2 text-xs text-slate-600">
-              {otras.map((a) => (
-                <li key={a.codigo}>
-                  <span className="font-mono font-semibold text-slate-800">{a.codigo}</span> · {a.nombre}
-                  {a.admite_ov ? " · admite OV (práctica)" : ""}{a.cuenta_para_woo ? " · cuenta para Woo" : " · no cuenta para Woo"}
-                </li>
-              ))}
-            </ul>
-          )}
-        </>
+        <ul className="flex flex-col gap-3">
+          {propias.map((a) => (
+            <li key={a.codigo} className="flex flex-col gap-1.5">
+              <span className="text-[13px] text-slate-800">
+                <span className="font-mono font-semibold text-slate-900">{a.codigo}</span> · {a.nombre}
+                {a.admite_ov && !a.surte_ventas ? " · de práctica" : ""}
+              </span>
+              <div className="flex flex-wrap gap-1.5">
+                <Chip encendida={a.surte_ventas} texto="Surte ventas" />
+                <Chip encendida={a.cuenta_para_woo} texto="Cuenta para Woo" />
+                <Chip encendida={a.admite_ov} texto="Admite OV" />
+              </div>
+            </li>
+          ))}
+        </ul>
       )}
+      <p className="text-xs leading-[18px] text-slate-600">
+        TEXCO, TEX2 y DROP son de Odoo y se leen en vivo en la tabla. Las columnas «kubera» sólo aparecen para las
+        bodegas de kubera que tienen saldo.
+      </p>
     </section>
   );
 }
@@ -107,7 +105,7 @@ function TarjetaSalud({ d }: { d: ResumenBodegas }) {
   const edad = sw.edad_s;
   const puntoSw = edad == null ? "mal" : edad <= 45 * 60 ? "bien" : edad <= 2 * 3600 ? "ojo" : "mal";
   const pe = sw.pendientes;
-  const f = d.formatos;
+  const c = d.conteos;
   const o = d.odoo;
   return (
     <section aria-labelledby="t-salud-bodegas" className="flex flex-col gap-3 rounded-2xl bg-white p-5 shadow-sm">
@@ -139,44 +137,19 @@ function TarjetaSalud({ d }: { d: ResumenBodegas }) {
               TEX2 con existencias: {pl(o.skus_tex2 ?? 0, "producto", "productos")} · caché de 10 min
               {o.archivados_tex2 ? ` · ${pl(o.archivados_tex2, "archivado", "archivados")} con ${n(o.piezas_archivadas_tex2)} pzs que stock_watch no cuenta` : ""}
               {o.duplicados ? ` · ${pl(o.duplicados, "código duplicado", "códigos duplicados")}` : ""}</>} />
-        {d.tablas.ok && (
-          <Renglon punto={(f.esperando ?? 0) > 0 ? "ojo" : "bien"}
-            titulo={`Formatos de Bodega: ${n(f.por_confirmar ?? 0)} por confirmar · ${n(f.esperando ?? 0)} renglones esperando puerta`}
-            texto={`${pl(f.abiertas_hoy ?? 0, "puerta abierta", "puertas abiertas")} hoy · ${pl(f.abiertas ?? 0, "renglón", "renglones")} con la puerta abierta en total · ${pl(f.movimientos ?? 0, "movimiento", "movimientos")} en el libro · ${pl(f.ov_abiertas ?? 0, "OV abierta", "OV abiertas")}`} />
+        {d.tablas.ok && c && (
+          <Renglon punto="bien"
+            titulo={`Libro de kubera: ${pl(c.movimientos ?? 0, "movimiento", "movimientos")}`}
+            texto={`${pl(c.ov_abiertas ?? 0, "OV abierta", "OV abiertas")} (borrador o confirmada) · conteo con caché de 5 min`} />
         )}
         {d.tablas.ok && d.tablas.vigia && (
           <Renglon punto={d.vigia.length ? "mal" : "bien"}
             titulo={d.vigia.length ? `La vigía ve ${pl(d.vigia.length, "descuadre", "descuadres")}` : "La vigía no ve descuadres"}
             texto={d.vigia.length
               ? d.vigia.slice(0, 4).map((v) => `${v.problema}${v.sku ? ` · ${v.sku}` : ""}${v.almacen ? ` (${v.almacen})` : ""}`).join("; ")
-              : "ops.stock_apartado_descuadre_v: apartados, devoluciones, formatos y REVISION cuadran."} />
+              : "ops.stock_apartado_descuadre_v: los apartados y las devoluciones por renglón de OV cuadran."} />
         )}
       </ul>
-    </section>
-  );
-}
-
-export function QueFalta({ pasos }: { pasos: ResumenBodegas["que_falta"] }) {
-  if (!pasos.length || pasos.every((p) => p.hecho)) return null;
-  return (
-    <section aria-labelledby="t-que-falta" className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-      <h2 id="t-que-falta" className="text-[15px] font-bold text-slate-900">Qué falta para que TEX3 cuente en Woo</h2>
-      <ol className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-        {pasos.map((p, i) => (
-          <li key={p.paso} className={`flex items-start gap-2.5 rounded-xl px-3 py-2.5 text-[13px] leading-5 ${
-            p.hecho ? "bg-emerald-50 text-emerald-900" : "bg-slate-50 text-slate-800"}`}>
-            {p.hecho
-              ? <CheckCircle2 size={18} className="mt-px shrink-0 text-emerald-700" aria-hidden />
-              : <Circle size={18} className="mt-px shrink-0 text-slate-500" aria-hidden />}
-            <span><span className="font-semibold">{i + 1}.</span> {p.paso}
-              <span className="sr-only">{p.hecho ? " (hecho)" : " (pendiente)"}</span></span>
-          </li>
-        ))}
-      </ol>
-      <p className="text-xs leading-[18px] text-slate-600">
-        Hasta entonces kubera no mueve nada en Woo: la tabla compara Odoo con Woo, y la columna TEX3 irá mostrando lo que
-        Bodega cargue, sin sumarlo a Woo.
-      </p>
     </section>
   );
 }
@@ -184,7 +157,7 @@ export function QueFalta({ pasos }: { pasos: ResumenBodegas["que_falta"] }) {
 export default function EstadoBodegas({ d }: { d: ResumenBodegas }) {
   return (
     <div className="grid items-start gap-4 lg:grid-cols-3">
-      <TarjetaTex3 almacenes={d.almacenes} tablas={d.tablas.ok} />
+      <TarjetaKubera almacenes={d.almacenes} tablas={d.tablas.ok} />
       <TarjetaBanderas banderas={d.banderas} hoy={d.hoy} />
       <TarjetaSalud d={d} />
     </div>

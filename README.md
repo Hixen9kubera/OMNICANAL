@@ -1001,6 +1001,93 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.636.0 — Operaciones › Bodegas sin la mudanza a TEX3: fuera formatos, «puerta» y «qué falta para que TEX3 cuente»; la pestaña ya lee `almacen.*` y `ventas.*` (commit 1 de la limpieza de la Fase 1)
+
+**Por qué.** El 8-oct-2026 Eduardo decidió que el inventario es el mismo, que al dejar Odoo se toma su
+última copia y que **TEX3 no existirá**. Los formatos de Bodega (`ops.stock_formato*`), su «puerta»
+(`salida_odoo_at`) y la bodega REVISION eran piezas de la mudanza TEX2 → TEX3 y de la revisión de
+devoluciones dentro de kubera: **nunca tuvieron una fila** y nadie les escribe. La limpieza las quita en
+dos pasos (especificación `ESPECIFICACION_LIMPIEZA_FASE1.md`, §5):
+
+1. **Este commit**: la pestaña deja de leerlas. Tiene que estar desplegado (los dos servicios) **antes**
+   de que la migración las borre; si no, en 60 s la pestaña queda en «faltan las tablas» para siempre.
+2. El commit siguiente: la migración **0071** que las borra (ver su entrada).
+
+Es solo lectura, como siempre: no cambia ningún flujo, no escribe en kubera, Odoo, Woo ni canales.
+
+**`backend/services/fanout_bodegas.py`**
+
+- **Nombres nuevos.** Todas las sentencias leen la casa que les dio la 0068 de Brandon:
+  `almacen.almacenes`, `almacen.stock_almacen`, `almacen.stock_mov`, `ventas.ov_ordenes` y
+  `ventas.ov_lineas`. La vigía sigue en `ops` (`ops.stock_apartado_descuadre_v`). Ya ninguna nombra un
+  puente `ops.<tabla>` de la 0068: es la condición 1 de las cinco para retirar los nueve puentes (§3.2 de
+  la especificación), y una prueba nueva lo fija.
+- **`_SQL_TABLAS`** pregunta por esas cinco tablas, la vigía y `stock_kubera`, **sin** `stock_formato*`.
+  `faltan` ahora dice el nombre calificado real (`almacen.stock_mov`, no `ops.stock_mov`): sale del
+  diccionario `NUCLEO`.
+- **Fuera:** `_SQL_PUERTAS`, `_SQL_RENGLONES_SKU`, `VIAS`, `estado_puerta()` y `que_falta()`. La fila ya no
+  lleva el tag `esperando` ni su peso al ordenar (los peores primero: de más, de menos, por copiar, con
+  saldo en kubera, el resto). El universo es «algo en TEX2 de Odoo, o fila en `almacen.stock_almacen`
+  (menos las de ENSAYO en cero), más el SKU buscado».
+- **`_SQL_FORMATOS` → `_SQL_CONTEOS`** (`/* bodegas:conteos */`): solo los movimientos del libro y las OV
+  abiertas, con la misma caché de 5 min. El resumen trae `conteos`.
+- **Columnas de kubera**: ya no «TEX3 siempre»; solo las bodegas de fuente kubera con saldo ≠ 0.
+- **Banderas**: se quedan las cuatro; cambian dos descripciones (`ov_generacion_auto`: «OV automáticas
+  (crear_auto); el planeador todavía no las genera»; `inventario_libro`: «Libro de kubera: entradas,
+  conteos y correcciones (es del corte)»).
+- **Compatible hacia atrás por UNA versión.** El frontend anterior lee sin guardas `d.formatos`,
+  `d.que_falta`, `f.puerta` en cada fila y `d.renglones` en el cajón, y la página se refresca cada 60 s:
+  una pestaña abierta con el código viejo, o el rato en que el backend ya desplegó y el frontend no (son
+  dos servicios), tronaría con TypeError. Por eso la respuesta **sigue mandando** `formatos` en ceros (más
+  `movimientos` y `ov_abiertas` reales, que el viejo sí pinta), `que_falta: []`, una puerta neutra
+  `{"estado": "sin_formato", "texto": "Sin formato"}` por fila y `renglones: []` en el cajón.
+  **Se quitan en la versión siguiente**, con los dos servicios desplegados y 24 h después.
+
+**`backend/routers/fanout.py`**: los docstrings de `/api/fanout/bodegas` y `/bodegas/sku` sin TEX3, sin
+formatos y con `almacen.*`.
+
+**Frontend**
+
+- `app/dashboard/bodegas/page.tsx`: sin la columna «Puerta» (la plantilla del grid pierde una columna), sin
+  el filtro «Esperando puerta», «Solo TEX3/kubera» pasa a «Con saldo en kubera», sin el bloque «Qué falta
+  para que TEX3 cuente» y textos sin formatos.
+- `components/fanout/EstadoBodegas.tsx`: la tarjeta «TEX3 · TEXCO III» pasa a **«Bodegas de kubera»**
+  (todas las de fuente kubera, cada una con sus tres banderas; tras la 0071 queda solo ENSAYO, la de
+  práctica); el renglón de formatos pasa a «Libro de kubera: N movimientos · M OV abiertas» (lee
+  `d.conteos?.…`: con un backend anterior simplemente no aparece); la vigía dice «los apartados y las
+  devoluciones por renglón de OV cuadran»; `QueFalta` se quita.
+- `components/fanout/LibroSku.tsx`: sin la puerta ni la sección «Renglones de formato»; docstring con
+  `almacen.stock_mov` y `ventas.ov_*`.
+- `components/fanout/tipos.ts`: fuera `EstadoPuerta`, `PuertaBodega`, `FilaBodega.puerta`, `que_falta`,
+  `RenglonFormato`, `DetalleBodega.renglones`, `PUERTA_CLS` y `conteo.esperando`; `formatos` pasa a
+  `conteos?` (opcional, por el backend anterior).
+
+**Órdenes de venta** (de Brandon; se le avisa): la tarjeta de la bandera `ov_generacion_auto` decía
+«Generación automática (TEXCO III)» y ahora dice **«Generación automática»**; los comentarios de
+`app/inventario/ordenes/page.tsx`, `components/ordenes/ui.tsx` y `components/ordenes/tipos.ts` ya no hablan
+de TEX3 ni de REVISION (TEX3 no existirá; las bodegas que no llevan órdenes son las de `admite_ov` apagado).
+
+**Pruebas** (`backend/tests/test_fanout_bodegas.py`, 64 en verde): el catálogo falso ya no trae TEX3 ni
+REVISION; «kubera con saldo» se prueba con una bodega **sintética** `ZZKUB` (el repo es público). Fuera la
+clase `Puerta`; `Universo`, `EstadoVacio`, `KuberaConSaldo`, `TablasAusentes`, `Detalle` y `KuberaFoto`
+ajustadas. Nuevas: la compatibilidad con el frontend anterior (formatos en ceros, `que_falta: []`, puerta
+neutra, `renglones: []`, y que no se consulten `puertas` ni `formatos`), `faltan` con el nombre calificado
+real, y **ninguna `_SQL_*` nombra un puente `ops.<tabla>` de la 0068, `stock_formato` ni
+`ops.devoluciones`**. `SqlSoloLectura` baja el mínimo de sentencias de 14 a 12 (salen tres y entra
+`_SQL_CONTEOS`). Y una que pidió la revisión: **cada `from|join esquema.tabla` de las `_SQL_*` existe** en
+`supabase/schema_manifest.json` o al final de la cadena de migraciones (su huella). `FakeKubera` contesta
+por la marca `/* bodegas:… */` y no por las tablas: un nombre roto (`almacen.stock_movx` en `_SQL_CONTEOS`)
+pasaba las 63 pruebas; con ésta, truena.
+
+**Verificado contra el sandbox** (`yvootpbz`, que ya tiene la 0068 y la 0069; transacción `read only` y
+ROLLBACK, sin Odoo): `_resumen()` y `detalle_sku()` del código nuevo corren las 12 sentencias contra el
+esquema real: `tablas.ok = true`, las seis bodegas de hoy, `conteos` = 8 movimientos y 0 OV abiertas, la
+vigía vacía; el cajón de un SKU de ENSAYO trae su libro (2 movimientos) y sus OV (2). (Que también
+funciona SIN TEX3 ni REVISION se comprobó en el ensayo de la 0071: ver la entrada siguiente.)
+
+`npx tsc --noEmit` en verde; las tres `*.prueba.cjs` de órdenes en verde (84). Suite del backend: 2522 pruebas, 1 falla, la de siempre de `main` (`test_regla_11_productos`),
+con `PYTHONIOENCODING=utf-8`.
+
 ### v0.635.0 — Reorden de esquemas, fase 0, puesta encima de la mudanza de Brandon (0068-0070): el runner del sandbox registra y salta lo aplicado y no duplica las migraciones que se registran solas, `--hasta`, las 0034-0036 llegan a main, la 0066/0067 y el manifiesto al día con producción
 
 Esta versión trae a `main` la fase 0 del reorden de esquemas (antes «v0.628.0 provisional», commit local

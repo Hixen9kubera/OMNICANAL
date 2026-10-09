@@ -700,17 +700,6 @@ export interface CeldaKubera {
  * sigue igual después de ella es una escritura fallida, un freno o el modo solo registro.
  */
 export type CoincideBodega = "igual" | "mas" | "menos" | "por_copiar" | "no_toca";
-export type EstadoPuerta = "sin_formato" | "por_confirmar" | "esperando" | "abierta";
-
-export interface PuertaBodega {
-  estado: EstadoPuerta;
-  texto: string;
-  renglones?: number;
-  piezas?: number;
-  folios?: string;
-  via?: string;
-  abierta?: string | null;
-}
 
 export interface FilaBodega {
   sku: string;
@@ -743,7 +732,7 @@ export interface FilaBodega {
   coincide: CoincideBodega;
   dif: number | null;
   coincide_t: string;
-  puerta: PuertaBodega;
+  /** `kubera` (tiene saldo en una bodega de kubera) · `no_coincide` · `por_copiar`. */
   tags: string[];
 }
 
@@ -801,9 +790,12 @@ export interface ResumenBodegas {
     };
   };
   formula: { texto: string; suma_kubera: boolean; absoluto: boolean; resta: boolean; solo_registro: boolean; habilitado: boolean };
-  formatos: Partial<Record<"por_confirmar" | "confirmados" | "esperando" | "abiertas_hoy" | "abiertas" | "movimientos" | "ov_abiertas" | "renglones", number>>;
+  /**
+   * Movimientos del libro y OV abiertas (caché de 5 min). Opcional: un backend anterior a la
+   * limpieza de la Fase 1 no lo manda (mandaba `formatos`, que ya no se lee).
+   */
+  conteos?: Partial<Record<"movimientos" | "ov_abiertas", number>>;
   vigia: { problema: string; sku: string | null; almacen: string | null; ref: string | null; esperado: unknown; encontrado: unknown; detalle: string | null }[];
-  que_falta: { paso: string; hecho: boolean }[];
   odoo: {
     ok: boolean;
     motivo?: string | null;
@@ -821,7 +813,7 @@ export interface ResumenBodegas {
   columnas_kubera: { codigo: string; nombre: string; cuenta_para_woo: boolean }[];
   /** Sin Odoo no se sabe qué hay en TEX2: la tabla sólo trae lo de kubera. */
   universo_parcial: boolean;
-  conteo: { filas: number; no_coincide: number; de_mas: number; por_copiar: number; esperando: number; kubera: number };
+  conteo: { filas: number; no_coincide: number; de_mas: number; por_copiar: number; kubera: number };
   filas: FilaBodega[];
 }
 
@@ -836,28 +828,6 @@ export interface MovLibro {
   quien: string | null;
   via: string | null;
   hora: string;
-}
-
-export interface RenglonFormato {
-  folio: string;
-  estado: "por_confirmar" | "confirmado" | "descartado";
-  almacen: string;
-  fila: number;
-  cantidad: number;
-  cantidad_archivo: number;
-  sku_archivo: string;
-  ubicacion: string | null;
-  nota: string | null;
-  aviso: string | null;
-  via: string | null;
-  via_t: string | null;
-  ref_odoo: string | null;
-  odoo_tex2_al_cargar: number | null;
-  odoo_tex2_al_confirmar: number | null;
-  odoo_tex2_al_abrir: number | null;
-  abierta: string | null;
-  cargado: string | null;
-  confirmado: string | null;
 }
 
 export interface LineaOv {
@@ -890,7 +860,6 @@ export interface DetalleBodega {
   columnas_odoo: ResumenBodegas["columnas_odoo"];
   libro: MovLibro[];
   libro_total: number;
-  renglones: RenglonFormato[];
   ov: LineaOv[];
   formula: ResumenBodegas["formula"];
 }
@@ -902,14 +871,6 @@ export const COINCIDE_BODEGA: Record<CoincideBodega, { texto: string; cls: strin
   menos: { texto: "Woo de menos", cls: CELDA_MATRIZ_SOLIDO.menos },
   por_copiar: { texto: "Por copiar", cls: CAUSA_CLS.camino },
   no_toca: { texto: "Sin comparar", cls: "border border-slate-200 bg-slate-50 text-slate-700" },
-};
-
-/** Chip de la puerta (contraste ≥ 4.5:1). «Esperando» usa el mismo índigo que «En camino». */
-export const PUERTA_CLS: Record<EstadoPuerta, string> = {
-  sin_formato: "bg-slate-100 text-slate-700",
-  por_confirmar: "bg-amber-100 text-amber-900",
-  esperando: CAUSA_CLS.camino,
-  abierta: "bg-emerald-50 text-emerald-800",
 };
 
 /** Los motivos del libro (`stock_mov_motivo_chk`, guía §3.12). */

@@ -107,7 +107,7 @@ export function ChipReserva({ reserva, detalle }: { reserva: Reserva; detalle?: 
 /**
  * Las bodegas que se pueden elegir en un renglón: de kubera y con `admite_ov`.
  * El catálogo trae también las de Odoo (TEXCO, TEX2, DROP) y las de kubera que
- * no llevan órdenes (REVISION, o TEX3 mientras esté apagada): ésas no se
+ * no llevan órdenes (las que tienen `admite_ov` apagado): ésas no se
  * ofrecen, porque la base las rechaza al confirmar.
  */
 export function bodegasDeOrdenes(bodegas: Bodega[] | null | undefined): Bodega[] {

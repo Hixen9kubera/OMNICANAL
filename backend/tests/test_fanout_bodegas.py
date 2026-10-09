@@ -8,17 +8,22 @@
      de kubera que cuenta para Woo: max(0, max(0, Odoo) + kubera − pendientes).
   2. Encendida en la tabla pero sin soporte en stock_watch, kubera NO suma y la
      pestaña lo dice.
-  3. El universo: algo en TEX2, saldo en kubera ≠ 0 (las filas en 0 de ENSAYO no
-     entran) o renglón de formato; más el buscado.
+  3. El universo: algo en TEX2 o saldo en kubera (las filas en 0 de ENSAYO no
+     entran); más el buscado.
   4. Odoo caído no truena: sin lectura previa, `odoo.ok = false` y siguen kubera
      y Woo; con lectura previa, se sirve la vieja con su edad.
-  5. Sin las tablas de la 0064/0065, 200 con `tablas.ok = false` y ninguna
-     consulta a esas tablas.
-  6. Estado vacío (TEX3 apagada, sin banderas, sin formatos): «qué falta» en
-     cuatro pasos sin hacer y las banderas apagadas por «sin fila».
+  5. Sin las tablas de la 0064/0065 (en `almacen.*`/`ventas.*` desde la 0068),
+     200 con `tablas.ok = false`, el nombre calificado real en `faltan` y
+     ninguna consulta a esas tablas.
+  6. Estado vacío (sin saldo en kubera ni banderas): sin columnas de kubera y
+     las banderas apagadas por «sin fila». Ya no hay formatos, puertas ni TEX3
+     (la limpieza de la Fase 1); por UNA versión la respuesta conserva
+     `formatos` en ceros, `que_falta: []`, una puerta neutra y `renglones: []`
+     para el frontend anterior.
   7. Odoo sólo se lee: la lista blanca rechaza todo lo que no sea search_read o
      read_group, y es la única puerta a Odoo del módulo. Y kubera sólo se lee:
-     toda sentencia `_SQL_*` es un `select` sin `for update`.
+     toda sentencia `_SQL_*` es un `select` sin `for update`, y ninguna nombra
+     un puente `ops.<tabla>` de la 0068 ni los formatos borrados.
   8. «Coincide» no se compara consigo mismo: si Odoo HOY no es el de la foto, o
      hubo una venta/orden después de la pasada, la fila queda `por_copiar` (no
      «de más / de menos»). Y `woo_esperado` + `coincide` dicen «igual» justo
@@ -43,7 +48,8 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+BACKEND = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(BACKEND))
 
 from services import fanout_bodegas as fb  # noqa: E402
 from services import odoo  # noqa: E402
@@ -58,19 +64,19 @@ def _limpiar() -> None:
     fb._odoo_uno.clear()
 
 
-ALMACENES = [  # la semilla de la 0064 (guía §2.1)
+# Las bodegas tras la limpieza de la Fase 1 (sin TEX3 ni REVISION). Para probar
+# «kubera con saldo» va una bodega SINTÉTICA, ZZKUB (el repo es público).
+ALMACENES = [
     {"codigo": "TEXCO", "nombre": "TEXCO", "fuente": "odoo", "odoo_warehouse_id": 135, "preferencia": 1,
      "surte_ventas": True, "admite_ov": False, "cuenta_para_woo": True, "motivo": None, "actualizado": None},
     {"codigo": "TEX2", "nombre": "TEXCO II", "fuente": "odoo", "odoo_warehouse_id": 150, "preferencia": 2,
      "surte_ventas": True, "admite_ov": False, "cuenta_para_woo": True, "motivo": None, "actualizado": None},
     {"codigo": "DROP", "nombre": "DROP OFF", "fuente": "odoo", "odoo_warehouse_id": 142, "preferencia": None,
      "surte_ventas": False, "admite_ov": False, "cuenta_para_woo": True, "motivo": None, "actualizado": None},
-    {"codigo": "TEX3", "nombre": "TEXCO III", "fuente": "kubera", "odoo_warehouse_id": None, "preferencia": 3,
-     "surte_ventas": False, "admite_ov": False, "cuenta_para_woo": False, "motivo": None, "actualizado": None},
     {"codigo": "ENSAYO", "nombre": "Bodega de ensayo", "fuente": "kubera", "odoo_warehouse_id": None,
      "preferencia": None, "surte_ventas": False, "admite_ov": True, "cuenta_para_woo": False, "motivo": None,
      "actualizado": None},
-    {"codigo": "REVISION", "nombre": "Revisión de devoluciones", "fuente": "kubera", "odoo_warehouse_id": None,
+    {"codigo": "ZZKUB", "nombre": "Bodega sintética de kubera", "fuente": "kubera", "odoo_warehouse_id": None,
      "preferencia": None, "surte_ventas": False, "admite_ov": False, "cuenta_para_woo": False, "motivo": None,
      "actualizado": None},
 ]
@@ -82,14 +88,12 @@ class FakeKubera:
 
     def __init__(self, **datos: Any) -> None:
         self.d = {
-            "tablas": {"almacenes": True, "stock_almacen": True, "stock_formato": True,
-                       "stock_formato_linea": True, "stock_mov": True, "ov_ordenes": True, "ov_lineas": True,
-                       "vigia": True, "stock_kubera": True},
+            "tablas": {"almacenes": True, "stock_almacen": True, "stock_mov": True, "ov_ordenes": True,
+                       "ov_lineas": True, "vigia": True, "stock_kubera": True},
             "pasada": {"ahora": "2026-10-06 12:00:00", "ultima": "2026-10-06 11:50:00",
                        "ultima_ts": "2026-10-06T17:50:00+00:00", "edad_s": 600, "filas": 3},
-            "almacenes": ALMACENES, "banderas": [], "saldos": [], "puertas": [],
-            "formatos": {"por_confirmar": 0, "confirmados": 0, "esperando": 0, "abiertas_hoy": 0,
-                         "abiertas": 0, "movimientos": 0, "ov_abiertas": 0},
+            "almacenes": ALMACENES, "banderas": [], "saldos": [],
+            "conteos": {"movimientos": 0, "ov_abiertas": 0},
             "foto": {
                 "SKU-A": {"sku": "SKU-A", "stock_woo": 8, "stock_odoo": 10, "stock_kubera": None,
                           "hora": "2026-10-06 11:50:00"},
@@ -98,7 +102,7 @@ class FakeKubera:
                 "SKU-T3": {"sku": "SKU-T3", "stock_woo": 2, "stock_odoo": 2, "stock_kubera": None,
                            "hora": "2026-10-06 11:50:00"},
             },
-            "libro": [], "renglones_sku": [], "ov_sku": [], "saldos_sku": [], "recientes": [],
+            "libro": [], "ov_sku": [], "saldos_sku": [], "recientes": [],
         }
         self.d.update(datos)
         self.corridas: list[str] = []
@@ -264,7 +268,7 @@ class WooEsperado(unittest.TestCase):
         self.assertIn("kubera 5", texto)
 
     def test_encendida_solo_kubera(self):
-        # Odoo no lo conoce pero TEX3 sí: max(0, 0 + 4 − 1) = 3
+        # Odoo no lo conoce pero kubera sí: max(0, 0 + 4 − 1) = 3
         self.assertEqual(fb.woo_esperado(None, 1, absoluto=True, resta=True, lee_kubera=True, libre_kub=4)[0], 3)
 
     def test_encendida_sin_nada_no_toca(self):
@@ -275,12 +279,12 @@ class WooEsperado(unittest.TestCase):
 
 
 class LibreKubera(unittest.TestCase):
-    def test_tex3_apagada_no_cuenta(self):
-        self.assertEqual(fb.libre_kubera([{"almacen": "TEX3", "libre": 7}], ALM), 0)
+    def test_bodega_apagada_no_cuenta(self):
+        self.assertEqual(fb.libre_kubera([{"almacen": "ZZKUB", "libre": 7}], ALM), 0)
 
     def test_cuenta_para_woo_suma_y_negativo_vale_cero(self):
-        alm = {**ALM, "TEX3": {**ALM["TEX3"], "cuenta_para_woo": True, "surte_ventas": True, "admite_ov": True}}
-        saldos = [{"almacen": "TEX3", "libre": 7}, {"almacen": "TEX3", "libre": -3},
+        alm = {**ALM, "ZZKUB": {**ALM["ZZKUB"], "cuenta_para_woo": True, "surte_ventas": True, "admite_ov": True}}
+        saldos = [{"almacen": "ZZKUB", "libre": 7}, {"almacen": "ZZKUB", "libre": -3},
                   {"almacen": "ENSAYO", "libre": 9}, {"almacen": "TEX2", "libre": 100}]
         self.assertEqual(fb.libre_kubera(saldos, alm), 7)
 
@@ -297,26 +301,6 @@ class Coincide(unittest.TestCase):
         k, dif, texto = fb.coincide(5, None, "calculado")
         self.assertEqual((k, dif), ("no_toca", None))
         self.assertIn("prendería", texto)
-
-
-class Puerta(unittest.TestCase):
-    def test_sin_formato(self):
-        self.assertEqual(fb.estado_puerta(None)["estado"], "sin_formato")
-
-    def test_por_confirmar_todavia_no_espera(self):
-        self.assertEqual(fb.estado_puerta({"por_confirmar": 2, "esperando": 0, "abiertas": 0})["estado"],
-                         "por_confirmar")
-
-    def test_esperando_gana_a_abierta(self):
-        p = fb.estado_puerta({"por_confirmar": 0, "esperando": 1, "piezas_esperando": 30, "abiertas": 3,
-                              "via": "tex2_bajo", "folios_esperando": "FMT-00002"})
-        self.assertEqual((p["estado"], p["piezas"], p["folios"]), ("esperando", 30, "FMT-00002"))
-
-    def test_abierta_con_su_via(self):
-        p = fb.estado_puerta({"por_confirmar": 0, "esperando": 0, "abiertas": 1, "via": "tex2_cero",
-                              "abierta": "2026-10-06 10:00:00"})
-        self.assertEqual(p["estado"], "abierta")
-        self.assertIn("TEX2 en cero", p["texto"])
 
 
 class Banderas(unittest.TestCase):
@@ -368,27 +352,28 @@ class OdooPorSku(unittest.TestCase):
 
 
 class Universo(unittest.TestCase):
-    def test_tex2_kubera_formatos_y_buscado(self):
+    def test_tex2_kubera_y_buscado(self):
         od = {"A-1": {"en_tex2": True}, "B-1": {"en_tex2": False}}
-        saldos = [{"sku": "c-1", "almacen": "TEX3", "fisico": 3, "apartado": 0},
+        saldos = [{"sku": "c-1", "almacen": "ZZKUB", "fisico": 3, "apartado": 0},
                   {"sku": "ZZCONC-1", "almacen": "ENSAYO", "fisico": 0, "apartado": 0}]
-        u = fb.universo(od, saldos, {"D-1": {}}, buscado="e-1")
-        self.assertEqual(u, ["A-1", "C-1", "D-1", "E-1"])
+        u = fb.universo(od, saldos, buscado="e-1")
+        self.assertEqual(u, ["A-1", "C-1", "E-1"])
 
     def test_sin_odoo(self):
-        self.assertEqual(fb.universo(None, [], {"D-1": {}}), ["D-1"])
+        saldos = [{"sku": "d-1", "almacen": "ZZKUB", "fisico": 1, "apartado": 0}]
+        self.assertEqual(fb.universo(None, saldos), ["D-1"])
 
-    def test_fila_en_cero_de_tex3_si_entra(self):
+    def test_fila_en_cero_de_kubera_si_entra(self):
         # Entró por devolución, se vendió hasta 0 y no hay nada en TEX2: sigue siendo de kubera.
-        saldos = [{"sku": "T-0", "almacen": "TEX3", "fisico": 0, "apartado": 0},
+        saldos = [{"sku": "T-0", "almacen": "ZZKUB", "fisico": 0, "apartado": 0},
                   {"sku": "E-0", "almacen": "ENSAYO", "fisico": 0, "apartado": 0}]
-        self.assertEqual(fb.universo({}, saldos, {}), ["T-0"])
+        self.assertEqual(fb.universo({}, saldos), ["T-0"])
 
 
 # ── 2. La pestaña completa, con mocks ────────────────────────────────────────
 
 class EstadoVacio(ConMocks):
-    def test_tex3_apagada_sin_banderas_ni_formatos(self):
+    def test_sin_saldo_en_kubera_ni_banderas(self):
         d = fb.resumen()
         self.assertTrue(d["ok"])
         self.assertTrue(d["tablas"]["ok"])
@@ -406,13 +391,12 @@ class EstadoVacio(ConMocks):
         self.assertEqual(a["odoo"]["TEXCO"]["libre"], 4)
         self.assertEqual(a["odoo"]["DROP"], {"fisico": 0, "reservado": 0, "libre": 0})
         self.assertEqual(a["otras"], 0)                     # 10 = 4 + 6 + 0
-        self.assertEqual(a["puerta"]["estado"], "sin_formato")
         self.assertEqual(d["conteo"]["no_coincide"], 1)
-        # Encabezado: TEX3 sola como columna, banderas apagadas por falta de fila, qué falta.
-        self.assertEqual([c["codigo"] for c in d["columnas_kubera"]], ["TEX3"])
+        self.assertNotIn("esperando", d["conteo"])
+        # Encabezado: ninguna columna de kubera sin saldo, banderas apagadas por falta de fila.
+        self.assertEqual(d["columnas_kubera"], [])
         self.assertTrue(all(not x["encendida"] and x["fuente"] == "variable" for x in d["banderas"]))
-        self.assertEqual(len(d["que_falta"]), 4)
-        self.assertFalse(any(p["hecho"] for p in d["que_falta"]))
+        self.assertEqual(d["conteos"], {"movimientos": 0, "ov_abiertas": 0})
         self.assertIn("kubera NO suma", d["formula"]["texto"])
         self.assertEqual(d["stock_watch"]["ultima"], "2026-10-06 11:50:00")
         # Odoo: sólo lectura y seis llamadas (almacenes, TEX2, productos de TEX2, sus
@@ -438,39 +422,48 @@ class EstadoVacio(ConMocks):
         self.assertEqual(len(self.odoo.llamadas), 11)                   # relee (almacenes en caché)
         self.assertTrue(d["odoo"]["tras_pasada"])
 
-    def test_formatos_y_vigia_con_cache_de_cinco_minutos(self):
-        self.kub.d["puertas"] = [{"sku": "SKU-T3", "por_confirmar": 0, "esperando": 2, "piezas_esperando": 5,
-                                  "abiertas": 1, "via": None, "abierta": None, "folios_esperando": "FMT-1"}]
+    def test_conteos_y_vigia_con_cache_de_cinco_minutos(self):
+        self.kub.d["conteos"] = {"movimientos": 8, "ov_abiertas": 1}
         d = fb.resumen()
         fb._cache.update(t=0.0, v=None)
         fb.resumen()
-        self.assertEqual(self.kub.corridas.count("formatos"), 1)
+        self.assertEqual(self.kub.corridas.count("conteos"), 1)
         self.assertEqual(self.kub.corridas.count("vigia"), 1)
-        self.assertEqual(self.kub.corridas.count("puertas"), 2)
-        # Lo que se ve por fila va fresco: sale de `puertas`, no del conteo con caché.
-        self.assertEqual((d["formatos"]["esperando"], d["formatos"]["abiertas"]), (2, 1))
-        self.assertTrue(d["que_falta"][0]["hecho"] and d["que_falta"][1]["hecho"])
+        self.assertEqual(d["conteos"], {"movimientos": 8, "ov_abiertas": 1})
+
+    def test_compatible_con_el_frontend_anterior(self):
+        # Por UNA versión: lo que el frontend anterior lee sin guardas sigue llegando,
+        # en ceros (y los conteos reales donde ya los leía).
+        self.kub.d["conteos"] = {"movimientos": 8, "ov_abiertas": 1}
+        d = fb.resumen()
+        self.assertEqual(d["que_falta"], [])
+        self.assertEqual(d["formatos"], {"por_confirmar": 0, "confirmados": 0, "esperando": 0, "abiertas_hoy": 0,
+                                         "abiertas": 0, "renglones": 0, "movimientos": 8, "ov_abiertas": 1})
+        self.assertTrue(all(f["puerta"] == {"estado": "sin_formato", "texto": "Sin formato"} for f in d["filas"]))
+        self.assertFalse(any("esperando" in f["tags"] for f in d["filas"]))
+        self.assertEqual(fb.detalle_sku("SKU-A")["renglones"], [])
+        self.assertNotIn("puertas", self.kub.corridas)
+        self.assertNotIn("formatos", self.kub.corridas)
 
 
 class KuberaConSaldo(ConMocks):
     def setUp(self) -> None:
         super().setUp()
-        self.kub.d["saldos"] = [{"sku": "SKU-T3", "almacen": "TEX3", "fisico": 5, "apartado": 1, "libre": 4,
+        self.kub.d["saldos"] = [{"sku": "SKU-T3", "almacen": "ZZKUB", "fisico": 5, "apartado": 1, "libre": 4,
                                  "ubicacion": "A-1"},
-                                {"sku": "SKU-A", "almacen": "TEX3", "fisico": 4, "apartado": 0, "libre": 4,
+                                {"sku": "SKU-A", "almacen": "ZZKUB", "fisico": 4, "apartado": 0, "libre": 4,
                                  "ubicacion": None}]
-        self.kub.d["puertas"] = [{"sku": "SKU-T3", "por_confirmar": 0, "esperando": 1, "piezas_esperando": 5,
-                                  "abiertas": 0, "via": None, "abierta": None, "folios_esperando": "FMT-00001"}]
 
     def test_apagada_kubera_no_suma_y_universo(self):
         d = fb.resumen()
         t3 = self.fila(d, "SKU-T3")
-        self.assertIn("kubera", t3["tags"])
-        self.assertIn("esperando", t3["tags"])
-        self.assertEqual(t3["kubera"]["TEX3"], {"fisico": 5, "apartado": 1, "libre": 4})
-        self.assertEqual(t3["libre_kubera"], 0)              # TEX3 no cuenta para Woo
+        self.assertEqual(t3["tags"], ["kubera"])
+        self.assertEqual(t3["kubera"]["ZZKUB"], {"fisico": 5, "apartado": 1, "libre": 4})
+        self.assertEqual(t3["libre_kubera"], 0)              # ZZKUB no cuenta para Woo
         self.assertEqual(t3["esperado"], 2)                  # sólo Odoo
         self.assertEqual(self.fila(d, "SKU-A")["esperado"], 8)
+        # Columnas de kubera: sólo las de fuente kubera con saldo (ENSAYO no tiene).
+        self.assertEqual([c["codigo"] for c in d["columnas_kubera"]], ["ZZKUB"])
 
     def test_encendida_pero_stock_watch_no_la_lee(self):
         self.kub.d["banderas"] = [{"flag": "stock_watch_lee_kubera", "valor": True, "motivo": "acta",
@@ -479,11 +472,10 @@ class KuberaConSaldo(ConMocks):
         self.assertIn("todavía no la lee", d["formula"]["texto"])
         self.assertFalse(d["formula"]["suma_kubera"])
         self.assertEqual(self.fila(d, "SKU-A")["esperado"], 8)
-        self.assertFalse(d["que_falta"][3]["hecho"])
 
-    def test_encendida_y_tex3_cuenta(self):
-        tex3 = {**ALM["TEX3"], "cuenta_para_woo": True, "surte_ventas": True, "admite_ov": True}
-        self.kub.d["almacenes"] = [a if a["codigo"] != "TEX3" else tex3 for a in ALMACENES]
+    def test_encendida_y_la_bodega_cuenta(self):
+        zz = {**ALM["ZZKUB"], "cuenta_para_woo": True, "surte_ventas": True, "admite_ov": True}
+        self.kub.d["almacenes"] = [a if a["codigo"] != "ZZKUB" else zz for a in ALMACENES]
         self.kub.d["banderas"] = [{"flag": "stock_watch_lee_kubera", "valor": True, "motivo": "acta",
                                    "actualizado_por": "x", "actualizado": None}]
         with mock.patch.object(fb, "_suma_kubera", return_value=True):
@@ -492,13 +484,12 @@ class KuberaConSaldo(ConMocks):
         self.assertEqual((a["libre_kubera"], a["esperado"]), (4, 12))     # 10 + 4 − 2
         self.assertEqual(a["coincide"], "menos")                          # Woo 8 < 12
         self.assertIn("kubera SÍ suma", d["formula"]["texto"])
-        self.assertTrue(d["que_falta"][2]["hecho"] and d["que_falta"][3]["hecho"])
 
 
 class OdooCaido(ConMocks):
     def test_sin_lectura_previa_no_truena(self):
         self.odoo.falla = OSError("timed out")
-        self.kub.d["saldos"] = [{"sku": "SKU-T3", "almacen": "TEX3", "fisico": 5, "apartado": 0, "libre": 5,
+        self.kub.d["saldos"] = [{"sku": "SKU-T3", "almacen": "ZZKUB", "fisico": 5, "apartado": 0, "libre": 5,
                                  "ubicacion": None}]
         with self.assertLogs("omnicanal.fanout_bodegas", level="WARNING"):
             d = fb.resumen()
@@ -535,21 +526,31 @@ class OdooCaido(ConMocks):
 
 class TablasAusentes(ConMocks):
     def test_200_con_aviso_y_sin_tocar_las_tablas(self):
-        sin = {"ok": False, "faltan": ["ops.almacenes", "ops.stock_almacen"], "vigia": False,
+        sin = {"ok": False, "faltan": ["almacen.almacenes", "almacen.stock_almacen"], "vigia": False,
                "stock_kubera": False}
         with mock.patch.object(fb, "_tablas", return_value=sin):
             d = fb.resumen()
         self.assertTrue(d["ok"])
         self.assertFalse(d["tablas"]["ok"])
-        prohibidas = {"almacenes", "saldos", "puertas", "formatos", "vigia"}
+        prohibidas = {"almacenes", "saldos", "conteos", "vigia"}
         self.assertFalse(prohibidas & set(self.kub.corridas), self.kub.corridas)
         self.assertTrue(any("null::integer" in s for s in self.kub.sqls if "bodegas:foto" in s))
         self.assertEqual(sorted(f["sku"] for f in d["filas"]), ["SKU-A", "SKU-B"])
         self.assertEqual(d["que_falta"], [])
         self.assertEqual(d["columnas_kubera"], [])
 
+    def test_faltan_con_el_nombre_calificado_real(self):
+        # Una base sin la 0068 (las tablas siguen en `ops`): faltan las cinco con su casa nueva.
+        self.kub.d["tablas"] = {"almacenes": False, "stock_almacen": False, "stock_mov": False,
+                                "ov_ordenes": False, "ov_lineas": True, "vigia": True, "stock_kubera": True}
+        with self.assertLogs("omnicanal.fanout_bodegas", level="WARNING"):
+            t = fb._tablas()
+        self.assertFalse(t["ok"])
+        self.assertEqual(t["faltan"], ["almacen.almacenes", "almacen.stock_almacen", "almacen.stock_mov",
+                                       "ventas.ov_ordenes"])
+
     def test_detalle_sin_tablas(self):
-        sin = {"ok": False, "faltan": ["ops.stock_mov"], "vigia": False, "stock_kubera": False}
+        sin = {"ok": False, "faltan": ["almacen.stock_mov"], "vigia": False, "stock_kubera": False}
         with mock.patch.object(fb, "_tablas", return_value=sin):
             d = fb.detalle_sku("SKU-A")
         self.assertTrue(d["ok"])
@@ -576,29 +577,21 @@ class Pendientes(ConMocks):
 
 
 class Detalle(ConMocks):
-    def test_libro_formatos_y_ov(self):
-        self.kub.d["saldos_sku"] = [{"sku": "SKU-T3", "almacen": "TEX3", "fisico": 5, "apartado": 0, "libre": 5,
+    def test_libro_y_ov(self):
+        self.kub.d["saldos_sku"] = [{"sku": "SKU-T3", "almacen": "ZZKUB", "fisico": 5, "apartado": 0, "libre": 5,
                                      "ubicacion": None, "actualizado": None}]
-        self.kub.d["libro"] = [{"id": 2, "almacen": "TEX3", "delta": 5, "saldo_despues": 5, "motivo": "entrada",
-                                "ref": "FMT-00001", "nota": None, "quien": "Bodega", "via": "panel",
-                                "hora": "2026-10-06 10:00:00", "total": 1}]
-        self.kub.d["renglones_sku"] = [{"folio": "FMT-00001", "estado": "confirmado", "almacen": "TEX3", "fila": 1,
-                                        "cantidad": 5, "cantidad_archivo": 5, "sku_archivo": "SKU-T3",
-                                        "ubicacion": None, "nota": None, "aviso": None, "via": "tex2_bajo",
-                                        "ref_odoo": None, "odoo_tex2_al_cargar": 7, "odoo_tex2_al_confirmar": None,
-                                        "odoo_tex2_al_abrir": 2, "abierta": "2026-10-06 10:00:00",
-                                        "cargado": None, "confirmado": None}]
-        self.kub.d["puertas"] = [{"sku": "SKU-T3", "por_confirmar": 0, "esperando": 0, "piezas_esperando": 0,
-                                  "abiertas": 1, "via": "tex2_bajo", "abierta": "2026-10-06 10:00:00",
-                                  "folios_esperando": None}]
+        self.kub.d["libro"] = [{"id": 2, "almacen": "ZZKUB", "delta": 5, "saldo_despues": 5,
+                                "motivo": "ajuste_conteo", "ref": None, "nota": None, "quien": "Bodega",
+                                "via": "panel", "hora": "2026-10-06 10:00:00", "total": 1}]
         d = fb.detalle_sku("sku-t3")
         self.assertTrue(d["ok"] and d["existe"])
         self.assertEqual(d["sku"], "SKU-T3")
         self.assertEqual(d["libro_total"], 1)
         self.assertNotIn("total", d["libro"][0])
-        self.assertEqual(d["renglones"][0]["via_t"], "TEX2 bajó")
-        self.assertEqual(d["fila"]["puerta"]["estado"], "abierta")
+        self.assertEqual(d["renglones"], [])                          # compat, siempre vacío
+        self.assertEqual(d["fila"]["kubera"]["ZZKUB"]["libre"], 5)
         self.assertEqual(d["fila"]["odoo"]["TEXCO"]["libre"], 2)      # lectura de un solo SKU
+        self.assertEqual(set(self.kub.corridas) & {"puertas", "renglones_sku"}, set())
 
     def test_sku_inexistente(self):
         d = fb.detalle_sku("NO-EXISTE")
@@ -710,12 +703,12 @@ class Hermanos(ConMocks):
 class KuberaFoto(ConMocks):
     def setUp(self) -> None:
         super().setUp()
-        tex3 = {**ALM["TEX3"], "cuenta_para_woo": True, "surte_ventas": True, "admite_ov": True}
-        self.kub.d["almacenes"] = [a if a["codigo"] != "TEX3" else tex3 for a in ALMACENES]
+        zz = {**ALM["ZZKUB"], "cuenta_para_woo": True, "surte_ventas": True, "admite_ov": True}
+        self.kub.d["almacenes"] = [a if a["codigo"] != "ZZKUB" else zz for a in ALMACENES]
         self.kub.d["foto"]["SKU-A"] = {**self.kub.d["foto"]["SKU-A"], "stock_woo": 12, "stock_kubera": 4}
 
     def _saldo(self, libre: int) -> None:
-        self.kub.d["saldos"] = [{"sku": "SKU-A", "almacen": "TEX3", "fisico": libre, "apartado": 0,
+        self.kub.d["saldos"] = [{"sku": "SKU-A", "almacen": "ZZKUB", "fisico": libre, "apartado": 0,
                                  "libre": libre, "ubicacion": None}]
 
     def test_usa_la_mitad_kubera_de_la_foto(self):
@@ -804,15 +797,56 @@ class SqlSoloLectura(unittest.TestCase):
     PROHIBIDO = re.compile(r"\b(insert|update|delete|merge|truncate|create|alter|drop|grant|revoke|copy|"
                            r"call|do|lock)\b|for\s+(no\s+key\s+)?(update|share)|\bset\s")
 
+    # Los nueve puentes que dejó la 0068 en `ops` (vistas sobre las tablas mudadas).
+    PUENTES = ("almacenes", "almacenes_hist", "stock_almacen", "stock_mov", "ov_folio", "ov_ordenes",
+               "ov_lineas", "ov_mensajes", "ov_archivos")
+
     def test_toda_sentencia_es_un_select(self):
         nombres = [n for n in dir(fb) if n.startswith("_SQL_")]
-        self.assertGreaterEqual(len(nombres), 14)
+        self.assertGreaterEqual(len(nombres), 12)
         for n in nombres:
             sql = re.sub(r"/\*.*?\*/", " ", getattr(fb, n), flags=re.S)
             sql = re.sub(r"--[^\n]*", " ", sql).strip().lower()
             with self.subTest(sentencia=n):
                 self.assertTrue(sql.startswith("select"), sql[:60])
                 self.assertIsNone(self.PROHIBIDO.search(sql), sql)
+
+    def test_ninguna_sentencia_usa_los_puentes_ni_los_formatos(self):
+        # El candado para que nadie vuelva a depender de los puentes `ops.<tabla>` de la
+        # 0068 (se retiran en un acta aparte) ni de lo que borró la limpieza.
+        puente = re.compile(r"\bops\.(" + "|".join(self.PUENTES) + r")\b", re.I)
+        for n in [n for n in dir(fb) if n.startswith("_SQL_")]:
+            sql = getattr(fb, n)
+            with self.subTest(sentencia=n):
+                self.assertIsNone(puente.search(sql), sql)
+                self.assertNotIn("stock_formato", sql)
+                self.assertNotIn("ops.devoluciones", sql)
+        self.assertTrue(all(nombre.split(".")[0] in ("almacen", "ventas") for nombre in fb.NUCLEO.values()))
+
+    def test_cada_tabla_que_lee_existe(self):
+        # FakeKubera contesta por la marca `/* bodegas:… */`, no por las tablas: un nombre
+        # roto (`almacen.stock_movx`) pasaba las demás pruebas y tronaba en producción.
+        # Cada `from|join esquema.tabla` tiene que estar en el manifiesto curado o
+        # existir al final de la cadena de migraciones (su huella).
+        sys.path.insert(0, str(BACKEND / "scripts"))
+        import aplicar_migraciones as A  # noqa: E402
+        raiz = BACKEND.parent
+        manifiesto = json.loads((raiz / "supabase" / "schema_manifest.json").read_text(encoding="utf-8"))
+        conocidas = {(e, t) for e, tablas in manifiesto["esquemas"].items() for t in tablas}
+        huellas = A.huellas_esperadas(A.listar_migraciones(raiz / "supabase" / "migrations"))
+        conocidas |= set().union(*(h["relaciones"] for h in huellas.values()))
+        leida = re.compile(r"\b(?:from|join)\s+([a-z_][a-z0-9_]*)\.([a-z_][a-z0-9_]*)\b", re.I)
+        vistas = 0
+        for n in [n for n in dir(fb) if n.startswith("_SQL_")]:
+            sql = re.sub(r"/\*.*?\*/", " ", getattr(fb, n), flags=re.S)
+            sql = re.sub(r"--[^\n]*", " ", sql)
+            for esquema, tabla in leida.findall(sql):
+                if esquema.lower() in ("pg_catalog", "information_schema"):
+                    continue
+                vistas += 1
+                with self.subTest(sentencia=n, tabla=f"{esquema}.{tabla}"):
+                    self.assertIn((esquema.lower(), tabla.lower()), conocidas)
+        self.assertGreaterEqual(vistas, 12)
 
     def test_odoo_tiene_una_sola_puerta(self):
         fuente = Path(fb.__file__).read_text(encoding="utf-8")
