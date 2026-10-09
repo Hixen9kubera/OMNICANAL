@@ -941,6 +941,42 @@ def iniciar() -> None:
     except Exception:  # noqa: BLE001 — este módulo no detiene a los demás
         log.exception("Órdenes de venta propias: NO se pudo registrar el barrido de "
                       "cancelaciones; el resto del scheduler arranca igual.")
+    # Almacén · copia de Odoo (services/almacen_odoo.py): la foto de ubicaciones y
+    # el historial de movimientos de TEXCO II, que sólo vivían en Odoo, a kubera.
+    # Cada pasada pide a Odoo lo escrito desde la última línea vista (el delta);
+    # la primera de cada arranque y una al día releen todo y concilian. Pregunta
+    # en cada pasada al catálogo de bodegas si el cedis sigue siendo de Odoo: el
+    # día que deje de serlo se calla sola. En su `try`, como el bloque de arriba:
+    # si no se pudiera registrar, el resto del scheduler arranca igual.
+    try:
+        if settings.almacen_odoo_enabled and settings.supabase_db_url:
+            from services import almacen_odoo
+
+            async def _almacen_odoo() -> None:
+                try:
+                    # Regla 11: lee Odoo (XML-RPC) y escribe la base → a un hilo.
+                    await asyncio.to_thread(almacen_odoo.vigilar)
+                except Exception as exc:  # noqa: BLE001 — nunca tumba al scheduler
+                    log.warning("Almacén · copia de Odoo falló: %s", type(exc).__name__)
+
+            _scheduler.add_job(
+                _almacen_odoo,
+                "interval",
+                minutes=30,
+                id="almacen_odoo",
+                # A los 4 min del boot, detrás de los golpes del arranque.
+                next_run_time=datetime.now(timezone.utc) + timedelta(minutes=4),
+                max_instances=1,
+                coalesce=True,
+            )
+            log.info("Almacén · copia de Odoo cada 30 min (%s): foto de ubicaciones e "
+                     "historial de movimientos; se detiene sola cuando el cedis deje de "
+                     "ser de Odoo.", ", ".join(almacen_odoo.CEDIS_OBSERVADOS))
+        else:
+            log.info("Almacén · copia de Odoo DESACTIVADA (ALMACEN_ODOO_ENABLED=false o sin kubera).")
+    except Exception:  # noqa: BLE001 — este módulo no detiene a los demás
+        log.exception("Almacén · copia de Odoo: NO se pudo registrar el vigilante; el resto "
+                      "del scheduler arranca igual.")
     _scheduler.start()
     if settings.sync_enabled:
         log.info("Sync programado cada %s min.", settings.sync_interval_min)

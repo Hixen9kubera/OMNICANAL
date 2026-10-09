@@ -1584,6 +1584,16 @@ class Settings(BaseSettings):
     # correcto (por DELTA) vive en `stock_watch`; esto se queda apagado.
     odoo_watch_auto_push: bool = False
 
+    # Almacén · copia de Odoo (services/almacen_odoo.py). Cada 30 min deja en
+    # kubera la foto de ubicaciones (`almacen.locations`) y el historial de
+    # movimientos (`almacen.historial_movimientos`) de los cedis que todavía se
+    # operan en Odoo — hoy TEXCO II. Sólo lee Odoo y escribe esas dos tablas.
+    # Encendido por instrucción de Brandon (9-oct-2026) y se detiene SOLO cuando
+    # el catálogo de bodegas diga que el cedis ya no es de Odoo: ése es el
+    # interruptor. Esta variable no hace falta en Railway; existe como freno de
+    # emergencia (ALMACEN_ODOO_ENABLED=false), sin deploy.
+    almacen_odoo_enabled: bool = True
+
     # ── Flujo del SKU (stepper de /omnicanal, services/inventario_flujo.py) ──
     # Una FOTO del catálogo en memoria: kubera (0.2–0.7 s) + cuatro lecturas de
     # catálogo completo a Odoo (12–35 s de día) + los SKUs del almacén DROP.

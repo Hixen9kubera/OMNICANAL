@@ -10,6 +10,11 @@
 --   de Odoo (sólo lectura allá), y se puede volver a correr mientras TEXCO II
 --   siga siendo de Odoo.
 --
+-- OJO (0070, mismo día): los productos archivados ya NO se traen. La 0070 borró
+-- sus renglones y quitó la columna `archivado_odoo` que esta migración crea, y el
+-- cargador se reemplazó por `services/almacen_odoo.py` (vigilante de 30 min) y
+-- `backend/scripts/copiar_almacen_odoo.py`. Para una base nueva: 0069 → 0070.
+--
 -- Estado: APLICADA en PRODUCCIÓN (tukwcvsi) el 9-oct-2026 07:05:58 UTC, desde el
 -- chat de Inventario y por instrucción de Brandon («sube la migración, aplica a
 -- producción»); sin acta. Antes, la migración entera dentro de una transacción

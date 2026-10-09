@@ -5,8 +5,13 @@
 > migración, aplica a producción»). No pasó por acta. La tabla **ya tiene datos**
 > (cargados a las 07:06 UTC). **En el sandbox NO está aplicada.**
 
+> **ACTUALIZACIÓN, mismo día (0070):** Brandon pidió no traer productos archivados. La 0070 borró
+> esos 37 renglones y quitó la columna `archivado_odoo`; el cargador de abajo se reemplazó por
+> `backend/scripts/copiar_almacen_odoo.py` y un vigilante mantiene la foto al día cada 30 min.
+> Ver `docs/MIGRACION_0070_NOTA_EDUARDO.md`. Lo que sigue describe la tabla como nació.
+
 Archivo: `supabase/migrations/0069_almacen_locations.sql`.
-Cargador: `backend/scripts/cargar_locations_tex2.py`.
+Cargador (ya no existe): `backend/scripts/cargar_locations_tex2.py`.
 
 ## Por qué existe
 

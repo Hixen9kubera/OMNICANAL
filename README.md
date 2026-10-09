@@ -1001,6 +1001,79 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.632.0 — `almacen.historial_movimientos`: el historial de TEXCO II sale de Odoo y un vigilante lo mantiene al día cada 30 minutos (migración 0070, aplicada y cargada)
+
+Brandon, 9-oct: *"requiero que me armes una nueva tabla llamada HISTORIAL_MOVIMIENTOS de todos los skus que
+tenemos… pasarás todos los skus de TEXCO II de su historial de movimientos a KUBERA supabase para que lo tengamos
+como fuente de información con un DELTA para siempre observar a odoo cada 30 MIN de sus movimientos hasta su
+desactivación de bodega"*. Y al ver la propuesta: *"dale, crea la migración de lo que necesitas y todos los
+archivados no los traigas ya que archivados pueden ser error"*.
+
+**La tabla.** `almacen.historial_movimientos` (migración `0070`): un renglón por línea de movimiento HECHA en Odoo
+(`stock.move.line`), vista desde un cedis.
+
+- `cedis` obligatorio, igual que en `almacen.locations`.
+- `delta` es lo que el movimiento le hizo al cedis: **+** entran piezas, **−** salen, **0** sólo cambiaron de lugar
+  adentro. `piezas` es cuántas se movieron. Un CHECK amarra el signo al lado del movimiento que está en el cedis.
+- `ubicacion_origen` / `ubicacion_destino` van escritas como en `almacen.locations` (`BLOQUE D-FILA 1-T6`,
+  `SIN UBICAR`, `Salida`) y sólo del lado que está dentro del cedis; la ruta completa de Odoo de los dos lados queda
+  en `odoo_origen` / `odoo_destino`.
+- `causa` usa las palabras del libro de bodega del panel (`services.odoo._causa`): entrada, venta, envio_full,
+  traspaso, preparacion, ajuste, merma, devolucion, cuarentena. Más `documento`, `referencia` (orden de venta o de
+  compra), `contraparte`, `tipo_operacion` y `quien`.
+- No es el libro de las bodegas de kubera (`almacen.stock_mov`): aquí queda lo que registró Odoo.
+
+**El vigilante** (`services/almacen_odoo.py`, job `almacen_odoo` del scheduler). Cada 30 minutos:
+
+- **El delta:** pide a Odoo sólo las líneas ESCRITAS desde la última que vio (`write_date`, con 15 min de traslape
+  para que una validación larga no se escape). La primera pasada de cada arranque y una vez al día relee todo y
+  concilia.
+- **La foto:** en la misma pasada concilia `almacen.locations` contra las existencias de Odoo y escribe sólo lo que
+  cambió. La foto de la v0.629.0 envejecía con cada surtido; ya no.
+- **El cuadre:** mide que Σ `delta` del historial de cada SKU sea igual a Σ `piezas` de su foto, y avisa en el log
+  si un SKU lleva dos pasadas sin cuadrar (una sola puede ser un movimiento que cayó entre las dos lecturas).
+- **Sin variable en Railway.** Se detiene sola el día que el catálogo de bodegas diga que TEXCO II ya no es de Odoo
+  (`almacen.almacenes.fuente`), que es el «hasta su desactivación» de Brandon. La foto se detiene antes si alguien
+  captura un renglón a mano en ese cedis. Freno de emergencia sin deploy: `ALMACEN_ODOO_ENABLED=false`.
+- Sólo lee Odoo (`search_read` y `read`, con tiempo límite) y sólo escribe esas dos tablas. No toca Woo, el stock
+  que se vende ni ningún canal. Corre en un hilo (regla 11) y nunca tumba al scheduler.
+- Escribe por diferencias, con sentencias repetibles que valen por sí solas: `supabase_db.get_cursor` puede cambiar
+  de conexión a media transacción, y así lo peor que pasa es que una pasada quede a medias y la siguiente la termine.
+
+**Sin archivados, en las dos tablas.** Ni la existencia ni los movimientos de un producto archivado en Odoo se
+traen. La 0070 borró de `almacen.locations` los 37 renglones que la v0.629.0 había traído marcados (22,250 piezas)
+y quitó la columna `archivado_odoo`. Consecuencia que hay que saber: 21 SKUs tenían su rack sólo en el producto
+archivado gemelo, así que ahora aparecen como `SIN UBICAR`.
+
+**A mano.** `backend/scripts/copiar_almacen_odoo.py` hace exactamente la pasada del vigilante (mismas funciones),
+con ensayo por omisión, `--delta` y `--forzar`. Reemplaza a `cargar_locations_tex2.py`, que se borró.
+
+**Lo que se encontró** (medido el 9-oct):
+
+- TEXCO II tiene **6,307 movimientos** de productos activos (1,412 SKUs), del 21-may al 9-oct: 1,918 preparación
+  (los pasos de recolectar y empacar, y el acomodo a rack), 1,817 ajuste, 1,618 entrada, 471 envío a canal, 469
+  traspaso, 7 merma y 7 venta.
+- **El historial reproduce la existencia exacta:** 1,225 de 1,225 SKUs, y por ubicación 1,628 de 1,628 pares SKU +
+  ubicación. Es la prueba de que la carga quedó completa.
+- 290 líneas de 110 productos archivados no se trajeron. En 86 de ellos Odoo había borrado la existencia sin dejar
+  movimiento: su historial decía que 11,501 piezas seguían ahí.
+- Toda salida a un socio que es canal (FULL, AMAZON, temu, tiktokshop) sale como `envio_full`, también las ventas
+  de Temu y TikTok, porque así clasifica el panel; el canal queda en `contraparte`.
+- Un SKU con Ñ (`MUE-0359-MUÑ-ROJ-BLN`) se borraba y se volvía a escribir en cada pasada: la base y Python no
+  pasaban la Ñ a minúscula igual. La comparación se hace ahora de un solo lado.
+
+**Aplicada en producción** el 9-oct 18:45 UTC desde este chat (sin acta, por instrucción de Brandon) y cargada a
+las 18:47 UTC. El sandbox no la tiene. Lo que queda abierto para Eduardo está en
+`docs/MIGRACION_0070_NOTA_EDUARDO.md`.
+
+**Verificado.** En local (Postgres 16, sobre `0064 → 0065 → 0068 → 0069` con la foto como estaba en producción):
+la 0070 dos veces; el script en ensayo, aplicado, repetido (0 cambios) y en delta; el camino del scheduler con el
+pool de `supabase_db` —primera pasada completa y la siguiente delta, repone lo que se borró a mano, se calla cuando
+TEXCO II pasa a kubera y deja de pisar la foto si hay un renglón capturado a mano—. En producción: ensayo de la
+migración entera con `ROLLBACK` (17 comprobaciones y 6 rechazos esperados), las mismas 17 después del `COMMIT`, y
+la pasada de delta siguiente sin un solo cambio. 32 pruebas nuevas (`tests/test_almacen_odoo.py`), entre ellas el
+registro del job cada 30 min y que corre fuera del loop.
+
 ### v0.631.0 — Seguro stock 0: SIEMPRE ENCENDIDO — sin interruptor, para todo el catálogo, con reactivación; y Temu ya inactiva también la «agotada»
 
 **Qué pidió Brandon (9-oct-2026).** «Enciéndelo, realiza las pruebas para únicamente inactivar la
