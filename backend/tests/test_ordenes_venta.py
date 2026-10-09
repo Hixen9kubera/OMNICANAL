@@ -1,7 +1,7 @@
 """Pruebas UNITARIAS de las órdenes de venta propias (services/ordenes_venta.py y
 services/ov_storage.py). Sin base y sin red: lo que toca kubera —y todo lo que
 la base impone por su cuenta— se prueba en tests/test_ordenes_venta_bd.py contra
-un Postgres local con las migraciones 0064 y 0065.
+un Postgres local con las migraciones 0064, 0065 y 0068.
 
 ── QUÉ FIJAN ───────────────────────────────────────────────────────────────────
   1. Quién es quién, qué código HTTP lleva cada error, y que la variable de
@@ -198,7 +198,7 @@ class QuienYErrores(unittest.TestCase):
             self.assertTrue(issubclass(clase, ov.ErrorOV))
             self.assertEqual(clase().status, status, clase.__name__)
         self.assertEqual(str(ov.Conflicto()), "La orden cambió mientras tanto; se recargó.")
-        self.assertIn("0064 y 0065", str(ov.FaltaMigracion()))
+        self.assertIn("0064, 0065 y 0068", str(ov.FaltaMigracion()))
         self.assertIn("modo prueba", str(ov.Apagado()))
         self.assertEqual((ov.ErrorOV("x", status=502).status, str(ov.Invalido("mal"))), (502, "mal"))
 
@@ -929,7 +929,7 @@ class Sentencias(unittest.TestCase):
                              r"for update of sa", nombre)
         for nombre in ("SQL_ENTREGAR", "SQL_SALIO", "SQL_SALIO_TARDE"):
             sql = self.sql[nombre]
-            self.assertIn("insert into ops.stock_mov", sql, nombre)
+            self.assertIn("insert into almacen.stock_mov", sql, nombre)
             self.assertIn("'salida_ov'", sql)
             self.assertIn("'ov:' || %(id)s || ':linea:' || s.linea_id || ':salida'", sql,
                           f"{nombre}: la MISMA clave para entregar y para «¿salió?»")
@@ -954,10 +954,10 @@ class Sentencias(unittest.TestCase):
             self.assertIn(columna, sql, columna)
         self.assertIn("'confirmada', 'venta', %(mc)s,", sql, "cliente = mp_canal (SEG-06)")
         self.assertIn("'marketplace'", sql)
-        self.assertRegex(sql, r"(?s)fo as \(\s*update ops\.ov_folio.*not exists \(select 1 from previa\)"
+        self.assertRegex(sql, r"(?s)fo as \(\s*update ventas.ov_folio.*not exists \(select 1 from previa\)"
                               r".*\(select count\(\*\) from s\) = \(select count\(\*\) from r\)",
                          "el folio sube AL FINAL, sólo si no existía y todo alcanzó")
-        self.assertLess(sql.index("for update of sa"), sql.index("update ops.ov_folio"),
+        self.assertLess(sql.index("for update of sa"), sql.index("update ventas.ov_folio"),
                         "la excepción documentada al orden de candados")
 
 
@@ -1028,9 +1028,9 @@ class SinMigracionYSinBase(Limpia):
         leer = self.parche("_leer_tablas", mock.MagicMock(return_value=True))
         self.assertTrue(ov.tablas_listas() and ov.tablas_listas())
         self.assertEqual(leer.call_count, 1)
-        self.assertIn("to_regclass('ops.ov_ordenes')", ov._SQL_HAY_TABLAS)
-        self.assertIn("to_regclass('ops.almacenes')", ov._SQL_HAY_TABLAS)
-        self.assertIn("to_regclass('ops.stock_almacen')", ov._SQL_HAY_TABLAS)
+        self.assertIn("to_regclass('ventas.ov_ordenes')", ov._SQL_HAY_TABLAS)
+        self.assertIn("to_regclass('almacen.almacenes')", ov._SQL_HAY_TABLAS)
+        self.assertIn("to_regclass('almacen.stock_almacen')", ov._SQL_HAY_TABLAS)
         leer.return_value = False
         self.assertTrue(ov.tablas_listas())
         self.assertFalse(ov.tablas_listas(refrescar=True))

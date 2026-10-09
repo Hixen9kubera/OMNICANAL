@@ -331,7 +331,7 @@ class Settings(BaseSettings):
     # omisión cuando la fila no existe.
     fulfillment_crear_full: bool = False
     # ── ÓRDENES DE VENTA PROPIAS (Inventario → Órdenes de venta) ──────────────
-    # La orden de venta de las bodegas de KUBERA (`ops.ov_*` y `ops.stock_*`,
+    # La orden de venta de las bodegas de KUBERA (`ventas.ov_*` y `almacen.stock_*`,
     # migraciones 0064 y 0065; contrato en docs/MIGRACION_0064_0065_GUIA_AGENTE.md).
     #
     # ⚠️ ESTA VARIABLE YA NO ES EL INTERRUPTOR: ES SU RESPALDO. El interruptor es
@@ -345,7 +345,7 @@ class Settings(BaseSettings):
     # esta variable: `services/ordenes_venta.py::habilitado`.
     #
     # APAGADO = MODO PRUEBA: se pueden crear, guardar y cancelar BORRADORES y
-    # chatear, pero NO confirmar (apartar stock en `ops.stock_almacen`) ni
+    # chatear, pero NO confirmar (apartar stock en `almacen.stock_almacen`) ni
     # entregar. Cancelar, borrar y contestar «¿salió?» NO dependen del
     # interruptor: sueltan stock o anotan lo que ya pasó, y poder hacerlo con el
     # módulo apagado es justo lo que lo hace seguro de apagar. El barrido de

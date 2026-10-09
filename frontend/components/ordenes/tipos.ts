@@ -3,14 +3,14 @@
  *
  * Son la forma EXACTA de lo que contesta `backend/routers/ordenes_venta.py`
  * (prefijo `/api/ordenes-venta`). El backend manda las columnas de
- * `ops.ov_ordenes` / `ops.ov_lineas` tal cual (migración 0064), más unos pocos
+ * `ventas.ov_ordenes` / `ventas.ov_lineas` tal cual (migración 0064), más unos pocos
  * campos derivados; aquí no se renombra nada, para que un `grep` del nombre de
  * una columna caiga en los dos lados.
  *
  * EL MODELO (plan v3 de Eduardo, 5-oct-2026; contrato en
  * docs/MIGRACION_0064_0065_GUIA_AGENTE.md): la orden sólo existe en BODEGAS DE
  * KUBERA y la bodega va POR RENGLÓN. Confirmar APARTA todo o nada contra
- * `ops.stock_almacen`; fuera de borrador el contenido ya no cambia.
+ * `almacen.stock_almacen`; fuera de borrador el contenido ya no cambia.
  *
  * La regla que atraviesa todos los tipos: `null` significa «no lo sabemos» y
  * NUNCA se colapsa a 0. `libre: null` es un SKU sin fila de saldo en esa
@@ -41,14 +41,14 @@ export type Via = "panel" | "api" | "claude" | "automatico";
 
 export type DevolucionEstado = "pendiente" | "recibida" | "cerrada";
 
-/** El catálogo CERRADO de `ops.ov_mensajes.evento` (CHECK de la 0064). */
+/** El catálogo CERRADO de `ventas.ov_mensajes.evento` (CHECK de la 0064). */
 export type EventoOrden =
   | "creada" | "borrador_guardado" | "descartada" | "confirmada" | "no_alcanzo"
   | "entregada_parcial" | "entregada" | "cancelada" | "borrada_admin" | "canal_cancelo"
   | "devolucion_esperada" | "devolucion_recibida" | "devolucion_aprobada"
   | "devolucion_merma" | "devolucion_cerrada";
 
-/** Una bodega del catálogo `ops.almacenes`. Las OV sólo viven en las de kubera con `admite_ov`. */
+/** Una bodega del catálogo `almacen.almacenes`. Las OV sólo viven en las de kubera con `admite_ov`. */
 export interface Bodega {
   codigo: string;
   nombre: string;
@@ -88,7 +88,7 @@ export interface LineaOrden {
   entregado: number | null;
   entregado_at: string | null;
   entregado_por: string | null;
-  /** Saldo del SKU EN SU BODEGA (`ops.stock_almacen`). `null` = sin bodega o sin fila de saldo. */
+  /** Saldo del SKU EN SU BODEGA (`almacen.stock_almacen`). `null` = sin bodega o sin fila de saldo. */
   fisico: number | null;
   apartado: number | null;
   /** fisico − apartado. */
@@ -97,7 +97,7 @@ export interface LineaOrden {
   conocido: boolean;
 }
 
-/** Lo que trae cada fila de la lista. Son las columnas de ops.ov_ordenes + derivados. */
+/** Lo que trae cada fila de la lista. Son las columnas de ventas.ov_ordenes + derivados. */
 export interface OrdenResumen {
   id: number;
   folio: string;

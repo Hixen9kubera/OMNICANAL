@@ -36,7 +36,7 @@ const traza = cargar("Traza");
 const RAIZ = path.resolve(__dirname, "..", "..", "..", "..");
 const MIGRACION = path.join(RAIZ, "supabase", "migrations", "0064_ops_ordenes_venta.sql");
 
-/** Los eventos que admite `ops.ov_mensajes.evento`, leídos del CHECK de la 0064. */
+/** Los eventos que admite `ventas.ov_mensajes.evento`, leídos del CHECK de la 0064. */
 function catalogoDeLaBase() {
   const sql = fs.readFileSync(MIGRACION, "utf8");
   const m = /constraint\s+ov_mensajes_evento_chk\s+check\s*\(\s*evento\s+is\s+null\s+or\s+evento\s+in\s*\(([^)]*)\)/i.exec(sql);

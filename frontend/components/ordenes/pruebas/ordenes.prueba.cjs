@@ -33,7 +33,7 @@ const chat = cargar("ChatOrden");
 
 // ── Armazones ────────────────────────────────────────────────────────────────
 
-/** El catálogo `ops.almacenes` tal como lo siembra la 0064 (TEX3 nace apagada). */
+/** El catálogo `almacen.almacenes` tal como lo siembra la 0064 (TEX3 nace apagada). */
 const bodega = (codigo, nombre, fuente, admite_ov) => ({
   codigo, nombre, fuente, admite_ov, surte_ventas: false, cuenta_para_woo: false,
 });

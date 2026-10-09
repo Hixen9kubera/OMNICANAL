@@ -24,7 +24,7 @@ llama el planeador, que es otra tarea— y las banderas son filas que enciende u
 ACTA, no la pantalla.
 
 QUÉ TOCA, Y ES TODO LO QUE TOCA
-  · LEE `ops.ov_ordenes`, `channel.orders` y la bitácora de Automatización
+  · LEE `ventas.ov_ordenes`, `channel.orders` y la bitácora de Automatización
     (`ops.odoo_sale_orders`, que puede NO existir en un ambiente: se sigue sin
     ella y se dice una vez).
   · ESCRIBE sólo por medio de `ordenes_venta.*`, firmado como `AUTOMATICO`.
@@ -129,7 +129,7 @@ def _rotulo(canal: Any) -> str:
 _SQL_VIVAS = """
 with vivas as (
     select o.id, o.folio, o.estado, o.rev, o.mp_canal, o.mp_cuenta, o.mp_orden
-      from ops.ov_ordenes o
+      from ventas.ov_ordenes o
      where o.borrada_at is null and o.mp_orden is not null
        and (o.estado = 'borrador'
             or (o.estado = 'confirmada' and o.canal_cancelo_at is null)

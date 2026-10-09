@@ -1001,6 +1001,30 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.628.0 — Órdenes de venta: sus tablas se mudan de `ops` a los esquemas `ventas` y `almacen` (migración 0068, ya aplicada)
+
+Brandon, 9-oct: *"repártelas tal como me muestras, no borres ninguna tabla… aplícalo desde aquí"*. Eduardo había
+creado los dos esquemas vacíos con la 0066 («las tablas llegan desde `ops`»).
+
+**Qué cambió.** Las nueve tablas del módulo cambiaron de esquema con `alter table … set schema` (ni un dato
+copiado ni borrado): a **`ventas`** `ov_folio`, `ov_ordenes`, `ov_lineas`, `ov_mensajes`, `ov_archivos`; a
+**`almacen`** `almacenes`, `almacenes_hist`, `stock_almacen`, `stock_mov`. Las 14 funciones de la base que las
+nombraban por esquema se recrearon tal cual, con el nombre nuevo. El módulo (`services/ordenes_venta.py`,
+`ov_auto.py`, `ov_storage.py`) ya dice `ventas.` / `almacen.`.
+
+**El puente.** En `ops` quedó una vista con el nombre viejo de cada tabla, para que nada se cayera entre la
+migración y este despliegue y para no tocar el tablero de bodegas del fan-out (`fanout_bodegas.py`, de otro
+chat), que sigue leyendo `ops.almacenes` / `ops.stock_*`. Se quitan cuando ya nadie use esos nombres. Ojo: la
+0064 y la 0065 ya no se pueden repetir sobre una base con la 0068.
+
+**Aplicada en producción** el 9-oct 06:48 UTC desde este chat (sin acta, por instrucción de Brandon); el
+sandbox no la tiene. Lo que queda abierto para Eduardo está en `docs/MIGRACION_0068_NOTA_EDUARDO.md`.
+
+**Verificado.** En local (Postgres 16 con 0064 → 0065 → 0068 dos veces): el código ANTERIOR pasó sus 305
+pruebas a través de las vistas puente, y el código nuevo pasa la suite completa (2,403 pruebas; la única falla,
+`test_regla_11_productos`, ya venía en `main` y es de otro módulo). En producción: mismas cuentas de filas
+antes y después en las nueve tablas, la vista vigía de apartado en 0 y ninguna función diciendo `ops.<tabla>`.
+
 ### v0.627.0 — Fan-out: las devoluciones en la trazabilidad del SKU, ligadas con el reingreso en Odoo (sólo lectura)
 
 Eduardo, 8-oct: *"me gustaría poder verlo como parte del fanout lo esencial de las

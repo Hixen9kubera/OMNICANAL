@@ -220,7 +220,7 @@ app = FastAPI(
         "Temu, Shein)."
     ),
 
-    version="0.627.0",
+    version="0.628.0",
     lifespan=lifespan,
     # /docs, /redoc y /openapi.json publican el mapa COMPLETO de los 84
     # endpoints: rutas, parámetros y esquemas. Con la API abierta eso es un
@@ -319,7 +319,7 @@ app.include_router(investigacion.router)
 # cabecera de routers/radar_precios.py.
 app.include_router(radar_precios.router)
 # Inventario · Órdenes de venta PROPIAS (folio OV-00001…): el documento que
-# hasta hoy sólo vivía en Odoo. Sólo escribe en `ops.ov_*`; no toca Odoo, Woo
+# hasta hoy sólo vivía en Odoo. Sólo escribe en `ventas.ov_*`; no toca Odoo, Woo
 # ni ningún marketplace. Confirmar/reservar/entregar, detrás de
 # ORDENES_VENTA_ENABLED — ver docs/ORDENES_VENTA.md.
 app.include_router(ordenes_venta.router)
@@ -334,7 +334,7 @@ def raiz():
     return {
         "app": "OMNICANAL Â· Kubera",
 
-        "version": "0.627.0",
+        "version": "0.628.0",
         "docs": "/docs",
         "canales": [c["id"] for c in lista_canales()],
     }

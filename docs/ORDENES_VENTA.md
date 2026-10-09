@@ -19,7 +19,7 @@ en Odoo. Ésta es la orden **propia**: nace, se confirma, aparta stock, se
 entrega y se cancela **en kubera (Supabase)**. El módulo no escribe en Odoo, en
 WooCommerce ni en ningún marketplace.
 
-| Paso | `ops.ov_ordenes.estado` | En pantalla | Quién |
+| Paso | `ventas.ov_ordenes.estado` | En pantalla | Quién |
 |---|---|---|---|
 | Se captura | `borrador` | BORRADOR | cualquiera que escribe (operador o admin), la API |
 | Se confirma y **aparta stock** (un mismo paso) | `confirmada` | CONFIRMADA | operador o admin, con la bandera encendida |
@@ -30,7 +30,7 @@ WooCommerce ni en ningún marketplace.
 Lo que cambió respecto a una orden de Odoo, y por qué:
 
 - **La bodega va por renglón** (`ov_lineas.almacen`) y sólo valen las bodegas de
-  kubera que admiten órdenes (`ops.almacenes.admite_ov`). Hoy: `ENSAYO`, la de
+  kubera que admiten órdenes (`almacen.almacenes.admite_ov`). Hoy: `ENSAYO`, la de
   práctica. `TEX3` existe y nace apagada.
 - **Apartar es todo o nada.** Si un solo renglón no alcanza, no se confirma
   nada y la pantalla dice cuál: «ACC-0250-NEG pide 4 y hay 2 libres en ENSAYO.
@@ -41,7 +41,7 @@ Lo que cambió respecto a una orden de Odoo, y por qué:
   queda el rastro de quién y por qué, y el folio no se recicla).
 - **La entrega es por renglón** y puede ser parcial: Bodega dice cuántas piezas
   salieron de cada renglón (de 0 a la cantidad). Cada pieza que sale queda en
-  el libro (`ops.stock_mov`, motivo `salida_ov`).
+  el libro (`almacen.stock_mov`, motivo `salida_ov`).
 
 ## 2. El interruptor
 
@@ -66,10 +66,10 @@ llamador es el planeador, que es otra tarea (§9).
 
 ## 3. Dónde vive (migraciones 0064 y 0065)
 
-`ops.ov_folio` (contador), `ops.ov_ordenes`, `ops.ov_lineas`, `ops.ov_mensajes`
-(chat y bitácora, sólo agregar), `ops.ov_archivos` (índice de PDF),
-`ops.almacenes` (catálogo de bodegas), `ops.stock_almacen` (el saldo: `fisico`,
-`apartado`; **libre = fisico − apartado**) y `ops.stock_mov` (el libro, sólo
+`ventas.ov_folio` (contador), `ventas.ov_ordenes`, `ventas.ov_lineas`, `ventas.ov_mensajes`
+(chat y bitácora, sólo agregar), `ventas.ov_archivos` (índice de PDF),
+`almacen.almacenes` (catálogo de bodegas), `almacen.stock_almacen` (el saldo: `fisico`,
+`apartado`; **libre = fisico − apartado**) y `almacen.stock_mov` (el libro, sólo
 agregar).
 
 **Estado al 6-oct-2026:** aplicadas en el **sandbox**; **producción no las
@@ -91,7 +91,7 @@ El SQL vigente son las constantes `SQL_*` de `backend/services/ordenes_venta.py`
    mismo envío. El pool (SteadyDB) puede repetir un `execute` en otra conexión:
    dos sentencias no son atómicas, una sí.
 2. **Orden de candados siempre igual** (guía §4.3): la fila de la orden →
-   `ops.almacenes` `FOR SHARE` → `ops.stock_almacen` `FOR UPDATE` en orden
+   `almacen.almacenes` `FOR SHARE` → `almacen.stock_almacen` `FOR UPDATE` en orden
    `(sku, almacen)` → escrituras → `ops.exigir`.
 3. **`rev` es el candado optimista de las personas.** Si la orden cambió, 409
    «La orden cambió mientras tanto; se recargó». Los procesos (el canal) usan
@@ -190,7 +190,7 @@ bucket · `413` PDF grande · `502` kubera o Storage no contestan.
 
 ### Chat en vivo
 
-`ops.ov_mensajes`: `tipo = 'sistema'` lo escribe la sentencia de cada
+`ventas.ov_mensajes`: `tipo = 'sistema'` lo escribe la sentencia de cada
 transición (con `evento` del catálogo cerrado de la base y el detalle en
 `datos`); `tipo = 'usuario'` es lo que escribe una persona.
 
@@ -213,7 +213,7 @@ advierte junto al botón.
 
 `revisar()` corre cada 3 min con la bandera encendida, y a mano con
 `POST /conciliar`. **Sólo lee** `channel.orders` y la bitácora de Automatización
-(`ops.odoo_sale_orders`); sólo escribe en `ops.ov_*` y sólo por medio de
+(`ops.odoo_sale_orders`); sólo escribe en `ventas.ov_*` y sólo por medio de
 `ordenes_venta.canal_cancelo`, firmado `automatico`. No toca ningún flujo vivo.
 Nunca lanza.
 

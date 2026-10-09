@@ -9,7 +9,7 @@
  * manera resumida y clara; guarda quién mandó el mensaje; usando async para que
  * en vivo se vean los mensajes de cada usuario».
  *
- * Dos clases de renglón, del mismo `ops.ov_mensajes` (que sólo se agrega):
+ * Dos clases de renglón, del mismo `ventas.ov_mensajes` (que sólo se agrega):
  *   · SISTEMA: la bitácora. La escribe la misma sentencia de cada transición
  *     (creada, confirmada con lo que apartó cada SKU, entregada, cancelada…),
  *     así que no puede faltar ni contradecir a la orden.
@@ -843,7 +843,7 @@ export function cambiosDe(datos: Record<string, unknown> | null): Cambio[] {
 }
 
 /**
- * Las columnas de `ops.ov_ordenes` que un borrador puede cambiar, como se
+ * Las columnas de `ventas.ov_ordenes` que un borrador puede cambiar, como se
  * llaman en la pantalla. Ya no está «Almacén»: la bodega dejó de ser del
  * encabezado y va por renglón (se ve en la mini-tabla de cada movimiento).
  */

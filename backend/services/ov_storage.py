@@ -4,13 +4,13 @@ ov_storage.py — Los PDF de las órdenes de venta propias en el bucket privado
 
 ⚠️ EL BUCKET TODAVÍA NO EXISTE. La migración 0064 revisada YA NO lo crea: va
 aparte (privado, 15 MB, sólo ``application/pdf``, sin políticas), con su
-retención decidida. Mientras no exista, ``ops.ov_archivos`` no tiene escritor:
+retención decidida. Mientras no exista, ``ventas.ov_archivos`` no tiene escritor:
 :func:`services.ordenes_venta.hay_bucket` lo pregunta en ``storage.buckets`` y
 el servicio contesta un 409 que lo dice ANTES de llegar aquí. Este módulo no
 pregunta nada: sólo habla con Storage cuando el servicio ya decidió que puede.
 
 QUÉ SE GUARDA: comprobantes, facturas y documentos de envío a FULL
-(``ops.ov_archivos.tipo``). **Las guías con la dirección del comprador NO se
+(``ventas.ov_archivos.tipo``). **Las guías con la dirección del comprador NO se
 guardan en kubera** (decisión D5): se piden a la API del canal al imprimir.
 
 Cliente mínimo de la API de Storage por HTTP crudo con ``requests``, igual que
@@ -18,7 +18,7 @@ Cliente mínimo de la API de Storage por HTTP crudo con ``requests``, igual que
 un parámetro más de aquél— porque las reglas del bucket son otras:
 
 1. **Aquí SÍ se borra** (sólo admin, y deja rastro en
-   ``ops.ov_archivos.borrado_at``); un packing list no se pierde nunca.
+   ``ventas.ov_archivos.borrado_at``); un packing list no se pierde nunca.
 2. **Nunca upsert**, como allá: el objeto se nombra por su sha256
    (``<folio>/<sha256>.pdf``), así que «ya existe» significa «ya está ese mismo
    contenido» y se toma como éxito, no como error.

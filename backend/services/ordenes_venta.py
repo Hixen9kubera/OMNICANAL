@@ -1,26 +1,26 @@
 """
 ordenes_venta.py — Las ÓRDENES DE VENTA PROPIAS del panel (Inventario → Órdenes
 de venta, folio OV-00001…) contra el esquema de Eduardo: migración 0064
-(`ops.ov_*`, `ops.almacenes`) y 0065 (`ops.stock_almacen`, `ops.stock_mov`).
+(`ventas.ov_*`, `almacen.almacenes`) y 0065 (`almacen.stock_almacen`, `almacen.stock_mov`).
 El contrato que este archivo cumple está en
 docs/MIGRACION_0064_0065_GUIA_AGENTE.md (§3 lo que garantiza la base, §4 lo que
 le toca al código); los patrones SQL salen de backend/scripts/verificar_0064_0065.py.
 
-ES EL ÚNICO ESCRITOR de `ops.ov_*` (y uno de los dos de `ops.stock_almacen` /
-`ops.stock_mov`: el otro será `inventario_libro`). El router y el barrido de
+ES EL ÚNICO ESCRITOR de `ventas.ov_*` (y uno de los dos de `almacen.stock_almacen` /
+`almacen.stock_mov`: el otro será `inventario_libro`). El router y el barrido de
 cancelaciones sólo LLAMAN estas funciones. De aquí no sale nada hacia afuera:
 ni Odoo, ni WooCommerce, ni un marketplace. Lo único externo es el bucket
 privado de los PDF (`ov_storage`), y siempre FUERA de la transacción.
 
 EL MODELO (plan v3 de Eduardo, 5-oct-2026)
-  · La orden sólo existe en BODEGAS DE KUBERA (`ops.almacenes`, fuente kubera y
+  · La orden sólo existe en BODEGAS DE KUBERA (`almacen.almacenes`, fuente kubera y
     `admite_ov`): hoy ENSAYO. La bodega va POR RENGLÓN.
-  · Confirmar APARTA todo o nada contra `ops.stock_almacen` (libre = fisico −
+  · Confirmar APARTA todo o nada contra `almacen.stock_almacen` (libre = fisico −
     apartado). Si un renglón no alcanza, no se confirma nada y se dice cuál.
   · Fuera de borrador el CONTENIDO es inmutable (lo impone un trigger). Un error
     en una confirmada se resuelve cancelando o borrando, no editando.
   · Entregar es por renglón y una sola vez por renglón, con piezas 0..cantidad;
-    cada pieza que sale queda en el libro (`ops.stock_mov`, motivo salida_ov).
+    cada pieza que sale queda en el libro (`almacen.stock_mov`, motivo salida_ov).
   · Si salió alguna pieza, una cancelación ya no es `cancelada`: es
     `entregada_cancelada`, la que espera devolución.
 
@@ -34,7 +34,7 @@ POR QUÉ ESTÁ ESCRITO ASÍ (lo que no es gusto)
    transición es una CONSTANTE de este módulo (`SQL_*`) y no se arma a pedazos.
 
 2. EL ORDEN DE LOS CANDADOS ES SIEMPRE EL MISMO (guía §4.3): la fila guardia de
-   la orden → `ops.almacenes` FOR SHARE → `ops.stock_almacen` FOR UPDATE en
+   la orden → `almacen.almacenes` FOR SHARE → `almacen.stock_almacen` FOR UPDATE en
    orden (sku, almacen), en una CTE `materialized` que se lee después →
    escrituras → `ops.exigir`. `crear_auto` es la excepción documentada (toma el
    folio al final: sólo sube si todo alcanzó). Un interbloqueo aquí es un bug.
@@ -116,7 +116,7 @@ FILTROS = ("todas", *ESTADOS, "por_devolver", "borradas")
 CANALES = ("temu", "tiktok", "mercado_libre", "amazon", "walmart", "shein", "directa", "otro")
 TIPOS_ARCHIVO = ("comprobante", "factura", "envio_full")
 ORIGENES_CANCELACION = ("manual", "sistema", "marketplace")
-# El catálogo CERRADO de ops.ov_mensajes.evento (ov_mensajes_evento_chk).
+# El catálogo CERRADO de ventas.ov_mensajes.evento (ov_mensajes_evento_chk).
 EVENTOS = ("creada", "borrador_guardado", "descartada", "confirmada", "no_alcanzo",
            "entregada_parcial", "entregada", "cancelada", "borrada_admin", "canal_cancelo",
            "devolucion_esperada", "devolucion_recibida", "devolucion_aprobada",
@@ -131,7 +131,7 @@ MAX_CANTIDAD = 100_000
 MAX_PRECIO = Decimal("9999999.99")
 MAX_IMPORTE = Decimal("999999999999.99")          # lo que cabe en numeric(14,2)
 MAX_PDF = 15 * 1024 * 1024                        # el tope que tendrá el bucket
-MAX_MENSAJE = 4000                                # CHECK de ops.ov_mensajes.cuerpo
+MAX_MENSAJE = 4000                                # CHECK de ventas.ov_mensajes.cuerpo
 MAX_MOTIVO = 500
 MAX_CLAVE = 80                                    # idempotencia del alta y del chat
 MIN_MOTIVO_CANCELAR = 5                           # ov_ordenes_canc_m_chk
@@ -158,8 +158,8 @@ _ETIQUETA = {"cliente": "cliente", "canal": "canal", "mp_canal": "canal de la ve
 _ROTULO = {"borrador": "en borrador", "confirmada": "confirmada", "entregada": "entregada",
            "cancelada": "cancelada", "entregada_cancelada": "entregada y cancelada"}
 
-_MSG_MIGRACION = ("Faltan las migraciones 0064 y 0065 (órdenes de venta e inventario de "
-                  "kubera) en esta base.")
+_MSG_MIGRACION = ("Faltan las migraciones 0064, 0065 y 0068 (órdenes de venta e inventario de "
+                  "kubera, ya en los esquemas ventas y almacen) en esta base.")
 _MSG_APAGADO = ("Las órdenes de venta están en modo prueba (la bandera «ordenes_venta» está "
                 "apagada): sólo borradores, sin confirmar ni entregar.")
 _MSG_AUTO_APAGADA = ("La generación automática de órdenes de venta está apagada (bandera "
@@ -633,9 +633,9 @@ def _olvidar_cache() -> None:
 
 # Guía §4.8: mientras la 0064/0065 no estén en producción, quien las lee
 # pregunta primero. Una sola consulta, sin tocar las tablas.
-_SQL_HAY_TABLAS = ("select to_regclass('ops.ov_ordenes') is not null "
-                   "and to_regclass('ops.almacenes') is not null "
-                   "and to_regclass('ops.stock_almacen') is not null as listas")
+_SQL_HAY_TABLAS = ("select to_regclass('ventas.ov_ordenes') is not null "
+                   "and to_regclass('almacen.almacenes') is not null "
+                   "and to_regclass('almacen.stock_almacen') is not null as listas")
 
 
 def _leer_tablas(cur: Any = None) -> bool:
@@ -664,7 +664,7 @@ def _tablas(refrescar: bool = False, cur: Any = None) -> bool | None:
 
 
 def tablas_listas(refrescar: bool = False, cur: Any = None) -> bool:
-    """¿Están `ops.ov_ordenes`, `ops.almacenes` y `ops.stock_almacen`? Con caché de
+    """¿Están `ventas.ov_ordenes`, `almacen.almacenes` y `almacen.stock_almacen`? Con caché de
     60 s. NUNCA truena: si no se pudo preguntar contesta False."""
     return _tablas(refrescar, cur) is True
 
@@ -749,7 +749,7 @@ def _leer_bucket(cur: Any = None) -> bool:
 
 def hay_bucket(refrescar: bool = False, cur: Any = None) -> bool:
     """¿Existe el bucket privado `ordenes-venta`? La 0064 NO lo crea (va aparte,
-    con su retención decidida) y mientras no exista `ops.ov_archivos` no tiene
+    con su retención decidida) y mientras no exista `ventas.ov_archivos` no tiene
     escritor. Con caché de 60 s; si no se pudo preguntar, False. Nunca lanza."""
     if cur is None and not refrescar:
         hay, valor = _recordado("bucket")
@@ -773,13 +773,13 @@ def hay_bucket(refrescar: bool = False, cur: Any = None) -> bool:
 
 _SQL_BODEGAS = """
 select codigo, nombre, fuente, admite_ov, surte_ventas, cuenta_para_woo
-  from ops.almacenes
+  from almacen.almacenes
  order by (fuente = 'kubera') desc, admite_ov desc, preferencia nulls last, codigo
 """
 
 
 def bodegas(cur: Any = None) -> list[dict[str, Any]]:
-    """El catálogo `ops.almacenes` (tipo Bodega de tipos.ts), las de kubera que
+    """El catálogo `almacen.almacenes` (tipo Bodega de tipos.ts), las de kubera que
     admiten OV primero. Este módulo NUNCA lo escribe: sus banderas cambian con acta."""
     return [{"codigo": f["codigo"], "nombre": f["nombre"], "fuente": f["fuente"],
              "admite_ov": bool(f["admite_ov"]), "surte_ventas": bool(f["surte_ventas"]),
@@ -1307,9 +1307,9 @@ _COLS = """
        coalesce(r.piezas_entregadas, 0) as piezas_entregadas,
        coalesce(r.renglones_entregados, 0) as renglones_entregados,
        coalesce(r.skus, '{}'::text[]) as skus, coalesce(r.bodegas, '{}'::text[]) as bodegas,
-       (select count(*) from ops.ov_archivos a
+       (select count(*) from ventas.ov_archivos a
          where a.orden_id = o.id and a.borrado_at is null) as n_archivos,
-       (select count(*) from ops.ov_mensajes m where m.orden_id = o.id) as n_mensajes"""
+       (select count(*) from ventas.ov_mensajes m where m.orden_id = o.id) as n_mensajes"""
 
 # El saldo del SKU EN SU BODEGA: sin bodega o sin fila de saldo, los tres salen
 # NULL («no lo sabemos»), que la pantalla pinta distinto de un cero.
@@ -1323,19 +1323,19 @@ _COLS_DETALLE = """,
                     'entregado_at', l.entregado_at, 'entregado_por', l.entregado_por,
                     'fisico', sa.fisico, 'apartado', sa.apartado, 'libre', sa.libre,
                     'conocido', p.sku is not null) order by l.linea, l.id)
-                   from ops.ov_lineas l
-                   left join ops.stock_almacen sa on sa.sku = l.sku and sa.almacen = l.almacen
+                   from ventas.ov_lineas l
+                   left join almacen.stock_almacen sa on sa.sku = l.sku and sa.almacen = l.almacen
                    left join core.products p on p.sku = l.sku
                   where l.orden_id = o.id), '[]'::json) as lineas,
        coalesce((select json_agg(json_build_object(
                     'id', a.id, 'orden_id', a.orden_id, 'tipo', a.tipo, 'nombre', a.nombre,
                     'bytes', a.bytes, 'sha256', a.sha256, 'subido_at', a.subido_at,
                     'subido_por', a.subido_por, 'subido_nombre', a.subido_nombre) order by a.id)
-                   from ops.ov_archivos a
+                   from ventas.ov_archivos a
                   where a.orden_id = o.id and a.borrado_at is null), '[]'::json) as archivos"""
 
 _DESDE = """
-  from ops.ov_ordenes o
+  from ventas.ov_ordenes o
   left join lateral (
        select count(*) as renglones, sum(l.cantidad) as piezas,
               sum(l.reservado) as piezas_apartadas,
@@ -1343,7 +1343,7 @@ _DESDE = """
               count(*) filter (where l.entregado_at is not null) as renglones_entregados,
               (array_agg(l.sku::text order by l.linea, l.id))[1:12] as skus,
               array_agg(distinct l.almacen) filter (where l.almacen is not null) as bodegas
-         from ops.ov_lineas l where l.orden_id = o.id) r on true"""
+         from ventas.ov_lineas l where l.orden_id = o.id) r on true"""
 
 _SQL_DETALLE = "select" + _COLS + _COLS_DETALLE + _DESDE
 
@@ -1400,7 +1400,7 @@ def _leer_cabeza(orden_id: Any, cur: Any = None) -> dict[str, Any]:
     """Sólo lo que hace falta para decidir un permiso (el chat no paga el detalle)."""
     n = _id(orden_id)
     fila = _fila("select id, folio, estado, rev, borrada_at, confirmada_at, canal_cancelo_at "
-                 "from ops.ov_ordenes where id = %(id)s", {"id": n}, cur)
+                 "from ventas.ov_ordenes where id = %(id)s", {"id": n}, cur)
     if not fila:
         raise NoExiste(f"No existe la orden de venta {orden_id}.")
     return fila
@@ -1449,7 +1449,7 @@ def _lo_hice_yo(orden_id: int, op: str, cur: Any = None) -> bool:
     reintento transitorio volvió a correr el cuerpo), no es un conflicto: es el
     éxito que fue. Guía §4.2: «antes de mostrarlo, relee»."""
     try:
-        return bool(_fila("select 1 as mio from ops.ov_mensajes "
+        return bool(_fila("select 1 as mio from ventas.ov_mensajes "
                           "where orden_id = %(id)s and datos->>'op' = %(op)s limit 1",
                           {"id": orden_id, "op": op}, cur))
     except ErrorOV:
@@ -1484,7 +1484,7 @@ def _venta_ligada(mp_canal: str | None, mp_cuenta: str | None, mp_orden: str | N
     if not (mp_canal and mp_cuenta and mp_orden):
         return None
     return _fila(
-        """select id, folio, estado from ops.ov_ordenes
+        """select id, folio, estado from ventas.ov_ordenes
             where mp_canal = %(canal)s and mp_cuenta = %(cuenta)s and mp_orden = %(orden)s
               and borrada_at is null and estado <> 'cancelada' and id <> %(excepto)s
             order by id limit 1""",
@@ -1565,9 +1565,9 @@ def _choque_venta(mp_canal: str | None, mp_cuenta: str | None, mp_orden: str | N
 # alta falla, la sentencia entera se deshace y el folio NO se consume.
 SQL_CREAR = _una("""
 with f as (
-  update ops.ov_folio set ultimo = ultimo + 1 where id = 1 returning ultimo
+  update ventas.ov_folio set ultimo = ultimo + 1 where id = 1 returning ultimo
 ), o as (
-  insert into ops.ov_ordenes (folio, estado, tipo, cliente, canal, mp_canal, mp_cuenta, mp_orden,
+  insert into ventas.ov_ordenes (folio, estado, tipo, cliente, canal, mp_canal, mp_cuenta, mp_orden,
                               descripcion, guia, paqueteria, fecha_venta, entrega_limite, moneda,
                               total, comision, precio_origen, creado_por, creado_nombre,
                               creado_via, clave)
@@ -1579,7 +1579,7 @@ with f as (
     from f
   returning id, folio, rev
 ), l as (
-  insert into ops.ov_lineas (orden_id, linea, sku, titulo, imagen, cantidad, precio_unitario,
+  insert into ventas.ov_lineas (orden_id, linea, sku, titulo, imagen, cantidad, precio_unitario,
                              almacen)
   select o.id, x.linea, x.sku, x.titulo, x.imagen, x.cantidad, x.precio_unitario, x.almacen
     from o, jsonb_to_recordset(%(lineas)s::jsonb)
@@ -1587,7 +1587,7 @@ with f as (
                  precio_unitario numeric, almacen text)
   returning id
 ), m as (
-  insert into ops.ov_mensajes (orden_id, tipo, evento, cuerpo, datos, autor, autor_nombre, via)
+  insert into ventas.ov_mensajes (orden_id, tipo, evento, cuerpo, datos, autor, autor_nombre, via)
   select o.id, 'sistema', 'creada', %(cuerpo)s, %(datos)s::jsonb, %(q)s, %(nombre)s, %(via)s
     from o
   returning id
@@ -1725,7 +1725,7 @@ def crear_borrador(datos: dict[str, Any], quien: Quien, clave: str | None = None
 # bloquea esa misma fila, y dos «guardar» del mismo borrador hacen fila ahí.
 SQL_GUARDAR = _una("""
 with o as (
-  update ops.ov_ordenes v
+  update ventas.ov_ordenes v
      set cliente        = case when %(t_cliente)s        then %(cliente)s        else v.cliente end,
          canal          = case when %(t_canal)s          then %(canal)s          else v.canal end,
          mp_canal       = case when %(t_mp_canal)s       then %(mp_canal)s       else v.mp_canal end,
@@ -1752,13 +1752,13 @@ with o as (
          as x(linea int, sku citext, titulo text, imagen text, cantidad int,
               precio_unitario numeric, almacen text)
 ), d as (
-  delete from ops.ov_lineas l using o
+  delete from ventas.ov_lineas l using o
    where %(con_lineas)s and l.orden_id = o.id
      and not exists (select 1 from x
                       where x.sku = l.sku and x.almacen is not distinct from l.almacen)
   returning l.id
 ), u as (
-  update ops.ov_lineas l
+  update ventas.ov_lineas l
      set linea = x.linea, titulo = x.titulo, imagen = x.imagen, cantidad = x.cantidad,
          precio_unitario = x.precio_unitario
     from o, x
@@ -1766,17 +1766,17 @@ with o as (
      and l.sku = x.sku and l.almacen is not distinct from x.almacen
   returning l.id
 ), i as (
-  insert into ops.ov_lineas (orden_id, linea, sku, titulo, imagen, cantidad, precio_unitario,
+  insert into ventas.ov_lineas (orden_id, linea, sku, titulo, imagen, cantidad, precio_unitario,
                              almacen)
   select o.id, x.linea, x.sku, x.titulo, x.imagen, x.cantidad, x.precio_unitario, x.almacen
     from o, x
    where %(con_lineas)s
-     and not exists (select 1 from ops.ov_lineas l
+     and not exists (select 1 from ventas.ov_lineas l
                       where l.orden_id = o.id and l.sku = x.sku
                         and l.almacen is not distinct from x.almacen)
   returning id
 ), msg as (
-  insert into ops.ov_mensajes (orden_id, tipo, evento, cuerpo, datos, autor, autor_nombre, via)
+  insert into ventas.ov_mensajes (orden_id, tipo, evento, cuerpo, datos, autor, autor_nombre, via)
   select o.id, 'sistema', 'borrador_guardado', %(cuerpo)s, %(datos)s::jsonb, %(q)s, %(nombre)s,
          %(via)s
     from o
@@ -1924,7 +1924,7 @@ def guardar(orden_id: int, rev: int, datos: dict[str, Any], quien: Quien,
 # `no_alcanzo` truena y NADA queda apartado.
 SQL_CONFIRMAR = _una("""
 with o as (
-  update ops.ov_ordenes v
+  update ventas.ov_ordenes v
      set estado = 'confirmada', confirmada_at = now(), confirmada_por = %(q)s,
          confirmada_nombre = %(nombre)s, rev = v.rev + 1
    where v.id = %(id)s and v.rev = %(rev)s and v.estado = 'borrador' and v.borrada_at is null
@@ -1934,37 +1934,37 @@ with o as (
   select (e->>'id')::bigint as linea_id, e->>'almacen' as almacen
     from jsonb_array_elements(%(plan)s::jsonb) e
 ), alm as (
-  select a.codigo from ops.almacenes a
+  select a.codigo from almacen.almacenes a
    where a.codigo in (select almacen from plan) and a.fuente = 'kubera' and a.admite_ov
      for share
 ), x as materialized (
   select sa.sku, sa.almacen, li.cantidad as n, li.id as linea_id
     from o
-    join ops.ov_lineas li on li.orden_id = o.id
+    join ventas.ov_lineas li on li.orden_id = o.id
     join plan on plan.linea_id = li.id
     join alm on alm.codigo = plan.almacen
-    join ops.stock_almacen sa on sa.sku = li.sku and sa.almacen = plan.almacen
+    join almacen.stock_almacen sa on sa.sku = li.sku and sa.almacen = plan.almacen
    order by sa.sku, sa.almacen
      for update of sa
 ), s as (
-  update ops.stock_almacen sa
+  update almacen.stock_almacen sa
      set apartado = sa.apartado + x.n
     from x
    where sa.sku = x.sku and sa.almacen = x.almacen and sa.libre >= x.n
   returning sa.sku, sa.almacen
 ), f as (
-  update ops.ov_lineas li set almacen = x.almacen, reservado = li.cantidad
+  update ventas.ov_lineas li set almacen = x.almacen, reservado = li.cantidad
     from x where li.id = x.linea_id
   returning li.id
 ), msg as (
-  insert into ops.ov_mensajes (orden_id, tipo, evento, cuerpo, datos, autor, autor_nombre, via)
+  insert into ventas.ov_mensajes (orden_id, tipo, evento, cuerpo, datos, autor, autor_nombre, via)
   select o.id, 'sistema', 'confirmada', %(cuerpo)s, %(datos)s::jsonb, %(q)s, %(nombre)s, %(via)s
     from o
   returning id
 )
 select ops.exigir((select count(*) from o) = 1, 'ov_no_esta_en_borrador_o_cambio_rev')
      + ops.exigir((select count(*) from x) > 0
-                  and (select count(*) from x) = (select count(*) from ops.ov_lineas
+                  and (select count(*) from x) = (select count(*) from ventas.ov_lineas
                                                    where orden_id = %(id)s),
                   'renglon_sin_plan_o_sin_saldo')
      + ops.exigir((select count(*) from s) = (select count(*) from x), 'no_alcanzo')
@@ -1978,10 +1978,10 @@ select l.id, l.sku::text as sku, l.titulo, l.cantidad, p.almacen,
        a.codigo is not null as existe, coalesce(a.fuente = 'kubera', false) as de_kubera,
        coalesce(a.admite_ov, false) as admite_ov,
        sa.sku is not null as con_saldo, sa.libre
-  from ops.ov_lineas l
+  from ventas.ov_lineas l
   left join jsonb_to_recordset(%(plan)s::jsonb) as p(id bigint, almacen text) on p.id = l.id
-  left join ops.almacenes a on a.codigo = p.almacen
-  left join ops.stock_almacen sa on sa.sku = l.sku and sa.almacen = p.almacen
+  left join almacen.almacenes a on a.codigo = p.almacen
+  left join almacen.stock_almacen sa on sa.sku = l.sku and sa.almacen = p.almacen
  where l.orden_id = %(id)s
  order by l.linea, l.id
 """
@@ -1990,9 +1990,9 @@ select l.id, l.sku::text as sku, l.titulo, l.cantidad, p.almacen,
 # deshizo la sentencia de confirmar entera, mensaje incluido (guía §4.1 punto 7).
 # No mueve `rev`: la orden no cambió.
 SQL_MENSAJE_SISTEMA = _una("""
-insert into ops.ov_mensajes (orden_id, tipo, evento, cuerpo, datos, autor, autor_nombre, via)
+insert into ventas.ov_mensajes (orden_id, tipo, evento, cuerpo, datos, autor, autor_nombre, via)
 select o.id, 'sistema', %(evento)s, %(cuerpo)s, %(datos)s::jsonb, %(q)s, %(nombre)s, %(via)s
-  from ops.ov_ordenes o
+  from ventas.ov_ordenes o
  where o.id = %(id)s and o.borrada_at is null
 returning id
 """)
@@ -2147,12 +2147,12 @@ with p as materialized (
   select (e->>'id')::bigint as linea_id, (e->>'n')::int as n
     from jsonb_array_elements(%(lineas)s::jsonb) e
 ), alm as (
-  select a.codigo from ops.almacenes a
+  select a.codigo from almacen.almacenes a
    where a.fuente = 'kubera'
-     and a.codigo in (select li.almacen from ops.ov_lineas li join p on p.linea_id = li.id)
+     and a.codigo in (select li.almacen from ventas.ov_lineas li join p on p.linea_id = li.id)
      for share
 ), o as (
-  update ops.ov_ordenes v
+  update ventas.ov_ordenes v
      set rev = v.rev + 1,
          estado           = case when t.quedan = 0 then 'entregada' else v.estado end,
          entregada_at     = case when t.quedan = 0 then now() end,
@@ -2161,41 +2161,41 @@ with p as materialized (
     from (select count(*) filter (where li.entregado_at is null
                                     and not exists (select 1 from p where p.linea_id = li.id))
                    as quedan
-            from ops.ov_lineas li where li.orden_id = %(id)s) t
+            from ventas.ov_lineas li where li.orden_id = %(id)s) t
    where v.id = %(id)s and v.rev = %(rev)s and v.estado = 'confirmada' and v.borrada_at is null
      and v.canal_cancelo_at is null
      and (v.tipo <> 'full' or v.envio_ref is not null)
   returning v.id, v.folio, v.estado
 ), l as materialized (
   select li.id, li.sku, li.almacen, li.cantidad, p.n
-    from o join ops.ov_lineas li on li.orden_id = o.id
+    from o join ventas.ov_lineas li on li.orden_id = o.id
     join p on p.linea_id = li.id
     join alm on alm.codigo = li.almacen
    where li.entregado_at is null and li.reservado = li.cantidad and p.n between 0 and li.cantidad
 ), x as materialized (
   select l.id as linea_id, sa.sku, sa.almacen, l.n, l.cantidad
-    from l join ops.stock_almacen sa on sa.sku = l.sku and sa.almacen = l.almacen
+    from l join almacen.stock_almacen sa on sa.sku = l.sku and sa.almacen = l.almacen
    order by sa.sku, sa.almacen
      for update of sa
 ), s as (
-  update ops.stock_almacen sa
+  update almacen.stock_almacen sa
      set fisico = sa.fisico - x.n, apartado = sa.apartado - x.cantidad
     from x where sa.sku = x.sku and sa.almacen = x.almacen
   returning sa.sku, sa.almacen, sa.fisico as saldo, x.n, x.linea_id
 ), m as (
-  insert into ops.stock_mov (sku, almacen, delta, saldo_despues, motivo, ref, ov_linea_id, clave,
+  insert into almacen.stock_mov (sku, almacen, delta, saldo_despues, motivo, ref, ov_linea_id, clave,
                              quien, quien_nombre, via)
   select s.sku, s.almacen, -s.n, s.saldo, 'salida_ov', (select folio from o), s.linea_id,
          'ov:' || %(id)s || ':linea:' || s.linea_id || ':salida', %(q)s, %(nombre)s, %(via)s
     from s where s.n > 0
   returning ov_linea_id
 ), r as (
-  update ops.ov_lineas li
+  update ventas.ov_lineas li
      set reservado = 0, entregado = s.n, entregado_at = now(), entregado_por = %(q)s
     from s where li.id = s.linea_id
   returning li.id
 ), msg as (
-  insert into ops.ov_mensajes (orden_id, tipo, evento, cuerpo, datos, autor, autor_nombre, via)
+  insert into ventas.ov_mensajes (orden_id, tipo, evento, cuerpo, datos, autor, autor_nombre, via)
   select o.id, 'sistema',
          case when o.estado = 'entregada' then 'entregada' else 'entregada_parcial' end,
          case when o.estado = 'entregada' then %(cuerpo_total)s else %(cuerpo_parcial)s end,
@@ -2270,7 +2270,7 @@ def entregar(orden_id: int, rev: int, quien: Quien, lineas: list[dict[str, Any]]
 # `cancelada`, es la de abajo.
 _CANCELAR = """
 with o as (
-  update ops.ov_ordenes v
+  update ventas.ov_ordenes v
      set estado = 'cancelada', cancelada_at = now(), cancelada_por = %(q)s,
          cancelada_nombre = %(nombre)s, cancelada_origen = %(origen)s,
          cancelada_motivo = %(motivo)s, rev = v.rev + 1
@@ -2279,18 +2279,18 @@ with o as (
 ), x as materialized (
   select sa.sku, sa.almacen, li.reservado as n, li.id as linea_id
     from o
-    join ops.ov_lineas li on li.orden_id = o.id and li.reservado > 0 and li.entregado_at is null
-    join ops.stock_almacen sa on sa.sku = li.sku and sa.almacen = li.almacen
+    join ventas.ov_lineas li on li.orden_id = o.id and li.reservado > 0 and li.entregado_at is null
+    join almacen.stock_almacen sa on sa.sku = li.sku and sa.almacen = li.almacen
    order by sa.sku, sa.almacen
      for update of sa
 ), s as (
-  update ops.stock_almacen sa set apartado = sa.apartado - x.n
+  update almacen.stock_almacen sa set apartado = sa.apartado - x.n
     from x where sa.sku = x.sku and sa.almacen = x.almacen
   returning sa.sku
 ), r as (
-  update ops.ov_lineas li set reservado = 0 from x where li.id = x.linea_id returning li.id
+  update ventas.ov_lineas li set reservado = 0 from x where li.id = x.linea_id returning li.id
 ), msg as (
-  insert into ops.ov_mensajes (orden_id, tipo, evento, cuerpo, datos, autor, autor_nombre, via)
+  insert into ventas.ov_mensajes (orden_id, tipo, evento, cuerpo, datos, autor, autor_nombre, via)
   select o.id, 'sistema', 'cancelada', %(cuerpo)s, %(datos)s::jsonb, %(q)s, %(nombre)s, %(via)s
     from o
   returning id
@@ -2318,14 +2318,14 @@ SQL_CANCELAR_CANAL = _una(_CANCELAR.replace(
 #   · suelta el apartado de lo que NO salió, y `devolucion_estado = 'pendiente'`.
 _CANCELAR_CON_SALIDA = """
 with o as (
-  update ops.ov_ordenes v
+  update ventas.ov_ordenes v
      set estado = 'entregada_cancelada',
          entregada_at = e.entregado_at, entregada_por = e.entregado_por,
          cancelada_at = now(), cancelada_por = %(q)s, cancelada_nombre = %(nombre)s,
          cancelada_origen = %(origen)s, cancelada_motivo = %(motivo)s,
          devolucion_estado = coalesce(v.devolucion_estado, 'pendiente'), rev = v.rev + 1
     from (select li.entregado_at, li.entregado_por
-            from ops.ov_lineas li
+            from ventas.ov_lineas li
            where li.orden_id = %(id)s and li.entregado > 0
            order by li.entregado_at desc, li.id desc
            limit 1) e
@@ -2334,18 +2334,18 @@ with o as (
 ), x as materialized (
   select sa.sku, sa.almacen, li.reservado as n, li.id as linea_id
     from o
-    join ops.ov_lineas li on li.orden_id = o.id and li.reservado > 0 and li.entregado_at is null
-    join ops.stock_almacen sa on sa.sku = li.sku and sa.almacen = li.almacen
+    join ventas.ov_lineas li on li.orden_id = o.id and li.reservado > 0 and li.entregado_at is null
+    join almacen.stock_almacen sa on sa.sku = li.sku and sa.almacen = li.almacen
    order by sa.sku, sa.almacen
      for update of sa
 ), s as (
-  update ops.stock_almacen sa set apartado = sa.apartado - x.n
+  update almacen.stock_almacen sa set apartado = sa.apartado - x.n
     from x where sa.sku = x.sku and sa.almacen = x.almacen
   returning sa.sku
 ), r as (
-  update ops.ov_lineas li set reservado = 0 from x where li.id = x.linea_id returning li.id
+  update ventas.ov_lineas li set reservado = 0 from x where li.id = x.linea_id returning li.id
 ), msg as (
-  insert into ops.ov_mensajes (orden_id, tipo, evento, cuerpo, datos, autor, autor_nombre, via)
+  insert into ventas.ov_mensajes (orden_id, tipo, evento, cuerpo, datos, autor, autor_nombre, via)
   select o.id, 'sistema', 'devolucion_esperada', %(cuerpo)s, %(datos)s::jsonb, %(q)s,
          %(nombre)s, %(via)s
     from o
@@ -2447,7 +2447,7 @@ def cancelar(orden_id: int, rev: int, quien: Quien, motivo: str = "", origen: st
 # cambia nada de ella y su venta y su clave quedan libres.
 SQL_BORRAR = _una("""
 with o as (
-  update ops.ov_ordenes v
+  update ventas.ov_ordenes v
      set borrada_at = now(), borrada_por = %(q)s, borrada_nombre = %(nombre)s,
          borrada_motivo = %(motivo)s, rev = v.rev + 1
    where v.id = %(id)s and v.rev = %(rev)s and v.borrada_at is null
@@ -2455,18 +2455,18 @@ with o as (
 ), x as materialized (
   select sa.sku, sa.almacen, li.reservado as n, li.id as linea_id
     from o
-    join ops.ov_lineas li on li.orden_id = o.id and li.reservado > 0 and li.entregado_at is null
-    join ops.stock_almacen sa on sa.sku = li.sku and sa.almacen = li.almacen
+    join ventas.ov_lineas li on li.orden_id = o.id and li.reservado > 0 and li.entregado_at is null
+    join almacen.stock_almacen sa on sa.sku = li.sku and sa.almacen = li.almacen
    order by sa.sku, sa.almacen
      for update of sa
 ), s as (
-  update ops.stock_almacen sa set apartado = sa.apartado - x.n
+  update almacen.stock_almacen sa set apartado = sa.apartado - x.n
     from x where sa.sku = x.sku and sa.almacen = x.almacen
   returning sa.sku
 ), r as (
-  update ops.ov_lineas li set reservado = 0 from x where li.id = x.linea_id returning li.id
+  update ventas.ov_lineas li set reservado = 0 from x where li.id = x.linea_id returning li.id
 ), msg as (
-  insert into ops.ov_mensajes (orden_id, tipo, evento, cuerpo, datos, autor, autor_nombre, via)
+  insert into ventas.ov_mensajes (orden_id, tipo, evento, cuerpo, datos, autor, autor_nombre, via)
   select o.id, 'sistema', 'borrada_admin', %(cuerpo)s, %(datos)s::jsonb, %(q)s, %(nombre)s,
          %(via)s
     from o
@@ -2518,13 +2518,13 @@ def borrar(orden_id: int, rev: int, quien: Quien, motivo: str, cur: Any = None) 
 # dé un KB001 con nombre y no un 42501 que se leería como bug en cada sondeo.
 SQL_CANAL_MARCA = _una("""
 with o as (
-  update ops.ov_ordenes
+  update ventas.ov_ordenes
      set canal_cancelo_at = now(), canal_cancelo_ref = %(ref_canal)s, rev = rev + 1
    where id = %(id)s and estado = 'confirmada' and canal_cancelo_at is null
      and borrada_at is null
   returning id
 ), m as (
-  insert into ops.ov_mensajes (orden_id, tipo, evento, cuerpo, datos, autor, autor_nombre, via)
+  insert into ventas.ov_mensajes (orden_id, tipo, evento, cuerpo, datos, autor, autor_nombre, via)
   select id, 'sistema', 'canal_cancelo', %(cuerpo)s, %(datos)s::jsonb, %(q)s, %(nombre)s, %(via)s
     from o
   returning id
@@ -2540,7 +2540,7 @@ select ops.exigir((select count(*) from o) = 1, 'canal_cancelo_no_aplica')
 # pendiente (la base lo rechaza: la llegada no se deshace).
 SQL_CANAL_CANCELO_ENTREGADA = _una("""
 with o as (
-  update ops.ov_ordenes v
+  update ventas.ov_ordenes v
      set estado = 'entregada_cancelada', cancelada_at = now(), cancelada_por = %(q)s,
          cancelada_nombre = %(nombre)s, cancelada_origen = 'marketplace',
          cancelada_motivo = %(motivo)s,
@@ -2548,7 +2548,7 @@ with o as (
    where v.id = %(id)s and v.estado = 'entregada' and v.borrada_at is null
   returning v.id
 ), m as (
-  insert into ops.ov_mensajes (orden_id, tipo, evento, cuerpo, datos, autor, autor_nombre, via)
+  insert into ventas.ov_mensajes (orden_id, tipo, evento, cuerpo, datos, autor, autor_nombre, via)
   select o.id, 'sistema', 'devolucion_esperada', %(cuerpo)s, %(datos)s::jsonb, %(q)s, %(nombre)s,
          %(via)s
     from o
@@ -2655,7 +2655,7 @@ def canal_cancelo(orden_id: int, ref_canal: str | None, motivo: str | None, en_c
 # persona), nombres, mensaje y el `exigir` partido en dos.
 SQL_SALIO = _una("""
 with o as (
-  update ops.ov_ordenes v
+  update ventas.ov_ordenes v
      set estado = 'entregada_cancelada', entregada_at = now(), entregada_por = %(q)s,
          entregada_nombre = %(nombre)s,
          cancelada_at = now(), cancelada_por = %(q_canal)s, cancelada_nombre = %(nombre_canal)s,
@@ -2667,30 +2667,30 @@ with o as (
 ), x as materialized (
   select li.id as linea_id, sa.sku, sa.almacen, li.cantidad
     from o
-    join ops.ov_lineas li on li.orden_id = o.id and li.entregado_at is null
+    join ventas.ov_lineas li on li.orden_id = o.id and li.entregado_at is null
                          and li.reservado = li.cantidad
-    join ops.stock_almacen sa on sa.sku = li.sku and sa.almacen = li.almacen
+    join almacen.stock_almacen sa on sa.sku = li.sku and sa.almacen = li.almacen
    order by sa.sku, sa.almacen
      for update of sa
 ), s as (
-  update ops.stock_almacen sa
+  update almacen.stock_almacen sa
      set fisico = sa.fisico - x.cantidad, apartado = sa.apartado - x.cantidad
     from x where sa.sku = x.sku and sa.almacen = x.almacen
   returning sa.sku, sa.almacen, sa.fisico, x.cantidad as n, x.linea_id
 ), m as (
-  insert into ops.stock_mov (sku, almacen, delta, saldo_despues, motivo, ref, ov_linea_id, clave,
+  insert into almacen.stock_mov (sku, almacen, delta, saldo_despues, motivo, ref, ov_linea_id, clave,
                              quien, quien_nombre, via)
   select s.sku, s.almacen, -s.n, s.fisico, 'salida_ov', (select folio from o), s.linea_id,
          'ov:' || %(id)s || ':linea:' || s.linea_id || ':salida', %(q)s, %(nombre)s, %(via)s
     from s
   returning id
 ), r as (
-  update ops.ov_lineas li
+  update ventas.ov_lineas li
      set reservado = 0, entregado = s.n, entregado_at = now(), entregado_por = %(q)s
     from s where li.id = s.linea_id
   returning li.id
 ), msg as (
-  insert into ops.ov_mensajes (orden_id, tipo, evento, cuerpo, datos, autor, autor_nombre, via)
+  insert into ventas.ov_mensajes (orden_id, tipo, evento, cuerpo, datos, autor, autor_nombre, via)
   select o.id, 'sistema', 'devolucion_esperada', %(cuerpo)s, %(datos)s::jsonb, %(q)s, %(nombre)s,
          %(via)s
     from o
@@ -2762,34 +2762,34 @@ def responder_salio(orden_id: int, rev: int, quien: Quien, salio: bool,
 #     había soltado). NO es «ya existía»: la salida no se escribió.
 SQL_SALIO_TARDE = _una("""
 with o as (
-  update ops.ov_ordenes v
+  update ventas.ov_ordenes v
      set estado = 'entregada_cancelada', entregada_at = now(), entregada_por = %(q)s,
          entregada_nombre = %(nombre)s, devolucion_estado = 'pendiente', rev = v.rev + 1
    where v.id = %(id)s and v.rev = %(rev)s and v.estado = 'cancelada' and v.borrada_at is null
   returning v.id, v.folio
 ), x as materialized (
   select li.id as linea_id, sa.sku, sa.almacen, li.cantidad
-    from o join ops.ov_lineas li on li.orden_id = o.id and li.entregado_at is null
-    join ops.stock_almacen sa on sa.sku = li.sku and sa.almacen = li.almacen
+    from o join ventas.ov_lineas li on li.orden_id = o.id and li.entregado_at is null
+    join almacen.stock_almacen sa on sa.sku = li.sku and sa.almacen = li.almacen
    order by sa.sku, sa.almacen
      for update of sa
 ), s as (
-  update ops.stock_almacen sa set fisico = sa.fisico - x.cantidad
+  update almacen.stock_almacen sa set fisico = sa.fisico - x.cantidad
     from x where sa.sku = x.sku and sa.almacen = x.almacen
   returning sa.sku, sa.almacen, sa.fisico, x.cantidad as n, x.linea_id
 ), m as (
-  insert into ops.stock_mov (sku, almacen, delta, saldo_despues, motivo, ref, ov_linea_id, clave,
+  insert into almacen.stock_mov (sku, almacen, delta, saldo_despues, motivo, ref, ov_linea_id, clave,
                              quien, quien_nombre, via)
   select s.sku, s.almacen, -s.n, s.fisico, 'salida_ov', (select folio from o), s.linea_id,
          'ov:' || %(id)s || ':linea:' || s.linea_id || ':salida', %(q)s, %(nombre)s, %(via)s
     from s
   returning id
 ), r as (
-  update ops.ov_lineas li set entregado = s.n, entregado_at = now(), entregado_por = %(q)s
+  update ventas.ov_lineas li set entregado = s.n, entregado_at = now(), entregado_por = %(q)s
     from s where li.id = s.linea_id
   returning li.id
 ), msg as (
-  insert into ops.ov_mensajes (orden_id, tipo, evento, cuerpo, datos, autor, autor_nombre, via)
+  insert into ventas.ov_mensajes (orden_id, tipo, evento, cuerpo, datos, autor, autor_nombre, via)
   select o.id, 'sistema', 'devolucion_esperada', %(cuerpo)s, %(datos)s::jsonb, %(q)s, %(nombre)s,
          %(via)s
     from o
@@ -2874,11 +2874,11 @@ def salio_tarde(orden_id: int, rev: int, quien: Quien, cur: Any = None) -> dict[
 #     cliente NUNCA es el comprador; lo exige ov_ordenes_auto_cliente_chk).
 SQL_CREAR_AUTO = _una("""
 with alm as (
-  select a.codigo from ops.almacenes a
+  select a.codigo from almacen.almacenes a
    where a.codigo = %(alm)s and a.fuente = 'kubera' and a.admite_ov and a.surte_ventas
      for share
 ), previa as (
-  select v.id from ops.ov_ordenes v
+  select v.id from ventas.ov_ordenes v
    where (v.clave = %(clave)s
           or (v.mp_canal, v.mp_cuenta, v.mp_orden) = (%(mc)s, %(mu)s, %(mo)s))
      and v.borrada_at is null and v.estado <> 'cancelada'
@@ -2887,21 +2887,21 @@ with alm as (
          as r(linea int, sku citext, n int, precio_unitario numeric, titulo text, imagen text)
 ), x as materialized (
   select sa.sku, sa.almacen, r.n, r.linea, r.precio_unitario, r.titulo, r.imagen
-    from ops.stock_almacen sa join alm on alm.codigo = sa.almacen join r on r.sku = sa.sku
+    from almacen.stock_almacen sa join alm on alm.codigo = sa.almacen join r on r.sku = sa.sku
    where not exists (select 1 from previa)
    order by sa.sku, sa.almacen
      for update of sa
 ), s as (
-  update ops.stock_almacen sa set apartado = sa.apartado + x.n
+  update almacen.stock_almacen sa set apartado = sa.apartado + x.n
     from x where sa.sku = x.sku and sa.almacen = x.almacen and sa.libre >= x.n
   returning sa.sku, sa.almacen
 ), fo as (
-  update ops.ov_folio set ultimo = ultimo + 1
+  update ventas.ov_folio set ultimo = ultimo + 1
    where id = 1 and not exists (select 1 from previa)
      and (select count(*) from s) = (select count(*) from r)
   returning ultimo
 ), o as (
-  insert into ops.ov_ordenes (folio, estado, tipo, cliente, canal, mp_canal, mp_cuenta, mp_orden,
+  insert into ventas.ov_ordenes (folio, estado, tipo, cliente, canal, mp_canal, mp_cuenta, mp_orden,
                               descripcion, guia, paqueteria, fecha_venta, entrega_limite, moneda,
                               total, comision, precio_origen, creado_por, creado_nombre,
                               creado_via, clave, confirmada_at, confirmada_por,
@@ -2914,14 +2914,14 @@ with alm as (
     from fo
   returning id
 ), l as (
-  insert into ops.ov_lineas (orden_id, linea, sku, titulo, imagen, cantidad, precio_unitario,
+  insert into ventas.ov_lineas (orden_id, linea, sku, titulo, imagen, cantidad, precio_unitario,
                              almacen, reservado)
   select o.id, row_number() over (order by x.linea, x.sku), x.sku, x.titulo, x.imagen, x.n,
          x.precio_unitario, x.almacen, x.n
     from o, x
   returning id
 ), m as (
-  insert into ops.ov_mensajes (orden_id, tipo, evento, cuerpo, datos, autor, autor_nombre, via)
+  insert into ventas.ov_mensajes (orden_id, tipo, evento, cuerpo, datos, autor, autor_nombre, via)
   select o.id, 'sistema', 'creada', %(cuerpo)s, %(datos)s::jsonb, %(q)s, %(nombre)s, 'automatico'
     from o
   returning id
@@ -2941,8 +2941,8 @@ select r.sku::text as sku, r.n,
        coalesce(a.fuente = 'kubera' and a.admite_ov and a.surte_ventas, false) as surte,
        sa.sku is not null as con_saldo, sa.libre
   from jsonb_to_recordset(%(lineas)s::jsonb) as r(linea int, sku citext, n int)
-  left join ops.almacenes a on a.codigo = %(alm)s
-  left join ops.stock_almacen sa on sa.sku = r.sku and sa.almacen = %(alm)s
+  left join almacen.almacenes a on a.codigo = %(alm)s
+  left join almacen.stock_almacen sa on sa.sku = r.sku and sa.almacen = %(alm)s
  order by r.linea
 """
 
@@ -3128,7 +3128,7 @@ def crear_auto(venta: dict[str, Any], lineas: list[dict[str, Any]], almacen: str
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Chat (`ops.ov_mensajes` es de SÓLO AGREGAR)
+# Chat (`ventas.ov_mensajes` es de SÓLO AGREGAR)
 # ══════════════════════════════════════════════════════════════════════════════
 
 # `datos.op` y `datos.clave` son fontanería (las marcas de idempotencia): no
@@ -3141,12 +3141,12 @@ _MENSAJE_JSON = """json_build_object(
 # Con `.replace` y no `.format`: el SQL lleva un '{}' literal (el jsonb vacío).
 _SQL_MENSAJES = """
 select o.rev, o.estado,
-       (select count(*) from ops.ov_mensajes m where m.orden_id = o.id) as total,
-       (select coalesce(max(m.id), 0) from ops.ov_mensajes m where m.orden_id = o.id) as ultimo_id,
+       (select count(*) from ventas.ov_mensajes m where m.orden_id = o.id) as total,
+       (select coalesce(max(m.id), 0) from ventas.ov_mensajes m where m.orden_id = o.id) as ultimo_id,
        coalesce((select json_agg(""" + _MENSAJE_JSON + """ order by m.id)
-                   from ops.ov_mensajes m
+                   from ventas.ov_mensajes m
                   where m.orden_id = o.id and __FILTRO__), '[]'::json) as mensajes
-  from ops.ov_ordenes o
+  from ventas.ov_ordenes o
  where o.id = %(id)s
 """
 
@@ -3154,13 +3154,13 @@ select o.rev, o.estado,
 # la marca (`op`: la repetición de un reintento transitorio no deja el mismo
 # mensaje dos veces) y por la `clave` (el reenvío de la pantalla tampoco).
 SQL_MENSAJE_USUARIO = _una("""
-insert into ops.ov_mensajes (orden_id, tipo, cuerpo, datos, autor, autor_nombre, via)
+insert into ventas.ov_mensajes (orden_id, tipo, cuerpo, datos, autor, autor_nombre, via)
 select o.id, 'usuario', %(cuerpo)s,
        jsonb_strip_nulls(jsonb_build_object('op', %(op)s::text, 'clave', %(clave)s::text)),
        %(q)s, %(nombre)s, %(via)s
-  from ops.ov_ordenes o
+  from ventas.ov_ordenes o
  where o.id = %(id)s and o.borrada_at is null
-   and not exists (select 1 from ops.ov_mensajes y
+   and not exists (select 1 from ventas.ov_mensajes y
                     where y.orden_id = o.id
                       and (y.datos->>'op' = %(op)s
                            or (%(clave)s::text is not null and y.tipo = 'usuario'
@@ -3252,17 +3252,17 @@ def enviar_mensaje(orden_id: int, quien: Quien, cuerpo: str, clave: str | None =
 # `evento` NULL: «PDF adjunto» no está en el catálogo cerrado de eventos.
 SQL_ARCHIVO_ALTA = _una("""
 with o as (
-  update ops.ov_ordenes v set rev = v.rev + 1
+  update ventas.ov_ordenes v set rev = v.rev + 1
    where v.id = %(id)s and v.borrada_at is null
   returning v.id
 ), a as (
-  insert into ops.ov_archivos (orden_id, tipo, nombre, ruta, sha256, bytes, subido_por,
+  insert into ventas.ov_archivos (orden_id, tipo, nombre, ruta, sha256, bytes, subido_por,
                                subido_nombre)
   select o.id, %(tipo)s, %(archivo)s, %(ruta)s, %(sha)s, %(bytes)s, %(q)s, %(nombre)s
     from o
   returning id
 ), m as (
-  insert into ops.ov_mensajes (orden_id, tipo, evento, cuerpo, datos, autor, autor_nombre, via)
+  insert into ventas.ov_mensajes (orden_id, tipo, evento, cuerpo, datos, autor, autor_nombre, via)
   select o.id, 'sistema', null, %(cuerpo)s, %(datos)s::jsonb, %(q)s, %(nombre)s, %(via)s
     from o
   returning id
@@ -3279,18 +3279,18 @@ select (select id from a) as id,
 # cruzaría con un alta del MISMO PDF, que toma la orden y espera al archivo.
 SQL_ARCHIVO_BAJA = _una("""
 with o as (
-  update ops.ov_ordenes v set rev = v.rev + 1
+  update ventas.ov_ordenes v set rev = v.rev + 1
    where v.id = %(id)s and v.borrada_at is null
-     and exists (select 1 from ops.ov_archivos x
+     and exists (select 1 from ventas.ov_archivos x
                   where x.id = %(aid)s and x.orden_id = v.id and x.borrado_at is null)
   returning v.id
 ), a as (
-  update ops.ov_archivos x set borrado_at = now(), borrado_por = %(q)s
+  update ventas.ov_archivos x set borrado_at = now(), borrado_por = %(q)s
     from o
    where x.id = %(aid)s and x.orden_id = o.id and x.borrado_at is null
   returning x.id, x.orden_id, x.nombre
 ), m as (
-  insert into ops.ov_mensajes (orden_id, tipo, evento, cuerpo, datos, autor, autor_nombre, via)
+  insert into ventas.ov_mensajes (orden_id, tipo, evento, cuerpo, datos, autor, autor_nombre, via)
   select a.orden_id, 'sistema', null, 'PDF quitado: ' || a.nombre,
          jsonb_build_object('archivo_id', a.id, 'nombre', a.nombre), %(q)s, %(nombre)s, %(via)s
     from a
@@ -3313,7 +3313,7 @@ def _tipo_archivo(tipo: Any) -> str:
 
 def _indice_vivo(orden_id: int, sha: str, cur: Any = None) -> bool:
     """¿Hay una fila VIVA del índice para ese PDF en esa orden?"""
-    return bool(_fila("""select 1 as hay from ops.ov_archivos
+    return bool(_fila("""select 1 as hay from ventas.ov_archivos
                           where orden_id = %(id)s and sha256 = %(sha)s and borrado_at is null
                           limit 1""", {"id": orden_id, "sha": sha}, cur))
 
@@ -3403,7 +3403,7 @@ def _archivo(orden_id: Any, archivo_id: Any, cur: Any = None) -> dict[str, Any]:
         ids = {"id": int(orden_id), "aid": int(archivo_id)}
     except (TypeError, ValueError):
         raise NoExiste("No existe ese PDF.") from None
-    fila = _fila("""select id, orden_id, nombre, ruta, sha256, bytes from ops.ov_archivos
+    fila = _fila("""select id, orden_id, nombre, ruta, sha256, bytes from ventas.ov_archivos
                      where id = %(aid)s and orden_id = %(id)s and borrado_at is null""", ids, cur)
     if not fila:
         raise NoExiste("No existe ese PDF (o ya se quitó).")
@@ -3459,7 +3459,7 @@ def borrar_archivo(orden_id: int, archivo_id: int, quien: Quien,
         # 0 filas: ya no estaba vivo. Se RELEE: si quedó marcado, sigue (el objeto
         # todavía puede estar en el bucket); si la fila no está marcada, lo que
         # cambió fue la orden (se borró) y no se toca nada.
-        marcado = _fila("select borrado_at is not null as ya from ops.ov_archivos "
+        marcado = _fila("select borrado_at is not null as ya from ventas.ov_archivos "
                         "where id = %(aid)s and orden_id = %(id)s",
                         {"id": a["orden_id"], "aid": a["id"]}, cur)
         if not (marcado and marcado.get("ya")):
@@ -3489,7 +3489,7 @@ select count(*) filter (where borrada_at is null) as todas,
        count(*) filter (where borrada_at is null and devolucion_estado = 'pendiente')
            as por_devolver,
        count(*) filter (where borrada_at is not null) as borradas
-  from ops.ov_ordenes
+  from ventas.ov_ordenes
 """
 
 
@@ -3535,7 +3535,7 @@ def listar(estado: str | None = None, q: str | None = None, canal: str | None = 
         donde.append(
             "(o.folio ilike %(q)s or o.mp_orden ilike %(q)s or o.cliente ilike %(q)s "
             "or o.descripcion ilike %(q)s or o.guia ilike %(q)s "
-            "or exists (select 1 from ops.ov_lineas l "
+            "or exists (select 1 from ventas.ov_lineas l "
             "            where l.orden_id = o.id and l.sku::text ilike %(q)s))")
         params["q"] = f"%{_escapar_like(busca)}%"
     w = " and ".join(donde)
@@ -3543,7 +3543,7 @@ def listar(estado: str | None = None, q: str | None = None, canal: str | None = 
     def _leer(c: Any) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
         c.execute(_SQL_CONTEOS)
         conteos = _dicts(c)[0]
-        c.execute(f"select count(*) as n from ops.ov_ordenes o where {w}", params)
+        c.execute(f"select count(*) as n from ventas.ov_ordenes o where {w}", params)
         total = int(_dicts(c)[0]["n"])
         c.execute("select" + _COLS + _DESDE + f" where {w} "
                   "order by o.creado_at desc, o.id desc limit %(lim)s offset %(off)s", params)
@@ -3641,7 +3641,7 @@ def nombre_de(correo: str) -> str | None:
         return None
 
 
-# Las existencias salen de `ops.stock_almacen`: una por bodega de kubera donde
+# Las existencias salen de `almacen.stock_almacen`: una por bodega de kubera donde
 # el SKU tiene fila de saldo. Sin fila no hay renglón («no lo sabemos»), que no
 # es lo mismo que un cero.
 _SQL_BUSCAR_SKUS = """
@@ -3649,7 +3649,7 @@ select p.sku::text as sku, p.name as nombre,
        coalesce((select json_agg(json_build_object(
                     'almacen', sa.almacen, 'fisico', sa.fisico, 'apartado', sa.apartado,
                     'libre', sa.libre) order by sa.almacen)
-                   from ops.stock_almacen sa where sa.sku = p.sku), '[]'::json) as existencias
+                   from almacen.stock_almacen sa where sa.sku = p.sku), '[]'::json) as existencias
   from core.products p
  where p.sku::text ilike %(parte)s or p.name ilike %(parte)s
  order by (p.sku::text ilike %(inicio)s) desc, (p.name ilike %(inicio)s) desc, p.sku::text
@@ -3738,7 +3738,7 @@ def _ligadas(ordenes: list[str], cur: Any = None) -> list[dict[str, Any]]:
     if not ordenes:
         return []
     return _filas("""select id, folio, estado, mp_canal, mp_cuenta, mp_orden
-                       from ops.ov_ordenes
+                       from ventas.ov_ordenes
                       where mp_orden = any(%(ordenes)s) and borrada_at is null
                         and estado <> 'cancelada'
                       order by id""", {"ordenes": list(ordenes)}, cur)
@@ -3890,7 +3890,7 @@ def ventas_pendientes(dias: int = 7, canal: str | None = None, limite: int = 100
    and exists (select 1 from channel.order_items i
                 where {par} and i.sku is not null and i.sku::text <> '')
    and not exists (select 1 from channel.order_items i where {par} and i.es_fulfillment)
-   and not exists (select 1 from ops.ov_ordenes v
+   and not exists (select 1 from ventas.ov_ordenes v
                     where v.mp_orden = c.external_order_id and v.mp_canal = c.canal
                       and v.borrada_at is null and lower(v.mp_cuenta) = lower(c.cuenta))
  order by c.creado_at desc

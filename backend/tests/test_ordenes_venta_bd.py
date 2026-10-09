@@ -110,6 +110,7 @@ TIPOS = BACKEND.parent / "frontend" / "components" / "ordenes" / "tipos.ts"
 MIGRACIONES = BACKEND.parent / "supabase" / "migrations"
 M64 = MIGRACIONES / "0064_ops_ordenes_venta.sql"
 M65 = MIGRACIONES / "0065_ops_inventario_kubera.sql"
+M68 = MIGRACIONES / "0068_mudanza_ov_a_ventas_y_almacen.sql"
 
 ADMIN = ov.Quien("admin@prueba.test", "Ada Admin", "panel", "admin")
 OPER = ov.Quien("oper@prueba.test", "Olga Operadora", "panel", "operador")
@@ -201,10 +202,13 @@ def setUpModule() -> None:
     _CN = psycopg2.connect(DSN)
     _CN.autocommit = True
     with _CN.cursor() as cur:
-        for archivo in (FIXTURE, M64, M65, M64, M65):
+        # La 0068 va al final y dos veces: después de la mudanza la 0064 y la 0065 ya no
+        # se pueden repetir (en `ops` quedan vistas con esos nombres, no tablas).
+        for archivo in (FIXTURE, M64, M65, M64, M65, M68, M68):
             cur.execute(archivo.read_text(encoding="utf-8"))
         cur.execute("select migracion, count(*) from ops.migraciones group by 1 order by 1")
-        assert cur.fetchall() == [("0064_ops_ordenes_venta", 2), ("0065_ops_inventario_kubera", 2)]
+        assert cur.fetchall() == [("0064_ops_ordenes_venta", 2), ("0065_ops_inventario_kubera", 2),
+                                  ("0068_mudanza_ov_a_ventas_y_almacen", 2)]
     _PARCHE_DSN = mock.patch.object(settings, "supabase_db_url", DSN)
     _PARCHE_DSN.start()
     sdb._reiniciar_pool()               # el pool pudo nacer antes, apuntando a otro lado
@@ -250,11 +254,11 @@ class Base(unittest.TestCase):
                          [], "la vista vigía reporta un descuadre")
         self.assertEqual(self.sql("select * from ops.devoluciones_vs_canal_v"), [])
         # 2) Las tres verificaciones de la base, por cada orden y cada saldo.
-        self.sql("select ops.verificar_ov(id) from ops.ov_ordenes")
+        self.sql("select ops.verificar_ov(id) from ventas.ov_ordenes")
         self.sql("select ops.verificar_libro(sku, almacen), ops.verificar_apartado(sku, almacen) "
-                 "from ops.stock_almacen")
+                 "from almacen.stock_almacen")
         # 3) El catálogo de bodegas no se toca desde el código (ni desde una prueba).
-        self.assertEqual(self.sql("select count(*) as n from ops.almacenes_hist")[0]["n"], 6)
+        self.assertEqual(self.sql("select count(*) as n from almacen.almacenes_hist")[0]["n"], 6)
         # 4) Nadie dejó una transacción abierta (un candado colgado tumba el pool).
         self.assertEqual(self.sql("select count(*) as n from pg_stat_activity "
                                   "where datname = current_database() "
@@ -290,12 +294,12 @@ class Base(unittest.TestCase):
 
     _SIEMBRA = """
         with s as (
-          insert into ops.stock_almacen as sa (sku, almacen, fisico)
+          insert into almacen.stock_almacen as sa (sku, almacen, fisico)
           values (%(sku)s, %(alm)s, %(n)s)
           on conflict (sku, almacen) do update set fisico = sa.fisico + excluded.fisico
           returning sa.sku, sa.almacen, sa.fisico
         ), m as (
-          insert into ops.stock_mov (sku, almacen, delta, saldo_despues, motivo, clave, nota,
+          insert into almacen.stock_mov (sku, almacen, delta, saldo_despues, motivo, clave, nota,
                                      quien, via)
           select s.sku, s.almacen, %(n)s, s.fisico, 'correccion', %(clave)s,
                  'Siembra de la prueba', 'pruebas@prueba.test', 'automatico'
@@ -315,13 +319,13 @@ class Base(unittest.TestCase):
             self.sql(self._SIEMBRA, params)
 
     def saldo(self, sku: str, almacen: str = "ENSAYO") -> tuple | None:
-        f = self.sql("select fisico, apartado, libre from ops.stock_almacen "
+        f = self.sql("select fisico, apartado, libre from almacen.stock_almacen "
                      "where sku = %s and almacen = %s", (sku, almacen))
         return (f[0]["fisico"], f[0]["apartado"], f[0]["libre"]) if f else None
 
     def libro(self, sku: str, almacen: str = "ENSAYO") -> list[tuple]:
         return [(f["motivo"], f["delta"], f["saldo_despues"]) for f in self.sql(
-            "select motivo, delta, saldo_despues from ops.stock_mov "
+            "select motivo, delta, saldo_despues from almacen.stock_mov "
             "where sku = %s and almacen = %s order by id", (sku, almacen))]
 
     def crear(self, lineas, quien=OPER, clave=None, **enc) -> dict:
@@ -341,7 +345,7 @@ class Base(unittest.TestCase):
         return [m["evento"] for m in ov.mensajes(orden_id)["mensajes"]]
 
     def folio_contador(self) -> int:
-        return self.sql("select ultimo from ops.ov_folio")[0]["ultimo"]
+        return self.sql("select ultimo from ventas.ov_folio")[0]["ultimo"]
 
     def venta_canal(self, orden: str, items: list[tuple], canal: str = "tiktok",
                     cuenta: str = CUENTA, **cols) -> None:
@@ -456,7 +460,7 @@ class Ciclo(Base):
         # EL LIBRO: una salida_ov por renglón, con la clave del hecho y el folio de ref.
         salidas = self.sql("""select sku::text as sku, delta, saldo_despues, clave, ref, ov_linea_id,
                                      quien, quien_nombre, via
-                                from ops.stock_mov where motivo = 'salida_ov' and ref = %s
+                                from almacen.stock_mov where motivo = 'salida_ov' and ref = %s
                                order by sku""", (o["folio"],))
         ids = {l["sku"]: l["id"] for l in o["lineas"]}
         self.assertEqual(salidas, [
@@ -728,12 +732,12 @@ class Entrega(Base):
         a = self.sku("A")
         self.siembra(a, 5)
         o = self.confirmada([L(a, 4)])
-        self.sql("""with x as (select sa.sku, sa.almacen, sa.fisico from ops.stock_almacen sa
+        self.sql("""with x as (select sa.sku, sa.almacen, sa.fisico from almacen.stock_almacen sa
                                 where sa.sku = %(sku)s and sa.almacen = 'ENSAYO' for update),
-                         s as (update ops.stock_almacen sa set fisico = 3 from x
+                         s as (update almacen.stock_almacen sa set fisico = 3 from x
                                 where sa.sku = x.sku and sa.almacen = x.almacen
                                returning sa.sku, sa.almacen, sa.fisico, x.fisico as antes)
-                    insert into ops.stock_mov (sku, almacen, delta, saldo_despues, motivo, clave,
+                    insert into almacen.stock_mov (sku, almacen, delta, saldo_despues, motivo, clave,
                                                nota, quien, via)
                     select s.sku, s.almacen, s.fisico - s.antes, s.fisico, 'ajuste_conteo',
                            'conteo:' || %(sesion)s || ':' || s.sku || ':' || s.almacen,
@@ -823,7 +827,7 @@ class Cancelar(Base):
         self.assertEqual(m["evento"], "devolucion_esperada")
         self.assertIn("DELIVERED but CANCELLED", m["cuerpo"])
         self.assertEqual(ov.listar("por_devolver")["conteos"]["por_devolver"],
-                         self.sql("select count(*) as n from ops.ov_ordenes where borrada_at is null "
+                         self.sql("select count(*) as n from ventas.ov_ordenes where borrada_at is null "
                                   "and devolucion_estado = 'pendiente'")[0]["n"])
 
     def test_una_entregada_no_se_cancela_a_mano(self):
@@ -988,7 +992,7 @@ class Alta(Base):
         self.assertEqual([x for x in r if isinstance(x, Exception)], [])
         self.assertEqual(len({x["orden"]["id"] for x in r}), 1)
         self.assertEqual(self.folio_contador(), antes + 1, "un solo folio")
-        self.assertEqual(self.sql("select count(*) as n from ops.ov_ordenes where clave = %s",
+        self.assertEqual(self.sql("select count(*) as n from ventas.ov_ordenes where clave = %s",
                                   (clave,))[0]["n"], 1)
 
     def test_un_alta_que_la_base_rechaza_no_consume_folio_y_no_sale_textual(self):
@@ -1199,7 +1203,7 @@ class ElCanalCancela(Base):
         self.assertEqual(self.saldo(a), (3, 0, 3), "salió: baja el físico y el apartado")
         linea = f["lineas"][0]
         self.assertEqual((linea["entregado"], linea["reservado"]), (2, 0))
-        self.assertEqual(self.sql("select clave, delta, ref from ops.stock_mov where ov_linea_id = %s",
+        self.assertEqual(self.sql("select clave, delta, ref from almacen.stock_mov where ov_linea_id = %s",
                                   (linea["id"],)),
                          [{"clave": f"ov:{o['id']}:linea:{linea['id']}:salida", "delta": -2,
                            "ref": o["folio"]}], "la misma clave que entregar")
@@ -1329,7 +1333,7 @@ class ElCanalCancela(Base):
                         espera = self.sql("""select count(*) as n from pg_stat_activity
                                               where datname = current_database()
                                                 and wait_event_type = 'Lock'
-                                                and query like '%%update ops.ov_ordenes%%'""")[0]["n"] >= 1
+                                                and query like '%%update ventas.ov_ordenes%%'""")[0]["n"] >= 1
                         if espera:
                             break
                     cn.commit()                    # la entrega parcial gana
@@ -1425,7 +1429,7 @@ class SalioTarde(Base):
 
 class CrearAuto(Base):
     """`crear_auto` aparta en una bodega que SURTE VENTAS, y ENSAYO no lo hace.
-    Encenderla es un cambio a `ops.almacenes` (con motivo y quién), que NO se
+    Encenderla es un cambio a `almacen.almacenes` (con motivo y quién), que NO se
     confirma: va DENTRO de la transacción de la prueba y el ROLLBACK lo deshace,
     como hace el verificador. Por eso esta clase usa `cur=` (guía §7.3)."""
 
@@ -1439,7 +1443,7 @@ class CrearAuto(Base):
     def encender(self, cur) -> None:
         # El set_config va en el MISMO execute que el UPDATE (guía §4.4).
         cur.execute("""select set_config('app.usuario', 'pruebas@prueba.test', true);
-                       update ops.almacenes
+                       update almacen.almacenes
                           set surte_ventas = true, preferencia = 9,
                               motivo = 'Prueba: ENSAYO surte ventas (crear_auto)'
                         where codigo = 'ENSAYO'""")
@@ -1496,7 +1500,7 @@ class CrearAuto(Base):
                                l["titulo"], l["imagen"], l["almacen"]) for l in o["lineas"]],
                              [(a, 3, 3, 166.67, "Audífonos", "https://img.prueba.test/a.jpg", "ENSAYO"),
                               (b, 1, 1, 130.0, "Bocina", None, "ENSAYO")])
-            cur.execute("select clave from ops.ov_ordenes where id = %s", (o["id"],))
+            cur.execute("select clave from ventas.ov_ordenes where id = %s", (o["id"],))
             self.assertEqual(cur.fetchone()["clave"], f"mp:tiktok:{CUENTA}:{orden}")
             m = ov.mensajes(o["id"], cur=cur)["mensajes"]
             self.assertEqual([(x["evento"], x["autor"], x["via"]) for x in m],
@@ -1516,19 +1520,19 @@ class CrearAuto(Base):
             self.assertEqual((r3["resultado"], r3["orden"]), ("no_alcanzo", None))
             self.assertIn(f"{b} pide 1 y hay 0 libres en ENSAYO", r3["mensaje"])
             self.assertEqual(self.saldo_en(cur, c), (1, 0, 1), "todo o nada")
-            cur.execute("select ultimo from ops.ov_folio")
+            cur.execute("select ultimo from ventas.ov_folio")
             self.assertEqual(cur.fetchone()["ultimo"], antes + 1)
             # Lo que al COMMIT revisaría la base, revisado aquí: nada pendiente truena.
             cur.execute("set constraints all immediate")
         # El ROLLBACK lo deshizo todo: ni la orden, ni el saldo, ni el encendido de ENSAYO.
         self.assertEqual(self.folio_contador(), antes)
         self.assertEqual((self.saldo(a), self.saldo(b)), (None, None))
-        self.assertEqual(self.sql("select surte_ventas, preferencia from ops.almacenes "
+        self.assertEqual(self.sql("select surte_ventas, preferencia from almacen.almacenes "
                                   "where codigo = 'ENSAYO'"), [{"surte_ventas": False,
                                                                 "preferencia": None}])
 
     def saldo_en(self, cur, sku: str) -> tuple | None:
-        cur.execute("select fisico, apartado, libre from ops.stock_almacen "
+        cur.execute("select fisico, apartado, libre from almacen.stock_almacen "
                     "where sku = %s and almacen = 'ENSAYO'", (sku,))
         f = cur.fetchone()
         return (f["fisico"], f["apartado"], f["libre"]) if f else None
@@ -1685,7 +1689,7 @@ class SinMigracion(Base):
         lista = ov.listar()
         self.assertEqual((lista["ok"], lista["falta_migracion"], lista["ordenes"], lista["total"]),
                          (False, True, [], 0))
-        self.assertIn("0064 y 0065", lista["motivo"])
+        self.assertIn("0064, 0065 y 0068", lista["motivo"])
         self.assertEqual(set(lista["conteos"]), set(ov.FILTROS))
         est = ov.estado_modulo(OPER)
         self.assertEqual((est["ok"], est["falta_migracion"], est["bodegas"]), (False, True, []))
@@ -1777,7 +1781,7 @@ class Archivos(Base):
         self.assertEqual((b["orden"]["archivos"], b["orden"]["n_archivos"], b["orden"]["rev"]),
                          ([], 0, o["rev"] + 2))
         self.assertEqual(self.storage.objetos, {})
-        fila = self.sql("select borrado_por, borrado_at from ops.ov_archivos where id = %s",
+        fila = self.sql("select borrado_por, borrado_at from ventas.ov_archivos where id = %s",
                         (a["id"],))[0]
         self.assertEqual(fila["borrado_por"], "admin@prueba.test")
         self.assertIsNotNone(fila["borrado_at"])
@@ -1797,7 +1801,7 @@ class Archivos(Base):
         o = self.crear([L(self.sku("A"), 1)])
         r = self.a_la_vez(*[lambda: ov.subir_archivo(o["id"], OPER, "comprobante", "c.pdf", PDF)] * 5)
         self.assertEqual([x for x in r if isinstance(x, Exception)], [])
-        self.assertEqual(self.sql("select count(*) as n from ops.ov_archivos where orden_id = %s",
+        self.assertEqual(self.sql("select count(*) as n from ventas.ov_archivos where orden_id = %s",
                                   (o["id"],))[0]["n"], 1)
         self.assertEqual(len(self.storage.objetos), 1)
         self.assertEqual(ov.obtener(o["id"], OPER)["rev"], o["rev"] + 1, "una sola subió la rev")
@@ -1823,7 +1827,7 @@ class Archivos(Base):
                 ov.subir_archivo(o["id"], OPER, "factura", "f.pdf", PDF)
         self.assertEqual((e.exception.status, str(e.exception)),
                          (502, "No se pudo guardar el PDF en Storage; intenta de nuevo."))
-        self.assertEqual(self.sql("select count(*) as n from ops.ov_archivos where orden_id = %s",
+        self.assertEqual(self.sql("select count(*) as n from ventas.ov_archivos where orden_id = %s",
                                   (o["id"],))[0]["n"], 0)
         self.storage.falla_subir = False
         a = ov.subir_archivo(o["id"], OPER, "factura", "f.pdf", PDF)["orden"]["archivos"][0]
@@ -1959,7 +1963,7 @@ class Lista(Base):
         real = self.sql("""select count(*) filter (where borrada_at is null) as todas,
                                   count(*) filter (where borrada_at is not null) as borradas,
                                   count(*) filter (where borrada_at is null and estado = 'confirmada')
-                                      as confirmada from ops.ov_ordenes""")[0]
+                                      as confirmada from ventas.ov_ordenes""")[0]
         self.assertEqual((conteos["todas"], conteos["borradas"], conteos["confirmada"]),
                          (real["todas"], real["borradas"], real["confirmada"]))
         with self.assertRaises(ov.Invalido):
@@ -2038,7 +2042,7 @@ class Concurrencia(Base):
                 time.sleep(0.05)
                 espera = self.sql("""select count(*) as n from pg_stat_activity
                                       where datname = current_database() and wait_event_type = 'Lock'
-                                        and query like '%%ops.stock_almacen%%'""")[0]["n"] >= 1
+                                        and query like '%%almacen.stock_almacen%%'""")[0]["n"] >= 1
                 if espera:
                     break
             cn_a.commit()                          # A gana
@@ -2087,7 +2091,7 @@ class Concurrencia(Base):
         corta = ov.SQL_CONFIRMAR.replace("lock_timeout = '4s'", "lock_timeout = '250ms'")
         with self.conexion() as otro:
             c = otro.cursor()
-            c.execute("select 1 from ops.stock_almacen where sku = %s and almacen = 'ENSAYO' "
+            c.execute("select 1 from almacen.stock_almacen where sku = %s and almacen = 'ENSAYO' "
                       "for update", (a,))
             with mock.patch.object(ov, "SQL_CONFIRMAR", corta):
                 with self.assertLogs("omnicanal.ordenes_venta", level="WARNING"):
@@ -2194,7 +2198,7 @@ class CursorPrestado(Base):
         chat. Y un rechazo esperado no deja abortada la transacción prestada."""
         a = self.sku("A")
         antes = self.folio_contador()
-        ordenes = self.sql("select count(*) as n from ops.ov_ordenes")[0]["n"]
+        ordenes = self.sql("select count(*) as n from ventas.ov_ordenes")[0]["n"]
         with self.conexion() as cn:
             cur = cn.cursor()
             self.siembra(a, 3, cur=cur)
@@ -2213,10 +2217,10 @@ class CursorPrestado(Base):
                              ["creada", "no_alcanzo", "borrador_guardado", "confirmada", "entregada"])
             self.assertEqual(ov.listar(q=o["folio"], cur=cur)["total"], 1)
             cur.execute("set constraints all immediate")        # lo que revisaría el COMMIT
-            self.assertEqual(self.sql("select count(*) as n from ops.ov_ordenes")[0]["n"], ordenes,
+            self.assertEqual(self.sql("select count(*) as n from ventas.ov_ordenes")[0]["n"], ordenes,
                              "desde afuera no se ve nada: no hubo COMMIT")
         self.assertEqual((self.folio_contador(), self.saldo(a)), (antes, None))
-        self.assertEqual(self.sql("select count(*) as n from ops.ov_ordenes")[0]["n"], ordenes)
+        self.assertEqual(self.sql("select count(*) as n from ventas.ov_ordenes")[0]["n"], ordenes)
 
     def test_tambien_con_un_cursor_de_tuplas(self):
         """El cursor prestado puede no ser RealDictCursor (el del verificador no lo es)."""

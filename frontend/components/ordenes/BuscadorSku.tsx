@@ -14,7 +14,7 @@
  * Por qué deja agregar un SKU que el catálogo no conoce: una venta de
  * marketplace puede traer un SKU que `core.products` todavía no tiene, y la
  * orden tiene que poder existir para que alguien lo vea (por eso
- * `ops.ov_lineas.sku` no lleva llave foránea). Ese renglón entra MARCADO
+ * `ventas.ov_lineas.sku` no lleva llave foránea). Ese renglón entra MARCADO
  * —segundo argumento de `onElegir`— y, como no tiene saldo en ninguna bodega,
  * la orden no se podrá confirmar hasta que lo tenga: falla cerrado, pero a la
  * vista.

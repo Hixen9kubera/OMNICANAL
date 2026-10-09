@@ -11,7 +11,7 @@
  * alguien está a punto de arrastrar el archivo.
  *
  * Por qué el TIPO se elige antes de subir y no trae uno por omisión:
- * `ops.ov_archivos.tipo` no tiene default (comprobante / factura / envío a
+ * `ventas.ov_archivos.tipo` no tiene default (comprobante / factura / envío a
  * FULL). Un valor preelegido acabaría etiquetando como «comprobante» todo lo
  * que alguien suba con prisa; sin elegirlo, la zona de subida no recibe nada.
  * Y se suelta después de cada subida: el siguiente PDF es otra decisión.
@@ -52,7 +52,7 @@ import type { Archivo, EstadoModulo, Orden, TipoArchivo } from "./tipos";
 /** El tope del bucket `ordenes-venta` (guía de la 0064/0065, §5.2 punto 13): 15 MB. */
 const MAX_BYTES = 15 * 1024 * 1024;
 
-/** El catálogo CERRADO de `ops.ov_archivos.tipo`, en el orden en que más se usan. */
+/** El catálogo CERRADO de `ventas.ov_archivos.tipo`, en el orden en que más se usan. */
 export const TIPOS_ARCHIVO: { id: TipoArchivo; rotulo: string; ayuda: string }[] = [
   { id: "comprobante", rotulo: "Comprobante", ayuda: "Comprobante de pago o de entrega a la paquetería." },
   { id: "factura", rotulo: "Factura", ayuda: "La factura de la venta." },

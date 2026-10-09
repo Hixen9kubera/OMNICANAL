@@ -884,7 +884,7 @@ def iniciar() -> None:
     # paquete ya iba en camino, o abre la devolución si ya se había entregado.
     #
     # SÓLO LEE las tablas de ventas (channel.orders y la bitácora
-    # ops.odoo_sale_orders) y SÓLO ESCRIBE por `ordenes_venta.*` (ops.ov_* y el
+    # ops.odoo_sale_orders) y SÓLO ESCRIBE por `ordenes_venta.*` (ventas.ov_* y el
     # saldo de las bodegas de kubera): no toca Odoo, Woo, ningún marketplace ni
     # pedidos_ml.
     #
