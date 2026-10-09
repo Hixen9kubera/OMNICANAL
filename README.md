@@ -1142,6 +1142,12 @@ Antes, si se quiere ver qué haría con datos de hoy: `FANOUT_VERIFICAR_RANCIO_E
 en vivo…)» sin llamar al canal (sólo lee kubera). **Reversa:** `FANOUT_VERIFICAR_RANCIO=false` (sin deploy; corta
 desde el siguiente evento).
 
+**9-oct: el ENSAYO se enciende en producción por un día** (Eduardo: «enciéndelo un día para probar»):
+`FANOUT_VERIFICAR_RANCIO_ENSAYO=true` entra con este deploy; `FANOUT_VERIFICAR_RANCIO` sigue APAGADA. Sólo agrega a
+`ops.fanout_log` el resultado «ENSAYO (verificaría en vivo…)» en los «sin cambio» que verificaría; no llama a TikTok
+ni a Temu ni cambia qué se escribe. Al día siguiente se cuentan esas filas contra la repetición de 60 días y se apaga
+(`FANOUT_VERIFICAR_RANCIO_ENSAYO=false`) o se pide el dale de Brandon para la bandera real.
+
 ### v0.632.0 — `almacen.historial_movimientos`: el historial de TEXCO II sale de Odoo y un vigilante lo mantiene al día cada 30 minutos (migración 0070, aplicada y cargada)
 
 Brandon, 9-oct: *"requiero que me armes una nueva tabla llamada HISTORIAL_MOVIMIENTOS de todos los skus que
