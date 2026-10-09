@@ -1001,6 +1001,57 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.629.0 — `almacen.locations`: las ubicaciones de TEXCO II salen de Odoo y ya viven en kubera (migración 0069, aplicada y cargada)
+
+Brandon, 9-oct: *"vas a utilizar el schema de almacén y crear una nueva tabla llamada locations donde vas a traer
+todas las ubicaciones de todos los skus de TEXCO II ya que TEXCO II se pasará a uso de kubera y no de odoo"*. La
+ubicación de rack de un SKU sólo existía en Odoo; ni Woo ni kubera la tenían.
+
+**La tabla.** `almacen.locations` (migración `0069`): un renglón por SKU y ubicación dentro de un cedis.
+
+- `cedis` es **obligatorio** (*"ningún sku podrá aparecer sin cedis"*). Guarda el código de la bodega (`TEX2`) con
+  llave a `almacen.almacenes`; el nombre «TEXCO II» sale de ese catálogo, no se repite en cada renglón.
+- `ubicacion` se escribe como la pinta el panel (`BLOQUE D-FILA 1-T6`, vía `services.odoo._rack`), más `bloque` /
+  `fila` / `tarima` partidos para filtrar y ordenar. El SKU sin rack entra como **`SIN UBICAR`**: su cedis lo dice
+  `cedis`, no la ubicación.
+- `piezas` se guarda pero es **informativa** (*"deja las piezas, mas no se usará todavía hasta nuevo aviso"*): nada
+  vende, aparta ni sincroniza con ella. El saldo oficial sigue siendo `almacen.stock_almacen.fisico`.
+- `origen` (`odoo` | `kubera`), `archivado_odoo`, y de qué renglón de Odoo salió (`odoo_quant_id`, `odoo_product_id`,
+  `odoo_ubicacion`).
+- No es el catálogo de racks: un rack vacío no tiene renglón (Odoo define 19,240 ubicaciones en TEX2 y sólo 564
+  tienen mercancía).
+
+**El cargador** (`backend/scripts/cargar_locations_tex2.py`). Copia la foto de Odoo (`stock.quant`, sólo
+`search_read`), ensayo por omisión. Es una foto que se reemplaza entera y se puede repetir hasta el día del corte:
+se niega a correr si TEXCO II ya es de kubera o si alguien capturó renglones a mano. No deja una transacción
+abierta mientras lee Odoo. No adivina: revienta ante cantidades con decimales, un producto sin SKU cuyo nombre no
+es un SKU, o dos productos activos del mismo SKU en la misma ubicación.
+
+**Lo que se encontró en los datos** (medido el 9-oct, 1,663 renglones · 1,228 SKUs · 476,395 piezas):
+
+- **76% de los SKUs no tienen rack**: 934 renglones están en la raíz `TEX2/FERRAFORME`.
+- **21 negativos, todos de movimientos hechos en Odoo** (Brandon: *"si es así los traes"*): 11 surtidos del 23 al
+  30-jul desde «FERRAFORME Archivar», que nunca tuvo mercancía; 7 por la «Adecuación para alta de producto
+  [revertido]» del 18-jul, que repartió a los racks más de lo que había; 3 por surtir o traspasar de más. El
+  negativo es lo que hace que la suma del SKU cuadre con Odoo.
+- **21 SKUs viven en dos productos de Odoo**: el archivado (20-may) conserva el rack y el activo (9-jul) lleva la
+  cuenta. Sumarlos duplica 22,250 piezas; van marcados con `archivado_odoo` y sin ellos el total es 454,145.
+- 3 productos sin SKU cuyo nombre es el SKU, y 1 SKU (`JUGU-1155-NEG`) que no está en `core.products`: por eso la
+  tabla no lleva llave al maestro.
+
+**Aplicada en producción** el 9-oct 07:05 UTC desde este chat (sin acta, por instrucción de Brandon: *"sube la
+migración, aplica a producción"*) y cargada a las 07:06 UTC. El sandbox no la tiene. Lo que queda abierto para
+Eduardo está en `docs/MIGRACION_0069_NOTA_EDUARDO.md`.
+
+**Verificado.** En local (Postgres 16): la 0069 sobre `0064 → 0065 → 0068` y también antes de la 0068 —la llave
+sigue a la tabla en la mudanza—, dos veces en cada orden, y el cargador tres veces con los datos reales de Odoo.
+En producción: ensayo de la migración entera dentro de una transacción con `ROLLBACK` (12 comprobaciones y 4
+rechazos esperados), las mismas 12 después del `COMMIT`, y la tabla cargada cuadra con Odoo renglón por renglón
+(1,663 / 476,395 piezas, 21 negativos, 0 sin cedis). 7 pruebas nuevas del cargador
+(`tests/test_cargar_locations_tex2.py`).
+
+**No cambia nada en pantalla ni en ningún flujo:** todavía no la lee nadie.
+
 ### v0.628.0 — Órdenes de venta: sus tablas se mudan de `ops` a los esquemas `ventas` y `almacen` (migración 0068, ya aplicada)
 
 Brandon, 9-oct: *"repártelas tal como me muestras, no borres ninguna tabla… aplícalo desde aquí"*. Eduardo había
