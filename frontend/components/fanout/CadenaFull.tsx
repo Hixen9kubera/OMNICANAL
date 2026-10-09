@@ -21,7 +21,8 @@ const OPCIONES: { id: CuentaSel; texto: string }[] = [
   { id: "SANCORFASHION", texto: "San Corpe" },
 ];
 
-function Nodo({ eyebrow, titulo, cifra, unidad, lineas, destacado, punteado }: {
+/** Un eslabón de la cadena (también lo usa la pestaña Devoluciones). */
+export function Nodo({ eyebrow, titulo, cifra, unidad, lineas, destacado, punteado }: {
   eyebrow: string;
   titulo: string;
   cifra: string;
@@ -45,7 +46,7 @@ function Nodo({ eyebrow, titulo, cifra, unidad, lineas, destacado, punteado }: {
   );
 }
 
-function Flecha() {
+export function Flecha() {
   return (
     <span className="hidden shrink-0 items-center justify-center text-slate-400 md:flex" aria-hidden>
       <ArrowRight size={20} />

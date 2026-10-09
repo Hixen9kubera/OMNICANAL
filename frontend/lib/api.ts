@@ -2454,3 +2454,27 @@ export function radarPrecios(p: RadarParams, signal?: AbortSignal): Promise<Rada
 export function radarPreciosSku(sku: string, signal?: AbortSignal): Promise<RadarDetalle> {
   return getJSON<RadarDetalle>(`/api/radar-precios/${encodeURIComponent(sku)}`, signal);
 }
+
+// ── Fan-out · Devoluciones (Operaciones › Fan-out, solo admin; solo lee) ─────
+
+import type { BandejaDevol, DetalleDevol } from "@/components/fanout/tipos";
+
+/**
+ * La bandeja de cajas que ML regresa a nuestra bodega, cada una con su
+ * recepción en Odoo. Sin `cuenta` vienen las dos. Odoo lleva caché de 10 min
+ * en el backend: pedirla cada minuto no le pega a Odoo.
+ */
+export function devolucionesFanout(dias: number, cuenta?: string | null, signal?: AbortSignal): Promise<BandejaDevol> {
+  const qs = new URLSearchParams({ dias: String(dias) });
+  // Vacía fuera: un `cuenta=` sin valor ensuciaría la llave de caché del backend.
+  if (cuenta) qs.set("cuenta", cuenta);
+  return getJSON<BandejaDevol>(`/api/fanout/devoluciones?${qs.toString()}`, signal);
+}
+
+/** ¿Por qué subió el stock de un SKU? Cada subida de Odoo con las recepciones que la hicieron. */
+export function devolucionesSku(sku: string, dias: number, signal?: AbortSignal): Promise<DetalleDevol> {
+  return getJSON<DetalleDevol>(
+    `/api/fanout/devoluciones/sku/${encodeURIComponent(sku)}?dias=${dias}`,
+    signal,
+  );
+}

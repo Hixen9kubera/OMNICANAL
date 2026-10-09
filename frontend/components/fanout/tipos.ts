@@ -292,8 +292,11 @@ export interface ItemDevolucion {
   fuente: string; id: string; cuenta: string; nombre: string; pedido: string | null;
   piezas: number; motivo: string;
   estado: EstadoDevolucion; estado_txt: string; estado_canal: string | null; dinero: string | null;
+  /** Cuándo reembolsa ML: 'delivered' (al entregar) o 'shipped' (al despachar: su cierre es la salida). */
+  refund_at?: string | null;
   destino: "seller_address" | "warehouse" | null; destino_txt: string; es_full: boolean;
   venta_contaba: boolean | null; venta_txt: string;
+  /** `hora` es 'YYYY-MM-DD HH:MM:SS', o solo 'YYYY-MM-DD' en la entrega que dice el texto de ML. */
   pasos: { estado: string; texto: string; hora: string; de: string }[];
   llego: boolean; llegada: string | null;
   liga: { k: LigaDevolucion; texto: string; nota?: string; hora?: string; dias?: number; sube?: number } | null;
@@ -471,6 +474,210 @@ export const CUENTA_CHIP: Record<string, string> = {
 /** +5 · −61 · 0, con separador de miles y el signo menos tipográfico. */
 export const conSigno = (n: number) =>
   n > 0 ? `+${n.toLocaleString("es-MX")}` : n < 0 ? `−${Math.abs(n).toLocaleString("es-MX")}` : "0";
+
+/** El nombre corto de cada cuenta de ML en chips y textos. */
+export const NOMBRE_CUENTA: Record<string, string> = { BEKURA: "Kubera", SANCORFASHION: "San Corpe" };
+
+// ── La pestaña Devoluciones (`GET /api/fanout/devoluciones`) ─────────────────
+
+/** Los grupos de la bandeja, en el orden en que se muestran: lo que falta primero. */
+export type GrupoDevol = "buscar" | "otro" | "atrasada" | "odoo" | "scrap" | "camino" | "noregresa";
+export type FiltroDevol = "todas" | GrupoDevol;
+/** Dónde va la caja según ML (su envío de devolución), no la columna `estado` de kubera. */
+export type EstadoMlDevol = "por_enviar" | "en_camino" | "entregada" | "vencida" | "cancelada" | "no_entregada";
+
+/**
+ * La recepción de Odoo ligada a la caja (liga dura: guía de la nota, orden de ML o el
+ * botón «Devolver»). `guia_aprox`: la nota trae la guía con UN carácter de diferencia
+ * (Bodega la tecleó mal) y la recepción es la única con ese SKU y esas piezas.
+ */
+export interface OdooDevol {
+  picking: string;
+  /** Hora local (CDMX) en que Bodega validó la recepción. */
+  hora: string;
+  destino: "rack" | "scrap";
+  por: "guia" | "guia_aprox" | "orden" | "devolver";
+  /** Lo que de verdad recibió la recepción; `otro_sku` = no es el SKU de la devolución. */
+  sku_recibido: string | null;
+  otro_sku: boolean;
+}
+
+export interface FilaDevol {
+  grupo: GrupoDevol;
+  id: string;
+  cuenta: string;
+  sku: string;
+  titulo: string;
+  piezas: number;
+  /** Horas locales (CDMX) 'YYYY-MM-DD HH:MM:SS'. */
+  abierta: string;
+  estado_ml: EstadoMlDevol;
+  estado_txt: string;
+  reembolsada: boolean;
+  /** «Despachada 29-sep 16:36 · llegó el vie 2-oct · reembolsada al despachar». */
+  pasos_txt: string;
+  /** El envío de devolución de ML (lo que Bodega anota en la nota de la recepción). */
+  guia: string | null;
+  despacho: string | null;
+  llegada: string | null;
+  llegada_de: "en vivo" | "texto de ML" | "cierre de ML" | null;
+  odoo: OdooDevol | null;
+  /** La liga por fecha con una subida de Odoo (v0.628.0): solo cuando no hay liga dura. */
+  probable: { hora: string; texto: string } | null;
+  odoo_txt: string;
+  odoo_sub: string;
+  accion: string;
+  /** Días desde la llegada o, si no llegó, desde el despacho. */
+  dias: number | null;
+}
+
+export interface ResumenDevol {
+  /** Abiertas o llegadas en el periodo. */
+  a_bodega: number; piezas: number;
+  llegaron: number; llegaron_ml: number; solo_odoo: number;
+  /** TODA liga dura (guía, orden o «Devolver»), pese al nombre; el desglose va en `por_guia` y `por_venta`. */
+  en_odoo_guia: number;
+  /** Por la guía de la nota (también la que trae un carácter de diferencia). */
+  por_guia?: number;
+  /** Por la venta: la orden de ML en la recepción o el botón «Devolver». */
+  por_venta?: number;
+  subieron: number; scrap: number; otro_sku: number;
+  buscar: number; atrasada: number; en_camino: number; no_regresan: number;
+  /** Las que van a la bodega de ML (FULL), abiertas en el periodo: no tocan Odoo. */
+  a_full: number;
+  /** Abiertas en el periodo sin destino en el envío de ML (no se cuentan arriba). */
+  sin_destino?: number;
+}
+
+/** Lo que Odoo recibió como «DEVOLUCIONES» en el periodo contra lo que kubera captura. */
+export interface CoberturaDevol {
+  recepciones: number;
+  /** Retiros de FULL: dos o más cajas de la bodega de ML y ninguna guía (sus guías no se cuentan). */
+  retiros_full?: number;
+  guias_en_recepciones: number;
+  guias_sin_kubera: number;
+}
+
+export interface BandejaDevol {
+  /** Hora local (CDMX) del corte. */
+  ahora: string;
+  dias: number;
+  odoo_ok: boolean;
+  odoo_error: string | null;
+  /** Hora local de la lectura de Odoo que se usó (caché de 10 min en el backend). */
+  odoo_leido: string | null;
+  resumen: ResumenDevol;
+  filtros: { id: FiltroDevol; n: number }[];
+  filas: FilaDevol[];
+  cobertura: CoberturaDevol;
+}
+
+export type TipoRecepcion = "devolucion" | "retiro_full" | "compra" | "traslado" | "ajuste" | "otro";
+
+export interface RecepcionSubida {
+  /** Única aunque el nombre se repita (los ajustes sin picking llevan el `reference` de Odoo). */
+  clave?: string;
+  picking: string;
+  hora: string;
+  destino: "rack" | "scrap";
+  tipo: TipoRecepcion;
+  /** La de la devolución ligada primero; «(+N)» si la nota trae más. */
+  guia: string | null;
+  /** La nota nombra la paquetería y trae un número largo, pero ninguna guía se reconoce. */
+  guia_no_reconocida?: boolean;
+  /** Guías de la nota que no están en ninguna devolución de kubera. */
+  guias_sin_kubera?: number;
+  /** Solo en `sin_subida`: se validó después de la última pasada de stock_watch. */
+  espera?: boolean;
+  /** Las piezas que entraron en esa recepción (con ese destino). */
+  piezas?: number;
+  /** La devolución de kubera que trae esa guía, si la hay (su `sku` puede ser otro: entró otro producto). */
+  devolucion: { id: string; cuenta: string; sku?: string | null } | null;
+  /** Ligada a kubera y sin guías que kubera no tenga. */
+  en_kubera: boolean;
+  txt: string;
+}
+
+/** Un renglón `odoo_delta` de `ops.fanout_log` con las recepciones validadas antes de él. */
+export interface SubidaOdoo {
+  hora: string;
+  de: number | null;
+  a: number | null;
+  sube: number;
+  /** Lo que el reparto hizo con ese cambio en los otros canales (mismo pase). */
+  reparto_txt: string;
+  recepciones: RecepcionSubida[];
+}
+
+/** `GET /api/fanout/devoluciones/sku/{sku}`: ¿por qué subió el stock de este SKU? */
+export interface DetalleDevol {
+  sku: string;
+  titulo: string;
+  dias: number;
+  /** Hora local (CDMX) del corte. */
+  ahora?: string;
+  odoo_ok: boolean;
+  odoo_error?: string | null;
+  odoo_de: number | null;
+  odoo_a: number | null;
+  subidas: SubidaOdoo[];
+  /** Hora local de la última pasada de stock_watch. */
+  pasada?: string | null;
+  /**
+   * Recepciones A RACK del periodo sin subida de Odoo en las 3 h siguientes: o
+   * stock_watch aún no pasa (`espera`), o una salida en la misma pasada pudo
+   * compensarlas. Cuentan en `resumen.entraron`.
+   */
+  sin_subida?: RecepcionSubida[];
+  /** Las recepciones a SCRAP: no suben el stock ni se cuelgan de una subida. Cuentan en `resumen.scrap`. */
+  a_scrap?: RecepcionSubida[];
+  /**
+   * `ligadas`: DEVOLUCIONES de este SKU ligadas (no recepciones). `sin_kubera`: GUÍAS
+   * de las notas que kubera no tiene. `retiro_full`: piezas a rack de retiros de FULL.
+   */
+  resumen: { entraron: number; scrap: number; ligadas: number; sin_kubera: number; retiro_full?: number };
+  pendientes: { id: string; cuenta: string; guia: string | null; txt: string }[];
+}
+
+/**
+ * Cada filtro de la bandeja: su nombre y el tono de las columnas «En Odoo» y
+ * «Qué hacer» de sus filas (ámbar = Bodega tiene algo que hacer).
+ */
+export const GRUPO_DEVOL: Record<FiltroDevol, { texto: string; odoo: string; accion: string }> = {
+  todas: { texto: "Todas", odoo: "text-slate-700", accion: "text-slate-600" },
+  buscar: { texto: "Buscar en Bodega", odoo: "text-amber-800", accion: "text-amber-800" },
+  otro: { texto: "Otro SKU", odoo: "text-amber-800", accion: "text-amber-800" },
+  atrasada: { texto: "Odoo ya la tiene", odoo: "text-emerald-800", accion: "text-slate-600" },
+  odoo: { texto: "En Odoo", odoo: "text-emerald-800", accion: "text-slate-600" },
+  scrap: { texto: "A SCRAP", odoo: "text-pink-800", accion: "text-slate-600" },
+  camino: { texto: "En camino", odoo: "text-slate-600", accion: "text-slate-600" },
+  noregresa: { texto: "No regresan", odoo: "text-slate-600", accion: "text-slate-600" },
+};
+
+/** La pastilla del estado según ML: los mismos tonos que la del carril (`DEVOL_ESTADO_CLS`). */
+export const DEVOL_ML_CLS: Record<EstadoMlDevol, string> = {
+  por_enviar: DEVOL_ESTADO_CLS.abierta,
+  en_camino: DEVOL_ESTADO_CLS.en_transito,
+  entregada: DEVOL_ESTADO_CLS.recibida,
+  vencida: DEVOL_ESTADO_CLS.rechazada,
+  cancelada: DEVOL_ESTADO_CLS.rechazada,
+  no_entregada: DEVOL_ESTADO_CLS.cerrada,
+};
+
+/** A dónde mandó Bodega la recepción: el rack sube el stock, SCRAP no. */
+export const DESTINO_RECEPCION: Record<"rack" | "scrap", { texto: string; cls: string }> = {
+  rack: { texto: "a rack", cls: "bg-sky-100 text-sky-900" },
+  scrap: { texto: "a SCRAP", cls: "bg-pink-100 text-pink-800" },
+};
+
+export const TIPO_RECEPCION: Record<TipoRecepcion, string> = {
+  devolucion: "Devolución",
+  retiro_full: "Retiro de FULL",
+  compra: "Compra",
+  traslado: "Traslado",
+  ajuste: "Ajuste",
+  otro: "Otro movimiento",
+};
 
 // ── La pestaña Bodegas (`backend/services/fanout_bodegas.py`) ────────────────
 

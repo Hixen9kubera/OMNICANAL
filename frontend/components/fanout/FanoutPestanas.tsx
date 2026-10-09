@@ -2,21 +2,23 @@
 
 /**
  * Las pestañas de Operaciones › Fan-out: la sincronización en vivo, la
- * coincidencia por SKU, FULL (las bodegas de Mercado Libre) y Bodegas (el
- * inventario propio de kubera contra Odoo y Woo). Son rutas hermanas y páginas
+ * coincidencia por SKU, FULL (las bodegas de Mercado Libre), Bodegas (el
+ * inventario propio de kubera contra Odoo y Woo) y Devoluciones (las cajas que
+ * regresan a nuestra bodega y su recepción en Odoo). Son rutas hermanas y páginas
  * autónomas (cada una trae su navbar), así que la barra vive aquí y la pinta cada
  * página arriba de su banner — el mismo molde que `InventarioPestanas`.
  */
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, Boxes, LayoutGrid, Warehouse } from "lucide-react";
+import { Activity, Boxes, LayoutGrid, RotateCcw, Warehouse } from "lucide-react";
 
 const PESTANAS = [
   { href: "/dashboard", label: "En vivo", icon: Activity, exacta: true },
   { href: "/dashboard/matriz", label: "Coincidencia por SKU", icon: LayoutGrid, exacta: false },
   { href: "/dashboard/full", label: "FULL", icon: Warehouse, exacta: false },
   { href: "/dashboard/bodegas", label: "Bodegas", icon: Boxes, exacta: false },
+  { href: "/dashboard/devoluciones", label: "Devoluciones", icon: RotateCcw, exacta: false },
 ];
 
 export default function FanoutPestanas() {

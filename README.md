@@ -1001,6 +1001,370 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.634.0 — Fan-out · Devoluciones: pestaña con la bandeja de cajas y el detalle por SKU, ligados a Odoo por la guía de la recepción (solo lectura); y la liga por fecha ya no toma subidas de antes del despacho
+
+> **Número.** Antes en la rama `feat/devoluciones-pestana`, en dos entregas que nunca llegaron a
+> `main`: «v0.628.0» (la liga por fecha, commits a25edd9 y 0f164bb) y «v0.631.0» (la pestaña,
+> fa725b8 y cc4b2c0). `main` usó esos números para otras cosas (v0.628.0 órdenes de venta, v0.631.0
+> seguro stock 0), así que las dos se publican juntas, en un solo commit, como v0.634.0. Abajo, la
+> pestaña (parte 1) y la liga por fecha (parte 2); las cifras de cada parte son las de su día.
+> Solo lectura, solo admin, sin banderas: nada que encender ni apagar.
+
+#### Parte 1 · La pestaña Devoluciones (antes rama «v0.631.0»)
+
+**Qué es.** Una pestaña nueva en Operaciones › Fan-out, **Devoluciones** (`/dashboard/devoluciones`),
+para una pregunta de Bodega: ¿qué cajas de devolución de Mercado Libre vienen a NUESTRA bodega, cuáles
+ya entraron a Odoo y cuáles hay que buscar? Es el diseño que aprobó Eduardo: la propuesta **A** (la
+bandeja) con la **B** (el cuadre por SKU) como detalle al tocar un SKU. La **D** (lista para
+descargar) no se construyó.
+
+- **A · la bandeja** (`GET /api/fanout/devoluciones?dias=14|30|60&cuenta=BEKURA|SANCORFASHION`).
+  Arriba la cadena: a nuestra bodega (abiertas o llegadas en el periodo) → llegaron (según ML, más
+  las que solo Odoo ve) → en Odoo (guía, orden o «Devolver», con el desglose) → subieron el stock (a
+  rack); abajo, cuatro recuadros: por encontrar, en camino, no regresan y las que van a FULL. Luego
+  caja por caja, una fila por devolución y SKU de Kubera y San Corpe, en este orden: **Buscar en
+  Bodega** (llegó según ML y no hay recepción con su guía), **Otro SKU** (la recepción con su guía
+  recibió otro producto), **Odoo ya la tiene** (ML todavía no la da por entregada), **En Odoo** (a
+  rack: subió el stock), **A SCRAP**, **En camino** y **No regresan**; dentro de cada grupo, la más
+  reciente primero. Filtros con su cuenta, búsqueda por SKU, guía, devolución o recepción, y se
+  refresca cada minuto.
+- **B · el cuadre** (`GET /api/fanout/devoluciones/sku/{sku}?dias=7|14|30|60`, el cajón lateral):
+  «¿por qué subió el stock?». Cada subida de Odoo del SKU (el renglón `odoo_delta` que anotó
+  stock_watch) con las recepciones A RACK que la hicieron —devolución, compra, traslado, ajuste o
+  retiro de FULL—, la guía de la nota, la devolución de kubera que la trae y lo que hizo el reparto
+  con ese cambio en los otros canales. Aparte, las de rack sin subida (dice si stock_watch todavía
+  no pasa) y las de SCRAP, que no suben el stock; abajo, las devoluciones del SKU que llegaron y no
+  entran. Desde ahí se abre la trazabilidad del SKU en su carril «Devoluciones».
+
+**De dónde sale cada dato.**
+
+| Dato | Fuente |
+|---|---|
+| La devolución, su camino según ML, el envío de devolución (`shipments[].shipment_id`, el «Envío #» de la etiqueta) y la guía de la paquetería (`tracking_number`) | `channel.returns` (+ `return_items`, `return_history` y el título de `channel.order_items`) |
+| Las recepciones | Odoo: `stock.picking` entrante y hecho con partner «DEVOLUCIONES» (Partner Locations/Vendors → «TEXCO I: Recepciones») o del botón «Devolver» (Customers → TEXCO/Salida, con `return_id` y venta «ML ‹orden›»); sus `stock.move` y su destino (vendible = interna CON almacén, la regla de `odoo._vendible`; SCRAP = interna sin almacén), y la **nota del chatter** (`mail.message` tipo comment) |
+| Las subidas de Odoo y su reparto | `ops.fanout_log`: el `odoo_delta` con la foto de Odoo y las filas del mismo pase |
+| La última pasada de stock_watch | `max(actualizado)` de `ops.stock_watch_photo` (se reescribe en cada pasada) |
+
+**La liga dura.** Bodega no liga la recepción con la venta: escribe A MANO en la nota el «Envío #» de
+11 dígitos («48096342888//MERCADO LIBRE»), a veces la guía de la paquetería (FedEx de 12,
+Paquetexpress «CUL01WE0635094», Estafeta, DHL) o la orden de ML (16 dígitos, 2000…). Una devolución se
+liga con la recepción que trae, en este orden: el envío de su devolución, la guía de la paquetería, su
+orden o la cadena «Devolver»; las dos últimas solo si en kubera no hay OTRA devolución viva de esa
+orden (si la hay, desempata el producto de la recepción). Nunca a una recepción de antes de abrirse, y
+un envío cancelado o vencido no se liga nunca (5566294012 cancelada y 5566301542 entregada, misma
+venta: IN/01226 es solo de la segunda). Si la misma guía está en dos recepciones, gana la que mandó el
+SKU a rack (IN/01480 a SCRAP a las 14:40 e IN/01481 a rack a las 14:43, guía 48075552134) y el texto
+nombra la otra con su destino. Al final, una guía de 12 o más con UN carácter de diferencia, solo si
+el par es único, con el mismo SKU y las mismas piezas: IN/01167 trae «3832142924750/FOLIO:1016169/FEDEX»
+y la 5558975718 (VEH-0006-GOM, 2 piezas) es la 383142924750 → `por='guia_aprox'`, y la fila dice «la
+nota trae 3832142924750: un dígito de más que la guía 383142924750». Sin liga dura, la que llegó lleva
+la liga **probable por fecha** (la parte 2 de esta entrada), contra las subidas que no explican ya recepciones
+identificadas; la fila lo dice.
+
+**Sus límites** (producción, solo lectura):
+- Liga **36 de 57** (63 %) al 8-oct y **39 de 59** al 9-oct (33 por guía, una de ellas aproximada, y 6
+  por la venta). Por fecha + producto solo 23 salían únicas y 4 mal.
+- **Kubera no captura la mayoría de las devoluciones.** En 60 días Odoo recibió 515 recepciones
+  «DEVOLUCIONES» con 2,060 guías anotadas; **2,025 no están en `channel.returns`**. 14 son retiros de
+  FULL (dos o más cajas de la bodega de ML, «1263041610-8», y ninguna guía: «Ingreso de 221 artículos
+  en buen estado // …»). Las cajas solas no bastan para decir «retiro»: 345 de 664 notas las traen,
+  casi siempre junto al envío de devolución de cada artículo (devoluciones de ventas FULL que
+  regresan a nuestra bodega).
+- **Recepciones sin guía o ilegible**: si la nota nombra la paquetería y trae un número que no se
+  reconoce, dice «guía no reconocida en la nota», no «sin guía». El número pegado a la paquetería
+  cuenta como su guía («1397938851//ESTAFETA», «4313175926/FOLIO:01015464/DHL»; el folio de Bodega
+  nunca), un 12 que empieza con 52 solo es FedEx si la nota dice FEDEX (puede ser un teléfono) y el
+  envío de ML no se ancla en 4 (la serie pasa a 5… hacia mayo de 2027).
+- **Multi-guía**: IN/01319 (12 piezas de TEC-0573-MET) trae 19 guías: 6 de devoluciones de ese SKU, 1
+  de TEC-0551-PLU y 12 que kubera no tiene. El cuadre muestra la guía de la devolución ligada, cuenta
+  las demás («12 guías más que kubera no tiene») y su resumen cuenta DEVOLUCIONES ligadas del SKU y
+  GUÍAS sin kubera, no recepciones.
+- **Estados de ML congelados**: tres «en camino» que Odoo ya recibió (5581207287 → IN/01453,
+  5570446525 → IN/01338, 5574466890 → IN/01402) van a «Odoo ya la tiene».
+- **Otro producto**: la guía de JUGU-0100-ROJ (5579601302) entró en IN/01541 como DEPO-0181-MET.
+- **No hay cuarentena**: validar a rack sube el `free_qty` y stock_watch lo copia; SCRAP no. Un
+  traslado del mismo producto de rack a SCRAP a ≤30 min cuenta como «pasó a SCRAP» (MUE-0133-MET:
+  IN/01318 a las 14:08, SCRAP a las 14:11).
+- **32 devoluciones sin destino** en el envío de ML (60 días; todas de ventas FULL y ninguna en Odoo):
+  se cuentan junto a FULL («· 32 más sin destino en ML»), no en la bandeja. FULL y éstas, por
+  apertura; nuestra bodega, por apertura o llegada (la cadena lo dice).
+
+**Cifras de producción** (60 días, las dos cuentas; se mueven con el día):
+
+| | 8-oct ~13:30 (diseño) | 9-oct 01:36 (rama, cc4b2c0) |
+|---|---|---|
+| A nuestra bodega | 57 | 59 (62 piezas) |
+| Llegaron | 43 (40 según ML + 3 solo Odoo) | 44 (41 + 3) |
+| En Odoo (liga dura) | 36 | 39 (33 por guía + 6 por la venta) |
+| Subieron el stock (a rack) | 32 | 35 |
+| Buscar en Bodega | 7 | 5 (6 el 9-oct a las 00:27 sin la guía aproximada) |
+| Otro SKU · Odoo ya la tiene · A SCRAP | 1 · 3 · 3 | 1 · 3 · 3 |
+| En camino · No regresan | 4 · 10 | 5 · 10 |
+| A FULL (por apertura) | 230 | 231, y 32 sin destino |
+
+Por cuenta (9-oct): Kubera 26 (buscar 1), San Corpe 33 (buscar 4). A 14 días: 13 cajas, buscar 1
+(5585338270, que llegó el 2-oct y su guía 48129099447 no está en ninguna recepción).
+
+**Tiempos** (código de la rama contra producción, 9-oct): la bandeja de 60 días en frío, 12.8 s (17
+llamadas a Odoo, 9.9 s; 2 consultas a kubera, 1.8 s); con la caché de Odoo, 0.8 s (el refresco de cada
+minuto); 14 días con la lectura de 60, 0.6 s. El cuadre de un SKU a 60 días en frío, 4.3 s (7
+llamadas, 3.4 s); con caché, 0.9 s.
+
+**Caché, freno y Odoo caído.**
+- La lectura global de Odoo va en caché 10 min y cubre desde la apertura más vieja de las filas que se
+  van a mostrar, menos un día (hoy, desde el 4-ago para 60 días): una fila entra por su llegada
+  aunque se haya abierto antes, y Odoo pudo recibirla días antes de que ML la diera por entregada.
+  Una sola caché para los tres periodos. Las devoluciones de kubera, 30 s; el cuadre, 2 min por SKU.
+- Una relectura a la vez: quien llega mientras otra corre espera a lo más 15 s y se lleva la última
+  buena. Tras una falla, 60 s sin volver a Odoo —la bandeja y el cuadre comparten el freno—, y cada
+  lectura tiene un plazo total (90 s la bandeja, 40 s el cuadre) que se descuenta llamada por
+  llamada: sus hilos son los del executor por defecto de asyncio, los mismos de los demás
+  `to_thread` del backend (incluido el registro de pedidos).
+- Si Odoo no contesta se sirve la última lectura buena de hasta 2 h, con aviso ámbar y su hora. Sin
+  ninguna, `odoo_ok=false`: las que llegaron según ML quedan en «Buscar» marcadas «Sin verificar en
+  Odoo» (acción «Verificar cuando Odoo conteste»), nada de Odoo cuenta en el resumen (en el cajón,
+  «—») y la página lo dice.
+
+**Solo lectura, solo admin, sin bandera.** Las dos rutas viven bajo `/api/fanout` (prefijo admin) y
+todo lo bloqueante va en `asyncio.to_thread` (regla 11). Odoo se lee por una sola puerta con lista
+blanca (`search_read`, `read`, `fields_get`); kubera, solo `select`. No hay variable que la encienda.
+
+**Lo que NO hace.** No escribe en Odoo ni en kubera ni en ningún canal: no liga la recepción con la
+venta, no corrige los estados de ML ni captura las devoluciones que kubera no tiene. No hay
+descarga (la propuesta D quedó fuera).
+
+**La revisión** (todo verificado antes de cambiarlo):
+- **Hilos**: el freno no se respetaba para las peticiones en cola (4 simultáneas con Odoo fallando
+  hacían 4 intentos en serie; ahora 1) y el cuadre no tenía freno (3 tras una falla hacían 3; ahora
+  0). Plazo total por lectura y sin fila larga.
+- **Odoo desde la apertura más vieja**, no desde `dias + 1` (una atrasada que ML marca entregada tarde
+  salía «Buscar» a 14 días).
+- **La misma guía a SCRAP y a rack**: gana rack y «subieron» la cuenta; en el cuadre, la de SCRAP dice
+  «misma guía que IN/…» y la devolución se cuenta una vez.
+- **SCRAP aparte en el cuadre** (IN/01317 a SCRAP quedaba bajo la subida que hizo IN/01319 1 h 38 min
+  después) y **las de rack sin subida** dicen si stock_watch todavía no pasa (IN/01562 se validó a
+  las 16:13 y su subida es de las 16:22).
+- **La liga probable** va por (devolución, SKU) y las subidas ya explicadas se excluyen por índice
+  (`fanout_vivo.ligar_devoluciones(..., excluir=)`): quitar el renglón hacía reaparecer su reintento.
+- **La guía con un dígito de más** (IN/01167), **las guías** (serie 5…, teléfono, paquetería, caja de
+  FULL), **multi-guía**, **retiro de FULL**, la llave única de los ajustes sin picking (`clave`).
+- **Textos**: «llegaron sin recepción con su guía en Odoo», «no regresan (vencidas, canceladas o no
+  entregadas)», «En Odoo» con «33 por guía · 6 por la venta», «devoluciones de kubera ligadas (guía,
+  orden o «Devolver»)», «guías en las notas que kubera no tiene».
+- **Accesibilidad**: el foco vuelve al SKU al cerrar el cajón, el día de llegada que viene del texto
+  de ML se ve, los días van en texto para lector de pantalla y la tabla con scroll es enfocable.
+- El lanzador del sandbox ya no descifra el token de ML de producción (no lo usaba).
+- **No se cambió**: «cajas = retiro de FULL» tal como se propuso (hubiera sacado a casi todas las
+  devoluciones de ventas FULL: ver arriba); las tarjetas a 375 px (la tabla es el mismo molde que
+  Bodegas, sin scroll de página); y la subida falsa de `free_qty` al liberar la reserva de un PICK de
+  FULL (TEC-0573-MET, 6-oct 16:54, 2 → 24 escrito en ML y revertido a las 17:54), que es de
+  stock_watch y va en su propia tarea.
+
+**Archivos.** Backend: `services/fanout_devoluciones.py` (nuevo), `routers/fanout.py` (las dos rutas),
+`services/fanout_vivo.py` (`ligar_devoluciones` acepta `excluir`), `main.py` (versión). Frontend:
+`app/dashboard/devoluciones/page.tsx` (nuevo), `components/fanout/DevolucionesSku.tsx` (nuevo),
+`tipos.ts` (contrato), `lib/api.ts` (`devolucionesFanout`, `devolucionesSku`), `FanoutPestanas.tsx` (la
+pestaña), `CadenaFull.tsx` (exporta `Nodo` y `Flecha`), `TrazabilidadSku.tsx` (`diasInicial`).
+
+**Pruebas.** `tests/test_fanout_devoluciones_pestana.py`: 57, con datos reales de producción (tokens y
+guías, normalización de Odoo, liga dura, bandeja, cuadre de TEC-0519-NAR-GRI, lectura de Odoo con
+freno, consultas y rutas); `tests/test_fanout_devoluciones.py`: +1 (`excluir`). Suite del backend:
+2,473 pruebas, 110 omitidas y 1 falla ajena a la rama (regla 11 en `routers/productos.py:1232`,
+`wp_db.norma_titulo`, igual antes de esta parte). `tsc --noEmit` y `next build` limpios.
+
+#### Parte 2 · La liga por fecha ya no toma subidas de antes del despacho (`refund_at=shipped`) (antes rama «v0.628.0»)
+
+
+**Qué estaba mal.** La v0.627.0 daba por «entregada» una devolución de ML en su cierre
+(`payload.returns.date_closed`) y aceptaba subidas de Odoo hasta 72 h antes. La premisa —ML
+cierra DESPUÉS de la entrega— solo vale cuando ML reembolsa al ENTREGAR
+(`payload.returns.refund_at = 'delivered'`). En producción (8-oct, solo lectura), **53 de las
+58 devoluciones de ML a nuestra bodega de los últimos 60 días tienen `refund_at = 'shipped'`**:
+el mediador reembolsa al DESPACHAR la caja y ese reembolso es el cierre. En los 20 pares de
+cierre y paso «en tránsito» visto en vivo (75 días) caen a ≤95 s uno del otro; en las que
+traen el día en el texto de ML, la caja llegó de 1 a 9 días DESPUÉS del cierre. Tomar el
+despacho como entrega, con 72 h hacia atrás, ligaba subidas de Odoo de antes de que la caja
+saliera.
+
+El caso: **TEC-0519-NAR-GRI, devolución 5585338270.** Abierta el 29-sep 12:14, en camino a
+las 16:36, cerrada (reembolso al despachar) a las 16:38; ML dice «El paquete llegó el viernes 2
+de octubre». La liga la juntaba con la subida 412 → 415 del 29-sep 14:49, **1.8 h ANTES de que
+la caja saliera**: eran las recepciones TEXCO/IN/01478, 01479 y 01481, de otras tres guías de
+ML (la de esta caja, 48129099447, no aparece en ninguna). Igual de imposibles:
+TEC-0471-NAR-ARC200 5576286635 (subida del 14-sep, 67.6 h antes de salir) y TEC-0551-PLU
+5567055140 (31-ago, 66.3 h antes). Y desde el 8-oct 13:37, cuando ML la dio por entregada, una
+cuarta: TEC-0519-NAR-GRI 5585383756 (salió el 3-oct 10:30 y se ligaba con la subida del 3-oct
+11:53, de otras guías). **Ojo: 5585338270 sigue mal ligada por fecha con esta parte** (ver la
+simulación); esta parte NO es su corrección: la pestaña (parte 1) la pone en «Buscar en
+Bodega», porque su guía no está en ninguna recepción.
+
+**Qué cambia** (`services/fanout_vivo.py`, solo lectura):
+- La consulta trae del crudo `refund_at` (`payload.returns.refund_at`) y el texto que ML le
+  muestra al vendedor (`payload.detalle.description`, columna `texto_ml`), y de cada fila de
+  `return_history` su `estado_canal` (`ec`).
+- Con `refund_at = 'shipped'` y la caja en camino o entregada, **el cierre es la SALIDA**, nunca
+  «entregada». Se llama «reembolsada al despachar» solo si el dinero salió en ese mismo instante
+  (≤3 min; en las 45 así de 75 días, ≤1 s); si no, «cerrada al despachar», y el reembolso va
+  como su propio paso: en FULL ML reembolsa al REVISAR la caja en su almacén, de 55 a 158 h
+  después (4 en 75 días; 5572526388: cierre el 8-sep 13:09, reembolso el 11-sep 07:54). «En
+  tránsito» y el cierre son un solo paso («en tránsito · reembolsada al despachar») si caen a
+  ≤3 min: se mide la diferencia, no el minuto del reloj (5 de los 20 pares cruzaban el minuto
+  y salían como dos pasos).
+- **El reembolso no se repite.** Si el cierre ya fue el reembolso, el de la cabecera no se
+  vuelve a pintar, y la transición en vivo a `reembolsada` —kubera la ve horas o días después—
+  dice «kubera la vio reembolsada» (14 de las 60 devoluciones de la foto mostraban un segundo
+  «reembolsada»; en 4 era la entrega, ver abajo).
+- **La entrega, en este orden:**
+  1. **La vista en vivo**: el paso `recibida` o, con el despacho, la primera transición cuyo
+     `estado_canal` es `delivered`. Con `refund_at = 'shipped'` kubera casi nunca pasa por
+     `recibida`: el dinero ya salió, así que al entregarse salta de `en_transito` a
+     `reembolsada` y la entrega solo queda en esa columna. De las 48 shipped+delivered de 75
+     días, 4 la tienen así y 4 con `recibida`; en las 6 que además traen texto, el día
+     coincide. Va con su hora y sin holgura.
+  2. **El día del texto de ML**: «El paquete llegó el viernes 2 de octubre.», «Llegó el lunes 7
+     de septiembre», «Entendimos que recibiste… Llegó el…» → paso «entregada» del 2-oct,
+     `de = 'texto de ML'`, SOLO el día. El año no viene: vale el de la salida o el siguiente, el
+     que deje el día entre la salida y 60 días después y, si el texto dice el día de la semana,
+     en ese día; si ninguno cuadra, no hay fecha (antes, salida el 4-ene con «jueves 31 de
+     diciembre» daba el 31-dic de ese mismo año, 12 meses en el futuro). «Llegó el…» también
+     habla del envío ORIGINAL: en reclamos sin devolución cae hasta 26 días antes de la
+     apertura, y el candado de la salida lo descarta. En las 89 devoluciones de 75 días con «llegó
+     el», el día de la semana y el tope no cambian ninguna fecha. «Llega entre el 24 y el 27…»
+     es una promesa, no cuenta. El texto solo vale con la caja entregada (`delivered`): en 3
+     devoluciones canceladas sin guía dice «llegó el 31 de agosto» igual.
+  3. **Ninguna**: con `shipped` la llegada queda sin fecha. El respaldo «la hora del
+     reembolso» ya no aplica (es la salida), ni la salida misma (se llevaría subidas de otras
+     cajas), y la liga lo dice: «Ya llegó a nuestra bodega, pero ML no dice qué día (reembolsó al
+     despachar: su cierre es la salida, no la entrega): no se puede buscar su reingreso en
+     Odoo.»
+- **Con `refund_at = 'delivered'` el día del texto también manda sobre el cierre − 72 h**, si
+  cae entre la salida (o la apertura) y el cierre: 5543262662 dice que llegó el 23-jul y ML
+  cerró el 28-jul 21:38, 5.9 días después, más que las 72 h. Sin texto, el cierre con 72 h como
+  antes.
+- **La ventana** nunca empieza antes de la apertura NI de la salida (`no_antes` = la más
+  tardía de las dos; la salida es el «en tránsito» en vivo o, con `shipped`, el cierre). Con la
+  llegada del texto va de las 00:00 de ese día al FIN del día + N, sin holgura. Las 72 h hacia
+  atrás quedan solo para la llegada tomada del cierre con `refund_at = 'delivered'` (o sin
+  `refund_at`).
+- **Con la misma llegada** (con solo el día pasa seguido) va primero la que salió antes, no la
+  de id menor.
+- **Con solo el día, la liga no afirma el reingreso**: «Llegó a nuestra bodega el 2-oct (según
+  ML); la primera subida de Odoo desde ese día es la del 3-oct (+1 d): Odoo 415 → 417; la subida
+  es de +2 y la devolución trae 1.», y su nota —también en la subida de Odoo— dice que es una
+  coincidencia por fecha MENOS confiable: esos días Bodega recibe otras devoluciones de ML que
+  la fecha no distingue. Con la llegada vista en vivo sigue «Reingresó a Odoo el…».
+- Los envíos que nunca viajaron (3 `cancelled` y 6 `expired` en los 60 días) siguen en «no
+  regresa»; su cierre no se pinta como despacho ni su texto como llegada.
+- **Sin `refund_at` todo queda como en la v0.627.0.** El carril de Temu no cambia.
+- Frontend: solo el tipo (`refund_at`, y que la `hora` de un paso puede ser solo el día).
+
+**Simulación contra producción** (8-oct 17:57 CDMX, una sola transacción de solo lectura; la
+regla de f0471c6, la del primer commit de esta parte, a25edd9, y la final (0f164bb), sobre la MISMA
+foto: los 30 SKUs con devoluciones de ML a nuestra bodega en 60 días, 60 devoluciones, ventana
+de 10 d). Cada liga se juzgó contra la recepción de Odoo cuya GUÍA —anotada en el chatter— es
+la de esa devolución. De las **40 que ya llegaron a nuestra bodega**:
+
+| | v0.627.0 | a25edd9 | final |
+|---|---|---|---|
+| Liga correcta por guía | 19 | 23 | 25 |
+| Liga falsa (subida de otra caja) | 15 | 7 | 6 |
+| Liga que no se puede verificar | 1 | 1 | 1 |
+| Sin fecha | 0 | 5 | 4 |
+| Sin reingreso | 5 | 4 | 4 |
+
+- **Las 3 imposibles** (subida antes de salir) ya no se ligan. TEC-0471-NAR-ARC200 5576286635
+  (IN/01403, 22-sep) y TEC-0551-PLU 5567055140 (IN/01319, 8-sep) caen en su recepción por guía.
+  **TEC-0519-NAR-GRI 5585338270 no**: pasa del +3 del 29-sep 14:49 al +2 del 3-oct 11:53, que
+  son IN/01530 (Paquetexpress) e IN/01531 (guía 48104929380); su envío 48129099447 y su guía
+  131253345055 no aparecen en ningún picking ni chatter de Odoo (lo más probable: todavía no se
+  recibe). Es una liga falsa conocida; ningún ajuste de ventana la arregla.
+- **La 4.ª, TEC-0519-NAR-GRI 5585383756**, con la entrega vista en vivo (8-oct 13:37:49) toma
+  el +1 del 8-oct 16:22, TEXCO/IN/01562, que trae su guía FEDEX 383939214207. Correcta (con
+  a25edd9 quedaba «sin fecha»).
+- **El desempate por la salida**: TEC-0573-MET 5570322560 (salió el 5-sep 09:33) toma el
+  11-sep 10:23, IN/01340, su guía; 5570201794 (salió a las 12:03) pasa a IN/01369 del 15-sep,
+  que tampoco es suya.
+- **Las 6 falsas que quedan solo las resuelve la liga dura por guía**: 5585338270 (arriba);
+  TEC-0573-MET 5567441805 (toma IN/01252 del 1-sep; la suya, IN/01296 del 4-sep, cae dentro de
+  su ventana y queda sin tomar), 5567909218 (IN/01279 del 3-sep; ni su envío ni su guía aparecen
+  en Odoo) y 5570201794; TEC-0778-NEG 5562071621 (IN/01215 del 28-ago, de otra guía: con la
+  v0.627.0 decía «sin reingreso», así que es una liga falsa NUEVA), y HERR-0035-AMA 5577111552
+  (llegó el 24-sep 17:47 según la historia en vivo, toma IN/01447 del 26-sep, de otra guía; la
+  suya es IN/01452 del 28-sep: falla igual con las tres reglas). Ninguna de las guías de esas
+  subidas está en las 541 devoluciones de ML de 120 días: compiten recepciones de devoluciones
+  que `channel.returns` no tiene y la fecha no las distingue. Por guía, de las 25 ligas con solo
+  el día de llegada 5 son de otra caja y 1 no se puede verificar; con la hora vista en vivo, 1
+  de 7.
+- **4 quedan «sin fecha», y es la respuesta honesta** hasta tener la liga por guía:
+  TEC-0573-MET 5567876791, 5568774512, 5570485726 y 5571507092. Su texto es el de la revisión
+  («Si no nos avisas dentro del plazo cómo llegó el producto…», capturado el 9-sep) y su
+  historia es solo el backfill. Las cuatro se recibieron en IN/01319 (8-sep): con la v0.627.0,
+  5570485726 y 5571507092 se ligaban bien ahí y las otras dos, mal, al 4-sep. Se pierden 2
+  ligas correctas. No se usa la salida como respaldo: salieron entre el 31-ago y el 4-sep y se
+  llevarían subidas del 1, 3 y 4-sep que no son suyas. Volver a leer el detalle del reclamo
+  escribe en producción: queda a decisión.
+- No llamar «correcciones» a todo lo que cambia: contra la guía, de las 18 que cambian entre
+  la v0.627.0 y a25edd9, 6 pasan de una subida falsa a la correcta, 3 cambian una falsa por
+  «sin fecha», 2 pierden la correcta («sin fecha»), 5 pasan de una falsa a otra falsa, 1 pasa
+  de «sin reingreso» a una falsa y 1 no se puede verificar. Mejora neta, no 18 arreglos.
+- La final contra a25edd9: cambian 3 ligas (las de arriba: 5585383756, 5570322560 y
+  5570201794), 14 devoluciones cambian sus pasos (el reembolso repetido, «en tránsito» y el
+  cierre que ya no se separan por cruzar el minuto, la entrega en vivo) y 29 el texto de la liga
+  (el tono con solo el día).
+- Lo crudo: `scratchpad/devol_tab/fix/sim_vieja_nueva.json` (la anterior, de a25edd9, en
+  `sim_vieja_nueva_a25edd9.json`).
+
+**Qué NO cambia y queda pendiente.**
+- **La liga dura por guía** —el chatter de Odoo anota la guía de ML en cada recepción— no está
+  en esta parte: la construye la pestaña (parte 1, `services/fanout_devoluciones.py`) y solo vive
+  ahí; es la única que resuelve las 6 falsas (entre ellas 5585338270) y las 4 sin fecha. En el
+  carril «Devoluciones» de la trazabilidad la liga sigue siendo una coincidencia por fecha y
+  cantidad. Sin banderas: todo es lectura.
+- **Fuera del alcance** (ya pasaba antes y no lo causa este cambio): 3 devoluciones que la
+  pantalla da «en camino» ya se recibieron en Odoo porque su `estado_canal` de ML está
+  congelado: CALZ-0127-BLN-NEG-ROJ-44 5570446525 (IN/01338 el 11-sep; ML sigue en `shipped`,
+  último cambio en kubera el 9-sep), TEC-0519-NAR-GRI 5581207287 (IN/01453 el 28-sep; `shipped`,
+  última actualización de ML el 22-sep) y VEH-0034-VER 5574466890 (IN/01402 el 22-sep;
+  `label_generated` desde el 10-sep). La pestaña (parte 1) las pone en «Odoo ya la tiene»;
+  por qué el sync de devoluciones de ML no refresca esos reclamos sigue siendo tarea aparte.
+
+Pruebas: `tests/test_fanout_devoluciones.py` 47, todas con filas reales de producción: TEC-0519
+(la subida de antes del despacho libre, la siguiente con el texto que no afirma y su nota, y la
+5585383756 con la entrega en vivo y su reingreso del 8-oct), sin entrega en vivo ni texto queda
+sin fecha, la misma llegada desempata por la salida (5570322560/5570201794), sin `refund_at`
+como antes, `delivered` conserva las 72 h sin texto y con texto manda el día (5543262662), llegada
+en vivo sin holgura, el día del texto completo y el fin de su ventana, la lectura del texto
+—año, cruce de año hacia atrás, día de la semana, 60 días, `hasta`, promesa, día anterior—, «en
+tránsito» y cierre en el mismo instante aunque crucen el minuto y «kubera la vio reembolsada»
+(5576286635, 5589172343), FULL que reembolsa al revisar (5572526388), envío cancelado o vencido
+sin subida, y las columnas de la consulta (`'ec', h.estado_canal`). Las del fan-out, 353 OK.
+Suite del backend: 2,415, la misma falla ajena que también da `origin/main`
+(`test_regla_11_productos`: `leer_contenido_canal:1232 wp_db.norma_titulo`). Sin cambios de
+frontend en la revisión.
+
+**Al publicar (v0.634.0, 9-oct).** Un solo commit encima de `main` en la v0.633.0 (c011d4a), hecho con
+`git merge --squash` de la rama. Lo que `main` cambió en los mismos archivos queda intacto: en
+`services/fanout_vivo.py`, `_en_vivo`, `_celda_reparto` y el «· en vivo» de la v0.633.0 (y
+`_atender_seguro`, `_celda_matriz`, `historia`, `matriz`) son idénticos a `main`, y la rama solo trae
+sus siete funciones de la liga más cinco nuevas; `routers/fanout.py` y `tipos.ts` suman los dos lados;
+`fanout_stock.py` y `config.py` no se tocan. Sin variables nuevas.
+- **Pruebas**: los 8 módulos `tests.test_fanout_*`, 486 OK (devoluciones 48, pestaña 58, rancio 60).
+  Suite del backend: 2,580, 110 omitidas y la misma falla ajena (`test_regla_11_productos`:
+  `leer_contenido_canal:1232 wp_db.norma_titulo`, igual en `origin/main`). `tsc --noEmit` y
+  `next build` limpios (`/dashboard/devoluciones`, 11 kB).
+- **Humo contra producción** (9-oct 14:46 CDMX; el código de esta versión en local, kubera en
+  transacciones de solo lectura y Odoo solo `search_read`/`read`/`fields_get`): la bandeja de 60 días
+  en frío, 13.9 s (17 llamadas a Odoo, 11.7 s; 2 consultas a kubera, 2.1 s); con caché, 0.4 s; 14 días
+  con la lectura de 60, 1.1 s. El cuadre de TEC-0519-NAR-GRI a 14 días en frío, 4.5 s (7 llamadas,
+  3.5 s); con caché, 1.0 s.
+- **Cifras** (60 días, las dos cuentas): 59 cajas a nuestra bodega (62 piezas; Kubera 26, San Corpe
+  33); llegaron 44 (41 según ML + 3 solo Odoo); en Odoo 39 (33 por guía + 6 por la venta); subieron
+  35; Buscar en Bodega 5 (Kubera 1, San Corpe 4); Otro SKU 1 · Odoo ya la tiene 3 · A SCRAP 3; en
+  camino 5 · no regresan 10; a FULL 226 y 32 sin destino. Odoo: 526 recepciones de devolución, 14
+  retiros de FULL, 2,068 guías en sus notas y 2,033 que kubera no tiene. A 14 días: 12 cajas, buscar 1
+  (5585338270). El cuadre de TEC-0519-NAR-GRI (14 días): Odoo 411 → 418, 4 subidas, entraron 7, a
+  SCRAP 3, 2 devoluciones ligadas, 7 guías sin kubera y 1 devolución pendiente.
+
 ### v0.633.0 — Fan-out · TikTok y Temu: si la libreta del canal puede estar vieja, decide la lectura en vivo (`FANOUT_VERIFICAR_RANCIO`, nace APAGADA)
 
 **El defecto (medido el 9-oct-2026 en producción, solo lectura).** `fanout_stock.plan` decide «el canal ya tiene N»

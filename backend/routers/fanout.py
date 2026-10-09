@@ -24,13 +24,18 @@ fanout.py — Monitoreo y simulación del fan-out de stock DROP.
   GET  /api/fanout/bodegas          → la pestaña Bodegas: kubera (0064/0065) contra
                                       Odoo por bodega y contra lo que copia stock_watch.
   GET  /api/fanout/bodegas/sku?sku= → el cajón de un SKU: su fila, libro, formatos y OV.
+  GET  /api/fanout/devoluciones?dias=&cuenta= → la pestaña Devoluciones: las cajas de ML
+                                      que regresan a nuestra bodega y si ya entraron a
+                                      Odoo, ligadas por la guía de la nota (solo lee).
+  GET  /api/fanout/devoluciones/sku/{sku}?dias= → el cuadre de un SKU: cada subida de
+                                      Odoo con las recepciones que la hicieron (solo lee).
   GET  /api/fanout/simular?sku=     → QUÉ haría con ese SKU ahora mismo, sin
                                       encolar ni escribir (seguro siempre).
   POST /api/fanout/encolar?sku=     → lo mete a la cola real (respeta dry-run).
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Query, Request, Response
+from fastapi import APIRouter, Path, Query, Request, Response
 from pydantic import BaseModel
 
 from config import settings
@@ -248,6 +253,40 @@ async def bodegas_sku(sku: str = Query(..., min_length=2, max_length=80, descrip
     from services import fanout_bodegas
     cuerpo = await asyncio.to_thread(lambda: fanout_bodegas.a_json(fanout_bodegas.detalle_sku(sku)))
     return Response(content=cuerpo, media_type="application/json", headers={"Cache-Control": "no-store"})
+
+
+@router.get("/devoluciones")
+async def devoluciones(dias: int = Query(60, ge=1, le=90, description="Días hacia atrás"),
+                       cuenta: str | None = Query(None, description="BEKURA | SANCORFASHION (sin ella, las dos)")):
+    """La pestaña Devoluciones: las devoluciones de ML que van a NUESTRA bodega y se
+    abrieron o llegaron en el periodo, en grupos (buscar en Bodega, otro SKU, Odoo ya
+    la tiene, en Odoo, a SCRAP, en camino, no regresan), cada una ligada con su
+    recepción de Odoo por la guía que Bodega anota en la nota. Odoo con caché de 10
+    min: si no contesta, la pestaña sigue con el estado de ML y lo dice
+    (`odoo_ok=false`). Solo lee."""
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from services import fanout_devoluciones
+    cuenta = (cuenta or "").strip().upper() or None
+    if cuenta and cuenta not in fanout_devoluciones.CUENTAS:
+        raise HTTPException(status_code=400, detail=f"cuenta desconocida: {cuenta}")
+    # psycopg2 y XML-RPC bloquean: en un hilo (regla 11).
+    return await asyncio.to_thread(fanout_devoluciones.bandeja, dias, cuenta)
+
+
+@router.get("/devoluciones/sku/{sku}")
+async def devoluciones_sku(sku: str = Path(..., min_length=2, max_length=80, description="SKU"),
+                           dias: int = Query(14, ge=1, le=60, description="Días hacia atrás")):
+    """El cuadre de un SKU: cada subida de Odoo que stock_watch copió a Woo, con las
+    recepciones que la hicieron (devolución, compra, traslado o ajuste), la devolución
+    de kubera que trae cada una por su guía y lo que hizo el reparto; más las
+    devoluciones que llegaron y todavía no entran. Solo lee."""
+    import asyncio
+
+    from services import fanout_devoluciones
+    return await asyncio.to_thread(fanout_devoluciones.detalle_sku, sku, dias)
 
 
 @router.get("/full/observacion")

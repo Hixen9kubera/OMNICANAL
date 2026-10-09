@@ -240,14 +240,28 @@ function Renglon({ it, dia, onRastro, sku }: {
   );
 }
 
-export default function TrazabilidadSku({ sku, onCerrar, onRastro, carrilInicial = "todo" }: {
+export default function TrazabilidadSku({ sku, onCerrar, onRastro, carrilInicial = "todo", diasInicial }: {
   sku: string | null;
   onCerrar: () => void;
   onRastro?: (sku: string, fin: string) => void;
   /** Con qué carril abre (la pestaña FULL abre en «FULL»). */
   carrilInicial?: Carril;
+  /**
+   * Con qué periodo abre cada vez (Devoluciones abre en el que alcanza a ver la
+   * caja: a 14 días una de hace 20 escondería el carril). Sin él, 14 días y
+   * luego el último que se eligió.
+   */
+  diasInicial?: number;
 }) {
-  const [dias, setDias] = useState(14);
+  const [dias, setDias] = useState(diasInicial ?? 14);
+  // Se ajusta al abrir, durante el render y no en un efecto: con un efecto, la
+  // primera lectura saldría con el periodo anterior y su respuesta podría
+  // llegar después que la buena.
+  const [abiertoCon, setAbiertoCon] = useState<string | null>(null);
+  if (diasInicial != null && sku !== abiertoCon) {
+    setAbiertoCon(sku);
+    if (sku && dias !== diasInicial) setDias(diasInicial);
+  }
   const [carril, setCarril] = useState<Carril>(carrilInicial);
   const [h, setH] = useState<Historia | null>(null);
   const [error, setError] = useState<string | null>(null);

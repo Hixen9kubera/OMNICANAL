@@ -1400,20 +1400,61 @@ _DEVOL_RECHAZO_TXT = {"expired": "venció", "cancelled": "cancelada", "failed": 
                       "not_delivered": "no se entregó"}
 _ACC_TEMU_DEVOL = ["cancelada_revisar", "cancelada_devuelta"]
 # Ventana ANTES de la llegada en la que también vale una subida de Odoo.
-#   · ML con la llegada vista en vivo (paso `recibida` de return_history): cero, la
-#     caja no puede reingresar antes de llegar.
-#   · ML con la llegada tomada del CIERRE (`payload.returns.date_closed`): ML cierra
-#     entre 0 y 77 h DESPUÉS de la entrega real (medido en el sandbox contra los pasos
-#     `recibida` en vivo, mediana ~20 h en las que van a su almacén). Si Bodega la
-#     registra el día que llega, sin holgura ese reingreso queda fuera de la ventana.
+#   · ML con la llegada vista en vivo (paso `recibida` de return_history, o con el
+#     despacho la primera transición con `estado_canal='delivered'`) o leída del texto
+#     de ML: cero, la caja no puede reingresar antes de llegar.
+#   · ML con la llegada tomada del CIERRE (`payload.returns.date_closed`), solo si ML
+#     reembolsa al ENTREGAR (ver `_despacho`): ML cierra entre 0 y 77 h DESPUÉS de la
+#     entrega real (medido en el sandbox contra los pasos `recibida` en vivo, mediana
+#     ~20 h en las que van a su almacén). Si Bodega la registra el día que llega, sin
+#     holgura ese reingreso queda fuera de la ventana.
 #   · Temu: la fecha es `actualizado_at`, la ÚLTIMA vez que kubera tocó la venta (el
 #     vigilante, la guía, el prefijo del motivo…), siempre después del reingreso y a
 #     veces días después. No hay un sello propio del cambio de `accion`.
-# Nunca antes de que se abrió la devolución (`no_antes`).
+# Nunca antes de que se abrió la devolución ni, en las de ML, de que la caja salió
+# (`no_antes`, ver `_salida`).
 _HOLGURA_CIERRE_ML_H = 72
 _HOLGURA_TEMU_H = 72
+# Cuándo reembolsa ML (`payload.returns.refund_at`): 'delivered', al entregarse la caja,
+# o 'shipped', al DESPACHARLA. Con 'shipped' (53 de las 58 que van a nuestra bodega en
+# 60 días, producción 8-oct) el cierre de ML es ese reembolso: cae a ≤0.03 h del paso
+# «en tránsito» en las 19 que tienen los dos, y la caja llega de 1 a 9 días DESPUÉS en
+# las 33 que traen la fecha en el texto. Tomado como entrega, con la holgura de 72 h,
+# ligaba subidas de Odoo de ANTES de que la caja saliera (TEC-0519-NAR-GRI, 5585338270:
+# la subida de +3 del 29-sep 14:49 eran recepciones de otras guías; la caja salió a las
+# 16:36 y llegó el 2-oct). Ahí la entrega solo se sabe en vivo o por lo que ML le dice
+# al vendedor (`payload.detalle.description`: «El paquete llegó el viernes 2 de
+# octubre.»): el día, sin hora ni año. Ese texto solo vale si ML ya la dio por
+# entregada: en 3 canceladas (envío cancelado, sin guía) dice lo mismo.
+# En vivo, con el despacho kubera casi nunca pasa por `recibida`: el reembolso ya se
+# dio, así que al entregarse salta de `en_transito` a `reembolsada` y la entrega solo
+# queda en el `estado_canal='delivered'` de esa fila (48 shipped+delivered en 75 días:
+# 4 así, 4 con `recibida`; en las 6 que además traen texto, el día coincide).
+_ESTADOS_DESPACHO = ("shipped", "delivered")
+# Dos sellos de ML que son el MISMO instante: «en tránsito» en vivo y el cierre con
+# despacho caen a ≤95 s (20 pares en producción, 5 cruzan el minuto); el reembolso y
+# el cierre, a ≤1 s cuando ML reembolsa al despachar. En FULL con 'shipped' ML
+# reembolsa DÍAS después, al revisar la caja en su almacén (4 en 75 días, de 55 a
+# 158 h): ese cierre es solo el despacho, y el reembolso es otro paso.
+_MISMO_INSTANTE_S = 180
+_MESES_LARGOS = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto",
+                 "septiembre", "octubre", "noviembre", "diciembre"]
+_SEMANA = {"lunes": 0, "martes": 1, "miercoles": 2, "jueves": 3, "viernes": 4, "sabado": 5, "domingo": 6}
+_LLEGO_TXT = re.compile(r"lleg[oó] el (?:(lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo) )?"
+                        r"(\d{1,2}) de (" + "|".join(_MESES_LARGOS) + r")\b", re.I)
+# Hasta cuántos días después de la salida puede caer el «llegó el…» (medido: de 1 a 9
+# días después del cierre). «Llegó el…» también habla del envío ORIGINAL (en 41
+# reclamos sin devolución cae de 0 a 26 días ANTES de la apertura): fuera de este
+# rango no es de esta caja.
+_LLEGADA_TEXTO_MAX_D = 60
 _NOTA_LIGA = ("Coincidencia probable por fecha, no una liga dura: Bodega recibe en Odoo "
               "sin ligarlo a la venta.")
+# Con solo el día de llegada (el texto de ML) la liga es más floja: esos mismos días
+# Bodega recibe otras devoluciones de ML (guías que no están en channel.returns) y la
+# fecha no las distingue. Por guía (8-oct), 5 de las 25 ligas así son de otra caja y 1
+# no se puede verificar; con la hora vista en vivo, 1 de 7.
+_NOTA_LIGA_DIA = ("Coincidencia por fecha MENOS confiable, no una liga dura: ML solo da el día de "
+                  "llegada y esos días Bodega recibe en Odoo otras devoluciones sin ligarlas a la venta.")
 # El cambio de ODOO de un `odoo_delta` va en el motivo («delta de Odoo (foto A -> B)»);
 # el resultado («Woo X -> Y») es lo que se le escribió a Woo, que también sube cuando
 # stock_watch le devuelve a Woo lo que Odoo ya tenía tras una venta en Woo (foto
@@ -1436,11 +1477,12 @@ _SQL_DESTINO = """coalesce(r.destino, (
 
 def _hora_dt(local: str | None) -> datetime | None:
     """'2026-09-24 10:15:00' (hora de CDMX) → datetime sin zona. Todas las horas de
-    la trazabilidad están en la misma zona, así que se comparan entre sí sin más."""
+    la trazabilidad están en la misma zona, así que se comparan entre sí sin más.
+    Solo el día ('2026-10-02', la llegada que da el texto de ML) → sus 00:00."""
     if not local:
         return None
     try:
-        return datetime.strptime(local[:19], "%Y-%m-%d %H:%M:%S")
+        return datetime.strptime(local[:19], "%Y-%m-%d %H:%M:%S" if len(local) > 10 else "%Y-%m-%d")
     except ValueError:
         return None
 
@@ -1450,6 +1492,61 @@ def _foto_odoo(motivo: str) -> tuple[int | None, int | None]:
     (la primera foto de un SKU dice «foto None -> N»: no hay antes con qué comparar)."""
     m = _FOTO_ODOO.search(motivo or "")
     return (int(m.group(1)), int(m.group(2))) if m else (None, None)
+
+
+def _mismo_instante(a: str | None, b: str | None) -> bool:
+    """¿Dos horas locales completas caen a ≤ `_MISMO_INSTANTE_S` una de otra? Se mide la
+    diferencia, no el minuto del reloj: 16:36:40 y 16:38:09 son el mismo despacho."""
+    ta = _hora_dt(a) if a and len(a) > 10 else None
+    tb = _hora_dt(b) if b and len(b) > 10 else None
+    return ta is not None and tb is not None and abs((ta - tb).total_seconds()) <= _MISMO_INSTANTE_S
+
+
+def _despacho(d: dict) -> bool:
+    """¿El cierre de ML es la SALIDA de la caja? Sí cuando ML reembolsa al despachar
+    (`refund_at = 'shipped'`, ver `_LLEGO_TXT`) y la caja de verdad viajó (en camino o
+    entregada). En una vencida o cancelada el cierre es eso, no un despacho."""
+    return d.get("refund_at") == "shipped" and d.get("estado_canal") in _ESTADOS_DESPACHO
+
+
+def _reembolso_al_despachar(d: dict) -> bool:
+    """¿El cierre con despacho ES el reembolso? Solo si el dinero salió en ese mismo
+    instante (ver `_MISMO_INSTANTE_S`); en FULL ML reembolsa días después, al revisar."""
+    return _despacho(d) and _mismo_instante(d.get("reembolsada"), d.get("cerrada"))
+
+
+def _salida(d: dict, pasos: list[dict]) -> str | None:
+    """Cuándo salió la caja: el paso «en tránsito» (kubera la vio en camino: no pudo
+    reingresar antes) o, si ML reembolsa al despachar, su cierre. None si no se sabe."""
+    transito = next((p["hora"] for p in pasos if p["estado"] == "en_transito"), None)
+    return transito or (d.get("cerrada") if _despacho(d) else None)
+
+
+def _llegada_texto(texto: str | None, salida: str | None, hasta: str | None = None) -> str | None:
+    """'El paquete llegó el viernes 2 de octubre.' → '2026-10-02': el día que ML dice que
+    llegó, sin hora (no la da). El año no viene: vale el de la salida o el siguiente, el
+    que deje el día entre la salida y `_LLEGADA_TEXTO_MAX_D` días después y, si el texto
+    dice el día de la semana, en ese día. `hasta`: tampoco después de ese día (con
+    'delivered', el cierre: ML cierra después de entregar). None si el texto no lo dice
+    o si ningún año cuadra (no es de esta caja, o el texto no es coherente)."""
+    m = _LLEGO_TXT.search(texto or "")
+    ref = _hora_dt(salida)
+    if not m or ref is None:
+        return None
+    semana = (m.group(1) or "").lower().translate(str.maketrans("éá", "ea"))
+    mes = _MESES_LARGOS.index(m.group(3).lower()) + 1
+    tope = _hora_dt(hasta)
+    for anio in (ref.year, ref.year + 1):
+        try:
+            dia = datetime(anio, mes, int(m.group(2)))
+        except ValueError:
+            continue
+        if not 0 <= (dia.date() - ref.date()).days <= _LLEGADA_TEXTO_MAX_D:
+            continue
+        if (tope is not None and dia.date() > tope.date()) or (semana and _SEMANA[semana] != dia.weekday()):
+            return None
+        return dia.strftime("%Y-%m-%d")
+    return None
 
 
 def _pasos_devolucion(d: dict) -> list[dict]:
@@ -1463,21 +1560,55 @@ def _pasos_devolucion(d: dict) -> list[dict]:
     con el valor de la primera captura, así que un cambio real que vio el barrido días
     después también dice 'backfill'. Lo que falte se completa con los hitos de la
     cabecera —apertura, cierre de ML (`payload.returns.date_closed`) y reembolso—,
-    marcados como tales."""
+    marcados como tales. El cierre es la entrega solo si ML reembolsa al entregar; si
+    reembolsa al despachar (`_despacho`) es la salida, y la entrega es, en este orden,
+    la vista en vivo (`recibida`, o la primera transición con `estado_canal`
+    'delivered'), el día del texto de ML o ninguna. Con 'delivered', el día del texto
+    también manda sobre el cierre (ML cierra hasta días después de entregar)."""
     pasos: list[dict] = []
     if d.get("abierta"):
         pasos.append({"estado": "abierta", "texto": "abierta", "hora": d["abierta"], "de": "apertura"})
-    for h in d.get("historia") or []:
-        if not h.get("antes"):
-            continue           # primera vez que se vio, no un hecho
+    despacho, cerrada = _despacho(d), d.get("cerrada")
+    al_despachar = _reembolso_al_despachar(d)
+    historia = [h for h in d.get("historia") or [] if h.get("antes")]   # sin la primera vez que se vio
+    # Con el despacho, al entregarse kubera salta de `en_transito` a `reembolsada` (el
+    # dinero ya salió): la entrega en vivo es la fila que trae `delivered` de ML.
+    entrega = (next((h for h in historia if h.get("ec") == "delivered"), None)
+               if despacho and not any(h["estado"] == "recibida" for h in historia) else None)
+    for h in historia:
+        if h is entrega:
+            pasos.append({"estado": "recibida", "texto": "entregada", "hora": h["hora"], "de": h.get("via") or "sondeo"})
+            continue
         texto = ("reabierta" if h["estado"] == "abierta" else _DEVOL_ESTADO_TXT.get(h["estado"], h["estado"]))
         if h["estado"] == "rechazada" and d.get("estado_canal") in _DEVOL_RECHAZO_TXT:
             texto = f"rechazada ({_DEVOL_RECHAZO_TXT[d['estado_canal']]})"
+        elif h["estado"] == "reembolsada" and al_despachar:
+            texto = "kubera la vio reembolsada"     # el reembolso es el del cierre, horas o días antes
         pasos.append({"estado": h["estado"], "texto": texto, "hora": h["hora"], "de": h.get("via") or "sondeo"})
     vistos = {p["estado"] for p in pasos}
-    if "recibida" not in vistos and d.get("estado_canal") == "delivered" and d.get("cerrada"):
-        pasos.append({"estado": "recibida", "texto": "entregada", "hora": d["cerrada"], "de": "cierre de ML"})
-    if "reembolsada" not in vistos and d.get("reembolsada"):
+    if despacho and cerrada:
+        # El cierre es el despacho. Si «en tránsito» se vio en el mismo instante, es un paso.
+        cierre = "reembolsada al despachar" if al_despachar else "cerrada al despachar"
+        transito = next((p for p in pasos if p["estado"] == "en_transito" and _mismo_instante(p["hora"], cerrada)), None)
+        if transito:
+            transito["texto"] = f"en tránsito · {cierre}"
+        else:
+            pasos.append({"estado": "reembolsada" if al_despachar else "cerrada", "texto": cierre,
+                          "hora": cerrada, "de": "cierre de ML"})
+    if "recibida" not in vistos and d.get("estado_canal") == "delivered":
+        salida = _salida(d, pasos) or d.get("abierta")
+        if despacho:
+            dia = _llegada_texto(d.get("texto_ml"), salida)
+        elif d.get("refund_at") == "delivered" and cerrada:
+            dia = _llegada_texto(d.get("texto_ml"), salida, hasta=cerrada)
+        else:
+            dia = None
+        if dia:
+            pasos.append({"estado": "recibida", "texto": "entregada", "hora": dia, "de": "texto de ML"})
+        elif not despacho and cerrada:
+            pasos.append({"estado": "recibida", "texto": "entregada", "hora": cerrada, "de": "cierre de ML"})
+    # Si el cierre ya fue el reembolso, el de la cabecera es el mismo: ya va arriba.
+    if "reembolsada" not in vistos and d.get("reembolsada") and not al_despachar:
         pasos.append({"estado": "reembolsada", "texto": "reembolsada", "hora": d["reembolsada"], "de": "reembolso"})
     if "rechazada" not in vistos and d.get("estado") == "rechazada" and d.get("cerrada"):
         crudo = _DEVOL_RECHAZO_TXT.get(d.get("estado_canal") or "")
@@ -1490,13 +1621,17 @@ def _pasos_devolucion(d: dict) -> list[dict]:
 def _llegada(d: dict, pasos: list[dict]) -> tuple[bool, str | None]:
     """¿La caja ya llegó a su destino, y cuándo? Llegó si ML la da por entregada
     (`delivered`) o si la historia en vivo la vio `recibida`. La hora es la del paso
-    «entregada» (en vivo o, si no, la del cierre de ML); sin ninguna, la del reembolso
-    —ML reembolsa al entregar o antes, nunca mucho después—."""
+    «entregada» (en vivo, del cierre de ML o, solo el día, del texto de ML); sin
+    ninguna, la del reembolso —ML reembolsa al entregar o antes, nunca mucho después—,
+    salvo que reembolse al DESPACHAR: ese reembolso es la salida (o, en FULL, la
+    revisión en su almacén), no la llegada, y la llegada queda sin fecha."""
     recibida = next((p for p in pasos if p["estado"] == "recibida"), None)
     llego = bool(recibida) or d.get("estado_canal") == "delivered"
     if not llego:
         return False, None
-    return True, (recibida["hora"] if recibida else d.get("reembolsada"))
+    if recibida:
+        return True, recibida["hora"]
+    return True, (None if d.get("refund_at") == "shipped" else d.get("reembolsada"))
 
 
 def _holgura_ml(pasos: list[dict]) -> int:
@@ -1532,50 +1667,65 @@ def _subidas_odoo(woo: list[dict]) -> list[tuple[int, datetime | None, int]]:
 
 
 def ligar_devoluciones(devs: list[dict], woo: list[dict], ahora: str,
-                       dias: int = 10, desde_datos: str | None = None
+                       dias: int = 10, desde_datos: str | None = None,
+                       excluir: set[int] | frozenset[int] = frozenset()
                        ) -> tuple[dict[str, dict], dict[int, list[dict]]]:
     """Liga cada devolución que LLEGÓ A NUESTRA BODEGA con la primera subida de Odoo
     que viene después. FUNCIÓN PURA: no lee nada.
 
-    `devs`: [{id, nombre, destino, llego, llegada ('YYYY-MM-DD HH:MM:SS' local o None),
-              piezas, holgura_h, no_antes}]
+    `devs`: [{id, nombre, destino, llego, llegada ('YYYY-MM-DD HH:MM:SS' local, solo
+              'YYYY-MM-DD' si es el día del texto de ML, o None), piezas, holgura_h,
+              no_antes, refund_at}]
     `woo`:  los renglones «woo» de la historia ({hora, origen, odoo_de, odoo_a, fallo});
             vale el índice.
     `desde_datos`: desde cuándo hay renglones cargados (el inicio del periodo, o el más
             viejo si la bitácora llegó a su tope). Una ventana que empieza antes no se
             puede juzgar: se dice «fuera del periodo», no «no se ve reingreso».
+    `excluir`: índices de subidas que no se ofrecen (la pestaña Devoluciones quita las
+            que ya explican recepciones con guía). Se pasan aparte en vez de quitar
+            renglones de `woo`: quitar uno cambiaría la regla de reintentos de
+            `_subidas_odoo` y su reintento reaparecería como subida.
     Devuelve ({id de devolución: liga}, {índice en `woo`: [devoluciones que explica]}).
 
     Una subida es un renglón de origen Odoo cuya foto de Odoo SUBE (`_subidas_odoo`).
     Va de la más vieja a la más nueva y cada devolución toma la primera subida dentro de
-    [llegada − holgura, llegada + `dias`] a la que todavía le quepan piezas: una subida
-    de +3 alcanza para tres devoluciones de 1, y una de +1 no se cuenta dos veces. Una
+    [llegada − holgura, llegada + `dias`] a la que todavía le quepan piezas (con solo el
+    día de llegada, el día completo: de sus 00:00 a su fin + `dias`): una subida
+    de +3 alcanza para tres devoluciones de 1, y una de +1 no se cuenta dos veces. Con
+    la misma llegada (pasa seguido con solo el día) escoge primero la que salió antes,
+    no la de id menor. Con solo el día el texto no afirma el reingreso: dice cuál es la
+    primera subida desde ese día (`_NOTA_LIGA_DIA`). Una
     subida grande (una entrada de contenedor) sí puede tomarse para una devolución de 1:
     el texto lo dice («la subida es de +200»). Es una coincidencia por fecha y cantidad
     —Bodega recibe en Odoo sin ligarlo a la venta—, no una liga dura."""
-    subidas = _subidas_odoo(woo)
+    subidas = [s for s in _subidas_odoo(woo) if s[0] not in excluir]
     resto = {i: sube for i, _, sube in subidas}
     hoy = _hora_dt(ahora)
     cargado = _hora_dt(desde_datos)
     por_dev: dict[str, dict] = {}
     por_sub: dict[int, list[dict]] = {}
     candidatas = sorted((d for d in devs if d.get("destino") == "seller_address" and d.get("llego")),
-                        key=lambda d: (d.get("llegada") or "9999", str(d["id"])))
+                        key=lambda d: (d.get("llegada") or "9999", d.get("no_antes") or "", str(d["id"])))
     for d in candidatas:
         llega = _hora_dt(d.get("llegada"))
         if llega is None:
-            por_dev[d["id"]] = {"k": "sin_fecha",
-                                "texto": "Ya llegó a nuestra bodega, pero sin fecha de entrega: no se puede buscar su reingreso en Odoo."}
+            por_dev[d["id"]] = {"k": "sin_fecha", "texto": (
+                "Ya llegó a nuestra bodega, pero ML no dice qué día (reembolsó al despachar: su "
+                "cierre es la salida, no la entrega): no se puede buscar su reingreso en Odoo."
+                if d.get("refund_at") == "shipped" else
+                "Ya llegó a nuestra bodega, pero sin fecha de entrega: no se puede buscar su reingreso en Odoo.")}
             continue
+        solo_dia = len(d["llegada"]) == 10          # el día del texto de ML, sin hora
+        cuando = _dia(d["llegada"]) + (" (según ML)" if solo_dia else "")
         desde = llega - timedelta(hours=int(d.get("holgura_h") or 0))
         no_antes = _hora_dt(d.get("no_antes"))
         if no_antes is not None and no_antes > desde:
             desde = no_antes
-        hasta = llega + timedelta(days=dias)
+        hasta = llega + timedelta(days=dias + (1 if solo_dia else 0))
         if cargado is not None and desde < cargado:
             por_dev[d["id"]] = {
                 "k": "fuera_periodo",
-                "texto": (f"Llegó a nuestra bodega el {_dia(d['llegada'])}, antes de lo que abarca este "
+                "texto": (f"Llegó a nuestra bodega el {cuando}, antes de lo que abarca este "
                           "periodo: amplía los días para buscar su reingreso en Odoo.")}
             continue
         sub = next(((i, t, sube) for i, t, sube in subidas
@@ -1584,7 +1734,7 @@ def ligar_devoluciones(devs: list[dict], woo: list[dict], ahora: str,
             espera = hoy is not None and hoy < hasta
             por_dev[d["id"]] = {
                 "k": "espera" if espera else "sin_reingreso",
-                "texto": (f"Llegó a nuestra bodega el {_dia(d['llegada'])} y "
+                "texto": (f"Llegó a nuestra bodega el {cuando} y "
                           + ("todavía no se ve reingreso en Odoo." if espera
                              else f"no se ve reingreso en Odoo en los {dias} días siguientes."))}
             continue
@@ -1595,7 +1745,9 @@ def ligar_devoluciones(devs: list[dict], woo: list[dict], ahora: str,
         w = woo[i]
         por_dev[d["id"]] = {
             "k": "reingreso", "hora": w["hora"], "dias": n_dias, "sube": sube,
-            "texto": (f"Reingresó a Odoo el {_dia(w['hora'])} ({_tras(n_dias)}): "
+            "texto": ((f"Llegó a nuestra bodega el {cuando}; la primera subida de Odoo desde ese día es la del"
+                       if solo_dia else "Reingresó a Odoo el")
+                      + f" {_dia(w['hora'])} ({_tras(n_dias)}): "
                       f"Odoo {int(w['odoo_de']):,} → {int(w['odoo_a']):,}"
                       + (f"; la subida es de +{sube:,} y la devolución trae {int(d.get('piezas') or 1):,}"
                          if sube != int(d.get("piezas") or 1) else "") + ".")}
@@ -1605,7 +1757,10 @@ def ligar_devoluciones(devs: list[dict], woo: list[dict], ahora: str,
 
 def _devoluciones_ml(sku: str, dias: int) -> list[dict]:
     """Las devoluciones de ML con piezas de este SKU que se movieron en la ventana
-    (se abrieron, se cerraron o se reembolsaron dentro de ella). Solo lee."""
+    (se abrieron, se cerraron o se reembolsaron dentro de ella). Solo lee. Del crudo de
+    ML trae también cuándo reembolsa (`refund_at`) y lo que le dice al vendedor
+    (`texto_ml`), y de cada fila de la historia el `estado_canal` de ML (`ec`): de ahí
+    sale la llegada cuando el cierre es el despacho."""
     return sdb.fetch_all(
         f"""with r as (
              select r.canal, r.cuenta, r.external_return_id as id, r.estado, r.estado_canal,
@@ -1615,19 +1770,22 @@ def _devoluciones_ml(sku: str, dias: int) -> list[dict]:
                     r.abierta_at, r.reembolsada_at,
                     case when coalesce(r.payload->'returns'->>'date_closed', '') ~ '^\\d{{4}}-\\d{{2}}-\\d{{2}}T'
                          then (r.payload->'returns'->>'date_closed')::timestamptz end as cerrada_at,
+                    r.payload->'returns'->>'refund_at' as refund_at,
+                    r.payload->'detalle'->>'description' as texto_ml,
                     sum(i.cantidad)::int as piezas
                from channel.returns r
                join channel.return_items i using (canal, cuenta, external_return_id)
               where i.sku = %(s)s
               group by r.canal, r.cuenta, r.external_return_id)
            select r.cuenta, r.id, r.estado, r.estado_canal, r.destino, r.es_fulfillment, r.venta_contaba,
-                  r.estado_dinero, r.pedido, r.motivo, r.piezas,
+                  r.estado_dinero, r.pedido, r.motivo, r.piezas, r.refund_at, r.texto_ml,
                   coalesce(r.abierta_at, r.cerrada_at, r.reembolsada_at) as ts,
                   to_char(r.abierta_at at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as abierta,
                   to_char(r.cerrada_at at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as cerrada,
                   to_char(r.reembolsada_at at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as reembolsada,
                   (select coalesce(json_agg(json_build_object(
                             'estado', h.estado_nuevo, 'antes', h.estado_anterior, 'via', h.detectado_via,
+                            'ec', h.estado_canal,
                             'hora', to_char(h.changed_at at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS'))
                           order by h.changed_at, h.id), '[]'::json)
                      from channel.return_history h
@@ -1698,6 +1856,7 @@ def _armar_devoluciones(ml: list[dict], temu: list[dict]) -> list[dict]:
             "pedido": d.get("pedido"), "piezas": int(d.get("piezas") or 0), "motivo": d.get("motivo") or "",
             "estado": d.get("estado") or "", "estado_txt": _DEVOL_ESTADO_TXT.get(d.get("estado") or "", d.get("estado") or "—"),
             "estado_canal": d.get("estado_canal"), "dinero": d.get("estado_dinero"),
+            "refund_at": d.get("refund_at"),
             "destino": destino, "destino_txt": _DESTINO_TXT.get(destino or "", "sin dato"),
             "es_full": bool(d.get("es_fulfillment")),
             "venta_contaba": vc,
@@ -1705,7 +1864,8 @@ def _armar_devoluciones(ml: list[dict], temu: list[dict]) -> list[dict]:
                           else "la venta ya estaba cancelada: no se resta dos veces" if vc is False
                           else "no se sabe si la venta contaba"),
             "pasos": pasos, "llego": llego, "llegada": llegada,
-            "holgura_h": _holgura_ml(pasos), "no_antes": d.get("abierta"),
+            "holgura_h": _holgura_ml(pasos),
+            "no_antes": max((h for h in (d.get("abierta"), _salida(d, pasos)) if h), default=None),
             "liga": _liga_inicial(d.get("estado") or "", d.get("estado_canal"), destino, llego),
         })
     for t in temu:
@@ -1755,9 +1915,11 @@ def _aplicar_liga(devs: list[dict], woo: list[dict], ahora: str, dias: int,
     """Escribe la liga en los dos lados: en la devolución, si reingresó a Odoo; en la
     subida de Odoo, a qué devolución(es) se parece."""
     por_dev, por_sub = ligar_devoluciones(devs, woo, ahora, dias, desde_datos)
+    solo_dia = {d["id"] for d in devs if len(d.get("llegada") or "") == 10}   # el día del texto de ML
     for d in devs:
         if d["id"] in por_dev:
-            d["liga"] = {**por_dev[d["id"]], "nota": _NOTA_LIGA}
+            floja = d["id"] in solo_dia and por_dev[d["id"]]["k"] == "reingreso"
+            d["liga"] = {**por_dev[d["id"]], "nota": _NOTA_LIGA_DIA if floja else _NOTA_LIGA}
     for i, explica in por_sub.items():
         piezas = sum(e["piezas"] for e in explica)
         nombres = ", ".join(f"{e['id']} de {e['nombre']} ({e['piezas']:,} {'pza' if e['piezas'] == 1 else 'pzs'})"
@@ -1766,7 +1928,7 @@ def _aplicar_liga(devs: list[dict], woo: list[dict], ahora: str, dias: int,
         woo[i]["devoluciones"] = explica
         woo[i]["liga_txt"] = (f"Coincide con {'la devolución' if len(explica) == 1 else 'las devoluciones'} "
                               f"{nombres}" + (f": explica {piezas:,} de +{sube:,}" if piezas != sube else "") + ".")
-        woo[i]["liga_nota"] = _NOTA_LIGA
+        woo[i]["liga_nota"] = _NOTA_LIGA_DIA if any(e["id"] in solo_dia for e in explica) else _NOTA_LIGA
 
 
 def _resumen_devoluciones(devs: list[dict]) -> dict[str, int]:
