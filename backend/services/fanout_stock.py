@@ -104,6 +104,20 @@ def dry_run() -> bool:
     return bool(getattr(settings, "fanout_dry_run", True))
 
 
+def seguro_encendido() -> bool:
+    """
+    ¿Corre el seguro «stock 0 ⇒ fuera de la venta» (`services/fanout_seguro.py`)?
+
+    SIEMPRE que el fan-out esté encendido. No tiene interruptor propio (decisión de
+    Brandon, 9-oct-2026: «quitas la variable para inactivar o reactivar
+    automáticamente; éste deberá de estar siempre encendido»): la variable
+    FANOUT_CERO_ENABLED ya no existe. Es la ÚNICA pregunta que hacen `_destinos`,
+    `_seguro`, el worker, los censos de Temu y TikTok, y `pedidos_ml`; quien pruebe
+    otra cosa y no quiera al seguro en medio, suplanta esta función.
+    """
+    return habilitado()
+
+
 def _canales_activos() -> set[str] | None:
     """Canales con escritura habilitada. None = todos (cuando el CSV va vacío)."""
     csv = (getattr(settings, "fanout_canales", "") or "").strip()
@@ -361,13 +375,13 @@ def _destinos(sku: str) -> list[dict[str, Any]]:
             "stock_actual_canal": stock_canal,       # None = DESCONOCIDO (≠ 0)
             "omitido_por": motivo,
         })
-        if getattr(settings, "fanout_cero_enabled", False):
+        if seguro_encendido():
             # Para el seguro «stock 0 ⇒ fuera de la venta» (`fanout_seguro`): el
             # estado que vio el censo (su prefiltro sin red) y si el descarte es
             # de ESTE nivel (FULL, borrada, borrador), que es lo único que el
             # seguro no mira. `plan()` reusa `omitido_por` para sus propias
-            # guardas, así que sin esta bandera no se distinguen. Con el seguro
-            # APAGADO (así nace) el destino sale EXACTAMENTE como antes: ni una
+            # guardas, así que sin esta bandera no se distinguen. Con el fan-out
+            # apagado (y con él el seguro) el destino sale como siempre: ni una
             # llave de más en `/simular`, en `/estado` ni en la respuesta de `bajar`.
             salida[-1].update(estado_canal=f.get("estado_canal"), fuera=bool(motivo))
     return salida
@@ -874,12 +888,13 @@ def _seguro(paso: str, *args):
     objetivo en 0 saca la publicación de la venta en Temu/TikTok ANTES de
     escribirle el 0, y la regresa cuando el stock vuelve, si la apagó él.
 
-    Con FANOUT_CERO_ENABLED apagado (así nace) esto no hace NADA: ni importa el
-    módulo (tampoco lo importan los censos ni `pedidos_ml`, que preguntan primero
-    por la bandera). Y cada paso va en su propio `try`: una excepción del seguro
-    nunca impide escribir el stock ni llegar a `_persistir`.
+    No tiene interruptor propio: corre siempre que el fan-out esté encendido
+    (`seguro_encendido`). Con el fan-out apagado esto no hace NADA: ni importa el
+    módulo (tampoco lo importan los censos ni `pedidos_ml`, que hacen la misma
+    pregunta). Y cada paso va en su propio `try`: una excepción del seguro nunca
+    impide escribir el stock ni llegar a `_persistir`.
     """
-    if not getattr(settings, "fanout_cero_enabled", False):
+    if not seguro_encendido():
         return None
     if paso != "abrir" and (not args or args[0] is None):
         return None
@@ -974,7 +989,7 @@ def bajar(sku: str, canal: str, motivo: str) -> dict[str, Any]:
     salida = "omitido"
     for a in arriba:
         # El canal ofrece piezas con Woo en 0: primero fuera de la venta
-        # (`fanout_seguro`), después se baja. Con el seguro apagado no hace nada.
+        # (`fanout_seguro`), después se baja.
         _seguro("antes", seg, a)
         if a["accion"] != "escribir":
             resultados.append(a)
@@ -1039,8 +1054,8 @@ def _worker() -> None:
                     _contadores["errores"] += 1
                     log.warning("fan-out %s falló: %s", sku, exc)
             # Seguro stock 0: las esperas anti-parpadeo que ya vencieron vuelven
-            # a la cola y `_aplicar` reevalúa todo. Apagado (así nace) no hace nada.
-            if getattr(settings, "fanout_cero_enabled", False):
+            # a la cola y `_aplicar` reevalúa todo.
+            if seguro_encendido():
                 from services import fanout_seguro
                 for sku in fanout_seguro.esperas_vencidas():
                     encolar(sku, fanout_seguro.MOTIVO_ESPERA)

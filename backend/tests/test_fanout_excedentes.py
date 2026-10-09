@@ -37,6 +37,21 @@ from services import fanout_excedentes as E  # noqa: E402
 from services import fanout_stock as F  # noqa: E402
 from services import fanout_vivo as V  # noqa: E402
 
+# El seguro «stock 0 ⇒ fuera de la venta» ya no tiene interruptor propio: corre siempre
+# que el fan-out esté encendido. Aquí se prueban los excedentes SOLOS, así que se deja
+# fuera: estas pruebas no deben depender de cómo venga FANOUT_ENABLED en el entorno (con
+# el fan-out encendido, `bajar` le abriría un contexto al seguro y éste iría a la base).
+# Los dos juntos se prueban en `test_fanout_seguro.Excedentes`.
+_SIN_SEGURO = mock.patch.object(F, "seguro_encendido", return_value=False)
+
+
+def setUpModule():
+    _SIN_SEGURO.start()
+
+
+def tearDownModule():
+    _SIN_SEGURO.stop()
+
 
 def _accion(canal, actual, objetivo, accion="escribir", omitido=None, cuenta="X", item="1"):
     return {"canal": canal, "cuenta": cuenta, "item_id": item, "stock_actual_canal": actual,

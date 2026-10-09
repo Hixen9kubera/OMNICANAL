@@ -1360,13 +1360,17 @@ class Settings(BaseSettings):
     # 10 y 1 piezas, porque el canal sube su número solo y vuelve a «a la venta». Cuando
     # el objetivo de un SKU es 0, el seguro SACA la publicación de la venta (antes de
     # escribir el 0) y la regresa sólo si la apagó él mismo y el stock volvió y se
-    # sostuvo. Nace APAGADO y en ENSAYO: sacar y regresar publicaciones de un
-    # marketplace vivo lo enciende Brandon, variable por variable (regla 3 de CLAUDE.md).
-    fanout_cero_enabled: bool = False       # interruptor general: apagado no lee ni anota nada
-    fanout_cero_ensayo: bool = True         # lee en vivo y anota lo que haría (dry_run); no apaga ni prende
-    fanout_cero_temu: bool = False          # por canal
-    fanout_cero_tiktok: bool = False
-    fanout_cero_reactivar: bool = False     # sin ella el seguro sólo apaga
+    # sostuvo.
+    #
+    # SIEMPRE ENCENDIDO, SIN INTERRUPTOR (decisión de Brandon, 9-oct-2026: «quitas la
+    # variable para inactivar o reactivar automáticamente; éste deberá de estar siempre
+    # encendido»). Nació apagado y en ensayo (v0.624.0) y se encendió con un canario. Ya
+    # NO EXISTEN FANOUT_CERO_ENABLED, _ENSAYO, _TEMU, _TIKTOK, _REACTIVAR ni _SOLO_SKUS:
+    # el seguro corre siempre que el fan-out esté encendido, en los dos canales, para todo
+    # el catálogo y con reactivación. Si alguna de esas seis sigue puesta en Railway, no la
+    # lee nadie (`extra="ignore"`). El freno de emergencia es el del fan-out de cada canal
+    # (FANOUT_TEMU / FANOUT_TIKTOK / FANOUT_DRY_RUN): ahí el seguro sólo anota.
+    # Lo de abajo NO son interruptores: son ajustes finos, y todos tienen su valor aquí.
     # SIN TOPES (decisión de Brandon, 9-oct-2026: «puede ser que en un día se acaben 20
     # SKUs de un jalón; déjalo sin tope»). Los tres siguen existiendo y nacen en 0, que
     # es SIN TOPE; un número mayor que 0 vuelve a poner ese tope. Cuentan INTENTOS (la
@@ -1375,12 +1379,11 @@ class Settings(BaseSettings):
     fanout_cero_tope_dia: int = 0           # apagados por día (CDMX)
     fanout_cero_tope_reactivar_dia: int = 0    # reactivaciones por día (CDMX)
     fanout_cero_excluir: str = ""           # CSV de SKUs que el seguro nunca toca
-    # A QUIÉN se le aplica DE VERDAD. Vacío = a nadie: todo el catálogo corre en ENSAYO
-    # FORZADO, aunque FANOUT_CERO_ENSAYO esté en false (así el canario no depende del
-    # orden en que se cambien dos variables). CSV de SKUs = sólo esos (canario). `*` = todos.
-    fanout_cero_solo_skus: str = ""
     fanout_cero_espera_min: int = 30        # el stock debe sostenerse > 0 este rato antes de reactivar
-    fanout_cero_temu_estados: str = "2/8"   # CSV de estados de Temu que se pueden apagar (3/1 espera su sondeo)
+    # CSV de estados de Temu que se pueden apagar: a la venta y AGOTADA. Desde `3/1` Temu
+    # regresa sola a la venta (13 de las 15 ventas con stock 0 entraron por ahí); el canario
+    # del 9-oct-2026 midió que `sale.status.set` la acepta y la deja en `3/2`.
+    fanout_cero_temu_estados: str = "2/8,3/1"
     fanout_cero_temu_nivel_sku: bool = False   # apagar sólo la variante (operationType=2); sin sondear
     # Tras apagar o prender se espera y se RELEE el canal: `espera_s` × `relecturas`.
     # Nadie ha medido cuánto tarda Temu en enseñar el cambio de estado (su lectura de

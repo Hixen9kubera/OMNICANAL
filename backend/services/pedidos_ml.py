@@ -861,12 +861,13 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
     except Exception as exc:  # noqa: BLE001
         log.warning("fan-out no encolado para %s: %s", order_id, exc)
 
-    # SEGURO STOCK 0 (`fanout_seguro`, nace apagado): si esta venta NUEVA de Temu
-    # o TikTok trae un SKU que el seguro tiene fuera de la venta, y se compró
-    # después de apagarlo, es que el canal vendió una publicación apagada: campana
-    # roja. Sólo avisa, no toca la venta. EN UN HILO (regla 11): lee kubera.
+    # SEGURO STOCK 0 (`fanout_seguro`, encendido siempre que lo esté el fan-out):
+    # si esta venta NUEVA de Temu o TikTok trae un SKU que el seguro tiene fuera de
+    # la venta, y se compró después de apagarlo, es que el canal vendió una
+    # publicación apagada: campana roja. Sólo avisa, no toca la venta. EN UN HILO
+    # (regla 11): lee kubera.
     try:
-        if accion == "creado" and getattr(settings, "fanout_cero_enabled", False):
+        if accion == "creado" and fanout_stock.seguro_encendido():
             from services import fanout_seguro
             await asyncio.to_thread(fanout_seguro.aviso_venta, orden.get("cuenta"),
                                     [s for s in skus if s], orden.get("fecha"), str(order_id))

@@ -108,6 +108,8 @@ function ObservacionFull({ abierto }: { abierto: boolean }) {
  * 1 ya con stock · intentos hoy Temu 1 · TikTok 0 (sin tope)».
  * El modo va POR CANAL y, si el ensayo es forzado, dice el primer porqué. `tope_dia` en 0
  * es SIN TOPE (así nace desde el 9-oct-2026); con un tope puesto vuelve a salir «1/5».
+ * El seguro ya no tiene interruptor: «apagado» sólo sale si el fan-out lo está, y «sólo
+ * apaga» sólo cuando corre en ensayo (ahí no regresa publicaciones a la venta).
  */
 function textoSeguro(s: SeguroCero): string {
   const canales = Object.values(s.canales);

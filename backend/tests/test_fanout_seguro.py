@@ -6,9 +6,10 @@ Escribirle 0 a Temu no bastó: ACC-0574-LIL recibió 0 el 1-oct-2026 y aun así 
 23, 10 y 1 piezas. Con el objetivo en 0 el seguro saca la publicación de la venta y
 la regresa cuando vuelve el stock. Tiene que ser aburrido y, sobre todo, no hacer daño:
 
-  1. NACE APAGADO Y EN ENSAYO: con las banderas por omisión no lee ni anota nada; en
-     ensayo (pedido o FORZADO porque el fan-out no escribe de verdad) no llama a
-     apagar ni a prender y sus filas van con `dry_run`.
+  1. SIEMPRE ENCENDIDO, SIN INTERRUPTOR (decisión de Brandon, 9-oct-2026): corre
+     siempre que el fan-out esté encendido; con el fan-out apagado no lee ni anota
+     nada. Donde el fan-out no escribe de verdad cae en ensayo FORZADO: no llama a
+     apagar ni a prender y sus filas van con `dry_run`. (`SinInterruptor`)
   2. PRIMERO SE APAGA, LUEGO SE ESCRIBE EL 0, y el 0 se escribe aunque el seguro
      falle. Vale para `escribir` y para `sin_cambio`. Woo ilegible no es 0.
   3. SE DECIDE CON EL ESTADO VIVO: ilegible o que no converge ⇒ error y sin marca.
@@ -32,8 +33,9 @@ Y lo que destapó la revisión del 7-oct-2026 (cada punto tiene su clase al fina
      vigila la auditoría. (`ReactivarVerifica`)
  13. LOS AVISOS NO SE PIERDEN por el candado de uno por tipo por hora. (`AvisosQueNoSePierden`)
  14. LO QUE TEMU MUEVE SOLA no suelta la marca. (`MarcasDeTemu`, `MarcasHuerfanas`)
- 15. FANOUT_CERO_SOLO_SKUS vacío no es «todos» (`Canario`), `soltar` respeta el
-     interruptor (`SoltarConInterruptor`) y apagado es IDÉNTICO a antes (`IdenticoApagado`).
+ 15. `soltar` no hace nada con el fan-out apagado (`SoltarConElFanoutApagado`) y, con
+     el fan-out apagado, todo es IDÉNTICO a antes de que existiera el seguro
+     (`IdenticoApagado`).
  16. EL SQL de la marca, los topes y el corte, que en lo demás va suplantado. (`Consultas`)
 
 ── NO SE TOCA NADA REAL ─────────────────────────────────
@@ -46,6 +48,7 @@ la red revienta. Los SKUs son INVENTADOS: el repo es público.
 from __future__ import annotations
 
 import asyncio
+import re
 import sys
 import threading
 import unittest
@@ -68,6 +71,9 @@ from services import tiktok as TK  # noqa: E402
 # Las funciones de verdad de los dos clientes, antes de que el arnés las suplante.
 _REAL = {"temu.cambiar_venta": TM.cambiar_venta, "tiktok.desactivar": TK.desactivar,
          "tiktok.activar": TK.activar}
+
+# Con qué estados de Temu nace el seguro (lo fija `SinInterruptor`).
+TEMU_ESTADOS_DE_FABRICA = "2/8,3/1"
 
 SKU = "ZZZ-0001-AZL"
 HERMANA = "ZZZ-0001-ROJ"
@@ -126,11 +132,11 @@ class Arnes(unittest.TestCase):
     `self.llamadas`, EN ORDEN: así se prueba qué pasó antes de qué."""
 
     AJUSTES = dict(
-        fanout_cero_enabled=True, fanout_cero_ensayo=False, fanout_cero_temu=True,
-        fanout_cero_tiktok=True, fanout_cero_reactivar=True, fanout_cero_tope_vuelta=5,
+        # El seguro no tiene interruptor: lo enciende el fan-out (`fanout_enabled`, abajo).
+        # Los topes nacen en 0 (sin tope); aquí van puestos para poder probarlos.
+        fanout_cero_tope_vuelta=5,
         fanout_cero_tope_dia=20, fanout_cero_tope_reactivar_dia=20, fanout_cero_excluir="",
-        # `*` = a todo el catálogo. Vacío sería ensayo forzado (ver `Canario`).
-        fanout_cero_solo_skus="*", fanout_cero_espera_min=30, fanout_cero_temu_estados="2/8",
+        fanout_cero_espera_min=30, fanout_cero_temu_estados="2/8",
         fanout_cero_temu_nivel_sku=False, fanout_cero_espera_s=8.0, fanout_cero_relecturas=3,
         fanout_cero_bloque_n=10,
         # El fan-out escribe de verdad (si no, el seguro cae en ensayo forzado).
@@ -404,37 +410,119 @@ class Arnes(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
 
+    def en_ensayo(self, *canales):
+        """Pone al seguro en ENSAYO en esos canales (en los dos si no se dice). Ya no
+        hay ensayo «a pedido»: el único que existe es el forzado, cuando el fan-out no
+        le escribe de verdad a ese canal. Aquí se suplanta la respuesta."""
+        canales = canales or S.CANALES
+        real = S.ensayo
+        p = mock.patch.object(S, "ensayo", side_effect=lambda c: (
+            (True, ["prueba: ensayo forzado"]) if (c or "").lower() in canales else real(c)))
+        p.start()
+        self.addCleanup(p.stop)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 
-class NaceApagado(unittest.TestCase):
-    def test_las_banderas_nacen_apagadas_y_en_ensayo(self):
+INTERRUPTORES_QUE_YA_NO_EXISTEN = ("fanout_cero_enabled", "fanout_cero_ensayo", "fanout_cero_temu",
+                                   "fanout_cero_tiktok", "fanout_cero_reactivar", "fanout_cero_solo_skus")
+
+
+class SinInterruptor(Arnes):
+    """Decisión de Brandon (9-oct-2026): «quitas la variable para inactivar o reactivar
+    automáticamente; éste deberá de estar siempre encendido». No queda ninguna variable
+    que lo apague, lo ponga en ensayo, le quite un canal, le quite la reactivación o lo
+    limite a unos SKUs. Va pegado al fan-out."""
+
+    def test_la_configuracion_ya_no_tiene_los_seis_interruptores(self):
         campos = type(S.settings).model_fields
+        self.assertEqual([k for k in INTERRUPTORES_QUE_YA_NO_EXISTEN if k in campos], [])
+        # Lo que queda son ajustes finos, cada uno con su valor de fábrica.
         esperado = {
-            "fanout_cero_enabled": False, "fanout_cero_ensayo": True, "fanout_cero_temu": False,
-            "fanout_cero_tiktok": False, "fanout_cero_reactivar": False,
             "fanout_cero_tope_vuelta": 0, "fanout_cero_tope_dia": 0,
             "fanout_cero_tope_reactivar_dia": 0, "fanout_cero_excluir": "",
-            "fanout_cero_solo_skus": "", "fanout_cero_espera_min": 30,
-            "fanout_cero_temu_estados": "2/8", "fanout_cero_temu_nivel_sku": False,
-            "fanout_cero_espera_s": 8.0, "fanout_cero_relecturas": 3, "fanout_cero_bloque_n": 10}
+            "fanout_cero_espera_min": 30, "fanout_cero_temu_estados": TEMU_ESTADOS_DE_FABRICA,
+            "fanout_cero_temu_nivel_sku": False, "fanout_cero_espera_s": 8.0,
+            "fanout_cero_relecturas": 3, "fanout_cero_bloque_n": 10}
         self.assertEqual({k: campos[k].default for k in esperado}, esperado)
+        self.assertEqual(sorted(k for k in campos if k.startswith("fanout_cero_")), sorted(esperado))
+
+    def test_ningun_modulo_lee_ya_esas_variables(self):
+        patron = re.compile(r"\b(?:" + "|".join(INTERRUPTORES_QUE_YA_NO_EXISTEN) + r")\b")
+        for ruta in ("config.py", "main.py", "services/fanout_seguro.py", "services/fanout_stock.py",
+                     "services/fanout_vivo.py", "services/fanout_excedentes.py",
+                     "services/pedidos_ml.py", "services/temu_censo.py", "services/tiktok_censo.py",
+                     "routers/fanout.py"):
+            fuente = (BACKEND / ruta).read_text(encoding="utf-8-sig")
+            self.assertEqual(patron.findall(fuente), [], ruta)
+
+    def test_una_variable_vieja_en_el_entorno_ya_no_lo_apaga(self):
+        # Si alguna de las seis sigue puesta en Railway (o en un `.env`), no la lee nadie.
+        import os
+        import subprocess
+        codigo = (
+            "from config import settings\n"
+            "from services import fanout_seguro as S, fanout_stock as F\n"
+            "print(S.habilitado(), F.seguro_encendido(), S.ensayo('temu')[0], S.ensayo('tiktok')[0],\n"
+            "      hasattr(settings, 'fanout_cero_enabled'))\n")
+        entorno = {**os.environ, "FANOUT_ENABLED": "true", "FANOUT_DRY_RUN": "false",
+                   "FANOUT_CANALES": "", "FANOUT_TEMU": "true", "FANOUT_TIKTOK": "true",
+                   "SUPABASE_WRITE_FANOUT_LOG": "true",
+                   "FANOUT_CERO_ENABLED": "false", "FANOUT_CERO_ENSAYO": "true",
+                   "FANOUT_CERO_TEMU": "false", "FANOUT_CERO_TIKTOK": "false",
+                   "FANOUT_CERO_REACTIVAR": "false", "FANOUT_CERO_SOLO_SKUS": "UNO-0001-AZL"}
+        r = subprocess.run([sys.executable, "-c", codigo], cwd=str(BACKEND), env=entorno,
+                           capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.stdout.strip().splitlines()[-1:], ["True True False False False"], r.stderr[-800:])
+
+    def test_esta_encendido_siempre_que_lo_este_el_fanout(self):
+        self.assertTrue(S.habilitado())
+        self.assertTrue(F.seguro_encendido())
+        self.assertEqual((S.ensayo("temu"), S.ensayo("tiktok")), ((False, []), (False, [])))
+        self.ajustes(fanout_enabled=False)
+        self.assertFalse(S.habilitado())
+        self.assertFalse(F.seguro_encendido())
+
+    def test_se_le_aplica_a_cualquier_sku_y_a_los_dos_canales(self):
+        for i, sku in enumerate(("ZZZ-0301-AZL", "ZZZ-0302-AZL", "ZZZ-0303-AZL")):
+            g, p = f"93{i:04d}", f"78{i:04d}"
+            self.canal[("temu", g)] = {"estado": "2/8", "stock": 4,
+                                       "skus": [{"id": 8000 + i, "seller_sku": sku, "cantidad": 4}]}
+            self.canal[("tiktok", p)] = {"estado": "ACTIVATE", "stock": None,
+                                         "skus": [{"id": f"T{i}", "seller_sku": sku, "cantidad": 3}]}
+            self.aplicar(plan(accion("temu", 4, item=g), accion("tiktok", 3, item=p), sku=sku))
+        self.assertEqual(len([v for v in self.ventas() if v[0] == "temu.venta"]), 3)
+        self.assertEqual(len([v for v in self.ventas() if v[0] == "tiktok.desactivar"]), 3)
+
+    def test_reactiva_siempre_no_hay_bandera(self):
+        self.sembrar_marca()
+        self.aplicar(plan(accion("temu", 0, estado="3/2"), objetivo=5))
+        self.assertEqual(self.ventas(), [("temu.venta", G, True, None)])
+        self.assertEqual(self.de(S.ACC_REACTIVAR)[0]["resultado"], "ok (3/2→2/8)")
+
+    def test_ya_no_hay_via_manual(self):
+        self.assertFalse(hasattr(S, "aplicar"))
+        rutas = (BACKEND / "routers" / "fanout.py").read_text(encoding="utf-8-sig")
+        self.assertNotIn("/seguro/aplicar", rutas)
+        self.assertNotIn("manual", S.Contexto.__slots__)
+
+    def test_el_freno_es_el_del_fanout_de_cada_canal(self):
+        # Apagar el fan-out de UN canal deja al seguro en ensayo en ESE canal: no apaga.
+        self.ajustes(fanout_tiktok=False)
+        self.aplicar(plan(accion("temu", 4), accion("tiktok", 3, accion="omitir",
+                                                    omitido="FANOUT_TIKTOK apagado")))
+        self.assertEqual(self.ventas(), [("temu.venta", G, False, None)])
+        self.assertEqual(S.ensayo("tiktok"), (True, ["FANOUT_TIKTOK apagado"]))
 
 
 class ApagadoNoHaceNada(Arnes):
-    def test_con_el_interruptor_general_apagado_ni_lee_ni_anota(self):
-        self.ajustes(fanout_cero_enabled=False)
+    def test_con_el_fanout_apagado_ni_lee_ni_anota(self):
+        self.ajustes(fanout_enabled=False)
         self.aplicar(plan(accion("temu", 4), accion("tiktok", 3)))
         self.assertEqual(self.llamadas, [("stock", "temu", G, 0), ("stock", "tiktok", P, 0)])
         self.assertEqual((self.lecturas, self.filas, self.avisos), ([], [], []))
         self.assertEqual(len(self.eventos), 1)
         self.assertIsNone(S.abrir(SKU, "x", plan()))
-
-    def test_con_el_canal_apagado_ese_canal_no_se_toca(self):
-        self.ajustes(fanout_cero_tiktok=False)
-        self.aplicar(plan(accion("temu", 4), accion("tiktok", 3)))
-        self.assertEqual(self.ventas(), [("temu.venta", G, False, None)])
-        self.assertNotIn(("tiktok", P), self.lecturas)
 
     def test_otros_canales_no_son_asunto_del_seguro(self):
         a = dict(accion("temu", 4), canal="mercado_libre")
@@ -488,7 +576,6 @@ class Inactivar(Arnes):
         self.assertEqual((self.llamadas, self.lecturas, self.filas), ([], [], []))
 
     def test_con_objetivo_mayor_que_cero_no_se_apaga(self):
-        self.ajustes(fanout_cero_reactivar=False)
         self.aplicar(plan(accion("temu", 4), objetivo=2))
         self.assertEqual(self.llamadas, [("stock", "temu", G, 2)])
         self.assertEqual(self.filas, [])
@@ -601,14 +688,6 @@ class Inactivar(Arnes):
         self.assertEqual((self.ventas(), self.lecturas), ([], []))
         self.assertEqual({f["resultado"] for f in self.de(S.ACC_OMITIR)}, {"excluido (FANOUT_CERO_EXCLUIR)"})
 
-    def test_con_lista_canario_solo_esos_skus(self):
-        self.ajustes(fanout_cero_solo_skus="OTRO-0001-AZL")
-        self.aplicar(plan(accion("temu", 4)))
-        self.assertEqual((self.ventas(), self.lecturas, self.filas), ([], [], []))
-        self.ajustes(fanout_cero_solo_skus=f"OTRO-0001-AZL,{SKU}")
-        self.aplicar(plan(accion("temu", 4)))
-        self.assertEqual(self.ventas(), [("temu.venta", G, False, None)])
-
     def test_si_ya_la_apago_el_seguro_no_repite(self):
         self.aplicar(plan(accion("temu", 4)))
         self.llamadas.clear()
@@ -697,7 +776,7 @@ class Variantes(Arnes):
 
 class Ensayo(Arnes):
     def test_en_ensayo_lee_y_anota_pero_no_apaga(self):
-        self.ajustes(fanout_cero_ensayo=True)
+        self.en_ensayo()
         self.aplicar(plan(accion("temu", 4), accion("tiktok", 3)))
         self.assertEqual(self.ventas(), [])
         self.assertEqual(sorted(self.lecturas), [("temu", G), ("tiktok", P)])
@@ -710,7 +789,7 @@ class Ensayo(Arnes):
                          [("stock", "temu", G, 0), ("stock", "tiktok", P, 0)])
 
     def test_ensayo_forzado_si_el_fanout_no_escribe_de_verdad(self):
-        casos = {"fanout_dry_run": True, "fanout_enabled": False, "fanout_temu": False,
+        casos = {"fanout_dry_run": True, "fanout_temu": False,
                  "fanout_canales": "tiktok,mercado_libre", "supabase_write_fanout_log": False}
         for bandera, valor in casos.items():
             with self.subTest(bandera=bandera):
@@ -735,9 +814,20 @@ class Ensayo(Arnes):
                 self.assertEqual(self.ventas(), [], f"{bandera}: no debía apagar")
                 self.assertEqual([f["dry_run"] for f in self.de(S.ACC_INACTIVAR)], [True])
 
+    def test_con_el_fanout_apagado_no_hay_ni_ensayo(self):
+        # Antes era un ensayo forzado más; ahora el seguro va pegado al fan-out y, con
+        # él apagado, no abre contexto: ni lee ni anota.
+        self.ajustes(fanout_enabled=False)
+        self.assertEqual(S.ensayo("temu"), (True, ["FANOUT_ENABLED apagado"]))
+        ctx = S.abrir(SKU, "x", plan(accion("temu", 4)))
+        self.assertIsNone(ctx)
+        S.antes(ctx, accion("temu", 4))
+        S.cerrar(ctx)
+        self.assertEqual((self.lecturas, self.filas, self.ventas()), ([], [], []))
+
     def test_en_ensayo_ninguna_fila_parece_real(self):
         # No sólo la de «apagaría»: las omisiones y los errores también van con dry_run.
-        self.ajustes(fanout_cero_ensayo=True)
+        self.en_ensayo()
         self.padres[SKU] = True
         self.aplicar(plan(accion("temu", 4)))                # se omite: SKU padre
         self.padres[SKU] = False
@@ -760,7 +850,7 @@ class Ensayo(Arnes):
         self.assertEqual(S.ensayo("tiktok"), (False, []))
 
     def test_el_ensayo_no_repite_la_misma_fila_en_24_h(self):
-        self.ajustes(fanout_cero_ensayo=True)
+        self.en_ensayo()
         self.aplicar(plan(accion("temu", 4)))
         self.lecturas.clear()
         self.aplicar(plan(accion("temu", 4)))
@@ -830,7 +920,7 @@ class Topes(Arnes):
         self.assertIn("no pude leer el tope del día", self.de(S.ACC_ERROR)[0]["resultado"])
 
     def test_en_ensayo_los_topes_no_cortan_pero_se_anotan(self):
-        self.ajustes(fanout_cero_ensayo=True)
+        self.en_ensayo()
         filas, planes = self._siete()
         self._barrer(filas, planes)
         res = [f["resultado"] for f in self.de(S.ACC_INACTIVAR, ensayo=True)]
@@ -939,13 +1029,6 @@ class Reactivar(Arnes):
                 F._worker()
         self.assertEqual(self.encolados, [(SKU, S.MOTIVO_ESPERA)])
 
-    def test_sin_la_bandera_de_reactivar_solo_apaga(self):
-        self._apagada_por_el_seguro()
-        self.ajustes(fanout_cero_reactivar=False)
-        self._vuelve_stock()
-        self.assertEqual(self.llamadas, [("stock", "temu", G, 5)])
-        self.assertEqual(self.de(S.ACC_REACTIVAR), [])
-
     def test_tope_de_reactivaciones_del_dia(self):
         self._apagada_por_el_seguro()
         self.usadas_extra[("temu", S.ACC_REACTIVAR)] = 20
@@ -988,7 +1071,7 @@ class Reactivar(Arnes):
 
     def test_en_ensayo_no_prende_ni_devuelve_nada_a_la_cola(self):
         self._apagada_por_el_seguro()
-        self.ajustes(fanout_cero_ensayo=True)
+        self.en_ensayo()
         self._vuelve_stock()
         self.assertEqual(self.ventas(), [])
         (f,) = self.de(S.ACC_REACTIVAR)
@@ -1081,7 +1164,7 @@ class Sellado(Arnes):
         self.assertEqual([a for a in self.avisos if "sin_marca" in a[0]], [], "nada quedó apagado")
 
     def test_una_fila_de_ensayo_que_no_se_guarda_no_alarma(self):
-        self.ajustes(fanout_cero_ensayo=True)
+        self.en_ensayo()
         with mock.patch.object(fanout_read, "registrar", side_effect=RuntimeError("kubera caída")):
             self.aplicar(plan(accion("temu", 4)))
         self.assertEqual(self.avisos, [])
@@ -1130,13 +1213,12 @@ class Barrido(Arnes):
         self._barrer({"sku": SKU, "ok": False, "motivo": "sin stock legible", "acciones": []})
         self.assertEqual((self.ventas(), self.filas), ([], []))
 
-    def test_no_corre_con_su_bandera_o_la_del_canal_apagada(self):
-        self.ajustes(fanout_cero_temu=False)
-        self.assertFalse(self._barrer(plan(accion("temu", 2)))["ok"])
-        self.ajustes(fanout_cero_temu=True, fanout_cero_enabled=False)
-        self.assertFalse(self._barrer(plan(accion("temu", 2)))["ok"])
+    def test_no_corre_con_el_fanout_apagado_ni_para_otros_canales(self):
         self.assertFalse(S.barrer("mercado_libre")["ok"])
-        self.assertEqual(self.ventas(), [])
+        self.ajustes(fanout_enabled=False)
+        r = self._barrer(plan(accion("temu", 2)))
+        self.assertEqual(r, {"ok": False, "motivo": S.APAGADO})
+        self.assertEqual((self.ventas(), self.lecturas, self.filas), ([], [], []))
 
     def test_devuelve_a_la_cola_las_marcas_con_stock_de_vuelta(self):
         self.sembrar_marca()
@@ -1198,7 +1280,7 @@ class Censos(unittest.TestCase):
             return lambda c: orden.append((quien, c, threading.get_ident())) or {"ok": True}
 
         parches = [
-            mock.patch.object(S.settings, "fanout_cero_enabled", encendido),
+            mock.patch.object(F, "seguro_encendido", return_value=encendido),
             mock.patch.object(S, "barrer", side_effect=anotar("seguro")),
             mock.patch.object(E, "revisar", side_effect=anotar("excedentes")),
             mock.patch.object(sdb, "fetch_one", return_value={"id": "cuenta"}),
@@ -1225,7 +1307,7 @@ class Censos(unittest.TestCase):
                                     "el barrido corrió en el hilo del event loop")
                 self.assertEqual(salida["seguro"], {"ok": True})
 
-    def test_con_el_seguro_apagado_el_censo_ni_lo_menciona(self):
+    def test_con_el_fanout_apagado_el_censo_ni_menciona_al_seguro(self):
         for canal in ("temu", "tiktok"):
             with self.subTest(canal=canal):
                 salida, orden = self._censar(canal, encendido=False)
@@ -1242,8 +1324,8 @@ class Excedentes(Arnes):
         self.assertEqual(self.llamadas, [("temu.venta", G, False, None), ("stock", "temu", G, 0)])
         self.assertEqual(self.de(S.ACC_INACTIVAR)[0]["ts"], self.eventos[0]["ts_dt"])
 
-    def test_con_el_seguro_apagado_bajar_hace_lo_de_siempre(self):
-        self.ajustes(fanout_cero_enabled=False)
+    def test_con_el_fanout_apagado_bajar_hace_lo_de_siempre(self):
+        self.ajustes(fanout_enabled=False)
         self.canal[("temu", G)]["stock"] = 14
         with mock.patch.object(F, "plan", return_value=plan(accion("temu", 14))):
             F.bajar(SKU, "temu", "excedente:temu")
@@ -1416,55 +1498,33 @@ class LecturaEnVivo(unittest.TestCase):
 
 
 class AMano(Arnes):
-    def _aplicar(self, acc, p, canal="temu"):
-        with mock.patch.object(F, "plan", return_value=p):
-            return S.aplicar(SKU, canal, acc)
+    """A mano sólo queda SOLTAR una marca. La vía del canario (`aplicar`) se fue con el
+    canario: el seguro ya corre solo sobre todo el catálogo."""
 
-    def test_la_via_manual_es_solo_para_el_canario(self):
-        r = self._aplicar("inactivar", plan(accion("temu", 4)))
-        self.assertFalse(r["ok"])
-        self.assertIn("FANOUT_CERO_SOLO_SKUS", r["motivo"])
-        self.assertEqual((self.ventas(), self.filas), ([], []))
-
-    def test_el_canario_apaga_y_devuelve_lo_que_contesto_el_canal(self):
-        self.ajustes(fanout_cero_solo_skus=SKU)
-        r = self._aplicar("inactivar", plan(accion("temu", 4)))
-        self.assertTrue(r["ok"])
-        self.assertEqual(self.ventas(), [("temu.venta", G, False, None)])
-        self.assertEqual((r["detalle"]["antes"], r["detalle"]["despues"]), ("2/8", "3/2"))
-        self.assertEqual(r["filas"][0]["resultado"], "ok (2/8→3/2)")
-        self.assertEqual(self.de(S.ACC_INACTIVAR)[0]["motivo"], S.MOTIVO_MANUAL)
-
-    def test_a_mano_tampoco_se_apaga_con_stock(self):
-        self.ajustes(fanout_cero_solo_skus=SKU)
-        r = self._aplicar("inactivar", plan(accion("temu", 4), objetivo=3))
-        self.assertFalse(r["ok"])
-        self.assertEqual(self.ventas(), [])
-
-    def test_a_mano_se_deja_sondear_el_3_1_de_temu(self):
-        self.ajustes(fanout_cero_solo_skus=SKU)
+    def test_la_agotada_de_temu_se_apaga_de_fabrica(self):
+        # `3/1` (agotada) es de donde Temu regresa SOLA a la venta. El canario del
+        # 9-oct-2026 midió `3/1→3/2`; desde entonces nace en la lista de apagables.
+        self.assertEqual(type(S.settings).model_fields["fanout_cero_temu_estados"].default, "2/8,3/1")
+        self.ajustes(fanout_cero_temu_estados="2/8,3/1")
+        self.assertEqual(S.estados_temu(), {"2/8", "3/1"})
         self.canal[("temu", G)]["estado"] = "3/1"
-        r = self._aplicar("inactivar", plan(accion("temu", 0, accion="sin_cambio", estado="3/1")))
+        self.canal[("temu", G)]["stock"] = 0
+        self.aplicar(plan(accion("temu", 0, accion="sin_cambio", estado="3/1")))
         self.assertEqual(self.ventas(), [("temu.venta", G, False, None)])
-        self.assertEqual(r["filas"][0]["resultado"], "ok (3/1→3/2)")
+        self.assertEqual(self.de(S.ACC_INACTIVAR)[0]["resultado"], "ok (3/1→3/2)")
 
-    def test_a_mano_en_ensayo_solo_anota(self):
-        self.ajustes(fanout_cero_solo_skus=SKU, fanout_cero_ensayo=True)
-        r = self._aplicar("inactivar", plan(accion("temu", 4)))
-        self.assertTrue(r["ensayo"])
-        self.assertEqual(self.ventas(), [])
+    def test_el_barrido_busca_tambien_las_agotadas(self):
+        self.ajustes(fanout_cero_temu_estados="2/8,3/1")
+        from services import supabase_db as sdb
+        with mock.patch.object(sdb, "fetch_all", return_value=[]) as fa:
+            S.candidatos("temu")
+        self.assertEqual(fa.call_args[0][1]["apagables"], ["2/8", "3/1"])
 
-    def test_a_mano_solo_reactiva_lo_que_apago_el_seguro(self):
-        self.ajustes(fanout_cero_solo_skus=SKU, fanout_cero_reactivar=False)
-        self.canal[("temu", G)]["estado"] = "3/2"          # apagada por una persona
-        r = self._aplicar("reactivar", plan(accion("temu", 0, accion="sin_cambio", estado="3/2")))
-        self.assertEqual(self.ventas(), [])
-        self.assertIn("sin marca", r["detalle"]["motivo"])
-        # Con la marca del seguro sí: sin espera y aunque el stock siga en 0 (es el sondeo).
-        self.sembrar_marca()
-        self.edad = 0.0
-        self._aplicar("reactivar", plan(accion("temu", 0, accion="sin_cambio", estado="3/2")))
-        self.assertEqual(self.ventas(), [("temu.venta", G, True, None)])
+    def test_regresa_a_la_venta_lo_que_apago_desde_agotada(self):
+        self.ajustes(fanout_cero_temu_estados="2/8,3/1")
+        self.sembrar_marca(resultado="ok (3/1→3/2)")
+        self.aplicar(plan(accion("temu", 0, estado="3/2"), objetivo=5))
+        self.assertEqual(self.llamadas, [("stock", "temu", G, 5), ("temu.venta", G, True, None)])
         self.assertEqual(self.de(S.ACC_REACTIVAR)[0]["resultado"], "ok (3/2→2/8)")
 
     def test_soltar_no_toca_el_canal_y_cierra_la_marca(self):
@@ -1520,7 +1580,7 @@ class AvisoDeVenta(Arnes):
         bloque = fuente[i - 400:i + 200]
         self.assertIn("await asyncio.to_thread(fanout_seguro.aviso_venta", bloque)
         self.assertIn('accion == "creado"', bloque)
-        self.assertIn('getattr(settings, "fanout_cero_enabled", False)', bloque)
+        self.assertIn("fanout_stock.seguro_encendido()", bloque)
 
 
 class Panel(unittest.TestCase):
@@ -1633,7 +1693,7 @@ class Intentos(Arnes):
         self.assertEqual(self.intentos("prender")[0]["resultado"], "prender (vivo 3/2)")
 
     def test_el_ensayo_no_sella_intentos(self):
-        self.ajustes(fanout_cero_ensayo=True)
+        self.en_ensayo()
         self.aplicar(plan(accion("temu", 4)))
         self.assertEqual(self.intentos(), [])
 
@@ -1735,14 +1795,6 @@ class Intentos(Arnes):
         self.assertFalse(S._no_convergio("temu"), "no eran seguidas")
         self.assertTrue(S._no_convergio("temu"))
         self.assertGreater(S._en_pausa("temu"), 0)
-
-    def test_a_mano_la_pausa_no_estorba_al_sondeo(self):
-        self.ajustes(fanout_cero_solo_skus=SKU)
-        S._no_convergio("temu")
-        S._no_convergio("temu")
-        with mock.patch.object(F, "plan", return_value=plan(accion("temu", 4))):
-            S.aplicar(SKU, "temu", "inactivar")
-        self.assertEqual(self.ventas(), [("temu.venta", G, False, None)])
 
     def test_la_espera_y_las_relecturas_se_ajustan_sin_deploy(self):
         self.ajustes(fanout_cero_espera_s=2.0, fanout_cero_relecturas=1)
@@ -2076,25 +2128,28 @@ class Reconciliar(Arnes):
 
 
 class ApagadasConStock(Arnes):
-    """Con la reactivación apagada, lo que el seguro saca de la venta ya NO se queda
-    fuera en silencio cuando vuelve el stock."""
+    """Lo que el seguro saca de la venta NO se queda fuera en silencio cuando vuelve
+    el stock. El seguro reactiva solo; donde no puede (en ensayo, o si algo se lo
+    impide por horas) lo dice."""
 
-    def test_el_evento_no_reactiva_y_el_barrido_lo_dice_una_vez_al_dia(self):
-        self.ajustes(fanout_cero_reactivar=False)
+    def test_en_ensayo_no_reactiva_y_el_barrido_lo_dice_una_vez_al_dia(self):
         self.sembrar_marca()                                # el seguro la apagó: 3/2
+        self.en_ensayo()                                    # el fan-out dejó de escribirle de verdad
         self.aplicar(plan(accion("temu", 0, estado="3/2"), objetivo=15))     # vuelve el stock
         self.assertEqual(self.ventas(), [])
-        self.assertEqual(len(self.filas), 1, "el evento no anota: no sabe si es un parpadeo")
+        (ens,) = self.de(S.ACC_REACTIVAR)
+        self.assertTrue(ens["dry_run"] and ens["resultado"].startswith("ENSAYO (prendería"))
         self.foto[SKU] = 15
         r = _barrer()
         (f,) = self.de(S.ACC_SIN_CAMBIO)
         self.assertTrue(f["resultado"].startswith(S.CON_STOCK + ": Woo ya tiene 15"))
-        self.assertIn("FANOUT_CERO_REACTIVAR", f["resultado"])
+        self.assertIn("corre en ensayo", f["resultado"])
+        self.assertIn("reactivarla a mano", f["resultado"])
         self.assertFalse(f["dry_run"])
         (a,) = [x for x in self.avisos if x[0] == "seguro_cero_con_stock:temu"]
         self.assertIn(f"{SKU} (Woo 15)", a[1])
         self.assertEqual(r["con_stock"], [SKU])
-        self.assertEqual(self.encolados, [], "con la reactivación apagada no se devuelve a la cola")
+        self.assertEqual(self.encolados, [], "en ensayo no se devuelve a la cola")
         # El siguiente censo del mismo día no repite ni la fila ni el aviso…
         self.avisos.clear()
         _barrer()
@@ -2107,8 +2162,8 @@ class ApagadasConStock(Arnes):
         self.assertEqual([a[0] for a in self.avisos], ["seguro_cero_con_stock:temu"])
 
     def test_si_ya_vende_o_woo_sigue_en_cero_no_dice_nada(self):
-        self.ajustes(fanout_cero_reactivar=False)
         self.sembrar_marca()
+        self.en_ensayo()
         self.foto[SKU] = 0
         _barrer()
         self.foto[SKU] = 9
@@ -2119,7 +2174,7 @@ class ApagadasConStock(Arnes):
         _barrer()
         self.assertEqual((self.de(S.ACC_SIN_CAMBIO), self.avisos), ([], []))
 
-    def test_con_la_reactivacion_encendida_solo_avisa_de_la_que_lleva_horas(self):
+    def test_reactivando_solo_avisa_de_la_que_lleva_horas(self):
         self.sembrar_marca()
         self.foto[SKU] = 9
         self.edad = 1800.0                                  # media hora con stock: el seguro va en camino
@@ -2132,7 +2187,6 @@ class ApagadasConStock(Arnes):
         self.assertIn("seguro_cero_con_stock:temu", [a[0] for a in self.avisos])
 
     def test_el_pie_y_la_ruta_de_estado_las_listan(self):
-        self.ajustes(fanout_cero_reactivar=False)
         self.sembrar_marca()
         self.foto[SKU] = 15
         r = S.resumen_panel()
@@ -2428,65 +2482,20 @@ class MarcasHuerfanas(Arnes):
         self.assertEqual(len(self.encolados), 2)
 
     def test_en_ensayo_el_barrido_no_devuelve_nada_a_la_cola(self):
-        self.ajustes(fanout_cero_ensayo=True)
-        self._apagada_en_tiktok()
-        _barrer(canal="tiktok")
-        self.assertEqual(self.encolados, [])
-
-    def test_fuera_del_canario_no_se_reencola(self):
-        self.ajustes(fanout_cero_solo_skus="OTRO-0009-XXX")
+        self.en_ensayo()
         self._apagada_en_tiktok()
         _barrer(canal="tiktok")
         self.assertEqual(self.encolados, [])
 
 
-class Canario(Arnes):
-    """A QUIÉN se le aplica de verdad lo dice FANOUT_CERO_SOLO_SKUS. Vacío ya no es
-    «todos»: apagar FANOUT_CERO_ENSAYO no suelta el seguro sobre el catálogo."""
-
-    def test_sin_decir_a_quien_el_seguro_no_sale_del_ensayo(self):
-        self.ajustes(fanout_cero_solo_skus="", fanout_cero_ensayo=False)
-        en_ensayo, forzado = S.ensayo("temu")
-        self.assertTrue(en_ensayo)
-        self.assertTrue(any("FANOUT_CERO_SOLO_SKUS vacío" in f for f in forzado))
-        self.aplicar(plan(accion("temu", 4)))
-        self.assertEqual(self.ventas(), [])
-        (f,) = self.de(S.ACC_INACTIVAR)
-        self.assertTrue(f["dry_run"])
-        r = _barrer([Barrido.FILA], {SKU: plan(accion("temu", 2))})
-        self.assertEqual((r["llamadas"], self.ventas()), (0, []))
-
-    def test_con_una_lista_solo_se_toca_ese_sku(self):
-        self.ajustes(fanout_cero_solo_skus="OTRO-0009-XXX")
-        self.aplicar(plan(accion("temu", 4)))
-        self.assertEqual((self.lecturas, self.filas, self.ventas()), ([], [], []))
-        _barrer([Barrido.FILA], {SKU: plan(accion("temu", 2))})
-        self.assertEqual(self.ventas(), [])
-        self.ajustes(fanout_cero_solo_skus=f"otro-0009-xxx; {SKU.lower()}")
-        self.aplicar(plan(accion("temu", 4)))
-        self.assertEqual(self.ventas(), [("temu.venta", G, False, None)])
-
-    def test_el_asterisco_es_todo_el_catalogo(self):
-        self.assertEqual(S.ensayo("temu"), (False, []))
-        self.aplicar(plan(accion("temu", 4)))
-        self.assertEqual(self.ventas(), [("temu.venta", G, False, None)])
-
-    def test_la_via_manual_pide_el_sku_por_su_nombre(self):
-        with mock.patch.object(F, "plan", return_value=plan(accion("temu", 4))):
-            r = S.aplicar(SKU, "temu", "inactivar")          # SOLO_SKUS = *
-        self.assertFalse(r["ok"])
-        self.assertIn("FANOUT_CERO_SOLO_SKUS", r["motivo"])
-        self.assertEqual(self.ventas(), [])
-
-
-class SoltarConInterruptor(Arnes):
-    def test_con_el_seguro_apagado_no_va_a_la_base_ni_anota(self):
-        self.ajustes(fanout_cero_enabled=False)
+class SoltarConElFanoutApagado(Arnes):
+    def test_con_el_fanout_apagado_no_va_a_la_base_ni_anota(self):
+        self.ajustes(fanout_enabled=False)
         self.sembrar_marca()
         antes = len(self.filas)
         with mock.patch.object(S, "marcas_vigentes", side_effect=AssertionError("fue a la base")):
             r = S.soltar(SKU, "temu")
-        self.assertEqual(r, {"ok": False, "motivo": "FANOUT_CERO_ENABLED apagado"})
+        self.assertEqual(r, {"ok": False, "motivo": S.APAGADO})
         self.assertEqual(len(self.filas), antes)
 
     def test_sin_marca_ni_corte_no_hay_nada_que_soltar(self):
@@ -2539,7 +2548,8 @@ class ExcedentesSellan(Arnes):
 
 
 class IdenticoApagado(unittest.TestCase):
-    """Con las banderas por omisión el fan-out hace EXACTAMENTE lo de producción."""
+    """Con el fan-out apagado (y con él el seguro) nada cambia respecto a antes de que
+    el seguro existiera: ni una llave de más, ni una importación, ni una pregunta."""
 
     FILAS = {"ZZZ-0001-AZL": {
         "temu|TEMU": {"canal": "temu", "cuenta": "TEMU", "item_id": G, "stock_real": 3,
@@ -2554,7 +2564,7 @@ class IdenticoApagado(unittest.TestCase):
     def _destinos(self, encendido):
         from services import channel_read
         with mock.patch.object(channel_read, "leer_inventario", return_value=self.FILAS), \
-                mock.patch.object(F.settings, "fanout_cero_enabled", encendido):
+                mock.patch.object(F, "seguro_encendido", return_value=encendido):
             return {d["canal"]: d for d in F._destinos(SKU)}
 
     def test_apagado_el_destino_no_lleva_ni_una_llave_de_mas(self):
@@ -2572,13 +2582,12 @@ class IdenticoApagado(unittest.TestCase):
     def test_el_seguro_no_toca_lo_que_destinos_marca_fuera(self):
         d = self._destinos(True)["tiktok"]
         ctx = S.Contexto(SKU, "prueba", 0, 0)
-        with mock.patch.multiple(S.settings, fanout_cero_enabled=True, fanout_cero_tiktok=True,
-                                 fanout_cero_solo_skus="*"), \
+        with mock.patch.object(F, "seguro_encendido", return_value=True), \
                 mock.patch.object(S, "_inactivar", side_effect=AssertionError("tocó un destino descartado")):
             S.antes(ctx, {**d, "objetivo": 0})
         self.assertEqual(ctx.filas, [])
 
-    def test_con_el_seguro_apagado_ni_se_importa_el_modulo(self):
+    def test_con_el_fanout_apagado_ni_se_importa_el_modulo(self):
         import os
         import subprocess
         codigo = (
@@ -2595,10 +2604,9 @@ class IdenticoApagado(unittest.TestCase):
             "    F._aplicar('X', 'prueba')\n"
             "    F.bajar('X', 'temu', 'excedente:temu')\n"
             "print('IMPORTADO' if 'services.fanout_seguro' in sys.modules else 'NO-IMPORTADO')\n")
-        # Apagado EXPLÍCITO (manda sobre cualquier `.env`); que además NACE apagado
-        # lo fija `NaceApagado`.
-        entorno = {**{k: v for k, v in os.environ.items() if not k.upper().startswith("FANOUT_CERO")},
-                   "FANOUT_CERO_ENABLED": "false"}
+        # El fan-out apagado EXPLÍCITO (manda sobre cualquier `.env`): el seguro va
+        # pegado a él.
+        entorno = {**os.environ, "FANOUT_ENABLED": "false"}
         r = subprocess.run([sys.executable, "-c", codigo], cwd=str(BACKEND), env=entorno,
                            capture_output=True, text=True, timeout=120)
         self.assertEqual(r.stdout.strip().splitlines()[-1:], ["NO-IMPORTADO"], r.stderr[-800:])
@@ -2612,16 +2620,16 @@ class IdenticoApagado(unittest.TestCase):
                     pass
             return esperas.call_count
 
-        with mock.patch.object(F.settings, "fanout_cero_enabled", False):
+        with mock.patch.object(F, "seguro_encendido", return_value=False):
             self.assertEqual(un_tic(), 0)
-        with mock.patch.object(F.settings, "fanout_cero_enabled", True):
+        with mock.patch.object(F, "seguro_encendido", return_value=True):
             self.assertGreaterEqual(un_tic(), 1, "encendido sí: así vuelven a la cola las esperas vencidas")
 
-    def test_los_censos_preguntan_por_la_bandera_antes_de_importar(self):
+    def test_los_censos_preguntan_si_corre_antes_de_importar(self):
         for censo in ("temu_censo", "tiktok_censo"):
             fuente = (BACKEND / "services" / f"{censo}.py").read_text(encoding="utf-8")
             i = fuente.index("from services import fanout_seguro")
-            self.assertIn('getattr(settings, "fanout_cero_enabled", False)', fuente[i - 120:i], censo)
+            self.assertIn("if fanout_stock.seguro_encendido():", fuente[i - 120:i], censo)
 
 
 class Consultas(unittest.TestCase):
@@ -2787,6 +2795,7 @@ class PanelPendientes(unittest.TestCase):
         self.assertEqual((a["nivel"], a["matriz"]), ("hoy", True))
         self.assertEqual(a["titulo"], "1 publicación apagada por el seguro de stock 0 ya tiene stock")
         self.assertIn(f"Temu · {SKU}: Woo tiene 1,500.", a["texto"])
+        self.assertIn("corre en ensayo", a["texto"])
         self.assertIn("reactivarlas a mano", a["texto"])
         dos = V._atender_seguro({"con_stock": [una, dict(una, sku="OTRO")], "reactivar": True,
                                  "soltadas": [dict(una, por="ok (estado 4/7 ajeno)")]})

@@ -642,7 +642,7 @@ def _atender_seguro(seg: dict[str, Any] | None) -> list[dict]:
             "texto": muestra(con_stock) + (
                 " El seguro las regresa solo cuando el stock se sostiene; si llevan horas así, "
                 "algo se lo impide." if seg.get("reactivar")
-                else " La reactivación automática está apagada: hay que reactivarlas a mano."),
+                else " El seguro corre en ensayo y no las regresa solo: hay que reactivarlas a mano."),
             "matriz": True})
     soltadas = seg.get("soltadas") or []
     if soltadas:

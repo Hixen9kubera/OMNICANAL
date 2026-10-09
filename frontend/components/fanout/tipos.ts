@@ -128,10 +128,11 @@ export interface Vivo {
 
 /** El pie del seguro «stock 0 ⇒ fuera de la venta» (`fanout_seguro.resumen_panel`). */
 export interface SeguroCero {
+  /** Sin interruptor propio: «apagado» = el fan-out está apagado; «ensayo» = el fan-out no escribe de verdad. */
   modo: "apagado" | "ensayo" | "encendido";
   apagadas: number; // publicaciones que el seguro tiene fuera de la venta
   tope_dia: number; // INTENTOS de apagar por día, por canal (cuenta la llamada, salga bien o no). 0 = sin tope
-  reactivar: boolean;
+  reactivar: boolean; // ¿regresa solo lo que apagó? Siempre, salvo en ensayo (ya no es una bandera)
   /** Apagadas por el seguro que YA tienen stock en Woo y siguen fuera de la venta. */
   con_stock?: { canal: string; sku: string; woo: number; desde?: string | null }[];
   /** Las que el seguro soltó solo, siguen fuera de la venta y tienen stock. */

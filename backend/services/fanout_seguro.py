@@ -38,15 +38,26 @@ LAS REGLAS, CADA UNA CON SU PORQUÉ
   · NADA SE QUEDA APAGADO EN SILENCIO: lo apagado que ya tiene stock, lo que el
     seguro soltó y sigue fuera de la venta, y lo que quedó a medias por un
     reinicio, se listan en `/api/fanout/seguro` y salen en un aviso.
-  · A QUIÉN SE LE APLICA lo dice FANOUT_CERO_SOLO_SKUS: vacío = a nadie (ensayo
-    forzado), una lista = el canario, `*` = todo el catálogo.
+  · SE LE APLICA A TODO EL CATÁLOGO, menos lo que nombre FANOUT_CERO_EXCLUIR.
 
-NACE APAGADO Y EN ENSAYO (regla 3 de CLAUDE.md). Con FANOUT_CERO_ENABLED apagado
-este módulo no lee ni anota nada y el fan-out se comporta igual que antes. Con
-FANOUT_CERO_ENSAYO encendido lee en vivo y anota lo que haría (`dry_run=true`),
-sin apagar ni prender. Además cae en ENSAYO FORZADO si el fan-out no escribe de
-verdad en ese canal o si la bitácora no se escribe en kubera (sin bitácora no hay
-marca).
+SIEMPRE ENCENDIDO, SIN INTERRUPTOR (decisión de Brandon, 9-oct-2026: «quitas la
+variable para inactivar o reactivar automáticamente; éste deberá de estar siempre
+encendido»). Nació apagado y en ensayo (v0.624.0) y se encendió con un canario de
+dos SKUs; desde esta versión YA NO EXISTEN las variables FANOUT_CERO_ENABLED,
+_ENSAYO, _TEMU, _TIKTOK, _REACTIVAR ni _SOLO_SKUS: ninguna variable lo apaga, lo
+deja en ensayo, le quita un canal, le quita la reactivación o lo limita a unos
+SKUs. Si alguna sigue puesta en Railway, no la lee nadie.
+
+El seguro va PEGADO AL FAN-OUT: es parte de él.
+  · Con el fan-out apagado (FANOUT_ENABLED) este módulo no lee ni anota nada.
+  · Donde el fan-out NO escribe stock de verdad en un canal —FANOUT_DRY_RUN, el
+    canal fuera de FANOUT_CANALES, FANOUT_<CANAL> apagado— o donde la bitácora no
+    llega a kubera (sin bitácora no hay marca), cae en ENSAYO FORZADO para ese
+    canal: lee en vivo y anota lo que haría (`dry_run=true`), sin apagar ni
+    prender. Apagar una publicación cuyo stock no se está sincronizando sería peor
+    que no hacer nada.
+Ése es también el freno de emergencia: apagar el fan-out de un canal detiene al
+seguro en ese canal, sin deploy.
 
 LA BITÁCORA (`ops.fanout_log`, sin migración; `accion` es texto libre):
   cero_inactivar   ok (2/8→3/2) · ENSAYO (apagaría; vivo 2/8, ofrece 2)
@@ -66,15 +77,22 @@ REGLA 11. Todo aquí es SÍNCRONO y sólo corre en el hilo `fanout-stock`, en lo
 hilos de los censos (`asyncio.to_thread`) o en el threadpool de FastAPI. Nada de
 esto se llama directo desde una corrutina.
 
-LO QUE YA SE MIDIÓ EN VIVO (canario del 9-oct-2026, ACC-0574-LIL y DEC-0078-PLA):
-  · TikTok `/products/deactivate`: `ACTIVATE → SELLER_DEACTIVATED` en ~10 s, y el
-    producto SIGUE EXISTIENDO (se relee con ese estado; no es un borrado).
+LO QUE YA SE MIDIÓ EN VIVO (canario del 9-oct-2026, ACC-0574-LIL y DEC-0078-PLA,
+las dos con Woo en 0). Las dos llamadas INACTIVAN: la publicación sigue existiendo.
+  · TikTok `/products/deactivate`: `ACTIVATE → SELLER_DEACTIVATED` en ~10 s. Los tres
+    censos siguientes la volvieron a listar con ese estado.
+  · Temu `bg.local.goods.sale.status.set {goodsId, onsale: 0}`: el token tiene
+    permiso, ACEPTA `3/1` (agotada) y la deja en `3/2` —el mismo estado de lo que se
+    apaga a mano en el Seller Center— en ~9 s. Releída por `/investigacion`: existe,
+    `3/2`, y su `goodsStatusChangeTime` es el segundo de la llamada.
   · Temu: la lectura de UN goods (`goodsIdList`) sólo trae el estado si además se le
     dice la CUBETA (`goodsSearchType`). Sin ella contesta la fila con `status4VO` en
-    null y el seguro la tomaba por ilegible: por eso el primer canario no llamó a
-    Temu. Ver `_vivo_temu`.
-⚠️ POR SONDEAR TODAVÍA: `bg.local.goods.sale.status.set` (qué estado deja y si
-acepta `3/1`) y los dos regresos a la venta (`onsale: 1` y `/products/activate`).
+    null: por eso el primer canario no llamó a Temu. Ver `_vivo_temu`.
+⚠️ POR VER TODAVÍA: los dos REGRESOS a la venta (`onsale: 1` y
+`/products/activate`), que ocurrirán solos la primera vez que a un SKU apagado le
+vuelva el stock. Si el canal no la deja a la venta, el seguro lo dice («no quedó a
+la venta», «no convergió») y la marca se conserva. Y `3/3` y `2/4` de Temu siguen
+sin apagarse: nadie ha visto qué hace `sale.status.set` desde ahí.
 """
 from __future__ import annotations
 
@@ -121,6 +139,9 @@ _ACC_MARCA = [ACC_INACTIVAR, ACC_REACTIVAR, ACC_SOLTAR]
 # únicas cuyo `objetivo` es el objetivo real del SKU en ese momento.
 _ACC_FANOUT = ["escribir", "omitir", "sin_cambio", "sin_destinos"]
 
+# Lo único que detiene al seguro: que el fan-out esté apagado.
+APAGADO = "el fan-out está apagado (FANOUT_ENABLED): el seguro va pegado a él y no corre"
+
 MOTIVO_BARRIDO = "seguro: barrido tras el censo de {canal}"
 MOTIVO_ESPERA = "seguro: reactivar tras espera"
 MOTIVO_MARCA = "seguro: marca con stock de vuelta"
@@ -138,11 +159,12 @@ ERR_AUDITORIA = "ERROR: auditoría"
 CON_STOCK = "con stock y apagada"
 MOVIDA = "movida por el canal"
 
-TODOS = "*"                # en FANOUT_CERO_SOLO_SKUS: todo el catálogo
 # Temu, además de lo apagable: estados desde los que la publicación puede volver
 # SOLA a la venta (o que nadie ha sondeado). No se apagan, pero se anotan una vez
 # al día para que el ensayo enseñe el tamaño real. `3/2` (apagada por el vendedor),
 # los incompletos y los borradores no entran: de ahí no regresa sola.
+# (`3/1` ya es apagable de fábrica; sólo cae aquí si alguien lo saca de
+# FANOUT_CERO_TEMU_ESTADOS.)
 _TEMU_VIGILADOS = {"3/1": "agotada", "3/3": "sin nombre: va y viene con 2/8",
                    "2/4": "familia «Active», sin sondear"}
 # Temu: estados que sólo pone la PLATAFORMA (agotada, bloqueada). Si una publicación
@@ -203,11 +225,11 @@ def _dormir(segundos: float) -> None:
 # ── Configuración ────────────────────────────────────────────────────────────
 
 def habilitado() -> bool:
-    return bool(getattr(settings, "fanout_cero_enabled", False))
-
-
-def canal_encendido(canal: str) -> bool:
-    return bool(getattr(settings, f"fanout_cero_{(canal or '').lower()}", False))
+    """El seguro no tiene interruptor propio: está encendido SIEMPRE que lo esté el
+    fan-out (ver la cabecera). La pregunta es de `fanout_stock.seguro_encendido`,
+    que es también la que hacen el fan-out, los censos y los pedidos."""
+    from services import fanout_stock
+    return fanout_stock.seguro_encendido()
 
 
 def _csv(nombre: str) -> set[str]:
@@ -219,23 +241,12 @@ def _excluidos() -> set[str]:
     return _csv("fanout_cero_excluir")
 
 
-def _solo_skus() -> set[str]:
-    """A quién se le aplica de verdad: vacío = a nadie (ensayo forzado), una lista
-    = sólo esos SKUs (canario), `*` = todo el catálogo."""
-    return _csv("fanout_cero_solo_skus")
-
-
-def _alcanza(sku: str, solo: set[str] | None = None) -> bool:
-    """¿Este SKU entra en lo que el seguro mira? Con la lista vacía entran todos
-    (en ensayo forzado: se quiere ver el tamaño real); con una lista, sólo ésos."""
-    solo = _solo_skus() if solo is None else solo
-    return not solo or TODOS in solo or str(sku or "").strip().upper() in solo
-
-
 def estados_temu() -> set[str]:
-    """Estados de Temu que se pueden apagar. Nace en `2/8`; `3/1` entra cuando el
-    sondeo confirme que `sale.status.set` lo acepta."""
-    crudo = str(getattr(settings, "fanout_cero_temu_estados", "2/8") or "")
+    """Estados de Temu que se pueden apagar: `2/8` (a la venta) y `3/1` (agotada).
+    Desde `3/1` Temu regresa SOLA a la venta en cuanto su contador sube: 13 de las
+    15 ventas con nuestro stock en 0 entraron por ahí. El canario del 9-oct-2026
+    confirmó que `sale.status.set` acepta `3/1` y la deja en `3/2`."""
+    crudo = str(getattr(settings, "fanout_cero_temu_estados", "2/8,3/1") or "")
     return {x.strip() for x in crudo.split(",") if x.strip()}
 
 
@@ -264,12 +275,10 @@ def _hoy() -> str:
 
 
 def ensayo(canal: str) -> tuple[bool, list[str]]:
-    """(¿corre en ensayo?, por qué está FORZADO). Forzado = el fan-out no escribe
-    de verdad en ese canal, o la bitácora no llega a kubera: apagar una publicación
-    mientras su stock no se sincroniza, o sin poder dejar la marca, sería peor que
-    no hacer nada. Y forzado también mientras nadie diga A QUIÉN se le aplica
-    (FANOUT_CERO_SOLO_SKUS vacío): apagar FANOUT_CERO_ENSAYO no puede, por sí
-    solo, soltar el seguro sobre todo el catálogo."""
+    """(¿corre en ensayo?, por qué). Ya no hay ensayo «a pedido»: sólo el FORZADO,
+    que es cuando el fan-out no escribe de verdad en ese canal o la bitácora no
+    llega a kubera. Apagar una publicación mientras su stock no se sincroniza, o
+    sin poder dejar la marca, sería peor que no hacer nada."""
     from services import fanout_stock
     canal = (canal or "").lower()
     forzado: list[str] = []
@@ -284,10 +293,7 @@ def ensayo(canal: str) -> tuple[bool, list[str]]:
         forzado.append(f"FANOUT_{canal.upper()} apagado")
     if not getattr(settings, "supabase_write_fanout_log", False):
         forzado.append("SUPABASE_WRITE_FANOUT_LOG apagado (sin bitácora en kubera no hay marca)")
-    if not _solo_skus():
-        forzado.append("FANOUT_CERO_SOLO_SKUS vacío (falta decir a quién: una lista de SKUs, "
-                       "o * para todo el catálogo)")
-    return bool(getattr(settings, "fanout_cero_ensayo", True)) or bool(forzado), forzado
+    return bool(forzado), forzado
 
 
 # ── Estados ──────────────────────────────────────────────────────────────────
@@ -987,10 +993,10 @@ class Contexto:
     se sellan al cerrar, con el `ts` del evento, para que el panel las junte."""
 
     __slots__ = ("sku", "motivo", "stock_drop", "objetivo", "filas", "vuelta",
-                 "presupuesto", "avisos", "manual", "detalle", "ensayo")
+                 "presupuesto", "avisos", "detalle", "ensayo")
 
     def __init__(self, sku: str, motivo: str, stock_drop: Any, objetivo: Any,
-                 vuelta: dict[str, Any] | None = None, manual: bool = False):
+                 vuelta: dict[str, Any] | None = None):
         self.sku = sku
         self.motivo = motivo
         self.stock_drop = stock_drop
@@ -1003,7 +1009,6 @@ class Contexto:
         self.presupuesto = vuelta
         # En un barrido los avisos son de la VUELTA (una campana, no una por SKU).
         self.avisos: dict[str, list] = vuelta["avisos"] if vuelta else _avisos_nuevos()
-        self.manual = manual
         self.detalle: dict[str, Any] = {}
         # Por canal: ¿este evento corre en ensayo? En ensayo TODAS sus filas van
         # con `dry_run`, no sólo la de «apagaría».
@@ -1027,15 +1032,15 @@ def _presupuesto_de(motivo: Any) -> dict[str, Any] | None:
 
 
 def abrir(sku: str, motivo: str, plan: dict[str, Any] | None,
-          vuelta: dict[str, Any] | None = None, manual: bool = False) -> Contexto | None:
-    """Abre el contexto de un evento. None si el seguro está apagado: entonces
-    `antes`, `despues` y `cerrar` no hacen nada."""
+          vuelta: dict[str, Any] | None = None) -> Contexto | None:
+    """Abre el contexto de un evento. None si el fan-out está apagado (y con él el
+    seguro): entonces `antes`, `despues` y `cerrar` no hacen nada."""
     if not habilitado():
         return None
     p = plan or {}
     ctx = Contexto(str(sku or "").strip(), motivo, p.get("stock_drop"), p.get("objetivo"),
-                   vuelta, manual)
-    if vuelta is None and not manual:
+                   vuelta)
+    if vuelta is None:
         ctx.presupuesto = _presupuesto_de(motivo)
     return ctx
 
@@ -1264,12 +1269,10 @@ def _es_destino(ctx: Contexto | None, a: dict[str, Any]) -> str | None:
     if ctx is None or not ctx.sku:
         return None
     canal = (a.get("canal") or "").lower()
-    if canal not in CANALES or not canal_encendido(canal):
+    if canal not in CANALES:
         return None
     # FULL, borrada, borrador de Temu: lo que el fan-out ya descarta por destino.
     if a.get("fuera") or not str(a.get("item_id") or "").strip():
-        return None
-    if not _alcanza(ctx.sku):
         return None
     return canal
 
@@ -1347,7 +1350,7 @@ def _inactivar(ctx: Contexto, a: dict[str, Any], canal: str) -> None:
     #     sabe. Así las 3/2, DRAFT y similares no cuestan llamadas ni filas. Las
     #     que pueden volver solas a la venta (3/1, 3/3, 2/4) dejan UNA fila al día,
     #     para que el ensayo enseñe cuántas son.
-    if not ctx.manual and censo and not apagable(canal, censo):
+    if censo and not apagable(canal, censo):
         aviso = _sin_sondear(canal, censo)
         if aviso:
             _anotar(ctx, a, ACC_OMITIR, aviso)
@@ -1386,14 +1389,13 @@ def _inactivar(ctx: Contexto, a: dict[str, Any], canal: str) -> None:
     # número vale POR HORA. Lo que no alcance lo apaga el barrido del siguiente
     # censo, que lleva su propio tope. Sin esto, 40 SKUs que caen a 0 de golpe
     # eran 40 llamadas en una sola tanda (medido con el canal falseado).
-    suelto = vuelta is None and not ctx.manual
+    suelto = vuelta is None
     if not en_ensayo and tope_vuelta and suelto and _sueltos_en_la_hora(canal) >= tope_vuelta:
         _anotar(ctx, a, ACC_OMITIR,
                 f"tope por hora ({tope_vuelta}): la apaga el barrido del siguiente censo")
         return
-    # El canal lleva dos «ok» seguidos sin que se vea nada: no se le pide más un
-    # rato. A mano (canario) sí: el sondeo quiere ver justo eso.
-    if not en_ensayo and not ctx.manual:
+    # El canal lleva dos «ok» seguidos sin que se vea nada: no se le pide más un rato.
+    if not en_ensayo:
         falta = _en_pausa(canal)
         if falta:
             _anotar(ctx, a, ACC_OMITIR,
@@ -1410,10 +1412,7 @@ def _inactivar(ctx: Contexto, a: dict[str, Any], canal: str) -> None:
         estado = str(vivo.get("estado") or "")
         stock = _stock_vivo(vivo, sku)
         ctx.detalle.update(antes=estado, stock_vivo=stock)
-        # A mano (canario) también se dejan probar los estados sin sondear de Temu
-        # (3/1, 3/3, 2/4): es justo el sondeo.
-        permitido = apagable(canal, estado) or (ctx.manual and canal == "temu" and estado in _TEMU_VIGILADOS)
-        if not permitido:
+        if not apagable(canal, estado):
             aviso = _sin_sondear(canal, estado)
             if aviso:
                 _anotar(ctx, a, ACC_OMITIR, aviso, stock=stock)
@@ -1541,17 +1540,14 @@ def despues(ctx: Contexto | None, a: dict[str, Any], escritura_ok: bool | None =
     `escritura_ok` = el escritor dio «ok» (None = no se escribió). Si el objetivo
     es mayor que 0 y la publicación lleva la marca del seguro, evalúa reactivarla.
 
-    Sin FANOUT_CERO_REACTIVAR el seguro sólo apaga y aquí no pasa nada; lo que se
-    quedó apagado y ya tiene stock lo dice el BARRIDO de cada censo
-    (`_aviso_con_stock`: una fila al día y un resumen a Slack), que mira un stock
-    que ya se sostuvo y no un parpadeo."""
+    La reactivación ya no tiene bandera: va siempre. Lo que aun así se quede
+    apagado con stock (la espera, un error, Temu la movió) lo dice el BARRIDO de
+    cada censo (`_aviso_con_stock`: una fila al día y un resumen a Slack)."""
     canal = _es_destino(ctx, a)
     if canal is None:
         return
     objetivo = a.get("objetivo")
     if objetivo is None or int(objetivo) <= 0:
-        return
-    if not getattr(settings, "fanout_cero_reactivar", False):
         return
     _reactivar(ctx, a, canal, escritura_ok)
 
@@ -1566,7 +1562,7 @@ def _reactivar(ctx: Contexto, a: dict[str, Any], canal: str,
     # 1 · MARCA vigente. Sin marca no hay nada que hacer ni que anotar; con la
     #     bitácora muda, «no sé» = no se reactiva.
     try:
-        if not ctx.manual and (canal, item) not in _marcas_por_item():
+        if (canal, item) not in _marcas_por_item():
             return
         propia = marca(canal, item)
     except Exception as exc:  # noqa: BLE001
@@ -1594,10 +1590,10 @@ def _reactivar(ctx: Contexto, a: dict[str, Any], canal: str,
         ajeno = cambio_ajeno(canal, sku, propia.get("ts"), _propios(canal, dejado["a"]))
         # 3b · ¿Alguien apagó el canal EN BLOQUE después de la marca? Eso no le
         #      cambia el estado a ésta (ya estaba apagada), así que no deja rastro
-        #      en ella: se ve en las demás. A mano (canario) no se pregunta.
-        bloque = None if (ajeno or ctx.manual) else apagado_en_bloque(canal, propia.get("ts"))
+        #      en ella: se ve en las demás.
+        bloque = None if ajeno else apagado_en_bloque(canal, propia.get("ts"))
         # 4 · Objetivo > 0 SOSTENIDO (anti-parpadeo).
-        edad = None if ctx.manual else edad_con_stock_s(sku)
+        edad = edad_con_stock_s(sku)
     except Exception as exc:  # noqa: BLE001
         _anotar(ctx, a, ACC_ERROR, f"ERROR: no pude leer la bitácora ({type(exc).__name__}); no se reactiva")
         return
@@ -1627,15 +1623,14 @@ def _reactivar(ctx: Contexto, a: dict[str, Any], canal: str,
                 f"{NOMBRE.get(canal, canal)} a la vez (hacia {bloque.get('hora')}); regresarla iría contra "
                 f"esa pausa")))
         return
-    if not ctx.manual:
-        espera_s = _entero("fanout_cero_espera_min", 30) * 60
-        if edad is None or edad < espera_s:
-            falta = espera_s - (edad or 0.0)
-            if not en_ensayo:           # el ensayo sólo mira: no devuelve nada a la cola
-                _programar(sku, falta)
-            _anotar(ctx, a, ACC_SIN_CAMBIO,
-                    f"espera {max(1, math.ceil(falta / 60))} min: el stock debe sostenerse antes de reactivar")
-            return
+    espera_s = _entero("fanout_cero_espera_min", 30) * 60
+    if edad is None or edad < espera_s:
+        falta = espera_s - (edad or 0.0)
+        if not en_ensayo:               # el ensayo sólo mira: no devuelve nada a la cola
+            _programar(sku, falta)
+        _anotar(ctx, a, ACC_SIN_CAMBIO,
+                f"espera {max(1, math.ceil(falta / 60))} min: el stock debe sostenerse antes de reactivar")
+        return
 
     with _candado(canal, item):
         # 2 · Estado VIVO igual al que dejó el seguro (quedó escrito en la marca).
@@ -1674,7 +1669,7 @@ def _reactivar(ctx: Contexto, a: dict[str, Any], canal: str,
         con_stock = escritura_ok is True or (
             stock is not None and objetivo is not None and int(objetivo) > 0
             and int(stock) == int(objetivo))
-        if not con_stock and not ctx.manual:
+        if not con_stock:
             _anotar(ctx, a, ACC_SIN_CAMBIO,
                     f"esperando stock (vivo {stock if stock is not None else '?'}, objetivo {objetivo})", stock=stock)
             return
@@ -1833,8 +1828,8 @@ def barrer(canal: str) -> dict[str, Any]:
          (`3/1` → `2/8`). Relee Woo con `plan()` antes de actuar.
       2. Mira las marcas vigentes: avisa de las HUÉRFANAS (el censo ya tiene otra
          publicación para ese SKU), devuelve a la cola las que ya tienen stock
-         (si la reactivación está encendida) y deja dicho cuáles siguen APAGADAS
-         CON STOCK (una fila al día y un resumen a Slack).
+         (salvo en ensayo) y deja dicho cuáles siguen APAGADAS CON STOCK (una fila
+         al día y un resumen a Slack).
       3. TikTok: revisa las reactivaciones que quedaron en auditoría.
 
     El tope «por vuelta» de aquí vale también para los excedentes que el censo
@@ -1846,16 +1841,13 @@ def barrer(canal: str) -> dict[str, Any]:
     if canal not in CANALES:
         return {"ok": False, "motivo": f"'{canal}' no es Temu ni TikTok"}
     if not habilitado():
-        return {"ok": False, "motivo": "FANOUT_CERO_ENABLED apagado"}
-    if not canal_encendido(canal):
-        return {"ok": False, "motivo": f"FANOUT_CERO_{canal.upper()} apagado"}
+        return {"ok": False, "motivo": APAGADO}
     t0 = _ahora()
     vuelta: dict[str, Any] = {"reales": 0, "ensayos": 0, "avisos": _avisos_nuevos()}
     with _lock:
         _presupuestos[canal] = {"t": t0, "vuelta": vuelta}
     cuenta: dict[str, int] = {}
     muestra: list[str] = []
-    solo = _solo_skus()
 
     def paso(nombre: str, fn, omision: Any = None) -> Any:
         try:
@@ -1871,8 +1863,6 @@ def barrer(canal: str) -> dict[str, Any]:
     filas = paso("candidatos", lambda: candidatos(canal), []) or []
     for f in filas:
         sku = str(f["sku"])
-        if not _alcanza(sku, solo):
-            continue
         ctx = None
         try:
             p = fanout_stock.plan(sku)        # Woo EN VIVO: la foto pudo quedar atrás
@@ -1904,10 +1894,9 @@ def barrer(canal: str) -> dict[str, Any]:
             vuelta["avisos"]["huerfana"].append(
                 (canal, str(m["sku"]), str(m["item_id"]), m.get("listing_actual")))
     reencolados: list[str] = []
-    if (getattr(settings, "fanout_cero_reactivar", False) and fanout_stock.habilitado()
-            and not ensayo(canal)[0]):      # el ensayo sólo mira: no devuelve nada a la cola
+    if not ensayo(canal)[0]:            # el ensayo sólo mira: no devuelve nada a la cola
         reencolados = paso("marcas con stock de vuelta",
-                           lambda: _reencolar_marcas(canal, solo, marcas), []) or []
+                           lambda: _reencolar_marcas(canal, marcas), []) or []
     nuevas_con_stock = paso("apagadas con stock",
                             lambda: _aviso_con_stock(canal, vuelta, marcas), []) or []
     if canal == "tiktok":
@@ -2005,7 +1994,7 @@ def _reconciliar(canal: str, vuelta: dict[str, Any]) -> dict[str, int]:
     return cuenta
 
 
-def _reencolar_marcas(canal: str, solo: set[str], marcas: list[dict[str, Any]]) -> list[str]:
+def _reencolar_marcas(canal: str, marcas: list[dict[str, Any]]) -> list[str]:
     """Devuelve a la cola del fan-out las marcas vigentes cuyo Woo ya es mayor que
     0 (por si un reinicio borró su espera). Una misma marca, a lo mucho una vez
     al día: una que no puede cerrarse (SKU excluido, destino descartado) se
@@ -2022,7 +2011,7 @@ def _reencolar_marcas(canal: str, solo: set[str], marcas: list[dict[str, Any]]) 
         woo = m.get("stock_woo")
         if m.get("huerfana") or woo is None or int(woo) <= 0:
             continue
-        if sku.upper() in en_cola or sku.upper() in esperando or not _alcanza(sku, solo):
+        if sku.upper() in en_cola or sku.upper() in esperando:
             continue
         with _lock:
             t = _reencoladas.get((canal, item))
@@ -2036,18 +2025,17 @@ def _reencolar_marcas(canal: str, solo: set[str], marcas: list[dict[str, Any]]) 
 
 def _aviso_con_stock(canal: str, vuelta: dict[str, Any], marcas: list[dict[str, Any]]) -> list[str]:
     """
-    Lo que el seguro tiene APAGADO y ya tiene stock en Woo. Con la reactivación
-    apagada (pasos 1 a 3 del encendido) esas publicaciones se quedaban fuera de la
-    venta sin ninguna señal: el fan-out les escribía el stock y seguían apagadas,
-    con 50 piezas en Woo. Aquí queda una fila al día por publicación
+    Lo que el seguro tiene APAGADO y ya tiene stock en Woo: que no se quede fuera
+    de la venta sin ninguna señal. Aquí queda una fila al día por publicación
     (`cero_sin_cambio «con stock y apagada…»`) y las NUEVAS de hoy salen juntas en
     un aviso; la lista completa está siempre en `/api/fanout/seguro` y en la matriz.
 
-    Con la reactivación encendida sólo cuentan las que llevan horas con stock: el
-    seguro debió regresarlas y algo se lo impide (espera, tope, error, Temu la
-    movió a `3/3`…).
+    El seguro reactiva solo, así que sólo cuentan las que llevan horas con stock:
+    debió regresarlas y algo se lo impide (espera, error, Temu la movió a `3/3`…).
+    En ENSAYO (el fan-out no escribe de verdad en ese canal) no regresa nada, y
+    entonces se dicen todas desde el primer censo.
     """
-    reactiva = bool(getattr(settings, "fanout_cero_reactivar", False)) and not ensayo(canal)[0]
+    reactiva = not ensayo(canal)[0]
     nuevas: list[str] = []
     for m in marcas:
         woo = m.get("stock_woo")
@@ -2064,7 +2052,8 @@ def _aviso_con_stock(canal: str, vuelta: dict[str, Any], marcas: list[dict[str, 
             razon = (f"lleva {round(edad / 3600)} h con stock y el seguro no la ha regresado "
                      "(su renglón dice por qué: espera, tope, error o estado movido)")
         else:
-            razon = "la reactivación automática está apagada (FANOUT_CERO_REACTIVAR): reactivarla a mano"
+            razon = ("el seguro corre en ensayo en este canal (el fan-out no le escribe de verdad) "
+                     "y no la regresa solo: reactivarla a mano")
         ctx = Contexto(sku, MOTIVO_BARRIDO.format(canal=canal), None, None, vuelta=vuelta)
         a = {"canal": canal, "cuenta": m.get("cuenta"), "item_id": str(m["item_id"]),
              "stock_actual_canal": m.get("stock_own")}
@@ -2125,19 +2114,19 @@ def _revisar_auditoria(canal: str, vuelta: dict[str, Any]) -> None:
             vuelta["avisos"]["auditoria"].append((canal, sku, que))
 
 
-# ── A mano: soltar una marca y la vía del canario ────────────────────────────
+# ── A mano: soltar una marca ─────────────────────────────────────────────────
 
 def soltar(sku: str, canal: str) -> dict[str, Any]:
     """Suelta la marca del seguro para `sku` en `canal`: deja de considerarla
     suya (no la reactivará) y destraba el corte de «3 errores». No toca el canal.
-    Con el seguro apagado no hace nada, y sólo anota donde hay algo que soltar:
+    Con el fan-out apagado no hace nada, y sólo anota donde hay algo que soltar:
     una marca vigente o un corte por errores."""
     from services import supabase_db as sdb
     sku, canal = str(sku or "").strip(), (canal or "").strip().lower()
     if canal not in CANALES or not sku:
         return {"ok": False, "motivo": "hace falta sku y canal (temu | tiktok)"}
     if not habilitado():
-        return {"ok": False, "motivo": "FANOUT_CERO_ENABLED apagado"}
+        return {"ok": False, "motivo": APAGADO}
     items: dict[str, dict[str, Any]] = {}
     for m in marcas_vigentes(canal):
         if _igual(m.get("sku"), sku):
@@ -2164,59 +2153,6 @@ def soltar(sku: str, canal: str) -> dict[str, Any]:
     _olvidar_marcas()
     return {"ok": all(s["sellada"] for s in soltadas), "sku": sku, "canal": canal,
             "soltadas": soltadas}
-
-
-def aplicar(sku: str, canal: str, accion: str) -> dict[str, Any]:
-    """
-    La vía del CANARIO: aplica el seguro a UN SKU a mano, desde producción (la
-    API de Temu sólo contesta desde la IP de Railway). Sólo para SKUs que estén
-    NOMBRADOS en FANOUT_CERO_SOLO_SKUS (`*` no cuenta), y respeta el ensayo: en
-    ensayo anota lo que haría. También gasta el tope del día.
-
-    `inactivar` exige objetivo 0 y se salta el prefiltro del censo (deja probar el
-    `3/1` de Temu). `reactivar` exige la marca vigente del seguro y que nadie más
-    haya movido el estado, pero se salta la espera y el «primero el stock» (el
-    sondeo quiere ver qué pasa al prender con stock 0). Devuelve lo que contestó
-    el canal y el estado antes y después.
-    """
-    from services import fanout_stock
-    sku, canal, accion = str(sku or "").strip(), (canal or "").strip().lower(), (accion or "").strip().lower()
-    if canal not in CANALES:
-        return {"ok": False, "motivo": "canal: temu | tiktok"}
-    if accion not in ("inactivar", "reactivar"):
-        return {"ok": False, "motivo": "accion: inactivar | reactivar"}
-    if not habilitado():
-        return {"ok": False, "motivo": "FANOUT_CERO_ENABLED apagado"}
-    if not canal_encendido(canal):
-        return {"ok": False, "motivo": f"FANOUT_CERO_{canal.upper()} apagado"}
-    if sku.upper() not in _solo_skus():
-        return {"ok": False, "motivo": f"{sku} no está en FANOUT_CERO_SOLO_SKUS (la vía manual es sólo para el canario)"}
-    p = fanout_stock.plan(sku)
-    if not p.get("ok"):
-        return {"ok": False, "motivo": p.get("motivo") or "sin plan"}
-    destinos = [x for x in p.get("acciones") or []
-                if (x.get("canal") or "").lower() == canal and str(x.get("item_id") or "").strip()]
-    if not destinos:
-        return {"ok": False, "motivo": f"{sku} no tiene publicación en {canal}"}
-    if accion == "inactivar" and p.get("objetivo") != 0:
-        return {"ok": False, "motivo": f"el objetivo de {sku} es {p.get('objetivo')}, no 0: el seguro sólo apaga en 0"}
-    en_ensayo, forzado = ensayo(canal)
-    ctx = Contexto(sku, MOTIVO_MANUAL, p.get("stock_drop"), p.get("objetivo"), manual=True)
-    try:
-        for a in destinos:
-            if a.get("fuera"):
-                ctx.detalle.update(motivo=f"el fan-out descarta ese destino: {a.get('omitido_por')}")
-                continue
-            if accion == "inactivar":
-                _inactivar(ctx, a, canal)
-            else:
-                _reactivar(ctx, a, canal, None)
-    finally:
-        cerrar(ctx)
-    return {"ok": True, "sku": sku, "canal": canal, "accion": accion,
-            "ensayo": en_ensayo, "ensayo_forzado": forzado, "objetivo": p.get("objetivo"),
-            "filas": [{k: v for k, v in f.items() if k != "real"} for f in ctx.filas],
-            "detalle": ctx.detalle}
 
 
 # ── Aviso: «vendió estando apagada» ──────────────────────────────────────────
@@ -2328,13 +2264,13 @@ def _breve(m: dict[str, Any]) -> dict[str, Any]:
 
 
 def resumen_panel() -> dict[str, Any]:
-    """El pie de /dashboard: apagado / ensayo / encendido por canal, cuántas tiene
-    apagadas, cuántas de ésas ya tienen stock y cuánto del tope de hoy lleva cada
-    canal. Sólo lee (una consulta, más el tope de los canales encendidos)."""
+    """El pie de /dashboard: apagado (el fan-out lo está) / ensayo / encendido por
+    canal, cuántas tiene apagadas, cuántas de ésas ya tienen stock y los intentos de
+    hoy de cada canal. Sólo lee (una consulta, más la cuenta de hoy por canal)."""
     canales: dict[str, dict[str, Any]] = {}
     for c in CANALES:
         en_ensayo, forzado = ensayo(c)
-        canales[c] = {"nombre": NOMBRE[c], "encendido": habilitado() and canal_encendido(c),
+        canales[c] = {"nombre": NOMBRE[c], "encendido": habilitado(),
                       "ensayo": en_ensayo, "forzado": forzado}
     activos = [c for c in CANALES if canales[c]["encendido"]]
     modo = ("apagado" if not activos
@@ -2350,7 +2286,9 @@ def resumen_panel() -> dict[str, Any]:
         canales[c]["con_stock"] = sum(1 for m in pendientes_ if m["canal"] == c)
         canales[c]["hoy"] = usadas_hoy(c, ACC_INACTIVAR) if canales[c]["encendido"] else 0
     return {"modo": modo, "apagadas": len(marcas), "tope_dia": tope,
-            "reactivar": bool(getattr(settings, "fanout_cero_reactivar", False)),
+            # La reactivación ya no tiene bandera: va siempre. Sólo deja de regresar
+            # publicaciones donde el seguro corre en ensayo (el fan-out no escribe).
+            "reactivar": modo == "encendido",
             "con_stock": [{"canal": m["canal"], "sku": m["sku"], "woo": int(m["stock_woo"]),
                            "desde": m.get("desde")} for m in pendientes_[:30]],
             "soltadas": [{"canal": s["canal"], "sku": s["sku"], "woo": int(s["stock_woo"]),
@@ -2359,14 +2297,15 @@ def resumen_panel() -> dict[str, Any]:
 
 
 def estado() -> dict[str, Any]:
-    """`GET /api/fanout/seguro`: banderas efectivas, si corre en ensayo forzado y
-    por qué, marcas vigentes, las apagadas que ya tienen stock, las soltadas que
-    siguen fuera de la venta, lo que quedó a medias, usadas/tope de hoy y la
-    última vuelta. Sólo lee: no llama a ningún canal."""
+    """`GET /api/fanout/seguro`: si corre (va pegado al fan-out), si algún canal
+    está en ensayo forzado y por qué, marcas vigentes, las apagadas que ya tienen
+    stock, las soltadas que siguen fuera de la venta, lo que quedó a medias, los
+    intentos de hoy y la última vuelta. Sólo lee: no llama a ningún canal."""
     salida: dict[str, Any] = {
+        # Sin interruptor propio: `habilitado` = el fan-out está encendido.
         "habilitado": habilitado(),
-        "ensayo": bool(getattr(settings, "fanout_cero_ensayo", True)),
-        "reactivar": bool(getattr(settings, "fanout_cero_reactivar", False)),
+        "interruptor": "ninguno: siempre encendido, pegado al fan-out",
+        "reactivar": True,
         "espera_min": _entero("fanout_cero_espera_min", 30),
         # 0 = sin tope (así nacen los cuatro).
         "topes": {"vuelta": _entero("fanout_cero_tope_vuelta", 0),
@@ -2374,7 +2313,7 @@ def estado() -> dict[str, Any]:
                   "dia": _entero("fanout_cero_tope_dia", 0),
                   "reactivar_dia": _entero("fanout_cero_tope_reactivar_dia", 0),
                   "cuentan": "llamadas al canal (salgan bien o no), no éxitos"},
-        "excluir": sorted(_excluidos()), "solo_skus": sorted(_solo_skus()),
+        "excluir": sorted(_excluidos()),
         "temu_estados": sorted(estados_temu()),
         "temu_nivel_sku": bool(getattr(settings, "fanout_cero_temu_nivel_sku", False)),
         "relectura": {"espera_s": _espera_s(), "veces": _relecturas()},
@@ -2401,7 +2340,7 @@ def estado() -> dict[str, Any]:
     for c in CANALES:
         en_ensayo, forzado = ensayo(c)
         info: dict[str, Any] = {
-            "encendido": habilitado() and canal_encendido(c),
+            "encendido": habilitado(),
             "en_ensayo": en_ensayo, "ensayo_forzado": forzado,
             "marcas_vigentes": sum(1 for m in marcas if m["canal"] == c),
             "pausa_min": _en_pausa(c),

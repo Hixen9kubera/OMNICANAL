@@ -1001,6 +1001,78 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.631.0 — Seguro stock 0: SIEMPRE ENCENDIDO — sin interruptor, para todo el catálogo, con reactivación; y Temu ya inactiva también la «agotada»
+
+**Qué pidió Brandon (9-oct-2026).** «Enciéndelo, realiza las pruebas para únicamente inactivar la
+publicación y no borrarla, quita el tope […] y la reactivación automática está excelente; después
+quitas la variable para inactivar o reactivar automáticamente: éste deberá de estar siempre
+encendido». La v0.630.0 hizo lo primero (canario + sin tope). Ésta hace lo último.
+
+**Lo que midió el canario en Temu (07:25 UTC, ya con la lectura por cubeta de la v0.630.0).**
+
+| SKU | `cero_intento` | `cero_inactivar` | Releída en vivo por `/investigacion` |
+|---|---|---|---|
+| `ACC-0574-LIL` | 07:25:54 «apagar (vivo 3/1)» | 07:26:03 «ok (3/1→3/2)» | existe · `3/2` · `goodsStatusChangeTime` = 07:25:54 |
+| `DEC-0078-PLA` | 07:26:04 «apagar (vivo 3/1)» | 07:26:14 «ok (3/1→3/2)» | existe · `3/2` · `goodsStatusChangeTime` = 07:26:05 |
+
+Es decir: `bg.local.goods.sale.status.set {goodsId, onsale: 0}` funciona con nuestro token, **acepta
+`3/1` (agotada)** y deja la publicación en `3/2`, que es el mismo estado de lo que se apaga a mano en
+el Seller Center. **Inactiva, no borra**: la publicación se vuelve a leer, con su SKU y su id. En
+TikTok (`ACTIVATE → SELLER_DEACTIVATED`) los tres censos siguientes la siguieron listando.
+
+**Qué cambia.**
+
+1. **Ya no existen** `FANOUT_CERO_ENABLED`, `FANOUT_CERO_ENSAYO`, `FANOUT_CERO_TEMU`,
+   `FANOUT_CERO_TIKTOK`, `FANOUT_CERO_REACTIVAR` ni `FANOUT_CERO_SOLO_SKUS`. No hay variable que lo
+   apague, lo deje en ensayo, le quite un canal, le quite la reactivación o lo limite a unos SKUs.
+   Si alguna sigue puesta en Railway **no la lee nadie** (`extra="ignore"`): borrarlas del panel es
+   limpieza, no cambia nada.
+2. **Va pegado al fan-out.** `fanout_stock.seguro_encendido()` es la única pregunta que hacen el
+   fan-out, los censos de Temu y TikTok y `pedidos_ml`, y contesta lo mismo que `FANOUT_ENABLED`.
+   Con el fan-out apagado el seguro no lee ni anota nada (ni se importa su módulo).
+3. **Para todo el catálogo y en los dos canales**, menos lo que nombre `FANOUT_CERO_EXCLUIR`.
+4. **Reactiva siempre** lo que él mismo apagó (su marca en `ops.fanout_log`), con el stock escrito
+   primero y sostenido 30 min. Lo que apagó una persona no lo toca.
+5. **Temu `3/1` es apagable de fábrica** (`FANOUT_CERO_TEMU_ESTADOS` nace en `2/8,3/1`). Es el
+   estado desde el que Temu regresa sola a la venta: 13 de las 15 ventas con nuestro stock en 0
+   entraron por ahí.
+6. **Se va la vía manual** (`POST /api/fanout/seguro/aplicar`) y su modo `manual`: era la del
+   canario y sólo servía para los SKUs nombrados en una variable que ya no existe. A mano queda
+   `POST /api/fanout/seguro/soltar` (le dice al seguro que olvide una publicación).
+
+**El freno de emergencia** es el del fan-out de cada canal, sin deploy: con `FANOUT_TEMU=false`,
+`FANOUT_TIKTOK=false` o `FANOUT_DRY_RUN=true` el seguro cae en ENSAYO FORZADO en ese canal —lee y
+anota lo que haría, no apaga ni prende—, porque apagar una publicación cuyo stock no se está
+sincronizando sería peor que no hacer nada. El pie de Operaciones lo dice por canal.
+
+**Lo que hay que saber de «sin tope» (v0.630.0) ahora que es para todo el catálogo.** Si algo vacía
+Woo de golpe (un día malo de Odoo), el seguro saca de la venta todo lo que quede en 0 en Temu y
+TikTok. Lo que lo acota: el barrido toma 60 publicaciones por censo; si un canal no confirma dos
+apagados seguidos se le deja de pedir una hora; tres errores seguidos cortan esa publicación; cada
+apagado sale en un aviso; y al volver el stock las regresa solo (en TikTok pasa por su auditoría).
+
+**Lo que falta ver en vivo.** Los dos REGRESOS a la venta (`onsale: 1` y `/products/activate`): van
+a ocurrir solos la primera vez que a un SKU apagado le vuelva el stock, y si el canal no la deja a
+la venta el seguro lo dice y conserva la marca. Y `3/3` y `2/4` de Temu siguen sin apagarse: nadie
+ha visto qué hace `sale.status.set` desde ahí (si Temu las regresa a `2/8`, las apaga el censo
+siguiente).
+
+**Pruebas.** `tests/test_fanout_seguro.py`: 214.
+- `SinInterruptor` (nueva): la configuración ya no tiene los seis campos; ningún módulo los lee; un
+  proceso arrancado con las seis variables viejas puestas en «apagado» sigue con el seguro
+  encendido; aplica a cualquier SKU y a los dos canales; reactiva sin bandera; ya no hay vía
+  manual; y el freno es el del fan-out del canal.
+- Lo que era «con el seguro apagado» pasa a ser «con el fan-out apagado» (`ApagadoNoHaceNada`,
+  `IdenticoApagado`, `SoltarConElFanoutApagado`, censos y excedentes). Se van `Canario` y las
+  pruebas de `aplicar`.
+- 24 mutaciones sobre lo que cambió el 9-oct: 23 atrapadas y 1 equivalente (quitar el prefiltro de
+  marcas no cambia nada porque la marca se vuelve a pedir enseguida; quitando las dos
+  comprobaciones fallan 5 pruebas).
+- `tests/test_fanout_excedentes.py` deja fuera al seguro a propósito (ya no tiene interruptor y
+  correría con esas pruebas si el entorno trae el fan-out encendido).
+- La batería completa del backend: 61 módulos en verde. `test_regla_11_productos` falla desde
+  antes y por otra cosa (`leer_contenido_canal`).
+
 ### v0.630.0 — Seguro stock 0: el canario destapó que Temu no dice el estado sin la cubeta, y los topes se quitan (nacen en 0 = sin tope)
 
 **Qué pidió Brandon (9-oct-2026).** Encender el seguro «stock 0 ⇒ fuera de la venta», probar que
