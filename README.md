@@ -1006,9 +1006,10 @@ cerrados devuelven `category_id.not_modifiable`).
 > **Número.** Antes en la rama `feat/devoluciones-pestana`, en dos entregas que nunca llegaron a
 > `main`: «v0.628.0» (la liga por fecha, commits a25edd9 y 0f164bb) y «v0.631.0» (la pestaña,
 > fa725b8 y cc4b2c0). `main` usó esos números para otras cosas (v0.628.0 órdenes de venta, v0.631.0
-> seguro stock 0), así que las dos se publican juntas, en un solo commit, como v0.634.0. Abajo, la
-> pestaña (parte 1) y la liga por fecha (parte 2); las cifras de cada parte son las de su día.
-> Solo lectura, solo admin, sin banderas: nada que encender ni apagar.
+> seguro stock 0), así que las dos se publican juntas, en un solo commit, con el número de este
+> encabezado (si hubiera que renumerar, el número vive solo aquí y en `backend/main.py`, dos
+> lugares). Abajo, la pestaña (parte 1) y la liga por fecha (parte 2); las cifras de cada parte son
+> las de su día. Solo lectura, solo admin, sin banderas: nada que encender ni apagar.
 
 #### Parte 1 · La pestaña Devoluciones (antes rama «v0.631.0»)
 
@@ -1342,7 +1343,7 @@ Suite del backend: 2,415, la misma falla ajena que también da `origin/main`
 (`test_regla_11_productos`: `leer_contenido_canal:1232 wp_db.norma_titulo`). Sin cambios de
 frontend en la revisión.
 
-**Al publicar (v0.634.0, 9-oct).** Un solo commit encima de `main` en la v0.633.0 (c011d4a), hecho con
+**Al publicar (9-oct).** Un solo commit encima de `main` en la v0.633.0 (c011d4a), hecho con
 `git merge --squash` de la rama. Lo que `main` cambió en los mismos archivos queda intacto: en
 `services/fanout_vivo.py`, `_en_vivo`, `_celda_reparto` y el «· en vivo» de la v0.633.0 (y
 `_atender_seguro`, `_celda_matriz`, `historia`, `matriz`) son idénticos a `main`, y la rama solo trae
@@ -1352,6 +1353,13 @@ sus siete funciones de la liga más cinco nuevas; `routers/fanout.py` y `tipos.t
   Suite del backend: 2,580, 110 omitidas y la misma falla ajena (`test_regla_11_productos`:
   `leer_contenido_canal:1232 wp_db.norma_titulo`, igual en `origin/main`). `tsc --noEmit` y
   `next build` limpios (`/dashboard/devoluciones`, 11 kB).
+- **Junto a la limpieza de la Fase 1** (rama `chore/limpieza-fase1`, sin publicar el 9-oct, que
+  también trae una «v0.634.0»; quien empuje segundo renumera): con `git merge-tree` las dos solo
+  chocan en los números (`backend/main.py`, sus dos lugares, y la cabeza del README); `tipos.ts` y
+  `routers/fanout.py` se combinan solos. Con las dos juntas, `test_fanout_*` (8 módulos),
+  `test_aplicar_migraciones` y `test_ordenes_venta`: 650 OK, y `tsc --noEmit` limpio. Su migración
+  de limpieza (hoy 0071) borra `ops.devoluciones` y `ops.stock_formato*`; la pestaña no lee
+  ninguna de las dos.
 - **Humo contra producción** (9-oct 14:46 CDMX; el código de esta versión en local, kubera en
   transacciones de solo lectura y Odoo solo `search_read`/`read`/`fields_get`): la bandeja de 60 días
   en frío, 13.9 s (17 llamadas a Odoo, 11.7 s; 2 consultas a kubera, 2.1 s); con caché, 0.4 s; 14 días
