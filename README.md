@@ -1001,6 +1001,147 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.633.0 — Fan-out · TikTok y Temu: si la libreta del canal puede estar vieja, decide la lectura en vivo (`FANOUT_VERIFICAR_RANCIO`, nace APAGADA)
+
+**El defecto (medido el 9-oct-2026 en producción, solo lectura).** `fanout_stock.plan` decide «el canal ya tiene N»
+comparando el objetivo contra `channel.listings.stock_own`, y ningún escritor del fan-out actualiza esa fila después
+de escribir. En Mercado Libre la corrige el webhook `items` en 0.7 s; en TikTok y Temu sólo el censo, cada 60 min
+(después de una escritura nuestra: mediana 20 min, p90 43 min). Si en esa ventana Woo regresa al número viejo, el plan
+ve la cifra vieja, dice «sin cambio» y el canal se queda con lo último que le escribimos.
+
+| 60 días (TikTok + Temu) | episodios | horas | pzh | quién los cerraba |
+|---|---|---|---|---|
+| «sin cambio» rancios | 163 (8.8 % de sus «sin cambio»; ML 0.3 %) | | | |
+| canal ARRIBA de Woo | 24 | 16.4 | 350.6 de más | el corrector de excedentes («solo bajar»), en el censo |
+| ABAJO · venta + regreso por el delta de Odoo («benigno») | 106 | 314.1 | 346.8 de menos *contra Woo* | nadie — pero el canal tenía lo cierto: la pieza sí se vendió |
+| ABAJO · rebote de la foto de Odoo, **se quedó** | 10 | 339.6 | 2,526.6 de menos | nadie (6 siguen abiertos el 9-oct) |
+| ABAJO · rebote de la foto de Odoo, **la foto regresó a la cifra del canal** | 19 | 208.7 | 460.9 | Woo mismo, al regresar (17 son la oscilación del 7-oct 10:34→10:54→11:34) |
+| ABAJO · otro | 4 | 3.6 | 4.7 | |
+
+Abiertos el 9-oct: 6 (`TEC-1769-PLA` Temu en 0 con Woo en 1 desde el 5-oct; `ORG-0398-NEG` y `TEC-1221-NEG-6MTS` en
+TikTok y Temu; `TEC-1032-NEG-SOL` Temu). Y el seguro de stock 0 no reactivaba lo que había apagado si el stock volvía
+con un «sin cambio» rancio: para él no hubo escritura, y esperaba al censo más el reencolado diario.
+
+**El arreglo.** No se toca `plan` —así no cambian el seguro, la matriz en vivo, `/simular`, el recuperador ni los
+excedentes—. En `_aplicar` (`fanout_stock.py:1158`), un destino de TikTok o Temu que sale «sin cambio» y cuya última
+cifra CONOCIDA en `ops.fanout_log` —lo último que le escribimos, o lo que una verificación encontró— de las últimas
+`FANOUT_VERIFICAR_RANCIO_H` horas es OTRA, se le pasa al escritor, que lee el canal en vivo y decide
+(`_rancios` :1027, `_verificar` :1088). La memoria es `ops.fanout_log`, que sobrevive a los deploys. Cuatro candados,
+los tres últimos de la revisión:
+
+1. **Sin escritura nuestra reciente no se verifica**: lo que el canal tiene por debajo sin que lo hayamos tocado suele
+   ser un pedido sin pagar que Temu apartó (7 publicaciones el 9-oct, p. ej. `ACC-0768-EST`) y que el corrector deja
+   abajo a propósito.
+2. **Si el censo ya releyó la publicación después de esa escritura, tampoco** (:1072): la libreta no está rancia y la
+   diferencia la hizo el canal solo (un apartado, una venta propia). Lo dice `channel.listings.updated_at`, que el
+   censo pone a TODAS las filas del canal en cada corrida (en producción el 9-oct: un solo valor en las 517 de Temu y
+   en las 1,297 de TikTok; fuera del censo, en 60 días el historial sólo registra al seguro reflejando un estado —13
+   veces— y una carga del 14-ago), con 5 min de margen porque el censo LEE el canal antes de escribir la libreta. Eran 28 de las 212 verificaciones que hacía la
+   regla sin candados (p. ej. `DEC-0015-MOR` 139244, `JUGU-0089-PLA`, `COM-0081-ROS`, y `CAM-0030-QUE` hoy a las 12:07).
+3. **Respeta la dirección** (:1074): si lo último que le dejamos es MÁS que el objetivo, lo rancio sería tenerlo
+   ARRIBA y el escritor va con `solo_bajar`, que nunca sube: si en vivo tiene lo mismo o menos —Temu descuenta al
+   APARTAR, horas antes de que el pedido aparezca— no lo toca. Sólo se SUBE cuando lo último que le dejamos es menos
+   (el canal ABAJO). Bajar siempre es seguro.
+4. **No se sube tras una venta** (:1075): si lo último lo escribió una «venta …» y el objetivo sube, casi siempre es
+   stock_watch regresando la pieza antes de que Odoo tenga la orden (`ACC-0250-NEG` ×12: «delta de Odoo aplicado» la
+   regresa 1–7 min después). Subir re-ofrecería una pieza vendida; hoy el defecto dejaba al canal en N−1 «por
+   accidente», y ahora es a propósito. Si la venta de verdad se canceló, el siguiente censo ve el canal abajo y el
+   plan lo escribe en el siguiente movimiento, como siempre.
+
+Además: lo que el plan OMITIÓ (stock desconocido, borrador, FULL) nunca se verifica; Mercado Libre y Amazon tampoco; un
+canal con su candado apagado (`FANOUT_CANALES`, `FANOUT_TIKTOK`, `FANOUT_TEMU`) tampoco —esos candados salieron de
+`plan` a `_bloqueo_canal` sin cambiar una letra—. Si kubera no contesta, el «sin cambio» queda como siempre (WARNING).
+`FANOUT_VERIFICAR_RANCIO_H=0` apaga la verificación (antes, un 0 se volvía 2 h).
+
+**Los escritores.** Temu ya releía siempre antes de calcular la diferencia; ahora su «ya tenía» se llama `YA_TENIA`.
+TikTok, con `verificar=True`, compara la cantidad del almacén de ventas que ya venía en el mismo GET (ninguna llamada
+extra) y no escribe si es igual; si no la puede leer, contesta ERROR y no escribe a ciegas (decisión aceptada: se
+reintenta en el siguiente evento de la ventana, porque un error no cuenta como «lo último que le dejamos»).
+
+**La bitácora** (`stock_canal` = lo LEÍDO en vivo, como en las filas de Amazon y del seguro; la libreta va en el texto):
+
+| qué pasó | `accion` | `resultado` |
+|---|---|---|
+| tenía otra cifra y se escribió | `escribir` | `ok (verificado en vivo: 4→5; el censo decía 5)` |
+| ya tenía el objetivo | `sin_cambio` | `verificado en vivo: el canal ya tiene 5 (lo último que le escribimos fue 4)` |
+| tenía menos y no se le sube (modo bajar) | `sin_cambio` | `verificado en vivo: el canal tiene 4, no se le sube a 5 (lo último que le escribimos fue 8)` |
+| Temu bajó y la relectura quedó debajo | `escribir` | `ok (verificado en vivo: 8→4, no se sube a 5; el censo decía 5)` |
+| falló el canal | `escribir` | `ERROR (verificado en vivo): …` (`stock_canal` = lo último que le escribimos) |
+| dry-run, o sólo el ensayo | `sin_cambio` | `DRY-RUN` / `ENSAYO (verificaría en vivo[, sólo bajar]: lo último que le escribimos fue 4)` |
+
+Los analizadores de la bitácora que lean `stock_canal` como «la libreta» deben tomarla del texto en estas filas.
+
+**Lo que se ve.** La trazabilidad pinta «4 → 5 · en vivo», «ya tenía 5 · en vivo», «tiene 4 · no se sube · en vivo»,
+«error · sigue en 4» (antes decía «sigue en 5», el objetivo) y «… · verificaría». La matriz, las barras de coincidencia
+y el rastro toman una verificación como el último valor conocido del canal (`fanout_vivo._SQL_VIVAS`, `matriz`,
+`historia`): antes seguían pintando «escrito X» como pendiente hasta el censo. Y el resultado pasa a
+`_seguro("despues")`: si el seguro había apagado esa publicación, la reactiva sin esperar al censo.
+
+**Repetición de casos reales** (offline, sobre el extracto de 60 días del 9-oct 17:26 UTC que dio los 163 episodios;
+el modelo de la lectura en vivo es el de `analizar.py`):
+
+| | sin la regla | regla sin candados (v1 de esta rama) | **con la regla** |
+|---|---|---|---|
+| ARRIBA (24) | 16.4 h · 350.6 pzh | 24/24 cerrados | **24/24** en el primer «sin cambio» (bajando) |
+| ABAJO dañino · se quedó (10) | 339.6 h · 2,526.6 pzh | 10/10 | **10/10** en el primer «sin cambio» (subiendo) |
+| ABAJO dañino · la foto regresó (19) | 208.7 h · 460.9 pzh | 19/19, pero ofrece de más 460.9 pzh contra lo que se quedó | **igual: 19/19 y 460.9 pzh de más** (mediana 0.71 h; 0 en publicaciones a la venta) |
+| ABAJO otro (4) | 3.6 h · 4.7 pzh | 4/4 | **4/4** |
+| ABAJO benigno (106) | canal con lo cierto | 105/106: re-ofrece la pieza vendida, 345.0 pzh de más | **0/106: se quedan como hoy, 0 pzh de más** |
+| lecturas en vivo nuevas | — | 205 en 60 d (3.42/día; 15.0/día desde el 2-oct) | **75 (1.25/día; 8.41/día desde el 2-oct 19:36 CDMX; pico 41 el 7-oct)** |
+
+Contra la bitácora real (no el modelo): 212 «sin cambio» disparaban la regla sin candados y 77 la de cierre
+(1.28/día; 8.71/día desde el 2-oct). De las 75 lecturas del modelo, 59 escriben (34 subiendo, 25 bajando) y 16 ya
+tenían el objetivo. Las ventanas de 1, 2 y 4 h dan lo mismo; con 0.5 h se escapan 4 episodios.
+
+*En lo que sí se vende* (`temu.VENDIBLES` = 2/8 y TikTok ACTIVATE; la repetición vieja contaba también 3/1 y 3/3): el
+beneficio es casi un solo episodio, `ACC-0696-ROJ-NEG-90CM` del 18-sep (Temu 2/8, de más 3.69 h: 81.8 pzh según el
+modelo, ≈110.7 con lo que leyó el censo), más 5.6 pzh de un «se quedó» y 2.9 de dos «otro»; el costo en publicaciones
+a la venta es 0 (los «foto regresó» están todos en TikTok SELLER_DEACTIVATED/DRAFT/PENDING y Temu 3/2 y 4/7). El 3/3 de Temu (no vendible para el sistema,
+pero con ~19 ventas en 30 días) va aparte: 2 «se quedó» con 95.2 pzh, entre ellos `TEC-1769-PLA`. **El valor de la
+regla está en las publicaciones que hoy no venden —que el día que se publiquen salen con la cifra buena— y en la
+reactivación del seguro.**
+
+**Riesgos que quedan, con cifras.**
+- *TikTok y Temu siguen a Woo como ML*, salvo tras una venta: en los rebotes de la foto de Odoo que luego regresan, el
+  canal sube con la foto pasajera y ~40 min después hay que volver a escribirle (los 19 de arriba, 460.9 pzh, ninguno a
+  la venta). Encenderla es aceptar eso.
+- *Apartados de Temu al SUBIR*: el modelo no los ve (Temu descuenta al apartar, antes de que el pedido aparezca). En 60
+  días hubo 19 verificaciones de Temu subiendo, y en 2 apareció un pedido de Temu en las 2 h siguientes (4 pzs): ésa es
+  la cota de lo que podría soltarse. Bajando no hay exposición (`solo_bajar`; 20 verificaciones, 7 con pedido, 35 pzs).
+- *Costo de la cola*: toda verificación de Temu que ESCRIBE ocupa 8 s o más de la cola única (`_escribir_temu` duerme y
+  relee después de toda escritura): 25 en 60 días, ~2.9 al día desde el 2-oct, unos 25–30 s diarios. Las demás son
+  una consulta a `ops.fanout_log` (0.9 ms en producción, por `ix_fanout_log_ts` y el índice de `listing_id`) y, si
+  dispara, una lectura al canal.
+- *Los 6 abiertos de hoy NO se cierran al encenderla*: su última escritura es del 5 y 7-oct (fuera de la ventana) y el
+  censo ya los releyó. La libreta ya dice lo real, así que el primer movimiento de Woo los escribe normal; si Woo no se
+  mueve, una alineación única (`POST /api/fanout/alinear`, con el sí de Brandon).
+
+**Demo en el SANDBOX** (ref `yvootpbz`, comprobado antes de escribir; el camino real de `_aplicar` con los escritores
+y el SEGURO de verdad —encendido, como en producción— hablando con dobles en memoria de TikTok y Temu; ninguna llamada
+de red). Dejó 52 filas en `ops.fanout_log` con «DEMO rancio» en el motivo, ids 138562–138613; se ven en Operaciones ›
+Fan-out › Coincidencia por SKU:
+- `ACC-0575-NEG` (ARRIBA 50→53→50): se verifica bajando y los dos canales regresan a 50; la pasada siguiente ya no verifica.
+- `ROP-0215-NEG-140CM` (venta TEMU + «delta de Odoo» regresa 59→60): NO se verifica; los canales se quedan en 59.
+- `ACC-0575-CAF` (la foto baja 140→135 y regresa): se verifica subiendo, 135→140 en los dos.
+- `ROP-0215-NEG-120CM` (le escribimos 103, Temu aparta 5 y queda en 98, Woo regresa a 100): TikTok 103→100; Temu «tiene 98 · no se sube».
+- `ACC-0696-ROJ-NEG-120CM` (el seguro): Woo 0 → la apaga y escribe 0; Woo vuelve a 54 antes del censo → se verifica y
+  se escribe 0→54; el stock se sostiene → la reactiva (Temu 3/2→2/8, TikTok a auditoría).
+- `ROP-0215-NEG-80CM` (sin la bandera, así es hoy): el rebote se queda en 63 con Woo en 60, y la apagada se queda
+  «esperando stock (vivo 0, objetivo 60)».
+
+**Pruebas.** `tests/test_fanout_rancio.py`: 60 pruebas (eran 40), con los escritores de verdad hablando con un canal
+falso y una bitácora falsa que contesta como Postgres. Nuevas: lo omitido por el plan con escritura reciente no se lee
+ni tumba el evento; el censo que releyó (y el que cae dentro del margen); no subir tras venta pero sí bajar; el
+apartado dentro de la ventana no se suelta; la relectura de Temu que queda debajo; la dirección que recibe el escritor y
+lo que le llega al seguro (None / True / False); el ensayo; el dry-run que anota; la ventana en 0; «error · sigue en
+4»; y la matriz/rastro. 15 mutaciones sobre el código nuevo, 15 atrapadas. El SQL corrió en producción en solo lectura
+(0.9 ms) y en el sandbox con la demo.
+
+**Encenderla** es escribir stock en TikTok y Temu: `FANOUT_VERIFICAR_RANCIO=true` con el dale de Brandon (regla 3).
+Antes, si se quiere ver qué haría con datos de hoy: `FANOUT_VERIFICAR_RANCIO_ENSAYO=true` anota «ENSAYO (verificaría
+en vivo…)» sin llamar al canal (sólo lee kubera). **Reversa:** `FANOUT_VERIFICAR_RANCIO=false` (sin deploy; corta
+desde el siguiente evento).
+
 ### v0.632.0 — `almacen.historial_movimientos`: el historial de TEXCO II sale de Odoo y un vigilante lo mantiene al día cada 30 minutos (migración 0070, aplicada y cargada)
 
 Brandon, 9-oct: *"requiero que me armes una nueva tabla llamada HISTORIAL_MOVIMIENTOS de todos los skus que

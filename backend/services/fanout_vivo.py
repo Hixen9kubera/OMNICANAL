@@ -175,6 +175,25 @@ def _celda_evento(filas: list[dict]) -> dict[str, Any]:
     return {**base, "detalle": (f"{base['detalle']} · {nota}" if base.get("detalle") else nota)[:240]}
 
 
+def _en_vivo(celda: dict[str, Any], f: dict) -> dict[str, Any]:
+    """Si la fila salió de verificar en vivo un «sin cambio» que pudo ser rancio
+    (`fanout_stock._verificar`), la celda lo dice y el detalle lleva lo que contestó
+    el canal; si sólo se anotó (dry-run o ensayo), dice «verificaría». Las demás
+    quedan igual que siempre."""
+    from services.fanout_stock import VERIFICARIA
+    r = str(f.get("resultado") or "")
+    if VERIFICARIA in r:
+        return {**celda, "texto": f"{celda['texto']} · verificaría", "detalle": r[:240]}
+    if _VERIFICADO not in r:
+        return celda
+    leido, objetivo = f.get("stock_canal"), f.get("objetivo")
+    if celda["k"] == "igual" and leido is not None and objetivo is not None and int(leido) != int(objetivo):
+        # Lo encontró por DEBAJO y, como lo último que le escribimos era más, no se
+        # le sube (un apartado o una venta de Temu después de esa escritura).
+        return {**celda, "texto": f"tiene {_n(leido)} · no se sube · en vivo", "detalle": r[:240]}
+    return {**celda, "texto": f"{celda['texto']} · en vivo", "detalle": r[:240]}
+
+
 def _celda_reparto(filas: list[dict]) -> dict[str, Any]:
     """Lo que pasó en UN canal/cuenta durante un cambio. Varias filas = varias
     publicaciones del mismo SKU en esa cuenta: manda la peor."""
@@ -190,12 +209,13 @@ def _celda_reparto(filas: list[dict]) -> dict[str, Any]:
                 "detalle": r[:240]}
     ok = [f for f in esc if str(f.get("resultado") or "").lower().startswith("ok")]
     if ok:
-        return {"k": "ok", "texto": f"{_n(ok[0].get('stock_canal'))} → {_n(ok[0].get('objetivo'))}"}
+        return _en_vivo({"k": "ok", "texto": f"{_n(ok[0].get('stock_canal'))} → {_n(ok[0].get('objetivo'))}"},
+                        ok[0])
     if any("DRY" in str(f.get("resultado") or "") for f in esc):
         return {"k": "sim", "texto": f"simulado → {_n(esc[0].get('objetivo'))}"}
     igual = [f for f in filas if f["accion"] == "sin_cambio"]
     if igual:
-        return {"k": "igual", "texto": f"ya tenía {_n(igual[0].get('stock_canal'))}"}
+        return _en_vivo({"k": "igual", "texto": f"ya tenía {_n(igual[0].get('stock_canal'))}"}, igual[0])
     om = [f for f in filas if f["accion"] == "omitir"]
     if om:
         r = str(om[0].get("resultado") or "")
@@ -403,13 +423,23 @@ def _estado_canales(rep: list[str], hoy: str) -> list[dict]:
 # `_SQL_VIVAS` como literal y una prueba exige que coincida. Los demás estados se muestran crudos.
 _TEMU_A_LA_VENTA = "2/8"
 
+# El `resultado` de las filas de `fanout_stock._verificar` empieza así (= su
+# `VERIFICADO`; va como literal en los SQL de abajo y una prueba exige que coincida).
+# Una verificación que encontró el canal sin tener que escribirle también es «el
+# último valor conocido»: lo que LEYÓ (`stock_canal`) es más nuevo que el censo.
+_VERIFICADO = "verificado en vivo"
+
 # Publicaciones A LA VENTA en el reparto (sin FULL), con su valor más reciente:
 # lo usan las barras de coincidencia y la lista completa de la matriz.
 _SQL_VIVAS = """
         with w as (
-          select distinct on (sku, canal) sku::text as sku, canal, ts, objetivo
+          select distinct on (sku, canal) sku::text as sku, canal, ts,
+                 case when accion = 'sin_cambio' then coalesce(stock_canal, objetivo)
+                      else objetivo end as objetivo
             from ops.fanout_log
-           where accion = 'escribir' and resultado ilike 'ok%%' and ts > now() - interval '3 days'
+           where ((accion = 'escribir' and resultado ilike 'ok%%')
+                  or (accion = 'sin_cambio' and resultado like 'verificado en vivo%%'))
+             and ts > now() - interval '3 days'
            order by sku, canal, ts desc, id desc),
         r as (
           -- Lo último que el fan-out leyó de Woo (en vivo, en cada venta o cambio).
@@ -900,7 +930,11 @@ def _celda_matriz(l: dict | None, w: dict | None, woo: int | None, hoy: str,
     fresc = (f"igual desde {_fecha(l.get('act'), hoy)}" if l["canal"] == "mercado_libre"
              else f"censo {_fecha(l.get('act'), hoy)}")
     if w and w.get("ts") and l.get("updated_at") and w["ts"] > l["updated_at"]:
-        if str(w.get("resultado") or "").lower().startswith("ok"):
+        if w.get("accion") == "sin_cambio" and str(w.get("resultado") or "").startswith(_VERIFICADO):
+            # Una verificación en vivo que no tuvo que escribir: vale lo que leyó.
+            valor = w.get("stock_canal") if w.get("stock_canal") is not None else w.get("objetivo")
+            fresc = f"verificado {_fecha(w.get('hora'), hoy)}"
+        elif str(w.get("resultado") or "").lower().startswith("ok"):
             valor, fresc = w.get("objetivo"), f"escrito {_fecha(w.get('hora'), hoy)}"
         elif str(w.get("resultado") or "").startswith("ERROR"):
             cod = "403" if "403" in str(w.get("resultado")) else "error"
@@ -1155,10 +1189,12 @@ def matriz() -> dict[str, Any]:
         {"z": _ZONA, "s": skus, "c": rep})
     esc = sdb.fetch_all(
         """select distinct on (sku, canal, cuenta) sku::text as sku, canal, upper(cuenta) as cuenta,
-                  ts, objetivo, resultado,
+                  ts, objetivo, resultado, accion, stock_canal,
                   to_char(ts at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as hora
              from ops.fanout_log
-            where sku::text = any(%(s)s) and accion = 'escribir' and ts > now() - interval '3 days'
+            where sku::text = any(%(s)s) and ts > now() - interval '3 days'
+              and (accion = 'escribir'
+                   or (accion = 'sin_cambio' and resultado like 'verificado en vivo%%'))
             order by sku, canal, cuenta, ts desc, id desc""", {"z": _ZONA, "s": skus})
     L = {(f["sku"], f["canal"], (f.get("cuenta") or "").upper()): f for f in lst}
     W = {(f["sku"], f["canal"], f["cuenta"]): f for f in esc}
@@ -1806,7 +1842,10 @@ def historia(sku: str, dias: int = 14, limite: int = 400, liga_dias: int | None 
     L = {(f["canal"], (f.get("cuenta") or "").upper()): f for f in lst}
     W: dict[tuple[str, str], dict] = {}
     for f in log:
-        if f["accion"] == "escribir" and f["canal"] not in ("", "woocommerce") and f["reciente"]:
+        if f["canal"] in ("", "woocommerce") or not f["reciente"]:
+            continue
+        if f["accion"] == "escribir" or (f["accion"] == "sin_cambio"
+                                         and str(f.get("resultado") or "").startswith(_VERIFICADO)):
             W.setdefault((f["canal"], f["cuenta"]), f)
     M = _marcas_seguro([sku])
     celdas, pendientes = {}, []

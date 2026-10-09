@@ -1355,6 +1355,25 @@ class Settings(BaseSettings):
     # APAGADO: escribe stock en los canales (regla 3 de CLAUDE.md — dale de Brandon).
     fanout_excedentes_enabled: bool = False
     fanout_excedentes_tope: int = 100       # publicaciones por censo
+    # «Sin cambio» rancios de TikTok/Temu (services/fanout_stock.py::_rancios). El plan
+    # decide «el canal ya tiene N» contra `channel.listings`, y en esos dos canales eso
+    # sólo lo refresca el censo (cada 60 min; mediana 20 min después de que escribimos).
+    # Si Woo regresa al número viejo dentro de esa ventana, no se escribía aunque el
+    # canal tuviera otra cifra: 163 casos en 60 días (8.8 % de sus «sin cambio»; 0.3 %
+    # en ML, que avisa por webhook), 139 con el canal ABAJO que nadie cerraba. Con la
+    # bandera, un «sin cambio» cuya última cifra conocida (escritura NUESTRA o
+    # verificación) de las últimas FANOUT_VERIFICAR_RANCIO_H horas es otra se le pasa al
+    # escritor, que lee el canal en vivo. No se verifica sin escritura nuestra reciente,
+    # ni si el censo ya releyó la publicación después (así no se toca lo que Temu apartó),
+    # ni para SUBIR tras una «venta …» (re-ofrecería la pieza vendida); si lo último que
+    # le dejamos es MÁS, sólo se baja. Nace APAGADA: escribe stock en los canales (regla 3
+    # de CLAUDE.md — dale de Brandon). La reversa es esta misma variable en false.
+    fanout_verificar_rancio: bool = False
+    # Ventana de «escritura nuestra reciente», en horas. 0 = no se verifica nada.
+    fanout_verificar_rancio_h: float = 2.0
+    # ENSAYO: con la bandera apagada, anota en la bitácora «ENSAYO (verificaría en vivo…)»
+    # en cada «sin cambio» que verificaría, SIN llamar al canal. Sólo lee kubera.
+    fanout_verificar_rancio_ensayo: bool = False
     # Seguro «stock 0 ⇒ fuera de la venta» en Temu y TikTok (services/fanout_seguro.py).
     # Escribirle 0 a Temu no basta: ACC-0574-LIL recibió 0 el 1-oct y aun así vendió 23,
     # 10 y 1 piezas, porque el canal sube su número solo y vuelve a «a la venta». Cuando

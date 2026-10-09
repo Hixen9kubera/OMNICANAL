@@ -49,10 +49,16 @@ FLAGS (Railway, apagable sin deploy):
   FANOUT_CANALES   CSV de canales habilitados para escribir (encendido gradual).
   FANOUT_RESERVA   piezas de colchón que NO se publican (cubre la ventana de
                    latencia entre la venta y la escritura).
+  FANOUT_VERIFICAR_RANCIO   default False — un «sin cambio» de TikTok/Temu tras
+                   una escritura nuestra reciente con otro número se verifica en
+                   vivo (`_rancios`); ventana en FANOUT_VERIFICAR_RANCIO_H (2 h; 0 =
+                   no verifica). FANOUT_VERIFICAR_RANCIO_ENSAYO sólo anota lo que
+                   verificaría, sin llamar al canal.
 """
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from collections import deque
@@ -90,6 +96,7 @@ _eventos: deque[dict[str, Any]] = deque(maxlen=_EVENTOS_MAX)
 _contadores: dict[str, int] = {
     "encolados": 0, "procesados": 0, "escrituras": 0, "simuladas": 0,
     "sin_cambio": 0, "errores": 0, "omitidos_full": 0, "omitidos_pausados": 0,
+    "verificados": 0,
 }
 
 
@@ -392,6 +399,9 @@ def _destinos(sku: str) -> list[dict[str, Any]]:
 # Lo que contestan los escritores con `solo_bajar` (excedentes) cuando el canal YA
 # tiene lo mismo o menos que el objetivo: no escribieron nada, a propósito.
 NO_BAJA = "no se baja"
+# Lo que contestan cuando el canal YA tenía el objetivo en vivo y no escribieron
+# nada (Temu siempre relee; TikTok, sólo con `verificar`).
+YA_TENIA = "ok (ya tenía"
 
 def _escribir_ml(cuenta: str, item_id: str, cantidad: int) -> tuple[bool, str]:
     """
@@ -529,7 +539,7 @@ def _en_hilo(corutina_factory, etiqueta: str, timeout: int = 60):
 
 
 def _escribir_tiktok(cuenta: str, item_id: str, cantidad: int,
-                     solo_bajar: bool = False) -> tuple[bool, str]:
+                     solo_bajar: bool = False, verificar: bool = False) -> tuple[bool, str]:
     """
     Actualiza el stock de UN producto en TikTok Shop.
 
@@ -546,6 +556,12 @@ def _escribir_tiktok(cuenta: str, item_id: str, cantidad: int,
 
     Con `solo_bajar` (excedentes) se relee ese almacén en vivo y no se escribe si
     TikTok ya tiene lo mismo o menos: subir liberaría lo que el canal apartó.
+
+    Con `verificar` («sin cambio» rancio, `_rancios`) se compara la cantidad viva de
+    ese almacén —viene en el mismo GET, sin llamada extra— y no se escribe si ya es
+    el objetivo; con los dos (la verificación cuando lo último que le dejamos era
+    MÁS), manda `solo_bajar`. Sin ellos, la escritura es absoluta y a ciegas, como
+    siempre.
     """
     from services import tiktok as tk
 
@@ -565,13 +581,17 @@ def _escribir_tiktok(cuenta: str, item_id: str, cantidad: int,
         sku_id = str(skus[0].get("id") or "")
         if not sku_id:
             return False, "la variante de TikTok no trae id"
-        if solo_bajar:
+        vivo = None
+        if solo_bajar or verificar:
             vivo = next((i.get("quantity") for i in (skus[0].get("inventory") or [])
                          if str(i.get("warehouse_id") or "") == _ALMACEN_VENTAS_TIKTOK), None)
             if vivo is None:
-                return False, "stock vivo de TikTok ilegible (no se baja a ciegas)"
-            if int(vivo) <= int(cantidad):
+                return False, ("stock vivo de TikTok ilegible (no se baja a ciegas)" if solo_bajar
+                               else "stock vivo de TikTok ilegible (no se verifica a ciegas)")
+            if solo_bajar and int(vivo) <= int(cantidad):
                 return True, f"{NO_BAJA}: TikTok tiene {int(vivo)} en vivo (objetivo {int(cantidad)})"
+            if verificar and int(vivo) == int(cantidad):
+                return True, f"{YA_TENIA} {int(cantidad)} en vivo)"
         cuerpo = {"skus": [{"id": sku_id,
                             "inventory": [{"warehouse_id": _ALMACEN_VENTAS_TIKTOK,
                                            "quantity": int(cantidad)}]}]}
@@ -579,6 +599,8 @@ def _escribir_tiktok(cuenta: str, item_id: str, cantidad: int,
             lambda: tk.llamar(f"/product/202309/products/{item_id}/inventory/update",
                               token, {"shop_cipher": cipher}, cuerpo, "POST"),
             "inventario tiktok")
+        if verificar:
+            return True, f"ok ({int(vivo)}→{int(cantidad)})"
         return True, f"ok ({cantidad})"
     except Exception as exc:  # noqa: BLE001
         # `tiktok.llamar` ya traduce el `code` del cuerpo a excepción: TikTok
@@ -618,7 +640,7 @@ _temu_escrito_en: dict[int, float] = {}   # goodsId → epoch de nuestra última
 
 
 def _escribir_temu(cuenta: str, item_id: str, cantidad: int,
-                   solo_bajar: bool = False) -> tuple[bool, str]:
+                   solo_bajar: bool = False, verificar: bool = False) -> tuple[bool, str]:
     """
     Stock a UN producto de Temu (canal DROP-only, decisión 18-ago).
 
@@ -645,6 +667,11 @@ def _escribir_temu(cuenta: str, item_id: str, cantidad: int,
        regresa por pedidos (M2E) y dispara otra pasada con el Woo ya nuevo.
     5. Con `solo_bajar` (excedentes) nunca sube: si en vivo ya tiene lo mismo o
        menos no escribe, y si tras bajar la relectura queda por debajo, se detiene.
+    6. `verificar` («sin cambio» rancio) no le cambia nada: este escritor SIEMPRE
+       decide con la lectura viva y, si ya tenía el objetivo, contesta `YA_TENIA`.
+       Existe para que los dos escritores se llamen igual. La verificación lo
+       llama con `solo_bajar` cuando lo último que le dejamos era MÁS que el
+       objetivo: así no suelta lo que Temu apartó después (descuenta al APARTAR).
     """
     import time as _t
 
@@ -691,7 +718,7 @@ def _escribir_temu(cuenta: str, item_id: str, cantidad: int,
         # es de fiar y un objetivo ya cumplido no necesita verificación.
         if (int(actual) == objetivo
                 and (_t.time() - _temu_escrito_en.get(goods_id, 0.0)) > _TEMU_VENTANA_RANCIA_S):
-            return True, f"ok (ya tenía {objetivo} en vivo)"
+            return True, f"{YA_TENIA} {objetivo} en vivo)"
 
         for intento in range(_TEMU_INTENTOS):
             diff = objetivo - int(actual)
@@ -719,7 +746,7 @@ def _escribir_temu(cuenta: str, item_id: str, cantidad: int,
                 return False, f"escrito, pero no se pudo verificar: {err}"
             if actual is not None and int(actual) == objetivo:
                 if escrituras == 0:
-                    return True, f"ok (ya tenía {objetivo} en vivo)"
+                    return True, f"{YA_TENIA} {objetivo} en vivo)"
                 return True, (f"ok ({inicial}→{objetivo}"
                               + (f", {escrituras} ajustes)" if escrituras > 1 else ")"))
         return False, (f"no convergió tras {_TEMU_INTENTOS} intentos: "
@@ -741,6 +768,32 @@ _ESCRITORES = {"mercado_libre": _escribir_ml, "amazon": _escribir_amazon,
 
 # ── Núcleo: calcular el plan de un SKU ───────────────────────────────────────
 
+def _bloqueo_canal(canal: str | None) -> str | None:
+    """
+    Por qué el fan-out NO le escribe a este canal aunque haga falta; None = sí le
+    escribe. Lo preguntan `plan` y la verificación de los «sin cambio» rancios
+    (`_rancios`): un candado nuevo aquí vale para los dos.
+    """
+    c = (canal or "").lower()
+    canales_ok = _canales_activos()
+    if canales_ok is not None and c not in canales_ok:
+        return f"canal '{canal}' no habilitado en FANOUT_CANALES"
+    if c == "tiktok" and not settings.fanout_tiktok:
+        # Candado propio, además de FANOUT_CANALES. El escritor ESTÁ hecho y
+        # probado; lo que falta es la decisión de encenderlo, y encender
+        # escrituras a un marketplace vivo no puede ser efecto secundario de
+        # un deploy.
+        return "FANOUT_TIKTOK apagado — el escritor está listo, falta encenderlo"
+    if c == "temu" and not settings.fanout_temu:
+        # Mismo candado que TikTok. El escritor existe desde el sondeo
+        # canario del 18-ago (`_escribir_temu`); encenderlo es un acto
+        # explícito, nunca efecto secundario de un deploy.
+        return "FANOUT_TEMU apagado — el escritor está listo, falta encenderlo"
+    if c not in _ESCRITORES:
+        return f"sin escritor implementado para '{canal}'"
+    return None
+
+
 def plan(sku: str) -> dict[str, Any]:
     """
     Qué haría el fan-out con este SKU AHORA MISMO. No escribe ni encola nada:
@@ -751,7 +804,6 @@ def plan(sku: str) -> dict[str, Any]:
         return {"sku": sku, "ok": False, "motivo": "sin stock legible en WooCommerce",
                 "acciones": []}
     objetivo = max(0, stock - _reserva())
-    canales_ok = _canales_activos()
     acciones: list[dict[str, Any]] = []
     for d in _destinos(sku):
         accion = dict(d)
@@ -764,29 +816,13 @@ def plan(sku: str) -> dict[str, Any]:
             accion["accion"] = "omitir"
             accion["omitido_por"] = "stock del canal DESCONOCIDO (no se escribe a ciegas)"
         elif d["stock_actual_canal"] == objetivo:
+            # OJO en TikTok y Temu: `stock_actual_canal` es lo que vio el ÚLTIMO
+            # censo (cada 60 min), no lo que les escribimos después. Ver `_rancios`.
             accion["accion"] = "sin_cambio"
             accion["omitido_por"] = f"el canal ya tiene {objetivo}"
-        elif canales_ok is not None and (d["canal"] or "").lower() not in canales_ok:
+        elif bloqueo := _bloqueo_canal(d["canal"]):
             accion["accion"] = "omitir"
-            accion["omitido_por"] = f"canal '{d['canal']}' no habilitado en FANOUT_CANALES"
-        elif (d["canal"] or "").lower() == "tiktok" and not settings.fanout_tiktok:
-            # Candado propio, además de FANOUT_CANALES. El escritor ESTÁ hecho y
-            # probado; lo que falta es la decisión de encenderlo, y encender
-            # escrituras a un marketplace vivo no puede ser efecto secundario de
-            # un deploy.
-            accion["accion"] = "omitir"
-            accion["omitido_por"] = ("FANOUT_TIKTOK apagado — el escritor está "
-                                     "listo, falta encenderlo")
-        elif (d["canal"] or "").lower() == "temu" and not settings.fanout_temu:
-            # Mismo candado que TikTok. El escritor existe desde el sondeo
-            # canario del 18-ago (`_escribir_temu`); encenderlo es un acto
-            # explícito, nunca efecto secundario de un deploy.
-            accion["accion"] = "omitir"
-            accion["omitido_por"] = ("FANOUT_TEMU apagado — el escritor está "
-                                     "listo, falta encenderlo")
-        elif (d["canal"] or "").lower() not in _ESCRITORES:
-            accion["accion"] = "omitir"
-            accion["omitido_por"] = f"sin escritor implementado para '{d['canal']}'"
+            accion["omitido_por"] = bloqueo
         else:
             accion["accion"] = "escribir"
         acciones.append(accion)
@@ -906,18 +942,249 @@ def _seguro(paso: str, *args):
         return None
 
 
+# ── «Sin cambio» rancios de TikTok y Temu ────────────────────────────────────
+#
+# EL DEFECTO (medido el 9-oct-2026 en producción). `plan` decide «el canal ya tiene
+# N» contra `channel.listings.stock_own`, y nadie actualiza esa fila después de que
+# escribimos: en ML la corrige el webhook `items` en 0.7 s, pero en TikTok y Temu
+# sólo el censo (cada 60 min; mediana 20 min, p90 43 min). Si Woo regresa al número
+# viejo dentro de esa ventana —una venta y stock_watch que la devuelve antes de que
+# Odoo tenga la orden, o el rebote de la foto de Odoo—, el plan ve la cifra vieja,
+# dice «sin cambio» y el canal se queda con lo último que le escribimos. 60 días:
+# 163 casos (8.8 % de sus «sin cambio»; 0.3 % en ML), 139 con el canal ABAJO que
+# nadie cerraba, porque el corrector de excedentes sólo baja. Y el seguro de stock 0
+# no reactivaba lo que había apagado: para él no hubo escritura.
+#
+# EL ARREGLO, acotado a propósito. No se toca `plan` (así no cambian el seguro, la
+# matriz, /simular, el recuperador ni los excedentes): en `_aplicar`, un «sin cambio»
+# de TikTok/Temu cuya última cifra CONOCIDA de esa publicación —lo último que le
+# escribimos, o lo que una verificación encontró— en las últimas
+# FANOUT_VERIFICAR_RANCIO_H horas es OTRA se le pasa al escritor, que lee el canal en
+# vivo y decide. La memoria de «qué le dejamos» es `ops.fanout_log`, que sobrevive a
+# los deploys (la de Temu en RAM, no). Cuatro candados, medidos sobre los 60 días:
+#
+#   1. Sin escritura nuestra reciente NO se verifica: lo que el canal tiene por debajo
+#      sin que lo hayamos tocado suele ser un pedido sin pagar que Temu apartó
+#      (ACC-0768-EST y otras 6 el 9-oct), y el censo ya lo vio.
+#   2. Si el censo RELEYÓ la publicación después de esa escritura, la libreta no está
+#      rancia: la diferencia la hizo el canal solo (un apartado, una venta propia) y
+#      eso no se toca. Lo dice `channel.listings.updated_at`, que el censo pone a TODAS
+#      las filas del canal en cada corrida (lo demás que la toca es el seguro al
+#      reflejar un estado: 13 veces en 60 días). Con `_CENSO_MARGEN_S` de margen,
+#      porque el censo LEE el canal antes de escribir la libreta.
+#   3. RESPETA LA DIRECCIÓN. Si lo último que le dejamos es MÁS que el objetivo, lo
+#      rancio sería tenerlo ARRIBA: el escritor va con `solo_bajar`, que nunca sube (si
+#      en vivo tiene lo mismo o menos —un apartado nuevo de Temu, que descuenta al
+#      APARTAR— no lo toca). Sólo se sube cuando lo último que le dejamos es MENOS.
+#   4. No se sube tras una VENTA: si lo último lo escribió una «venta …» y el objetivo
+#      sube, casi siempre es stock_watch regresando la pieza antes de que Odoo tenga la
+#      orden (106 de los 163 casos): subirlo re-ofrecería una pieza vendida. Si la
+#      venta se canceló de verdad, el siguiente censo ve el canal abajo y el plan lo
+#      escribe en el siguiente movimiento, como siempre.
+
+_CANALES_VERIFICAR = ("tiktok", "temu")
+_ESCRITORES_VERIFICAR = {"tiktok": _escribir_tiktok, "temu": _escribir_temu}
+# Va en el `resultado` de toda fila que sale de una verificación: así se distinguen
+# en la bitácora, en la trazabilidad (`fanout_vivo._en_vivo`) y en la matriz, que
+# las toma como el último valor conocido del canal (`fanout_vivo._VERIFICADO`).
+VERIFICADO = "verificado en vivo"
+# …y en las que la decidieron pero NO llamaron al canal: dry-run, o
+# FANOUT_VERIFICAR_RANCIO_ENSAYO con la bandera apagada.
+VERIFICARIA = "verificaría en vivo"
+_RE_DE_VIVO = re.compile(r"^ok \((-?\d+)→(-?\d+)")
+_RE_TIENE = re.compile(r"tiene (-?\d+) en vivo")
+# Lo que puede tardar un censo entre LEER una publicación y escribir la libreta: si la
+# escribió antes de esto, pudo haberla leído antes de nuestra escritura.
+_CENSO_MARGEN_S = 300
+
+# La última cifra que SABEMOS que le dejamos a cada publicación: una escritura «ok»
+# (del fan-out o de los excedentes) o una verificación que la encontró sin escribirle,
+# y si el censo la releyó después. Usa los índices de la 0028: en producción
+# (9-oct-2026) `ix_fanout_log_ts`, 116 filas en 2 h y 1-4 ms, también para el SKU con
+# más filas de la bitácora; `channel.listings` va por su llave (sku, …).
+_SQL_ULTIMA_CONOCIDA = """
+    with u as (
+      select distinct on (canal, item_id) canal, item_id, objetivo, ts, motivo
+        from ops.fanout_log
+       where sku = %(s)s and canal = any(%(c)s) and not dry_run
+         and ts > now() - %(h)s * interval '1 hour'
+         and ((accion = 'escribir' and resultado ilike 'ok%%')
+              or (accion = 'sin_cambio' and resultado like %(v)s))
+       order by canal, item_id, id desc)
+    select u.canal, u.item_id, u.objetivo, u.ts, u.motivo,
+           exists (select 1 from channel.listings l
+                    where l.sku = %(s)s and l.canal = u.canal and l.listing_id = u.item_id
+                      and l.updated_at > u.ts + %(m)s * interval '1 second') as releida
+      from u"""
+
+
+def _rancio_activo() -> bool:
+    """¿Se buscan «sin cambio» rancios? Con la bandera, o con su ensayo (que sólo anota)."""
+    return bool(getattr(settings, "fanout_verificar_rancio", False)
+                or getattr(settings, "fanout_verificar_rancio_ensayo", False))
+
+
+def _rancios(sku: str, acciones: list[dict[str, Any]]) -> dict[tuple[str, str], dict[str, Any]]:
+    """
+    Los «sin cambio» de TikTok/Temu que pudieron decidirse contra una cifra vieja:
+    {(canal, item_id): la última fila conocida de esa publicación + `modo`}. `modo` es
+    «bajar» si lo último que le dejamos es MÁS que el objetivo (se verifica con
+    `solo_bajar`) o «subir» si es menos. Vacío si la bandera y su ensayo están
+    apagados, si la ventana es 0, si la bitácora de kubera no se escribe (no hay con
+    qué comparar) o si no se pudo leer: en todos esos casos todo queda como siempre.
+    """
+    if not _rancio_activo():
+        return {}
+    if not getattr(settings, "supabase_write_fanout_log", False):
+        return {}
+    try:
+        horas = float(getattr(settings, "fanout_verificar_rancio_h", 2.0))
+    except (TypeError, ValueError):
+        horas = 0.0
+    if horas <= 0:          # ventana 0 (o ilegible) = no se verifica nada
+        return {}
+    # Sólo lo que el plan dejó «sin cambio» (su `stock_actual_canal` es conocido e igual
+    # al objetivo): lo omitido —stock DESCONOCIDO, borradores, FULL— no se toca.
+    dudosos = {((a.get("canal") or "").lower(), str(a["item_id"])): a for a in acciones
+               if a.get("accion") == "sin_cambio" and a.get("item_id")
+               and (a.get("canal") or "").lower() in _CANALES_VERIFICAR
+               and _bloqueo_canal(a.get("canal")) is None}
+    if not dudosos:
+        return {}
+    from services import supabase_db as sdb
+    try:
+        filas = sdb.fetch_all(_SQL_ULTIMA_CONOCIDA, {
+            "s": sku, "c": sorted({c for c, _ in dudosos}), "h": horas,
+            "v": VERIFICADO + "%", "m": _CENSO_MARGEN_S})
+    except Exception as exc:  # noqa: BLE001 — sin bitácora, el «sin cambio» queda como hoy
+        log.warning("fan-out %s: no pude leer la última escritura en kubera (%s); "
+                    "los «sin cambio» de TikTok/Temu no se verifican", sku, exc)
+        return {}
+    salida: dict[tuple[str, str], dict[str, Any]] = {}
+    for f in filas:
+        clave = (str(f.get("canal") or "").lower(), str(f.get("item_id") or ""))
+        a = dudosos.get(clave)
+        if a is None or f.get("objetivo") is None:
+            continue
+        ultima, objetivo = int(f["objetivo"]), int(a["stock_actual_canal"])
+        if ultima == objetivo:
+            continue        # lo último que le dejamos ES lo que dice la libreta
+        if f.get("releida"):
+            continue        # el censo la releyó después: la libreta está al día (candado 2)
+        modo = "bajar" if ultima > objetivo else "subir"
+        if modo == "subir" and str(f.get("motivo") or "").lower().startswith("venta "):
+            continue        # tras una venta, subir re-ofrecería la pieza vendida (candado 4)
+        salida[clave] = {**f, "modo": modo}
+    return salida
+
+
+def _verificaria(ultima: dict[str, Any], simulacion: bool) -> str:
+    """El `resultado` de un «sin cambio» rancio que NO se lleva al canal (dry-run o ensayo)."""
+    return (f"{'DRY-RUN' if simulacion else 'ENSAYO'} ({VERIFICARIA}"
+            f"{', sólo bajar' if ultima.get('modo') == 'bajar' else ''}: "
+            f"lo último que le escribimos fue {ultima.get('objetivo')})")
+
+
+def _verificar(sku: str, a: dict[str, Any],
+               ultima: dict[str, Any]) -> tuple[dict[str, Any], bool | None]:
+    """
+    Le pasa al escritor un «sin cambio» rancio para que decida con el canal en vivo
+    (con `solo_bajar` si `modo` es «bajar»). Devuelve la fila para la bitácora y si el
+    canal quedó con el objetivo —True sí, None no (a propósito), False error—, que es
+    lo que `_seguro("despues")` necesita para reactivar. Nunca levanta.
+
+    `stock_actual_canal` (→ `stock_canal`) es lo que se LEYÓ en vivo, como en las
+    filas de Amazon y del seguro; la libreta queda en el texto («el censo decía L»).
+
+      · ya tenía el objetivo  → sigue `sin_cambio`: «verificado en vivo: el canal ya tiene N …»;
+      · tenía menos y no se
+        le sube (modo bajar)  → sigue `sin_cambio`: «verificado en vivo: el canal tiene K,
+                                no se le sube a N …», con K como `stock_canal`;
+      · tenía otra cifra      → `escribir` «ok (verificado en vivo: X→N; el censo decía L)»;
+      · falló                 → `escribir` «ERROR (verificado en vivo): …», con lo último
+                                que le escribimos como `stock_canal` (nada lo desmiente).
+    """
+    canal = (a.get("canal") or "").lower()
+    objetivo, censo, previa = int(a["objetivo"]), a.get("stock_actual_canal"), ultima.get("objetivo")
+    bajar = ultima.get("modo") == "bajar"
+    try:
+        ok, det = _ESCRITORES_VERIFICAR[canal](a["cuenta"], a["item_id"], objetivo,
+                                               solo_bajar=bajar, verificar=True)
+    except Exception as exc:  # noqa: BLE001 — los escritores ya atrapan; esto es red
+        ok, det = False, f"{type(exc).__name__}: {exc}"
+    _contadores["verificados"] += 1
+    nota = f"lo último que le escribimos fue {previa}"
+    tiene = None
+    if ok and det.startswith(NO_BAJA):
+        m = _RE_TIENE.search(det)
+        tiene = int(m.group(1)) if m else None
+    alcanzado: bool | None
+    if ok and (det.startswith(YA_TENIA) or (det.startswith(NO_BAJA) and tiene == objetivo)):
+        _contadores["sin_cambio"] += 1
+        alcanzado = True
+        fila = {**a, "resultado": f"{VERIFICADO}: el canal ya tiene {objetivo} ({nota})"}
+    elif ok and det.startswith(NO_BAJA):
+        # Tiene MENOS que el objetivo y lo último que le dejamos era más: Temu apartó o
+        # vendió después de nuestra escritura. Subirlo soltaría ese apartado.
+        _contadores["sin_cambio"] += 1
+        alcanzado = None
+        fila = {**a, "stock_actual_canal": tiene,
+                "resultado": (f"{VERIFICADO}: el canal tiene {tiene if tiene is not None else '?'}, "
+                              f"no se le sube a {objetivo} ({nota})")}
+    elif ok:
+        _contadores["escrituras"] += 1
+        m = _RE_DE_VIVO.match(det)
+        vivo = int(m.group(1)) if m else censo
+        if m and "no se sube a" in det:
+            # Temu con `solo_bajar`: bajó, pero la relectura quedó por debajo del objetivo.
+            alcanzado = None
+            fila = {**a, "accion": "escribir", "omitido_por": None, "stock_actual_canal": vivo,
+                    "resultado": (f"ok ({VERIFICADO}: {vivo}→{m.group(2)}, no se sube a {objetivo}; "
+                                  f"el censo decía {censo})")}
+        else:
+            alcanzado = True
+            fila = {**a, "accion": "escribir", "omitido_por": None, "stock_actual_canal": vivo,
+                    "resultado": f"ok ({VERIFICADO}: {vivo}→{objetivo}; el censo decía {censo})"}
+    else:
+        _contadores["errores"] += 1
+        alcanzado = False
+        fila = {**a, "accion": "escribir", "omitido_por": None, "stock_actual_canal": previa,
+                "resultado": f"ERROR ({VERIFICADO}): {det}"}
+    log.info("fan-out %s %s/%s: «sin cambio» verificado en vivo (%s; último escrito %s, objetivo %s) → %s",
+             sku, canal, a.get("item_id"), ultima.get("modo"), previa, objetivo, fila["resultado"])
+    return fila, alcanzado
+
+
 def _aplicar(sku: str, motivo: str) -> None:
     """Calcula el plan y (si no es dry-run) lo ejecuta. Registra siempre."""
     inicio = time.time()
     p = plan(sku)
     simulacion = dry_run()
     seg = _seguro("abrir", sku, motivo, p)
+    rancios = _rancios(sku, p.get("acciones", []))
+    # En dry-run, o con sólo el ensayo encendido, se anota lo que verificaría y no se
+    # llama al canal.
+    sin_canal = simulacion or not getattr(settings, "fanout_verificar_rancio", False)
     resultados: list[dict[str, Any]] = []
     for a in p.get("acciones", []):
         # Objetivo 0 ⇒ primero fuera de la venta, después el 0 (que se escribe
         # SIEMPRE, falle o no el seguro). No depende de `accion`: también vale
         # para `sin_cambio`.
         _seguro("antes", seg, a)
+        ultima = rancios.get(((a.get("canal") or "").lower(), str(a.get("item_id") or "")))
+        if ultima is not None and sin_canal:
+            _contadores["sin_cambio"] += 1
+            resultados.append({**a, "resultado": _verificaria(ultima, simulacion)})
+            _seguro("despues", seg, a, None)
+            continue
+        if ultima is not None:
+            # «Sin cambio» contra una cifra que pudo quedar vieja: decide el canal en
+            # vivo. Si quedó con el objetivo, el seguro puede reactivar lo que apagó
+            # (sin esto esperaba al censo + el reencolado diario).
+            fila, alcanzado = _verificar(sku, a, ultima)
+            resultados.append(fila)
+            _seguro("despues", seg, fila, alcanzado)
+            continue
         if a["accion"] != "escribir":
             _contadores["sin_cambio" if a["accion"] == "sin_cambio" else (
                 "omitidos_full" if "FULL" in (a.get("omitido_por") or "")
