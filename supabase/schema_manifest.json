@@ -1,5 +1,145 @@
 {
  "esquemas": {
+  "almacen": {
+   "almacenes": {
+    "columnas": [
+     "codigo:text:notnull",
+     "nombre:text:notnull",
+     "fuente:text:notnull",
+     "odoo_warehouse_id:integer:null",
+     "preferencia:smallint:null",
+     "surte_ventas:boolean:notnull",
+     "admite_ov:boolean:notnull",
+     "cuenta_para_woo:boolean:notnull",
+     "temu_warehouse_id:text:null",
+     "actualizado_at:timestamp with time zone:notnull",
+     "actualizado_por:text:null",
+     "motivo:text:null"
+    ],
+    "constraints": {
+     "CHECK": 9,
+     "PRIMARY KEY": 1,
+     "UNIQUE": 3
+    },
+    "rls": true
+   },
+   "almacenes_hist": {
+    "columnas": [
+     "id:bigint:notnull",
+     "codigo:text:notnull",
+     "antes:jsonb:null",
+     "despues:jsonb:notnull",
+     "motivo:text:null",
+     "quien:text:null",
+     "cambiado_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "historial_movimientos": {
+    "columnas": [
+     "id:bigint:notnull",
+     "cedis:text:notnull",
+     "sku:USER-DEFINED:notnull",
+     "fecha:timestamp with time zone:notnull",
+     "causa:text:notnull",
+     "piezas:integer:notnull",
+     "delta:integer:notnull",
+     "ubicacion_origen:text:null",
+     "ubicacion_destino:text:null",
+     "documento:text:null",
+     "referencia:text:null",
+     "contraparte:text:null",
+     "tipo_operacion:text:null",
+     "quien:text:null",
+     "odoo_move_line_id:bigint:notnull",
+     "odoo_product_id:integer:notnull",
+     "odoo_origen:text:notnull",
+     "odoo_destino:text:notnull",
+     "odoo_escrito_at:timestamp with time zone:notnull",
+     "cargado_at:timestamp with time zone:notnull",
+     "actualizado_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "CHECK": 5,
+     "FOREIGN KEY": 1,
+     "PRIMARY KEY": 1,
+     "UNIQUE": 1
+    },
+    "rls": true
+   },
+   "locations": {
+    "columnas": [
+     "id:bigint:notnull",
+     "cedis:text:notnull",
+     "sku:USER-DEFINED:notnull",
+     "ubicacion:text:notnull",
+     "bloque:text:null",
+     "fila:text:null",
+     "tarima:text:null",
+     "piezas:integer:notnull",
+     "origen:text:notnull",
+     "odoo_quant_id:bigint:null",
+     "odoo_product_id:integer:null",
+     "odoo_ubicacion:text:null",
+     "entrada_at:timestamp with time zone:null",
+     "cargado_at:timestamp with time zone:notnull",
+     "actualizado_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "CHECK": 6,
+     "FOREIGN KEY": 1,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "stock_almacen": {
+    "columnas": [
+     "sku:USER-DEFINED:notnull",
+     "almacen:text:notnull",
+     "fuente:text:notnull",
+     "fisico:integer:notnull",
+     "apartado:integer:notnull",
+     "libre:integer:null",
+     "ubicacion:text:null",
+     "actualizado_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "CHECK": 3,
+     "FOREIGN KEY": 1,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "stock_mov": {
+    "columnas": [
+     "id:bigint:notnull",
+     "sku:USER-DEFINED:notnull",
+     "almacen:text:notnull",
+     "fuente:text:notnull",
+     "delta:integer:notnull",
+     "saldo_despues:integer:notnull",
+     "motivo:text:notnull",
+     "ref:text:null",
+     "clave:text:notnull",
+     "ov_linea_id:bigint:null",
+     "nota:text:null",
+     "quien:text:notnull",
+     "quien_nombre:text:null",
+     "via:text:null",
+     "creado_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "CHECK": 9,
+     "FOREIGN KEY": 2,
+     "PRIMARY KEY": 1,
+     "UNIQUE": 1
+    },
+    "rls": true
+   }
+  },
   "channel": {
    "categories": {
     "columnas": [
@@ -823,40 +963,34 @@
   "ops": {
    "almacenes": {
     "columnas": [
-     "codigo:text:notnull",
-     "nombre:text:notnull",
-     "fuente:text:notnull",
+     "codigo:text:null",
+     "nombre:text:null",
+     "fuente:text:null",
      "odoo_warehouse_id:integer:null",
      "preferencia:smallint:null",
-     "surte_ventas:boolean:notnull",
-     "admite_ov:boolean:notnull",
-     "cuenta_para_woo:boolean:notnull",
+     "surte_ventas:boolean:null",
+     "admite_ov:boolean:null",
+     "cuenta_para_woo:boolean:null",
      "temu_warehouse_id:text:null",
-     "actualizado_at:timestamp with time zone:notnull",
+     "actualizado_at:timestamp with time zone:null",
      "actualizado_por:text:null",
      "motivo:text:null"
     ],
-    "constraints": {
-     "CHECK": 9,
-     "PRIMARY KEY": 1,
-     "UNIQUE": 3
-    },
-    "rls": true
+    "constraints": {},
+    "rls": false
    },
    "almacenes_hist": {
     "columnas": [
-     "id:bigint:notnull",
-     "codigo:text:notnull",
+     "id:bigint:null",
+     "codigo:text:null",
      "antes:jsonb:null",
-     "despues:jsonb:notnull",
+     "despues:jsonb:null",
      "motivo:text:null",
      "quien:text:null",
-     "cambiado_at:timestamp with time zone:notnull"
+     "cambiado_at:timestamp with time zone:null"
     ],
-    "constraints": {
-     "PRIMARY KEY": 1
-    },
-    "rls": true
+    "constraints": {},
+    "rls": false
    },
    "channel_submissions": {
     "columnas": [
@@ -918,19 +1052,6 @@
     },
     "rls": true
    },
-   "devoluciones_vs_canal_v": {
-    "columnas": [
-     "problema:text:null",
-     "sku:USER-DEFINED:null",
-     "almacen:text:null",
-     "ref:text:null",
-     "esperado:integer:null",
-     "encontrado:integer:null",
-     "detalle:jsonb:null"
-    ],
-    "constraints": {},
-    "rls": false
-   },
    "migraciones": {
     "columnas": [
      "id:bigint:notnull",
@@ -974,6 +1095,314 @@
     },
     "rls": true
    },
+   "ov_archivos": {
+    "columnas": [
+     "id:bigint:null",
+     "orden_id:bigint:null",
+     "tipo:text:null",
+     "nombre:text:null",
+     "ruta:text:null",
+     "sha256:text:null",
+     "bytes:bigint:null",
+     "subido_at:timestamp with time zone:null",
+     "subido_por:text:null",
+     "subido_nombre:text:null",
+     "borrado_at:timestamp with time zone:null",
+     "borrado_por:text:null"
+    ],
+    "constraints": {},
+    "rls": false
+   },
+   "ov_folio": {
+    "columnas": [
+     "id:smallint:null",
+     "ultimo:integer:null"
+    ],
+    "constraints": {},
+    "rls": false
+   },
+   "ov_lineas": {
+    "columnas": [
+     "id:bigint:null",
+     "orden_id:bigint:null",
+     "linea:integer:null",
+     "sku:USER-DEFINED:null",
+     "titulo:text:null",
+     "imagen:text:null",
+     "cantidad:integer:null",
+     "precio_unitario:numeric:null",
+     "almacen:text:null",
+     "fuente:text:null",
+     "reservado:integer:null",
+     "entregado:integer:null",
+     "entregado_at:timestamp with time zone:null",
+     "entregado_por:text:null"
+    ],
+    "constraints": {},
+    "rls": false
+   },
+   "ov_mensajes": {
+    "columnas": [
+     "id:bigint:null",
+     "orden_id:bigint:null",
+     "tipo:text:null",
+     "evento:text:null",
+     "cuerpo:text:null",
+     "datos:jsonb:null",
+     "autor:text:null",
+     "autor_nombre:text:null",
+     "via:text:null",
+     "creado_at:timestamp with time zone:null"
+    ],
+    "constraints": {},
+    "rls": false
+   },
+   "ov_ordenes": {
+    "columnas": [
+     "id:bigint:null",
+     "folio:text:null",
+     "estado:text:null",
+     "tipo:text:null",
+     "rev:integer:null",
+     "cliente:text:null",
+     "canal:text:null",
+     "mp_canal:text:null",
+     "mp_cuenta:text:null",
+     "mp_orden:text:null",
+     "full_tienda:text:null",
+     "envio_ref:text:null",
+     "descripcion:text:null",
+     "guia:text:null",
+     "paqueteria:text:null",
+     "fecha_venta:timestamp with time zone:null",
+     "entrega_limite:timestamp with time zone:null",
+     "moneda:text:null",
+     "total:numeric:null",
+     "comision:numeric:null",
+     "precio_origen:text:null",
+     "devolucion_estado:text:null",
+     "canal_cancelo_at:timestamp with time zone:null",
+     "canal_cancelo_ref:text:null",
+     "creado_at:timestamp with time zone:null",
+     "creado_por:text:null",
+     "creado_nombre:text:null",
+     "creado_via:text:null",
+     "confirmada_at:timestamp with time zone:null",
+     "confirmada_por:text:null",
+     "confirmada_nombre:text:null",
+     "entregada_at:timestamp with time zone:null",
+     "entregada_por:text:null",
+     "entregada_nombre:text:null",
+     "cancelada_at:timestamp with time zone:null",
+     "cancelada_por:text:null",
+     "cancelada_nombre:text:null",
+     "cancelada_origen:text:null",
+     "cancelada_motivo:text:null",
+     "borrada_at:timestamp with time zone:null",
+     "borrada_por:text:null",
+     "borrada_nombre:text:null",
+     "borrada_motivo:text:null",
+     "actualizado_at:timestamp with time zone:null",
+     "clave:text:null"
+    ],
+    "constraints": {},
+    "rls": false
+   },
+   "process_log": {
+    "columnas": [
+     "id:bigint:notnull",
+     "proceso:text:notnull",
+     "origen:text:null",
+     "sku:USER-DEFINED:null",
+     "accion:text:null",
+     "estado:text:null",
+     "detalle:jsonb:null",
+     "detail_ref:text:null",
+     "duracion_s:numeric:null",
+     "created_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "stock_almacen": {
+    "columnas": [
+     "sku:USER-DEFINED:null",
+     "almacen:text:null",
+     "fuente:text:null",
+     "fisico:integer:null",
+     "apartado:integer:null",
+     "libre:integer:null",
+     "ubicacion:text:null",
+     "actualizado_at:timestamp with time zone:null"
+    ],
+    "constraints": {},
+    "rls": false
+   },
+   "stock_apartado_descuadre_v": {
+    "columnas": [
+     "problema:text:null",
+     "sku:USER-DEFINED:null",
+     "almacen:text:null",
+     "ref:text:null",
+     "esperado:integer:null",
+     "encontrado:integer:null",
+     "detalle:jsonb:null"
+    ],
+    "constraints": {},
+    "rls": false
+   },
+   "stock_formato": {
+    "columnas": [
+     "id:bigint:notnull",
+     "folio:text:null",
+     "almacen:text:notnull",
+     "fuente:text:notnull",
+     "estado:text:notnull",
+     "archivo_nombre:text:notnull",
+     "archivo_hash:text:notnull",
+     "archivo_path:text:null",
+     "reemplaza_a:bigint:null",
+     "dividido_de:bigint:null",
+     "cargado_por:text:notnull",
+     "cargado_nombre:text:null",
+     "cargado_at:timestamp with time zone:notnull",
+     "confirmado_por:text:null",
+     "confirmado_nombre:text:null",
+     "confirmado_at:timestamp with time zone:null",
+     "confirmo_bodega:text:null",
+     "descartado_por:text:null",
+     "descartado_at:timestamp with time zone:null",
+     "descartado_motivo:text:null",
+     "rev:integer:notnull"
+    ],
+    "constraints": {
+     "CHECK": 11,
+     "FOREIGN KEY": 3,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "stock_formato_evento": {
+    "columnas": [
+     "id:bigint:notnull",
+     "formato_id:bigint:notnull",
+     "linea_id:bigint:null",
+     "evento:text:notnull",
+     "antes:jsonb:null",
+     "despues:jsonb:null",
+     "nota:text:null",
+     "quien:text:notnull",
+     "creado_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "CHECK": 2,
+     "FOREIGN KEY": 1,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "stock_formato_linea": {
+    "columnas": [
+     "id:bigint:notnull",
+     "formato_id:bigint:notnull",
+     "fila:integer:notnull",
+     "sku:USER-DEFINED:notnull",
+     "sku_archivo:text:notnull",
+     "cantidad:integer:notnull",
+     "cantidad_archivo:integer:notnull",
+     "ubicacion:text:null",
+     "nota:text:null",
+     "odoo_tex2_al_cargar:numeric:null",
+     "odoo_tex2_al_confirmar:numeric:null",
+     "odoo_total_al_cargar:numeric:null",
+     "salida_odoo_at:timestamp with time zone:null",
+     "salida_odoo_via:text:null",
+     "salida_odoo_ref:text:null",
+     "odoo_tex2_al_abrir:numeric:null",
+     "aviso:text:null",
+     "rev:integer:notnull"
+    ],
+    "constraints": {
+     "CHECK": 7,
+     "FOREIGN KEY": 1,
+     "PRIMARY KEY": 1,
+     "UNIQUE": 1
+    },
+    "rls": true
+   },
+   "stock_mov": {
+    "columnas": [
+     "id:bigint:null",
+     "sku:USER-DEFINED:null",
+     "almacen:text:null",
+     "fuente:text:null",
+     "delta:integer:null",
+     "saldo_despues:integer:null",
+     "motivo:text:null",
+     "ref:text:null",
+     "clave:text:null",
+     "ov_linea_id:bigint:null",
+     "nota:text:null",
+     "quien:text:null",
+     "quien_nombre:text:null",
+     "via:text:null",
+     "creado_at:timestamp with time zone:null"
+    ],
+    "constraints": {},
+    "rls": false
+   },
+   "task_queue": {
+    "columnas": [
+     "id:bigint:notnull",
+     "task_type:text:notnull",
+     "sku:USER-DEFINED:null",
+     "account_id:uuid:null",
+     "status:text:notnull",
+     "payload:jsonb:null",
+     "intentos:integer:notnull",
+     "max_intentos:integer:notnull",
+     "last_error:text:null",
+     "next_retry_at:timestamp with time zone:null",
+     "created_at:timestamp with time zone:notnull",
+     "updated_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "CHECK": 1,
+     "FOREIGN KEY": 1,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "webhook_events": {
+    "columnas": [
+     "id:bigint:notnull",
+     "env:text:notnull",
+     "canal:text:notnull",
+     "topic:text:notnull",
+     "external_id:text:notnull",
+     "delivery_id:text:notnull",
+     "cuenta:text:null",
+     "sku:USER-DEFINED:null",
+     "payload:jsonb:null",
+     "detail_ref:text:null",
+     "firma_valida:boolean:null",
+     "procesado:boolean:notnull",
+     "resultado:text:null",
+     "intentos:integer:notnull",
+     "next_retry_at:timestamp with time zone:null",
+     "recibido_at:timestamp with time zone:notnull",
+     "procesado_at:timestamp with time zone:null"
+    ],
+    "constraints": {
+     "PRIMARY KEY": 1,
+     "UNIQUE": 1
+    },
+    "rls": true
+   }
+  },
+  "ventas": {
    "ov_archivos": {
     "columnas": [
      "id:bigint:notnull",
@@ -1106,220 +1535,47 @@
      "UNIQUE": 1
     },
     "rls": true
-   },
-   "process_log": {
-    "columnas": [
-     "id:bigint:notnull",
-     "proceso:text:notnull",
-     "origen:text:null",
-     "sku:USER-DEFINED:null",
-     "accion:text:null",
-     "estado:text:null",
-     "detalle:jsonb:null",
-     "detail_ref:text:null",
-     "duracion_s:numeric:null",
-     "created_at:timestamp with time zone:notnull"
-    ],
-    "constraints": {
-     "PRIMARY KEY": 1
-    },
-    "rls": true
-   },
-   "stock_almacen": {
-    "columnas": [
-     "sku:USER-DEFINED:notnull",
-     "almacen:text:notnull",
-     "fuente:text:notnull",
-     "fisico:integer:notnull",
-     "apartado:integer:notnull",
-     "libre:integer:null",
-     "ubicacion:text:null",
-     "actualizado_at:timestamp with time zone:notnull"
-    ],
-    "constraints": {
-     "CHECK": 3,
-     "FOREIGN KEY": 1,
-     "PRIMARY KEY": 1
-    },
-    "rls": true
-   },
-   "stock_apartado_descuadre_v": {
-    "columnas": [
-     "problema:text:null",
-     "sku:USER-DEFINED:null",
-     "almacen:text:null",
-     "ref:text:null",
-     "esperado:integer:null",
-     "encontrado:integer:null",
-     "detalle:jsonb:null"
-    ],
-    "constraints": {},
-    "rls": false
-   },
-   "stock_formato": {
-    "columnas": [
-     "id:bigint:notnull",
-     "folio:text:null",
-     "almacen:text:notnull",
-     "fuente:text:notnull",
-     "estado:text:notnull",
-     "archivo_nombre:text:notnull",
-     "archivo_hash:text:notnull",
-     "archivo_path:text:null",
-     "reemplaza_a:bigint:null",
-     "dividido_de:bigint:null",
-     "cargado_por:text:notnull",
-     "cargado_nombre:text:null",
-     "cargado_at:timestamp with time zone:notnull",
-     "confirmado_por:text:null",
-     "confirmado_nombre:text:null",
-     "confirmado_at:timestamp with time zone:null",
-     "confirmo_bodega:text:null",
-     "descartado_por:text:null",
-     "descartado_at:timestamp with time zone:null",
-     "descartado_motivo:text:null",
-     "rev:integer:notnull"
-    ],
-    "constraints": {
-     "CHECK": 11,
-     "FOREIGN KEY": 3,
-     "PRIMARY KEY": 1
-    },
-    "rls": true
-   },
-   "stock_formato_evento": {
-    "columnas": [
-     "id:bigint:notnull",
-     "formato_id:bigint:notnull",
-     "linea_id:bigint:null",
-     "evento:text:notnull",
-     "antes:jsonb:null",
-     "despues:jsonb:null",
-     "nota:text:null",
-     "quien:text:notnull",
-     "creado_at:timestamp with time zone:notnull"
-    ],
-    "constraints": {
-     "CHECK": 2,
-     "FOREIGN KEY": 1,
-     "PRIMARY KEY": 1
-    },
-    "rls": true
-   },
-   "stock_formato_linea": {
-    "columnas": [
-     "id:bigint:notnull",
-     "formato_id:bigint:notnull",
-     "fila:integer:notnull",
-     "sku:USER-DEFINED:notnull",
-     "sku_archivo:text:notnull",
-     "cantidad:integer:notnull",
-     "cantidad_archivo:integer:notnull",
-     "ubicacion:text:null",
-     "nota:text:null",
-     "odoo_tex2_al_cargar:numeric:null",
-     "odoo_tex2_al_confirmar:numeric:null",
-     "odoo_total_al_cargar:numeric:null",
-     "salida_odoo_at:timestamp with time zone:null",
-     "salida_odoo_via:text:null",
-     "salida_odoo_ref:text:null",
-     "odoo_tex2_al_abrir:numeric:null",
-     "aviso:text:null",
-     "rev:integer:notnull"
-    ],
-    "constraints": {
-     "CHECK": 7,
-     "FOREIGN KEY": 1,
-     "PRIMARY KEY": 1,
-     "UNIQUE": 1
-    },
-    "rls": true
-   },
-   "stock_mov": {
-    "columnas": [
-     "id:bigint:notnull",
-     "sku:USER-DEFINED:notnull",
-     "almacen:text:notnull",
-     "fuente:text:notnull",
-     "delta:integer:notnull",
-     "saldo_despues:integer:notnull",
-     "motivo:text:notnull",
-     "ref:text:null",
-     "clave:text:notnull",
-     "ov_linea_id:bigint:null",
-     "nota:text:null",
-     "quien:text:notnull",
-     "quien_nombre:text:null",
-     "via:text:null",
-     "creado_at:timestamp with time zone:notnull"
-    ],
-    "constraints": {
-     "CHECK": 9,
-     "FOREIGN KEY": 2,
-     "PRIMARY KEY": 1,
-     "UNIQUE": 1
-    },
-    "rls": true
-   },
-   "task_queue": {
-    "columnas": [
-     "id:bigint:notnull",
-     "task_type:text:notnull",
-     "sku:USER-DEFINED:null",
-     "account_id:uuid:null",
-     "status:text:notnull",
-     "payload:jsonb:null",
-     "intentos:integer:notnull",
-     "max_intentos:integer:notnull",
-     "last_error:text:null",
-     "next_retry_at:timestamp with time zone:null",
-     "created_at:timestamp with time zone:notnull",
-     "updated_at:timestamp with time zone:notnull"
-    ],
-    "constraints": {
-     "CHECK": 1,
-     "FOREIGN KEY": 1,
-     "PRIMARY KEY": 1
-    },
-    "rls": true
-   },
-   "webhook_events": {
-    "columnas": [
-     "id:bigint:notnull",
-     "env:text:notnull",
-     "canal:text:notnull",
-     "topic:text:notnull",
-     "external_id:text:notnull",
-     "delivery_id:text:notnull",
-     "cuenta:text:null",
-     "sku:USER-DEFINED:null",
-     "payload:jsonb:null",
-     "detail_ref:text:null",
-     "firma_valida:boolean:null",
-     "procesado:boolean:notnull",
-     "resultado:text:null",
-     "intentos:integer:notnull",
-     "next_retry_at:timestamp with time zone:null",
-     "recibido_at:timestamp with time zone:notnull",
-     "procesado_at:timestamp with time zone:null"
-    ],
-    "constraints": {
-     "PRIMARY KEY": 1,
-     "UNIQUE": 1
-    },
-    "rls": true
    }
   }
  },
  "resumen": {
+  "almacen": 6,
   "channel": 10,
   "core": 5,
   "costing": 8,
   "enrich": 14,
   "migration": 4,
-  "ops": 22
+  "ops": 21,
+  "ventas": 5
  },
  "triggers": {
+  "almacen.almacenes": [
+   "almacenes_guarda",
+   "almacenes_hist",
+   "almacenes_sin_truncate"
+  ],
+  "almacen.almacenes_hist": [
+   "almacenes_hist_sin_truncate",
+   "almacenes_hist_solo_agregar"
+  ],
+  "almacen.historial_movimientos": [
+   "historial_movimientos_tocar_trg"
+  ],
+  "almacen.locations": [
+   "locations_tocar_trg"
+  ],
+  "almacen.stock_almacen": [
+   "stock_almacen_apartado_cuadra",
+   "stock_almacen_cuadra",
+   "stock_almacen_guarda",
+   "stock_almacen_sin_truncate"
+  ],
+  "almacen.stock_mov": [
+   "stock_mov_cuadra",
+   "stock_mov_devolucion_cuadra",
+   "stock_mov_sin_truncate",
+   "stock_mov_solo_agregar"
+  ],
   "channel.listings": [
    "trg_hist_listings",
    "trg_touch_listings"
@@ -1341,15 +1597,6 @@
    "trg_hist_costos_validados",
    "trg_touch_costos_validados"
   ],
-  "ops.almacenes": [
-   "almacenes_guarda",
-   "almacenes_hist",
-   "almacenes_sin_truncate"
-  ],
-  "ops.almacenes_hist": [
-   "almacenes_hist_sin_truncate",
-   "almacenes_hist_solo_agregar"
-  ],
   "ops.devoluciones": [
    "devoluciones_guarda",
    "devoluciones_sin_truncate"
@@ -1357,36 +1604,6 @@
   "ops.migraciones": [
    "migraciones_sin_truncate",
    "migraciones_solo_agregar"
-  ],
-  "ops.ov_archivos": [
-   "ov_archivos_guarda",
-   "ov_archivos_sin_truncate"
-  ],
-  "ops.ov_folio": [
-   "ov_folio_guarda",
-   "ov_folio_sin_truncate"
-  ],
-  "ops.ov_lineas": [
-   "ov_lineas_apartado_cuadra",
-   "ov_lineas_coherente",
-   "ov_lineas_guarda",
-   "ov_lineas_sin_truncate"
-  ],
-  "ops.ov_mensajes": [
-   "ov_mensajes_sin_truncate",
-   "ov_mensajes_solo_agregar"
-  ],
-  "ops.ov_ordenes": [
-   "ov_ordenes_apartado_cuadra",
-   "ov_ordenes_coherente",
-   "ov_ordenes_guarda",
-   "ov_ordenes_sin_truncate"
-  ],
-  "ops.stock_almacen": [
-   "stock_almacen_apartado_cuadra",
-   "stock_almacen_cuadra",
-   "stock_almacen_guarda",
-   "stock_almacen_sin_truncate"
   ],
   "ops.stock_formato": [
    "stock_formato_guarda",
@@ -1400,11 +1617,29 @@
    "stock_formato_linea_guarda",
    "stock_formato_linea_sin_truncate"
   ],
-  "ops.stock_mov": [
-   "stock_mov_cuadra",
-   "stock_mov_devolucion_cuadra",
-   "stock_mov_sin_truncate",
-   "stock_mov_solo_agregar"
+  "ventas.ov_archivos": [
+   "ov_archivos_guarda",
+   "ov_archivos_sin_truncate"
+  ],
+  "ventas.ov_folio": [
+   "ov_folio_guarda",
+   "ov_folio_sin_truncate"
+  ],
+  "ventas.ov_lineas": [
+   "ov_lineas_apartado_cuadra",
+   "ov_lineas_coherente",
+   "ov_lineas_guarda",
+   "ov_lineas_sin_truncate"
+  ],
+  "ventas.ov_mensajes": [
+   "ov_mensajes_sin_truncate",
+   "ov_mensajes_solo_agregar"
+  ],
+  "ventas.ov_ordenes": [
+   "ov_ordenes_apartado_cuadra",
+   "ov_ordenes_coherente",
+   "ov_ordenes_guarda",
+   "ov_ordenes_sin_truncate"
   ]
  }
 }

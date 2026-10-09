@@ -37,8 +37,9 @@ export interface PulsoRed {
 const COLOR: Record<string, string> = {
   core: "#4ADE9B", channel: "#5EB8F0", costing: "#F0B45E", enrich: "#C08BF0",
   ops: "#F07C9B", migration: "#8B93A8", analytics: "#5ED8D8", public: "#A8C060",
-  propuestas_retirado: "#4A5654", canal: "#E8E4D8", tienda: "#E8E4D8",
-  erp: "#E8E4D8", webhook: "#7FE0D4", "sondeo 5 min": "#7FE0D4",
+  propuestas_retirado: "#4A5654", ventas: "#F0D45E", almacen: "#9BD86A",
+  canal: "#E8E4D8", tienda: "#E8E4D8", erp: "#E8E4D8", webhook: "#7FE0D4",
+  "sondeo 5 min": "#7FE0D4",
   "sondeo 10 min": "#7FE0D4", "cada 15 min": "#7FE0D4", "cron 06:15": "#7FE0D4",
   panel: "#7FE0D4", "por venta": "#7FE0D4",
 };
@@ -48,8 +49,9 @@ const COLOR: Record<string, string> = {
 const COLOR_CLARO: Record<string, string> = {
   core: "#059669", channel: "#2563eb", costing: "#d97706", enrich: "#7c3aed",
   ops: "#db2777", migration: "#64748b", analytics: "#0891b2", public: "#65a30d",
-  propuestas_retirado: "#94a3b8", canal: "#475569", tienda: "#475569",
-  erp: "#475569", webhook: "#0f766e", "sondeo 5 min": "#0f766e",
+  propuestas_retirado: "#94a3b8", ventas: "#ca8a04", almacen: "#4d7c0f",
+  canal: "#475569", tienda: "#475569", erp: "#475569", webhook: "#0f766e",
+  "sondeo 5 min": "#0f766e",
   "sondeo 10 min": "#0f766e", "cada 15 min": "#0f766e", "cron 06:15": "#0f766e",
   panel: "#0f766e", "por venta": "#0f766e",
 };

@@ -110,6 +110,11 @@ TIPOS = BACKEND.parent / "frontend" / "components" / "ordenes" / "tipos.ts"
 MIGRACIONES = BACKEND.parent / "supabase" / "migrations"
 M64 = MIGRACIONES / "0064_ops_ordenes_venta.sql"
 M65 = MIGRACIONES / "0065_ops_inventario_kubera.sql"
+# Fase 0 del reorden de esquemas (8-oct-2026): los esquemas vacíos `ventas` y
+# `almacen`, y el retiro de ops.devoluciones_vs_canal_v. No tocan ops.ov_* ni el
+# libro; van en la cadena para que la base de prueba sea la de producción.
+M66 = MIGRACIONES / "0066_esquemas_ventas_almacen.sql"
+M67 = MIGRACIONES / "0067_ops_quitar_devoluciones_vs_canal_v.sql"
 M68 = MIGRACIONES / "0068_mudanza_ov_a_ventas_y_almacen.sql"
 
 ADMIN = ov.Quien("admin@prueba.test", "Ada Admin", "panel", "admin")
@@ -192,8 +197,9 @@ def _recrear_base() -> None:
 
 
 def setUpModule() -> None:
-    """Una vez por corrida: la base se tira y se recrea (fixture → 0064 → 0065, y
-    otra vez 0064 → 0065: idempotencia), y el pool del backend apunta a ella."""
+    """Una vez por corrida: la base se tira y se recrea (fixture → 0064 → 0065 →
+    0066 → 0067, y otra vez las cuatro: idempotencia), y el pool del backend
+    apunta a ella."""
     global _CN, _PARCHE_DSN
     if not DSN:
         return
@@ -202,13 +208,20 @@ def setUpModule() -> None:
     _CN = psycopg2.connect(DSN)
     _CN.autocommit = True
     with _CN.cursor() as cur:
-        # La 0068 va al final y dos veces: después de la mudanza la 0064 y la 0065 ya no
-        # se pueden repetir (en `ops` quedan vistas con esos nombres, no tablas).
-        for archivo in (FIXTURE, M64, M65, M64, M65, M68, M68):
+        # La cadena de producción: 0066 y 0067 después de la 0065, y la 0068 al final.
+        # Todo dos veces (idempotencia), pero la 0068 va AL FINAL de las dos vueltas:
+        # después de la mudanza la 0064 y la 0065 ya no se pueden repetir (en `ops`
+        # quedan vistas con esos nombres, no tablas). El runner nunca las repite.
+        for archivo in (FIXTURE, M64, M65, M66, M67, M64, M65, M66, M67, M68, M68):
             cur.execute(archivo.read_text(encoding="utf-8"))
         cur.execute("select migracion, count(*) from ops.migraciones group by 1 order by 1")
         assert cur.fetchall() == [("0064_ops_ordenes_venta", 2), ("0065_ops_inventario_kubera", 2),
+                                  ("0066_esquemas_ventas_almacen", 2),
+                                  ("0067_ops_quitar_devoluciones_vs_canal_v", 2),
                                   ("0068_mudanza_ov_a_ventas_y_almacen", 2)]
+        # La 0065 re-aplicada vuelve a crear la vista; la 0067 que va después la quita.
+        cur.execute("select to_regclass('ops.devoluciones_vs_canal_v') is null")
+        assert cur.fetchone() == (True,), "la 0067 no quitó ops.devoluciones_vs_canal_v"
     _PARCHE_DSN = mock.patch.object(settings, "supabase_db_url", DSN)
     _PARCHE_DSN.start()
     sdb._reiniciar_pool()               # el pool pudo nacer antes, apuntando a otro lado
@@ -252,7 +265,7 @@ class Base(unittest.TestCase):
                          "from ops.stock_apartado_descuadre_v")
         self.assertEqual([f for f in vigia if (f["problema"], f["sku"]) not in self.vigia_esperada],
                          [], "la vista vigía reporta un descuadre")
-        self.assertEqual(self.sql("select * from ops.devoluciones_vs_canal_v"), [])
+        # (ops.devoluciones_vs_canal_v ya no existe: la quita la 0067.)
         # 2) Las tres verificaciones de la base, por cada orden y cada saldo.
         self.sql("select ops.verificar_ov(id) from ventas.ov_ordenes")
         self.sql("select ops.verificar_libro(sku, almacen), ops.verificar_apartado(sku, almacen) "

@@ -1001,6 +1001,294 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.635.0 — Reorden de esquemas, fase 0, puesta encima de la mudanza de Brandon (0068-0070): el runner del sandbox registra y salta lo aplicado y no duplica las migraciones que se registran solas, `--hasta`, las 0034-0036 llegan a main, la 0066/0067 y el manifiesto al día con producción
+
+Esta versión trae a `main` la fase 0 del reorden de esquemas (antes «v0.628.0 provisional», commit local
+e61949a, nunca empujado), rebasada sobre v0.632.0 y adaptada a lo que Brandon aplicó el mismo día.
+**Estado de cada migración al 9-oct-2026** (medido en `ops.migraciones`, solo lectura):
+
+| Migración | Producción (`tukwcvsi`) | Sandbox (`yvootpbz`) |
+|---|---|---|
+| 0066 esquemas `ventas`/`almacen` y 0067 fuera `ops.devoluciones_vs_canal_v` | 9-oct 04:41:25 UTC, con su acta (`_paso_prod_esquemas_0066_0067`) | 9-oct 00:02 y 02:28 UTC |
+| 0068 mudanza de `ops.ov_*`/`almacenes*`/`stock_*` (Brandon) | 9-oct 06:48:14 UTC, sin acta | **9-oct 19:51 UTC, con este runner** |
+| 0069 `almacen.locations` (Brandon) | 9-oct 07:05:58 UTC, sin acta | **9-oct 19:51 UTC, con este runner** (vacía) |
+| 0070 `almacen.historial_movimientos` (Brandon) | 9-oct 18:45:55 UTC, sin acta | **pendiente** (no se aplicó a propósito) |
+
+**0. Lo que cambió al ponerla encima de la 0068-0070**
+
+- **Rebase sobre v0.632.0.** Tres conflictos: la versión de `main.py` (quedó **v0.633.0** en la rama y se publica como **v0.635.0**, porque main ya traía la v0.633.0 y la v0.634.0 de Fan-out; la v0.632.0
+  ya era de Brandon), esta bitácora (su entrada va arriba de las de Brandon, que quedan intactas) y la
+  cadena de `tests/test_ordenes_venta_bd.py`, que conserva las dos: `FIXTURE → 0064 → 0065 → 0066 → 0067
+  → 0064 → 0065 → 0066 → 0067 → 0068 → 0068` (la 0068 al final de las dos vueltas: después de la mudanza
+  la 0064 y la 0065 ya no se pueden repetir). Se afirma una fila doble de cada una, la 0068 incluida, y
+  que la vista de la 0067 ya no está.
+- **Las migraciones que se registran solas.** La 0068 inserta su fila dentro de un `DO` (`select '0068_…',
+  jsonb_build_object('tablas_movidas', …)`, sin guarda) y la 0069 y la 0070 con `where not exists`.
+  Medido en producción: `ops.migraciones` **no tiene un único** sobre `migracion` (solo la PK `id` y el
+  CHECK del nombre, igual que en la 0064), así que nada en la base impide una fila doble: quien no
+  duplica es el runner. Ya contaba las filas antes y después; ahora además:
+  - lee, sin tocar la base, qué nombres inserta cada archivo en `ops.migraciones` (las tres formas de la
+    casa: `values (…)`, `select '…'` en un `DO`, `select … where not exists`) y **rechaza antes de
+    ejecutar** —también en `--plan`— el archivo que se registra con OTRO nombre que el suyo. Es la red
+    para lo que viene renumerado: la limpieza y la cuarentena ya van por su tercera numeración;
+  - si un archivo deja **más de una** fila con su nombre en una sola corrida, lo deshace entero;
+  - dice en la corrida «la fila la puso el propio archivo» y en el plan «(se registra sola)».
+- **Bug de la huella que destapó la 0068.** La 0068, 0069 y 0070 repiten `create schema if not exists
+  almacen` «para que el sandbox no dependa del orden». La huella le asignaba el esquema a la ÚLTIMA que lo
+  nombra, así que la 0066 se quedaba sin huella y una adopción la habría dado por «sin efecto propio».
+  Ahora un esquema lo responde quien lo **creó**; si se tira, quien lo vuelve a crear.
+- **`--hasta NNNN`**: corre solo lo pendiente ≤ NNNN y deja lo de arriba pendiente (el plan lo lista como
+  `NO CORRE (--hasta NNNN)`). No va con `--recrear` ni con `--adoptar-hasta`, y no sirve para saltar
+  atrasadas. Con él el sandbox recibió hoy la 0068 y la 0069 y no la 0070.
+- **`supabase/schema_manifest.json` al día con producción** (medido el 9-oct, solo lectura; reglas del
+  archivo: `indent=1`, ascii, llaves ordenadas, sin salto final, `resumen` = conteo por esquema; las
+  constraints sin las de tipo trigger). Las 9 tablas mudadas pasan de `ops` a `ventas` (5) y `almacen`
+  (4) con **exactamente** la forma que el manifiesto ya tenía para ellas (columnas, constraints, RLS y
+  triggers: se comprobó contra producción antes de moverlas); en `ops` entran las **9 vistas puente** de
+  la 0068 (mismas columnas, todas `null` porque una vista no guarda NOT NULL, sin constraints ni RLS
+  propios, `security_invoker=true`); y entran `almacen.locations` y `almacen.historial_movimientos`. La
+  0070 va incluida aunque la tarea pedía «0066-0069»: está en `main` y en producción, y sin ella
+  `locations` quedaría con la columna `archivado_odoo` que producción ya no tiene. `resumen`: ventas 5,
+  almacen 6, ops 21. La prueba del manifiesto fija esas reglas (cada puente = su tabla con todo `null`).
+  El manifiesto sigue siendo **curado**, no foto: no se tocaron las otras ~35 tablas de producción que no
+  tiene ni las 7 que tiró la 0052.
+- `ESQUEMAS_PROPIOS` (runner), `ESQUEMAS_NEGOCIO` (`verificar_rls.py`) y `ESQUEMAS` (`routers/flujo.py`)
+  ya traían `ventas` y `almacen` desde la fase 0 (las notas de Brandon de la 0068-0070 decían que
+  faltaban: era cierto en `main`, no en esta rama). La huella los lee sola (sale de la cadena). Se
+  corrigieron los comentarios que decían «nacen vacíos».
+- `docs/MIGRACION_0064_0065_GUIA_AGENTE.md`: nota al inicio (las nueve tablas viven en `ventas`/`almacen`,
+  los puentes, y que una base con la 0068 ya no admite re-correr la 0064/0065).
+  `backend/scripts/verificar_0064_0065.py`: **no se adaptó**; su encabezado dice ahora que sus pruebas de
+  forma buscan tablas en `ops` y que `--en-transaccion` re-aplica la 0064/0065, así que sirve solo contra
+  una base sin la 0068.
+
+**El plan contra producción** (solo lectura: el runner se niega a apuntar a producción por su candado de
+ref, así que se usaron sus funciones de plan y de catálogo dentro de `set transaction read only` +
+ROLLBACK). **No dice «nada que aplicar»**, y está bien que no: el registro de producción nació con la 0064
+(6-oct) y tiene 7 filas (0064 a 0070); las 66 de abajo nunca se adoptaron, así que el plan las ve como
+«atrasadas» y se BLOQUEA sin correr nada. De la 0064 en adelante no hay nada pendiente, y la huella de
+las siete está **completa** en el catálogo de producción (la mudanza incluida). Si algún día se quisiera
+el registro completo en producción, `--adoptar-hasta 0063` (con su acta) adoptaría 63 con huella; tres
+piden nombrarse: la 0001 (las 7 tablas que tiró la 0052), la 0014 (nada verificable) y **la 0060:
+`costing.sku_contenedor` no existe en producción** (sí en el sandbox).
+
+**Sandbox.** Plan antes: frontera 0067, 70 filas, `CORRE` 0068, 0069 y 0070 «(se registra sola)».
+Corrida con `--hasta 0069`: la 0068 (avisos «schema already exists») y la 0069, una transacción cada
+una, **una fila cada una, la suya** (`tablas_movidas: 9` y `locations: 0`), 72 filas y ningún nombre
+repetido. Verificado después, solo lectura: las 9 tablas en `ventas`/`almacen` con los mismos conteos
+que antes (6 bodegas, 6 de historia, 4 saldos, 8 movimientos, 6 órdenes, 6 renglones, 16 mensajes, 0
+archivos, folio 1), su RLS y sus triggers iguales a producción; las 9 vistas puente con
+`security_invoker=true`, iguales a producción, `service_role` lee y escribe, `anon`/`authenticated` nada;
+ninguna función dice ya `ops.<tabla mudada>`; `almacen.locations` existe y está **vacía** (no se cargó);
+la vigía en 0 filas. La paridad contra el manifiesto: las tablas de la 0064-0069 cuadran; lo único nuevo
+es lo esperado por no tener la 0070 (falta `almacen.historial_movimientos` y `locations` aún tiene
+`archivado_odoo`); el resto de las diferencias ya existían. El plan siguiente: `CORRE 0070` y nada más.
+
+**Pruebas.** `tests/test_aplicar_migraciones.py`: 73 (12 nuevas: las tres formas del insert propio, el
+nombre ajeno rechazado sin mandar el texto y en `--plan`, las dos filas en una corrida, las reales
+0068-0070 contra la base falsa —que ahora entiende las tres formas y la guarda `not exists`—, `--hasta`
+en el plan y en `main`, el esquema que responde quien lo creó y la huella real de la mudanza; y dos
+ampliadas: «un número, un archivo» de la 0064 en adelante, y las reglas del manifiesto). Suite del backend con `PYTHONIOENCODING=utf-8`:
+**2,522 pruebas, 1 falla** (`test_regla_11_productos`), la misma que da `origin/main` (2,449 pruebas, 1
+falla) en la misma consola; sin UTF-8 también falla `test_competencia_juez_rutas`, en las dos.
+`verificar_rls.py`: 73 migraciones, 85 tablas, 27 vistas, en verde. `test_ordenes_venta_bd.py` necesita
+el Postgres local (`OV_TEST_DSN`) y aquí se saltó.
+
+**Lo de abajo es la fase 0 tal como se construyó el 8-oct** (entonces «v0.628.0 provisional»). Dos cosas
+ya no son ciertas: la 0066 y la 0067 **sí** se aplicaron (tabla de arriba) y los pasos de «Cómo se aplica
+en el sandbox» ya se corrieron.
+
+Eduardo aprobó el 8-oct la reorganización de `ops` en dos esquemas nuevos, `ventas` (órdenes de venta
+propias y las bitácoras de Odoo y Temu) y `almacen` (bodegas y su libro), con las recomendaciones D1
+(TEXCO lleva el libro), D3, D4, D5 y D6. D10 cambia: `channel.restock_panel` **no** se borra, porque
+producción la consulta miles de veces (`pg_stat_statements`). Esta versión es **solo la fase 0**: los
+prerrequisitos que no tocan tablas de negocio. **No se aplicó nada en ninguna base**: todo se verificó
+en el sandbox dentro de transacciones que terminan en ROLLBACK, y producción solo se midió (lectura).
+
+**1. `backend/scripts/aplicar_migraciones.py` ya no re-ejecuta todo.** Hasta hoy corría los 70 `*.sql`
+en cada vuelta y no anotaba nada. Funcionaba mientras cada archivo fuera re-ejecutable sobre la base de
+hoy; en cuanto una tabla se mude de esquema, la 0033, 0058, 0061, 0064 y 0065 recrearían en `ops` copias
+vacías, su `create or replace` regresaría las funciones al texto viejo (y los triggers validarían en
+silencio contra esas copias) y un `set schema` repetido truena con 42P07. Además, sobre el sandbox de hoy no
+pasaba de la 0033: esa versión comenta `stock_texco`, columna que la bitácora de la 0036 ya no tiene. Ahora manda el registro
+`ops.migraciones` (lo crea la 0064; es de solo agregar):
+- **Una transacción por archivo, con su fila.** Si el archivo trae su propio `begin;` … `commit;` (una
+  pareja al nivel de arriba, la forma de la casa: hoy 20 archivos), el runner vuelve comentario esas dos
+  líneas y lo envuelve en la suya: o queda el DDL **y** la fila, o nada. Cualquier otra forma (dos
+  commits, un `rollback;`) se rechaza **antes** de tocar la base. `end;` no cuenta como control (es el
+  cierre de bloque de plpgsql).
+- **Sin duplicar.** Si el archivo ya inserta su propia fila (0064, 0065, 0066, 0067), el runner cuenta
+  las filas antes y después y no agrega otra. Las que pone el runner llevan en `detalle` `por`, `modo`
+  (`ejecutada`, `registro_tardio` o `adoptada`) y el `sha256` del texto con saltos LF (igual en un
+  checkout CRLF). `quien` queda con su default de la 0064 (`app.usuario` o `current_user`).
+- **Fila con otro nombre = fallo.** Si un archivo inserta en `ops.migraciones` una fila que no es la
+  suya (un archivo renumerado —aquí se renumera seguido: 0058→0059, 0061→0062— que no cambió su
+  `insert … values ('NNNN_…')`), se deshace entero: la fila fantasma movería la frontera y, como el
+  registro es de solo agregar, no se podría borrar.
+- **Base nueva (`--recrear`, o sin `ops.migraciones` y sin tablas en los esquemas propios)**: corre todo
+  en orden. Lo que corre antes de que exista el registro (0001…0063) se registra, con modo
+  `registro_tardio`, en la misma transacción del archivo que lo crea (la 0064).
+- **`--recrear` revisa antes de tirar nada** lo que la cadena toca sin crear (`alter`/`grant`/`revoke`/
+  `comment` sobre una relación que ninguna migración crea; se calcula de los archivos): hoy, la 0025 sobre
+  `propuestas_retirado.competencia_*` (3 tablas y 2 vistas) y `public.packing_lists`/`_items`. Si falta
+  algo, se detiene **sin tirar nada** (también con `--plan --recrear`, que ahora se conecta en solo
+  lectura). En el sandbox faltan los siete —la 0052, fuera de main, los quitó—, así que ahí **`--recrear`
+  no está soportado** hasta que exista una migración de compatibilidad con su acta. Antes tiraba los 8
+  esquemas y tronaba en la 0025, con el sandbox a medio armar y sin registro.
+- **Sin `ops.migraciones` pero con tablas** (una corrida a medias antes de la 0064, una restauración
+  anterior al 6-oct): se detiene. Antes la daba por base nueva y re-corría desde la 0001 encima de lo vivo
+  (la 0033 vieja truena contra la forma de la 0036, y tras mudar tablas recrearía copias vacías). Si un
+  archivo falla antes de que exista el registro, el mensaje ya no promete «la próxima corrida empieza en
+  él»: dice que lo confirmado no tiene fila y que se recree.
+- **Base existente (el sandbox)**: una sola vez, `--adoptar-hasta NNNN` registra como aplicadas, **sin
+  ejecutarlas**, las ≤ NNNN sin fila. Solo por debajo de la «frontera» (el número más alto ya
+  registrado: lo de arriba nunca corrió) y en una sola transacción. **No supone** que todo lo de abajo
+  esté aplicado —el sandbox no lo armó solo este runner, hubo scripts de aplicación sueltos—: antes de
+  adoptar compara la **huella** de cada una contra el catálogo. La huella se calcula reproduciendo la
+  cadena entera con el modelo de `verificar_rls.py` (drops, renombres, `set schema`, `alter schema …
+  rename`), y cada objeto lo responde la **última** migración que lo dejó como está (si una posterior tira
+  y recrea la tabla, lo de la anterior ya no cuenta): tablas y vistas, columnas agregadas o renombradas,
+  **RLS** (`relrowsecurity`), **`security_invoker`** (`reloptions`), **funciones** por esquema, nombre,
+  número de argumentos y **cuerpo** (`prosrc`, sin comentarios y con el espacio colapsado), **índices**
+  (también renombrados, en el orden del archivo), **triggers**, **constraints**, **policies**,
+  **esquemas**, y lo que la migración **tira** y nadie recrea (tiene que ya no estar). Si falta algo —o si
+  la migración no tiene **nada** verificable (solo grants, comments o datos)— **no adopta a ciegas**: hay
+  que nombrarla en `--excepto` (no se adopta y se corre después) o en `--sin-huella-ok` (se adopta igual:
+  lo tiró una migración fuera de main, o era un no-op en esa base). La que hizo algo verificable que una
+  posterior reemplazó entero se adopta sin más y el plan la lista («sin efecto propio»). Lo que la huella
+  **no** ve —y el plan lo dice—: el cuerpo de las vistas, grants, comments, datos, tipos y defaults.
+- **Por omisión**: salta lo registrado y corre y registra lo nuevo, en orden. Si hay pendientes **por
+  debajo** de la frontera («atrasadas»: un `.sql` que llegó tarde a main, o lo que se excluyó al
+  adoptar), se detiene y las nombra; `--incluir-atrasadas` las corre en orden de archivo.
+- **`--plan`** (o `--ensayo`) imprime qué correría, saltaría o adoptaría y sale con 1 si está bloqueado;
+  lee en una transacción `set transaction read only` que termina en ROLLBACK (nunca marca la sesión, por
+  la regla 13). La paridad del final también lee así.
+- **Si un archivo truena a la mitad**: se deshace ese archivo entero (sin fila) y la corrida se detiene;
+  lo anterior queda confirmado y registrado, y la próxima corrida empieza en él (salvo antes de la 0064,
+  arriba). Un candado
+  `pg_advisory_xact_lock` por archivo forma a dos corridas simultáneas (la segunda ve la fila y salta).
+- **Lo que no cambió**: el candado de producción (ref `tukwcvsi` o `SUPABASE_PROD_REF` → aborta; es solo
+  para el sandbox) y la paridad contra el manifiesto. De `env.staging` ahora lee **solo**
+  `SUPABASE_DB_URL` y `SUPABASE_PROD_REF` (el archivo trae llaves de MySQL/Woo de producción); si la
+  raíz no lo tiene (un worktree), busca `../OMNICANAL/env.staging`, o se le da con `--env`.
+
+Medido en el sandbox (solo lectura): `ops.migraciones` tiene 2 filas (0064, 0065) y hay 66 archivos sin
+fila por debajo. La huella encontró **seis sin aplicar**: la 0043 (`enrich.market_highlights` sin RLS,
+`market_categoria_prioridad_v` sin invoker), la 0044_blindaje (`market_highlights_hist` sin RLS), la
+0045 (`market_publicaciones_v` sin invoker), la 0046 (`ops.channel_submissions.actor` y su índice), la
+0050 (sigue viva `ops.purgar_webhook_events(int,int)` de la 0004; falta la de 3 argumentos: el cron purga
+todos los canales a 3 días) y la 0051 (`channel.publication_mode`). Y tres que se adoptan con nombre: la
+0001 (las 7 tablas que tiró la 0052, fuera de main: `costing.fx_rates`, `costing.legacy_costos_ml`,
+`enrich.odoo_viability`, `enrich.supplier_data`, `migration.costs_differences`,
+`migration.costs_preview`, `ops.task_queue`), la 0014 (nada verificable: renombra `propuestas` si
+existe, y en el sandbox no existe) y la 0025, aplicada **en parte**: le falta `security_invoker` a
+`enrich.market_skus_v` y no se puede volver a correr (truena: no existe `propuestas_retirado`); eso va en
+una migración nueva con su acta, después de medir producción. **Ningún** cuerpo de función difiere. La
+primera versión de este runner (huella de solo tablas, vistas y columnas) habría adoptado la 0043, 0044,
+0045 y 0050 como aplicadas —para siempre, porque el registro es de solo agregar—; lo detectó la revisión.
+
+**2. Las 0034, 0035 y 0036 llegan a main tal cual** (de `feat/caja-compartida`, a66bd54; mismo sha256 que
+en la rama). Contra la forma real de producción medida el 8-oct (columnas, constraints, índices y
+triggers de `costing.caja_compartida`, `ops.automatizacion_flags`, `ops.odoo_sale_orders` y
+`ops.odoo_sale_order_items`) **no hay diferencias**: el CHECK del nombre de flag y `creado_at` están en la
+0035, y `cuenta`, `stock_libre`, `medido_at` y la FK en la 0036; `archivo_sha256` de `caja_compartida` lo
+pone la 0056 (que en una base armada desde main tronaba sin la 0034). El problema era **la base nueva**:
+la 0033 de main (que nunca se aplicó en producción) corre antes y crea las tres tablas con su forma vieja;
+la 0035 y la 0036 usan `create table if not exists`, así que no crean nada, y la 0036 **truena** en
+`comment on column ops.odoo_sale_order_items.stock_libre` (42703). Sin editar la 0033 ni la 0036, una
+migración nueva se ordena justo entre las dos:
+
+- `0033_ops_odoo_sale_orders_forma_prod.sql` (`sorted()` la pone después de la 0033 y antes de la 0034,
+  como las otras numeraciones repetidas). Si encuentra la forma de la 0033 (bitácora sin `cuenta`,
+  interruptor sin `creado_at`) y la tabla está **vacía**, la tira para que la 0035/0036 la creen con la
+  forma de producción. La bitácora vieja **con filas** truena (convertirla cambia la llave: es un acta).
+  El interruptor con filas no se tira: se le agregan `creado_at` y el CHECK en su lugar (columnas en otro
+  orden; la paridad lo dirá). Con la forma de producción —producción y sandbox— no hace nada: solo lee el
+  catálogo, sin candados sobre las tablas.
+
+**3. `0066_esquemas_ventas_almacen.sql`**: `create schema if not exists ventas` y `almacen`, con su
+comment; `grant usage` a service_role y `alter default privileges for role postgres in schema …` para
+tablas y secuencias, exactamente como `ops` (medido en producción: `{postgres=UC/postgres,
+service_role=U/postgres}`, tablas `service_role=arwdDxtm`, secuencias `service_role=rwU`); anon y
+authenticated, nada. No se exponen en PostgREST. Deja su fila en `ops.migraciones`. Idempotente. No
+mueve ninguna tabla. Los esquemas quedan registrados en `ESQUEMAS_NEGOCIO` (`verificar_rls.py`: una
+tabla que se mude a un esquema fuera de la lista dejaría de revisarse en silencio), `ESQUEMAS_PROPIOS`
+(`aplicar_migraciones.py`, también para `--recrear`), `ESQUEMAS` de `routers/flujo.py` (los esquemas
+cuyas tablas pinta la Red viva; vacíos no pintan nada) con su color en `RedViva.tsx`, y en
+`supabase/schema_manifest.json` (`"ventas": {}`, `"almacen": {}` en «esquemas» y `0` en «resumen»).
+
+**4. `0067_ops_quitar_devoluciones_vs_canal_v.sql`** (Fase 0b, devoluciones): `drop view if exists
+ops.devoluciones_vs_canal_v` (sin cascade), su fila, y el comment de la vigía principal
+`ops.stock_apartado_descuadre_v` reescrito sin «junto con ops.devoluciones_vs_canal_v». La vista cruzaba lo recibido en REVISION
+(`ops.devoluciones`: 0 filas, sin escritor) contra `channel.return_items`, nunca devolvió nada y ataba
+esas columnas (un ALTER de `return_items` o la reversa de la 0049 truenan mientras exista). Va antes de
+cualquier ALTER de `return_items`. **Lectores en origin/main**: ninguno en runtime —la vigía de la
+pestaña Bodegas (`fanout_bodegas.py`) lee solo `ops.stock_apartado_descuadre_v` y ya pregunta
+`to_regclass`—; `verificar_0064_0065.py` ahora la revisa solo si existe; `test_ordenes_venta_bd.py`
+aplica 0066 y 0067 después de la 0065 (dos veces: idempotencia), afirma que la vista ya no está y deja de
+leerla; `ov_fixture.sql`, la guía `MIGRACION_0064_0065_GUIA_AGENTE.md` y el manifiesto, al día. Nada
+depende de ella en la base. **No** toca `ops.devoluciones`, sus triggers, REVISION ni la vigía principal
+(eso es la Fase 1, con su acta). Ojo: re-correr la 0065 a mano la vuelve a crear; el runner ya no lo hace.
+git y `pg_depend` no ven cuerpos plpgsql ni clientes de fuera del repo (así se escapó `restock_panel`):
+el encabezado de la 0067 trae el **prechequeo de solo lectura que su acta corre en producción**
+(`pg_stat_statements` sin DDL, `pg_proc.prosrc` y las vistas encima); solo se sigue si los únicos
+aciertos son los `select count(*)` del aplicador y el verificador del 6-oct. El aplicador del acta
+0064/0065 (`_paso_prod_ov_0064_0065/aplicar_0064_0065.py`, fuera del repo) exige las dos vistas: tras la
+0067 queda histórico; no se editó (lo cubre `SHA256SUMS.txt` y el acta está firmada) y lleva al lado
+`LEEME_DESPUES_DE_0067.txt`.
+
+**Verificado en el sandbox, dentro de UNA transacción con ROLLBACK** (con las funciones del runner y su
+`commit()` neutralizado), los pasos de abajo tal cual: adopción de 60 (`modo = adoptada`); luego las 8
+pendientes —0043, 0044_blindaje, 0045, 0046, 0050, 0051, 0066, 0067— corren sin error con **una** fila
+cada una (las 6 atrasadas `ejecutada`; la 0066 y la 0067, la suya propia, sin duplicar); quedan
+`purgar_webhook_events(int,int,int)`, RLS en las dos tablas de enrich, `security_invoker=on` en las dos
+vistas, `channel.publication_mode` y `actor`; el plan siguiente dice «Nada que correr» y la huella de
+TODO lo ≤ 0067 cuadra salvo las tres nombradas; `ventas`/`almacen` con la misma
+ACL, el mismo dueño y los mismos default privileges que `ops`, una tabla nueva en `ventas` hereda lo mismo
+que una en `ops`, anon/authenticated sin USAGE; la vista fuera, `ops.devoluciones` y la vigía principal
+intactas; 0066 y 0067 re-ejecutadas sin error (2 filas cada una). El ajuste de forma sobre las tablas
+reales: sin avisos y los conteos iguales (72 órdenes, 78 renglones). En un esquema de prueba, 0033 →
+ajuste → 0035 → 0036 deja las tres tablas **iguales a producción** (columnas, constraints, índices,
+trigger y RLS); sin el ajuste, la misma cadena truena con `UndefinedColumn stock_libre`. Después del
+ROLLBACK, en otra transacción de lectura: nada quedó (registro con 2 filas, sin esquemas nuevos, la vista
+en su lugar).
+
+**Cómo se aplica en el sandbox** (lo corre el coordinador, en este orden):
+
+```
+EXC=0043_blindaje_enrich,0044_blindaje_market_highlights_hist,0045_reblindaje_market_publicaciones_v,0046_actor_channel_submissions,0050_retencion_webhooks_por_canal,0051_modo_publicacion
+OK=0001_esquema_v4,0014_retiro_propuestas,0025_blindaje_rls
+backend/.venv/Scripts/python.exe backend/scripts/aplicar_migraciones.py --plan --adoptar-hasta 0063 --excepto $EXC --sin-huella-ok $OK   # ADOPTA 60, sale con 0
+backend/.venv/Scripts/python.exe backend/scripts/aplicar_migraciones.py --adoptar-hasta 0063 --excepto $EXC --sin-huella-ok $OK
+backend/.venv/Scripts/python.exe backend/scripts/aplicar_migraciones.py --plan --incluir-atrasadas   # 6 ATRASADA + CORRE 0066, 0067
+backend/.venv/Scripts/python.exe backend/scripts/aplicar_migraciones.py --incluir-atrasadas
+backend/.venv/Scripts/python.exe backend/scripts/aplicar_migraciones.py --plan                       # Nada que correr
+```
+
+La paridad del final sale con 1 por diferencias que ya existían (las 7 tablas de la 0052 siguen en el
+manifiesto y 8 tablas con columnas distintas); las migraciones ya quedaron confirmadas antes.
+
+**Producción** (8-oct): no se tocó. La 0066 y la 0067 van con su acta (se aplicaron el 9-oct a las 04:41 UTC) (las dos se registran solas); el ajuste
+`0033_…_forma_prod` ahí no hace nada.
+
+Pruebas: `tests/test_aplicar_migraciones.py` (61, sin base: el plan —base nueva, base con tablas y sin
+registro, sandbox de hoy, adopción con frontera, `--excepto`, atrasadas, `--recrear`—; la huella de cada
+clase —una migración que solo prende RLS bloquea si no está, invoker y el replace que lo quita, funciones
+por argumentos y cuerpo, índices renombrados en orden, triggers, constraints, policies, esquemas, lo que
+se tira, la tabla recreada, la migración sin nada verificable— y la de la cadena real (las seis que el
+sandbox no tenía, la 0014 única sin huella, los requisitos externos de la 0025); una transacción por
+archivo con su fila, el registro tardío, sin duplicar la fila propia, la fila con otro nombre, el fallo a
+la mitad antes y después de la 0064, otra corrida que ya registró, la adopción; y `main`: `--plan` y
+`--plan --adoptar-hasta` en read only sin escribir, la adopción, `--recrear` que tira también `ventas` y
+`almacen` y registra tarde, `--recrear` sin requisitos que no tira nada, la base con tablas sin registro,
+la URL de producción que sale antes de conectar, las dos llaves de `env.staging`, la forma de los 70
+archivos reales, las listas de esquemas, el manifiesto y el blindaje estático). Trece mutantes del runner
+(quitar cada clase de huella, el bloqueo sin huella, la fila ajena, los requisitos, el read only, el
+candado…): los trece hacen fallar alguna prueba. Suite
+del backend: 2,464 pruebas (110 saltadas); falla 1, que también falla en f0471c6: `wp_db.norma_titulo` de
+la regla 11 (`test_competencia_juez_rutas` también falla en Windows si la consola no es UTF-8; con
+`PYTHONIOENCODING=utf-8` pasa). `verificar_rls.py`
+estático en verde (70 migraciones, 83 tablas, 18 vistas); `tsc --noEmit` limpio.
 ### v0.634.0 — Fan-out · Devoluciones: pestaña con la bandeja de cajas y el detalle por SKU, ligados a Odoo por la guía de la recepción (solo lectura); y la liga por fecha ya no toma subidas de antes del despacho
 
 > **Número.** Antes en la rama `feat/devoluciones-pestana`, en dos entregas que nunca llegaron a

@@ -83,9 +83,15 @@ MIGRACIONES = RAIZ / "supabase" / "migrations"
 
 # Esquemas donde vive el negocio. `public` entra porque es el ÚNICO expuesto por
 # PostgREST: una tabla sin RLS ahí sí es alcanzable de verdad.
+# `ventas` y `almacen` nacen vacíos en la 0066 (reorden de esquemas, 8-oct-2026):
+# una tabla que se mude a un esquema que NO esté aquí deja de revisarse en
+# silencio, así que entran desde el día en que existen. La 0068 (9-oct) les mudó
+# las tablas de las órdenes de venta y del libro; la 0069/0070 crearon las de
+# almacen.locations y almacen.historial_movimientos.
 ESQUEMAS_NEGOCIO = frozenset({
     "core", "channel", "costing", "enrich", "ops",
     "analytics", "migration", "public", "propuestas_retirado",
+    "ventas", "almacen",
 })
 
 # ─── Patrones ──────────────────────────────────────────────────────────────

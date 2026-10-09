@@ -16,7 +16,8 @@
 --   · 0065: `ops.stock_watch_photo` (su paso 0 truena sin ella y el ALTER final
 --     le agrega `stock_kubera`) y `channel.return_items` (la vista
 --     ops.devoluciones_vs_canal_v lee canal, cuenta, external_return_id, sku y
---     cantidad). Por eso van aquí `channel.returns` y `channel.return_items`
+--     cantidad; la crea la 0065 y la QUITA la 0067, que la prueba aplica
+--     después). Por eso van aquí `channel.returns` y `channel.return_items`
 --     MÍNIMAS: así la prueba no depende de aplicar la 0049, que arrastra vistas
 --     y triggers de devoluciones del canal que este módulo no toca.
 --   · El servicio: `ops.automatizacion_flags` (las banderas son filas),
@@ -128,7 +129,8 @@ create table channel.order_items (
 );
 
 -- Devoluciones del canal (de la 0049), MÍNIMAS: sólo las columnas que usa la
--- vista ops.devoluciones_vs_canal_v de la 0065, y las llaves que las ligan.
+-- vista ops.devoluciones_vs_canal_v de la 0065 (la 0067 la quita después, pero
+-- la 0065 la crea y sin estas columnas truena), y las llaves que las ligan.
 create table channel.returns (
     canal text not null references core.channels (id), cuenta text not null,
     external_return_id text not null, external_order_id text, estado text,

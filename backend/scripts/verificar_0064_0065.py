@@ -12,6 +12,15 @@ base solo vale si se probó que RECHAZA lo que debe, con el SQLSTATE exacto que
 Python va a atrapar, y que DEJA PASAR los flujos del plan (confirmar, entregar,
 la puerta del formato, devoluciones, crear_auto).
 
+OJO DESDE LA 0068 (9-oct-2026)
+------------------------------
+La 0068 mudó las tablas de `ops` a `ventas`/`almacen` y dejó en `ops` vistas
+puente con el nombre viejo. Este verificador es de la 0064/0065 y no se adaptó:
+sus pruebas de FORMA buscan TABLAS en `ops` (fallan contra una base con la
+0068) y --en-transaccion re-aplica la 0064 y la 0065, que ya no se pueden
+repetir sobre la mudanza. Sus sentencias SQL_* siguen pasando por los puentes.
+Sirve contra una base SIN la 0068; para lo demás, tests/test_ordenes_venta_bd.py.
+
 MODOS
 -----
   --en-transaccion   BEGIN; aplica 0064 y 0065 (DOS veces: idempotencia); corre
@@ -76,7 +85,11 @@ TABLAS = ("almacenes", "almacenes_hist", "migraciones", "ov_folio", "ov_ordenes"
           "stock_formato_evento", "stock_mov", "devoluciones")
 SOLO_AGREGAR = ("almacenes_hist", "migraciones", "ov_mensajes", "stock_formato_evento", "stock_mov")
 VISTA = "stock_apartado_descuadre_v"
-VISTAS = (VISTA, "devoluciones_vs_canal_v")
+# La 0067 (fase 0 del reorden de esquemas, 8-oct-2026) QUITA esta vista: sin ella
+# ya no es falla. Si está (p. ej. --en-transaccion, que re-aplica la 0065 y la
+# vuelve a crear), se revisa igual que la principal.
+VISTA_RETIRADA = "devoluciones_vs_canal_v"
+VISTAS = (VISTA, VISTA_RETIRADA)
 QUIEN = "verificador"
 ENV_POR_OMISION = RAIZ.parent / "OMNICANAL" / "env.staging"
 
@@ -759,6 +772,13 @@ select ops.exigir((select count(*) from s) = 1, 'recontar') as cuadra
 """
 
 
+def _vistas(c) -> tuple[str, ...]:
+    """Las vistas vigía que hay que revisar: la principal siempre; la retirada
+    por la 0067 solo si existe."""
+    hay = c.valor("select to_regclass(%s) is not null", (f"ops.{VISTA_RETIRADA}",))
+    return VISTAS if hay else (VISTA,)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # 1. FORMA
 # ═══════════════════════════════════════════════════════════════════════════
@@ -768,14 +788,14 @@ def _(c: Ctx):
                      "where n.nspname = 'ops' and c.relname = any(%s)", (list(TABLAS) + list(VISTAS),)))
     faltan = [t for t in TABLAS if filas.get(t) != "r"]
     c.afirma(not faltan, f"faltan tablas: {faltan}")
-    c.afirma(all(filas.get(v) == "v" for v in VISTAS), f"faltan vistas vigía: {[v for v in VISTAS if filas.get(v) != 'v']}")
+    c.afirma(filas.get(VISTA) == "v", f"falta la vista vigía {VISTA}")
     # La vigía principal no depende de channel.* (la reversa de la 0049 no la toca).
     dep = c.valor("""select count(*) from pg_depend d join pg_rewrite r on r.oid = d.objid
                       join pg_class v on v.oid = r.ev_class join pg_class t on t.oid = d.refobjid
                       join pg_namespace n on n.oid = t.relnamespace
                      where v.oid = 'ops.stock_apartado_descuadre_v'::regclass and n.nspname = 'channel'""")
     c.afirma(dep == 0, f"la vigía principal depende de {dep} objetos de channel.*")
-    return f"{len(TABLAS)} tablas + {len(VISTAS)} vistas; la vigía principal sin channel.*"
+    return f"{len(TABLAS)} tablas + {len(_vistas(c))} vista(s); la vigía principal sin channel.*"
 
 
 @prueba("forma", "columnas_y_tipos")
@@ -895,7 +915,7 @@ def _(c: Ctx):
     extra = "UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER"
     if (c.valor("select current_setting('server_version_num')::int") or 0) >= 170000:
         extra += ",MAINTAIN"
-    for t in TABLAS + VISTAS:
+    for t in TABLAS + _vistas(c):
         q = f"ops.{t}"
         if not c.valor("select has_table_privilege('service_role', %s, 'SELECT')", (q,)):
             malos.append(f"service_role sin SELECT en {t}")
@@ -917,17 +937,17 @@ def _(c: Ctx):
 @prueba("forma", "vista_invoker")
 def _(c: Ctx):
     sin = []
-    for v in VISTAS:
+    for v in _vistas(c):
         opts = c.valor("select reloptions from pg_class where oid = %s::regclass", (f"ops.{v}",))
         if not (opts and "security_invoker=on" in opts):
             sin.append(f"{v}: {opts}")
     c.afirma(not sin, f"sin security_invoker: {sin}")
-    return f"{len(VISTAS)} vistas con security_invoker=on"
+    return f"{len(_vistas(c))} vista(s) con security_invoker=on"
 
 
 @prueba("forma", "comentarios")
 def _(c: Ctx):
-    sin = [t for t in TABLAS + VISTAS
+    sin = [t for t in TABLAS + _vistas(c)
            if not c.valor("select obj_description(%s::regclass, 'pg_class')", (f"ops.{t}",))]
     cols = [("stock_mov", "clave"), ("stock_watch_photo", "stock_kubera"), ("ov_ordenes", "canal_cancelo_at"),
             ("stock_formato_linea", "salida_odoo_at"), ("ov_ordenes", "clave"), ("almacenes", "cuenta_para_woo"),
@@ -939,7 +959,7 @@ def _(c: Ctx):
         if not n or not c.valor("select col_description(%s::regclass, %s)", (f"ops.{t}", n)):
             sin.append(f"{t}.{col}")
     c.afirma(not sin, f"sin comment: {sin}")
-    return f"{len(TABLAS) + len(VISTAS)} objetos y {len(cols)} columnas con comment"
+    return f"{len(TABLAS) + len(_vistas(c))} objetos y {len(cols)} columnas con comment"
 
 
 @prueba("forma", "triggers_y_diferidos")

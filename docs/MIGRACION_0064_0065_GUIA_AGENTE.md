@@ -1,5 +1,13 @@
 # 0064 y 0065: qué hace la base y qué le toca a tu código
 
+> **Nota del 9-oct-2026 (0068).** Las tablas de esta guía ya NO viven en `ops`: la 0068 mudó
+> `ov_folio`, `ov_ordenes`, `ov_lineas`, `ov_mensajes` y `ov_archivos` a **`ventas`**, y `almacenes`,
+> `almacenes_hist`, `stock_almacen` y `stock_mov` a **`almacen`** (aplicada en producción el 9-oct a las
+> 06:48 UTC). En `ops` quedan 9 **vistas puente** con el nombre viejo (`select *`, `security_invoker`)
+> mientras haya código que diga `ops.<tabla>`; las funciones (`ops.verificar_*`, los triggers) siguen
+> en `ops`. Donde abajo dice `ops.<tabla>` de esas nueve, léase su esquema nuevo. Una base armada con
+> la 0068 ya no admite re-correr la 0064 ni la 0065 (el runner `aplicar_migraciones.py` no las repite).
+
 > **Para:** Brandon y su agente de Claude, que van a programar el código que usa estas tablas
 > (`services/ordenes_venta.py`, `services/inventario_libro.py` y los lectores).
 > **Fecha:** 6-oct-2026.
@@ -107,10 +115,10 @@ Todo vive en el esquema `ops`.
 | `ops.stock_formato` (0065) | Un archivo de Bodega (lote movido de TEX2 a TEX3). Folio `FMT-00001…` generado | PK `id` | `inventario_libro` | Pantalla «Entradas de Bodega»; stock_watch (`tras`, puerta) |
 | `ops.stock_formato_linea` (0065) | Renglón del formato. **La puerta es un dato:** `salida_odoo_at` NULL significa que espera | PK `id` | `inventario_libro` | Lo mismo |
 | `ops.stock_formato_evento` (0065) | La huella de cada operación sobre un formato. Solo se agrega | PK `id` | `inventario_libro`, en la misma sentencia de cada operación | Auditoría y pantalla |
-| `ops.devoluciones` (0065) | Una fila por SKU y dictamen de cada paquete que entra a `REVISION`. Folio `DEV-00001…` generado | PK `id`; `clave` única | Toda sentencia que también escribe `ov_*` (recibir una venta, que cambia `devolucion_estado`; un dictamen que deja su evento en el chat de la OV): una función de `ordenes_venta`, que la pantalla llama (§5.1, punto 3). Lo que no toca `ov_*` (partir, el retiro de FULL y sus dictámenes): `inventario_libro` | Vigía, aviso de 72 h, cruce con `channel.returns` |
+| `ops.devoluciones` (0065) | Una fila por SKU y dictamen de cada paquete que entra a `REVISION`. Folio `DEV-00001…` generado | PK `id`; `clave` única | Toda sentencia que también escribe `ov_*` (recibir una venta, que cambia `devolucion_estado`; un dictamen que deja su evento en el chat de la OV): una función de `ordenes_venta`, que la pantalla llama (§5.1, punto 3). Lo que no toca `ov_*` (partir, el retiro de FULL y sus dictámenes): `inventario_libro` | Vigía, aviso de 72 h (el cruce con el canal se fue con `ops.devoluciones_vs_canal_v`, quitada por la 0067) |
 | `ops.stock_watch_photo.stock_kubera` (0065, columna nueva `integer`) | La mitad de kubera de la foto de stock_watch | — | stock_watch | El freno de stock_watch |
 | Vista `ops.stock_apartado_descuadre_v` (0065) | Vigía: **solo devuelve filas cuando algo no cuadra**. No depende de `channel.*` | — | — | El aviso cada 15 min |
-| Vista `ops.devoluciones_vs_canal_v` (0065) | Vigía del cruce con el canal: lo recibido de más contra `channel.return_items`. Mismas columnas que la anterior | — | — | El aviso cada 15 min |
+| ~~Vista `ops.devoluciones_vs_canal_v` (0065)~~ | **Quitada por la 0067** (fase 0 del reorden de esquemas, 8-oct-2026): ataba `channel.return_items` y nunca devolvió filas (`ops.devoluciones` no tiene escritor). Si alguien re-aplica la 0065, la vuelve a crear: re-aplicar también la 0067 | — | — | Nadie |
 
 ### 2.1 Las bodegas sembradas (0064, `on conflict do nothing`)
 
@@ -530,7 +538,7 @@ Antes de leer las tablas, tres convenciones:
 
 ### 3.14 Las vistas vigía
 
-**Columnas:** `problema`, `sku`, `almacen`, `ref`, `esperado`, `encontrado` y `detalle`. Las dos vistas tienen `security_invoker = on`.
+**Columnas:** `problema`, `sku`, `almacen`, `ref`, `esperado`, `encontrado` y `detalle`. La vista tiene `security_invoker = on` (la segunda, `ops.devoluciones_vs_canal_v`, la quitó la 0067).
 
 **`ops.stock_apartado_descuadre_v`.** Valores de `problema`:
 
@@ -544,7 +552,7 @@ Antes de leer las tablas, tres convenciones:
 | `formato_sin_cuadrar` | Formato confirmado: Σ de entradas con `ref = folio` ≠ Σ de renglones con la puerta abierta |
 | `revision_descuadrada` | El físico de `REVISION` por SKU ≠ Σ `cantidad` de sus devoluciones abiertas |
 
-**`ops.devoluciones_vs_canal_v`.** `problema = 'devuelto_de_mas_vs_canal'`: lo recibido por `external_return_id` pasa de lo que dice `channel.return_items`.
+**`ops.devoluciones_vs_canal_v`** (QUITADA por la 0067, 8-oct-2026). Daba `problema = 'devuelto_de_mas_vs_canal'`: lo recibido por `external_return_id` pasaba de lo que dice `channel.return_items`. El cruce de devoluciones con el canal se rediseña sobre `channel.returns` (D6 del reorden de esquemas).
 
 **Qué frena la base y qué solo ve la vista.** Los únicos constraint triggers son `stock_mov_cuadra`, `stock_almacen_cuadra`, los `*_apartado_cuadra` y `stock_mov_devolucion_cuadra`:
 - **Frenados al COMMIT** (la vista es la segunda red): `apartado_descuadrado`, `apartado_en_ov_no_confirmada` y `devolucion_de_mas`.
@@ -1190,7 +1198,7 @@ def clasificar(e: psycopg2.Error, operacion: str) -> tuple[str, str | None]:
    - **la puerta**, con su lectura de Odoo en solo lectura (las tres señales y sus umbrales en §4.9 i);
    - conteo, merma, corrección y traspaso (`tras:`);
    - lo de devoluciones que no toca `ov_*`: partir el paquete, y recibir y dictaminar un retiro de FULL. Cuándo pasa `devolucion_estado` a `cerrada` es un hueco (§5.3, punto 23).
-5. **El aviso cada 15 min, que lee LAS DOS vistas:** `ops.stock_apartado_descuadre_v` y `ops.devoluciones_vs_canal_v`. Tienen las mismas columnas. Avisa con 1 fila o más, y **pon la consulta de la segunda aparte**: depende de `channel.return_items`, y si truena no debe tapar la primera.
+5. **El aviso cada 15 min, que lee la vista vigía** `ops.stock_apartado_descuadre_v`. Avisa con 1 fila o más. (Leía también `ops.devoluciones_vs_canal_v`, que la 0067 quitó el 8-oct-2026: ya no se consulta.)
 6. **Las cuatro banderas, apagadas por omisión** (`ordenes_venta`, `stock_watch_lee_kubera`, `ov_generacion_auto` e `inventario_libro`), como filas de `ops.automatizacion_flags` con su variable de respaldo en `false`. La tabla completa está en §4.8:
    - **las filas NO se siembran** (decisión 13 de la 0064). Las crea el acta que las enciende, con su motivo;
    - si una bandera no se puede leer, se toma como apagada.
