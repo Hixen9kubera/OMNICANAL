@@ -130,7 +130,7 @@ export interface Vivo {
 export interface SeguroCero {
   modo: "apagado" | "ensayo" | "encendido";
   apagadas: number; // publicaciones que el seguro tiene fuera de la venta
-  tope_dia: number; // INTENTOS de apagar por día, por canal (cuenta la llamada, salga bien o no)
+  tope_dia: number; // INTENTOS de apagar por día, por canal (cuenta la llamada, salga bien o no). 0 = sin tope
   reactivar: boolean;
   /** Apagadas por el seguro que YA tienen stock en Woo y siguen fuera de la venta. */
   con_stock?: { canal: string; sku: string; woo: number; desde?: string | null }[];

@@ -65,6 +65,10 @@ from services import fanout_vivo as V  # noqa: E402
 from services import temu as TM  # noqa: E402
 from services import tiktok as TK  # noqa: E402
 
+# Las funciones de verdad de los dos clientes, antes de que el arnés las suplante.
+_REAL = {"temu.cambiar_venta": TM.cambiar_venta, "tiktok.desactivar": TK.desactivar,
+         "tiktok.activar": TK.activar}
+
 SKU = "ZZZ-0001-AZL"
 HERMANA = "ZZZ-0001-ROJ"
 G = "900001"        # goodsId inventado
@@ -409,8 +413,8 @@ class NaceApagado(unittest.TestCase):
         esperado = {
             "fanout_cero_enabled": False, "fanout_cero_ensayo": True, "fanout_cero_temu": False,
             "fanout_cero_tiktok": False, "fanout_cero_reactivar": False,
-            "fanout_cero_tope_vuelta": 5, "fanout_cero_tope_dia": 5,
-            "fanout_cero_tope_reactivar_dia": 20, "fanout_cero_excluir": "",
+            "fanout_cero_tope_vuelta": 0, "fanout_cero_tope_dia": 0,
+            "fanout_cero_tope_reactivar_dia": 0, "fanout_cero_excluir": "",
             "fanout_cero_solo_skus": "", "fanout_cero_espera_min": 30,
             "fanout_cero_temu_estados": "2/8", "fanout_cero_temu_nivel_sku": False,
             "fanout_cero_espera_s": 8.0, "fanout_cero_relecturas": 3, "fanout_cero_bloque_n": 10}
@@ -1310,16 +1314,70 @@ class LecturaEnVivo(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
 
-    def test_temu(self):
-        async def llamar(tipo, datos=None, timeout=40.0):
-            return {"goodsList": [{"goodsId": int(G), "outGoodsSn": SKU, "quantity": 2,
-                                   "status4VO": 2, "subStatus4VO": 8, "skuIdList": [5001]}]}
+    def _temu(self, cubeta_real, estado=(2, 8), existe=True):
+        """Un `llamar` que contesta como Temu (medido el 9-oct-2026): el goods sólo sale
+        CON SU ESTADO en la cubeta donde vive; en otra cubeta, lista vacía; y sin
+        cubeta sale la fila con `status4VO` y `subStatus4VO` en null."""
+        vistos: list[dict] = []
+        fila = {"goodsId": int(G), "outGoodsSn": SKU, "quantity": 2, "skuIdList": [5001]}
 
-        with mock.patch.object(TM, "llamar", side_effect=llamar), mock.patch.object(TM, "disponible", return_value=True):
+        async def llamar(tipo, datos=None, timeout=40.0):
+            self.assertEqual(tipo, "bg.local.goods.list.query")
+            vistos.append(dict(datos or {}))
+            cubeta = (datos or {}).get("goodsSearchType")
+            if not existe:
+                return {"goodsList": []}
+            if cubeta is None:
+                return {"goodsList": [dict(fila, status4VO=None, subStatus4VO=None,
+                                           goodsShowSubStatus=3003)]}
+            if cubeta != cubeta_real:
+                return {"goodsList": []}
+            return {"goodsList": [dict(fila, status4VO=estado[0], subStatus4VO=estado[1])]}
+
+        return vistos, mock.patch.object(TM, "llamar", side_effect=llamar)
+
+    def test_temu(self):
+        vistos, p = self._temu(1)
+        with p, mock.patch.object(TM, "disponible", return_value=True):
             v = S._vivo_temu(G)
         self.assertEqual((v["ok"], v["estado"], v["stock"]), (True, "2/8", 2))
         self.assertEqual(v["skus"], [{"id": 5001, "seller_sku": SKU, "cantidad": 2}])
         self.assertEqual(S._stock_vivo(v, SKU), 2)
+
+    def test_temu_pregunta_con_la_cubeta_o_no_hay_estado(self):
+        # El canario del 9-oct: sin `goodsSearchType` la fila llega con el estado en
+        # null y el seguro no podía decidir nada. Con la cubeta 1 basta UNA llamada.
+        vistos, p = self._temu(1, estado=(3, 1))
+        with p, mock.patch.object(TM, "disponible", return_value=True):
+            v = S._vivo_temu(G)
+        self.assertEqual((v["ok"], v["estado"]), (True, "3/1"))
+        self.assertEqual(vistos, [{"pageNo": 1, "pageSize": 10, "goodsIdList": [int(G)],
+                                   "goodsSearchType": 1}])
+        self.assertIs(type(vistos[0]["goodsSearchType"]), int, "como cadena Temu contesta 3000000")
+
+    def test_temu_en_otra_cubeta_se_encuentra(self):
+        vistos, p = self._temu(4, estado=(4, 7))
+        with p, mock.patch.object(TM, "disponible", return_value=True):
+            v = S._vivo_temu(G)
+        self.assertEqual((v["ok"], v["estado"]), (True, "4/7"))
+        self.assertEqual([d.get("goodsSearchType") for d in vistos], [1, 4])
+        self.assertFalse(S.apagable("temu", v["estado"]), "y desde ahí no se apaga")
+
+    def test_temu_fuera_de_las_cubetas_conocidas_es_ilegible(self):
+        vistos, p = self._temu(9)
+        with p, mock.patch.object(TM, "disponible", return_value=True):
+            v = S._vivo_temu(G)
+        self.assertFalse(v["ok"])
+        self.assertIn("no está en ninguna cubeta conocida", v["motivo"])
+        self.assertEqual([d.get("goodsSearchType") for d in vistos], list(TM.CUBETAS) + [None])
+
+    def test_temu_eliminado_se_distingue(self):
+        vistos, p = self._temu(1, existe=False)
+        with p, mock.patch.object(TM, "disponible", return_value=True):
+            v = S._vivo_temu(G)
+        self.assertFalse(v["ok"])
+        self.assertIn("no aparece en el listado", v["motivo"])
+        self.assertEqual(len(vistos), len(TM.CUBETAS) + 1)
 
     def test_temu_ilegible(self):
         async def vacio(tipo, datos=None, timeout=40.0):
@@ -1636,11 +1694,12 @@ class Intentos(Arnes):
         self.assertEqual(len(self.ventas()), 2, "y sigue sin apagar más")
 
     def test_el_tope_de_reactivaciones_tambien_avisa(self):
-        self.ajustes(fanout_cero_tope_reactivar_dia=0)
+        self.ajustes(fanout_cero_tope_reactivar_dia=1)
+        self.usadas_extra[("temu", S.ACC_REACTIVAR)] = 1
         self.sembrar_marca()
         self.aplicar(plan(accion("temu", 0, estado="3/2"), objetivo=5))
         self.assertEqual(self.ventas(), [])
-        self.assertEqual(self.de(S.ACC_OMITIR)[0]["resultado"], "tope de reactivaciones del día (0)")
+        self.assertEqual(self.de(S.ACC_OMITIR)[0]["resultado"], "tope de reactivaciones del día (1)")
         self.assertIn("seguro_cero_tope_reactivar:temu", [a[0] for a in self.avisos])
 
     def test_dos_publicaciones_del_mismo_sku_no_se_brincan_el_tope(self):
@@ -1739,6 +1798,172 @@ class TopePorVuelta(Arnes):
         self.aplicar(planes[skus[5]])
         self.assertEqual(len(self.ventas()), 1)
         self.assertEqual(S._sueltos_en_la_hora("temu"), 1)
+
+
+class SinTope(Arnes):
+    """Decisión de Brandon (9-oct-2026): «puede ser que en un día se acaben 20 SKUs de
+    un jalón; déjalo sin tope». Los topes nacen en 0 y 0 es SIN TOPE: ni por vuelta, ni
+    por hora, ni por día, ni al reactivar."""
+
+    def setUp(self):
+        super().setUp()
+        self.ajustes(fanout_cero_tope_vuelta=0, fanout_cero_tope_dia=0,
+                     fanout_cero_tope_reactivar_dia=0)
+
+    def test_los_tres_topes_nacen_en_cero(self):
+        campos = type(S.settings).model_fields
+        self.assertEqual([campos[k].default for k in (
+            "fanout_cero_tope_vuelta", "fanout_cero_tope_dia", "fanout_cero_tope_reactivar_dia")],
+            [0, 0, 0])
+
+    def test_un_barrido_apaga_veinte_de_un_jalon(self):
+        _skus, filas, planes = _varios(self, n=20)
+        salida = _barrer(filas, planes)
+        self.assertEqual(len(self.ventas()), 20)
+        self.assertEqual(len(self.de(S.ACC_INACTIVAR)), 20)
+        self.assertEqual(self.de(S.ACC_OMITIR), [])
+        self.assertEqual(salida["llamadas"], 20)
+        self.assertEqual([a for a in self.avisos if a[0].startswith("seguro_cero_tope")], [])
+
+    def test_veinte_eventos_sueltos_en_la_misma_hora_tambien(self):
+        skus, _filas, planes = _varios(self, n=20)
+        for s in skus:
+            self.aplicar(planes[s])
+        self.assertEqual(len(self.ventas()), 20)
+        self.assertEqual(self.de(S.ACC_OMITIR), [])
+
+    def test_los_excedentes_del_mismo_censo_tampoco_se_frenan(self):
+        _skus, filas, planes = _varios(self, n=8)
+        _barrer(filas[:6], planes)
+        self.llamadas.clear()
+        for f in filas[6:]:
+            with mock.patch.object(F, "plan", return_value=planes[f["sku"]]):
+                F.bajar(f["sku"], "temu", "excedente:temu")
+        self.assertEqual(len(self.ventas()), 2)
+
+    def test_sin_tope_no_depende_de_poder_leer_la_cuenta_del_dia(self):
+        # Con tope, no poder leer la cuenta en kubera detiene el apagado. Sin tope no
+        # hay nada que leer: esa consulta caída no deja publicaciones a la venta.
+        self.tope_caido = True
+        self.aplicar(plan(accion("temu", 4)))
+        self.assertEqual(self.ventas(), [("temu.venta", G, False, None)])
+        self.assertEqual(self.de(S.ACC_ERROR), [])
+
+    def test_reactivar_tampoco_tiene_tope(self):
+        self.tope_caido = True
+        self.usadas_extra[("temu", S.ACC_REACTIVAR)] = 500
+        self.sembrar_marca()
+        self.aplicar(plan(accion("temu", 0, estado="3/2"), objetivo=5))
+        self.assertEqual(self.ventas(), [("temu.venta", G, True, None)])
+        self.assertEqual(self.de(S.ACC_OMITIR), [])
+
+    def test_un_numero_mayor_que_cero_vuelve_a_poner_el_tope(self):
+        self.ajustes(fanout_cero_tope_dia=3)
+        _skus, filas, planes = _varios(self)
+        _barrer(filas, planes)
+        self.assertEqual(len(self.ventas()), 3)
+
+    def test_el_intento_se_sigue_sellando_antes_y_sin_sello_no_se_llama(self):
+        _skus, filas, planes = _varios(self, n=3)
+        _barrer(filas, planes)
+        self.assertEqual(len(self.intentos("apagar")), 3)
+        self.llamadas.clear()
+        self.bitacora_caida = True
+        with mock.patch.object(S, "_cortado", return_value=False):
+            self.aplicar(plan(accion("temu", 4)))
+        self.assertEqual(self.ventas(), [], "sin bitácora no se llama al canal, con o sin tope")
+
+    def test_el_estado_dice_que_no_hay_tope(self):
+        with mock.patch.object(S, "_ultimas", return_value=[]), \
+                mock.patch.object(S, "usadas_hoy", return_value=0), \
+                mock.patch.object(S, "candidatos", return_value=[]), \
+                mock.patch.object(S, "huerfanas", return_value=[]):
+            self.assertEqual(S.resumen_panel()["tope_dia"], 0)
+            topes = S.estado()["topes"]
+        self.assertEqual((topes["vuelta"], topes["hora_fuera_de_censo"], topes["dia"],
+                          topes["reactivar_dia"]), (0, 0, 0, 0))
+
+
+class SoloInactivaNuncaBorra(Arnes):
+    """Lo que pidió probar Brandon el 9-oct-2026: el seguro INACTIVA la publicación
+    —queda en el canal, apagada— y nunca la borra. Las únicas dos llamadas que mueven
+    algo son `bg.local.goods.sale.status.set {onsale: 0|1}` (Temu) y
+    `/product/202309/products/deactivate|activate` (TikTok)."""
+
+    def test_al_caer_a_cero_solo_cambia_el_estado_de_venta(self):
+        self.aplicar(plan(accion("temu", 4), accion("tiktok", 3)))
+        self.assertEqual(self.ventas(), [("temu.venta", G, False, None), ("tiktok.desactivar", P)])
+        # La publicación sigue existiendo en el canal, con su estado de «apagada a mano».
+        self.assertEqual(self.canal[("temu", G)]["estado"], "3/2")
+        self.assertEqual(self.canal[("tiktok", P)]["estado"], "SELLER_DEACTIVATED")
+        self.assertEqual({(c, e) for c, e in S._APAGADO_A_MANO.items()},
+                         {("temu", "3/2"), ("tiktok", "SELLER_DEACTIVATED")})
+
+    def test_el_resultado_se_confirma_releyendo_la_publicacion(self):
+        # «ok (2/8→3/2)» sólo se sella si la publicación SE VUELVE A LEER en el canal y
+        # está apagada: una que hubiera desaparecido no se puede releer y no da «ok».
+        self.aplicar(plan(accion("temu", 4)))
+        self.assertEqual(self.de(S.ACC_INACTIVAR)[0]["resultado"], "ok (2/8→3/2)")
+        self.assertGreaterEqual(self.lecturas.count(("temu", G)), 2, "antes y después de llamar")
+
+    def test_si_tras_apagar_ya_no_se_puede_leer_no_se_da_por_hecho(self):
+        original = self.canal[("temu", G)]
+
+        async def cambiar_venta(goods_id, en_venta, sku_ids=None):
+            self.llamadas.append(("temu.venta", str(goods_id), en_venta, sku_ids))
+            self.ilegibles.add(("temu", str(goods_id)))        # como si ya no existiera
+            return {"success": True}
+
+        with mock.patch.object(TM, "cambiar_venta", side_effect=cambiar_venta):
+            self.aplicar(plan(accion("temu", 4)))
+        self.assertEqual(self.de(S.ACC_INACTIVAR), [], "sin relectura no hay «ok» ni marca")
+        self.assertTrue(self.de(S.ACC_ERROR)[0]["resultado"].startswith(S.ERR_NO_CONVERGE))
+        self.assertIs(self.canal[("temu", G)], original)
+
+    def test_las_llamadas_reales_son_las_de_estado_de_venta(self):
+        temu, tiktok = [], []
+
+        async def llamar_temu(tipo, datos=None, timeout=40.0):
+            temu.append((tipo, datos))
+            return {"success": True}
+
+        async def llamar_tiktok(ruta, token, params=None, cuerpo=None, metodo="GET"):
+            tiktok.append((ruta, cuerpo, metodo))
+            return {"errors": []}
+
+        with mock.patch.object(TM, "cambiar_venta", side_effect=_REAL["temu.cambiar_venta"]), \
+                mock.patch.object(TK, "desactivar", side_effect=_REAL["tiktok.desactivar"]), \
+                mock.patch.object(TK, "activar", side_effect=_REAL["tiktok.activar"]), \
+                mock.patch.object(TM, "llamar", side_effect=llamar_temu), \
+                mock.patch.object(TK, "llamar", side_effect=llamar_tiktok):
+            S._apagar("temu", G)
+            S._apagar("tiktok", P)
+            S._prender("temu", G)
+            S._prender("tiktok", P)
+        self.assertEqual(temu, [
+            ("bg.local.goods.sale.status.set", {"goodsId": int(G), "onsale": 0}),
+            ("bg.local.goods.sale.status.set", {"goodsId": int(G), "onsale": 1})])
+        self.assertEqual(tiktok, [
+            ("/product/202309/products/deactivate", {"product_ids": [P]}, "POST"),
+            ("/product/202309/products/activate", {"product_ids": [P]}, "POST")])
+
+    def test_el_modulo_no_conoce_ninguna_llamada_de_borrado(self):
+        import inspect
+        import re
+        prohibido = re.compile(r"goods\.delete|products/delete|/delete\b|[\"']DELETE[\"']|\.delete\(|"
+                               r"recycle|bg\.local\.goods\.(?!list\.query|sale\.status\.set)[a-z.]+",
+                               re.IGNORECASE)
+        fuente = inspect.getsource(S)
+        self.assertEqual(prohibido.findall(fuente), [])
+        # Y de los dos clientes sólo usa estas cinco funciones (más leer la configuración).
+        usados = set(re.findall(r"\b(?:tm|tk)\.([a-zA-Z_]+)", fuente))
+        self.assertEqual(usados, {"disponible", "llamar", "cambiar_venta", "CUBETAS",
+                                  "access_token", "cipher", "desactivar", "activar"})
+        # `llamar` sólo para LEER: el listado de Temu y el producto de TikTok.
+        self.assertEqual(set(re.findall(r"tm\.llamar\(\s*\"([^\"]+)\"", fuente)),
+                         {"bg.local.goods.list.query"})
+        self.assertEqual(re.findall(r"tk\.llamar\(\s*f?\"([^\"]+)\"", fuente),
+                         ["/product/202309/products/{item_id}"])
 
 
 class Reconciliar(Arnes):

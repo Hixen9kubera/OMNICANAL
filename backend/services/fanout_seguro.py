@@ -29,9 +29,12 @@ LAS REGLAS, CADA UNA CON SU PORQUÉ
   · UNA VARIANTE HERMANA CON STOCK NO SE APAGA. La baja de TikTok es por producto
     completo: con más de una variante sólo se apaga si TODAS están en 0.
   · NUNCA UN SKU PADRE, ni FULL, ni lo que el fan-out ya descarta.
-  · TOPES por vuelta, por hora (eventos sueltos) y por día, que cuentan LLAMADAS
-    al canal y no éxitos: antes de cada llamada se sella una fila `cero_intento`,
-    y sin poder sellarla no se llama. Llegar al tope del día avisa en rojo.
+  · SIN TOPES (decisión de Brandon, 9-oct-2026: «puede ser que en un día se
+    acaben 20 SKUs de un jalón; déjalo sin tope»). Los tres topes —por vuelta, por
+    hora en eventos sueltos y por día— siguen en el código pero nacen en 0, que
+    significa SIN TOPE; un número mayor que 0 los vuelve a poner. Lo que NO cambia:
+    antes de cada llamada se sella una fila `cero_intento`, y sin poder sellarla
+    no se llama.
   · NADA SE QUEDA APAGADO EN SILENCIO: lo apagado que ya tiene stock, lo que el
     seguro soltó y sigue fuera de la venta, y lo que quedó a medias por un
     reinicio, se listan en `/api/fanout/seguro` y salen en un aviso.
@@ -63,10 +66,15 @@ REGLA 11. Todo aquí es SÍNCRONO y sólo corre en el hilo `fanout-stock`, en lo
 hilos de los censos (`asyncio.to_thread`) o en el threadpool de FastAPI. Nada de
 esto se llama directo desde una corrutina.
 
-⚠️ POR SONDEAR EN VIVO. Al 7-oct-2026 nadie ha llamado desde el proyecto a
-`bg.local.goods.sale.status.set` (Temu) ni a `/products/deactivate|activate`
-(TikTok). Qué estado dejan, si el token de Temu tiene permiso y si reactivar pasa
-por revisión se confirma con el canario: `POST /api/fanout/seguro/aplicar`.
+LO QUE YA SE MIDIÓ EN VIVO (canario del 9-oct-2026, ACC-0574-LIL y DEC-0078-PLA):
+  · TikTok `/products/deactivate`: `ACTIVATE → SELLER_DEACTIVATED` en ~10 s, y el
+    producto SIGUE EXISTIENDO (se relee con ese estado; no es un borrado).
+  · Temu: la lectura de UN goods (`goodsIdList`) sólo trae el estado si además se le
+    dice la CUBETA (`goodsSearchType`). Sin ella contesta la fila con `status4VO` en
+    null y el seguro la tomaba por ilegible: por eso el primer canario no llamó a
+    Temu. Ver `_vivo_temu`.
+⚠️ POR SONDEAR TODAVÍA: `bg.local.goods.sale.status.set` (qué estado deja y si
+acepta `3/1`) y los dos regresos a la venta (`onsale: 1` y `/products/activate`).
 """
 from __future__ import annotations
 
@@ -150,7 +158,7 @@ _ESPERA_S = 8.0            # tras apagar o prender se espera y se RELEE (la lect
 _RELECTURAS = 3            # y si aún no se ve el cambio, se insiste: una lectura rancia no es un fracaso
 _MARGEN_ESPERA_S = 20.0    # colchón del anti-parpadeo: el evento que arranca la espera aún no está en la bitácora
 _GRACIA_VENTA_MIN = 15     # una venta comprada hasta 15 min después de apagar pudo estar ya en camino
-_BARRIDO_MAX = 60          # candidatos por barrido (los topes cortan mucho antes)
+_BARRIDO_MAX = 60          # candidatos por barrido; sin tope, lo que no quepa lo toma el siguiente censo
 _MARCAS_TTL_S = 60.0
 _DEDUP_S = 24 * 3600
 _SELLAR_INTENTOS = 3
@@ -402,17 +410,37 @@ def _vivo_temu(item_id: str) -> dict[str, Any]:
         goods_id = int(str(item_id))
     except (TypeError, ValueError):
         return {"ok": False, "motivo": f"goodsId ilegible: {item_id!r}"}
+
+    def pedir(cubeta: int | None) -> dict[str, Any] | None:
+        datos: dict[str, Any] = {"pageNo": 1, "pageSize": 10, "goodsIdList": [goods_id]}
+        if cubeta is not None:
+            datos["goodsSearchType"] = int(cubeta)     # ENTERO: como cadena da 3000000
+        res = fanout_stock._en_hilo(lambda: tm.llamar("bg.local.goods.list.query", datos),
+                                    "seguro: lectura temu")
+        return next((g for g in ((res or {}).get("goodsList") or [])
+                     if str(g.get("goodsId")) == str(goods_id)), None)
+
+    # EL ESTADO SÓLO VIENE CON LA CUBETA. Medido el 9-oct-2026 (ACC-0574-LIL): con
+    # `goodsIdList` y SIN `goodsSearchType`, Temu contesta la fila —`quantity` y
+    # `skuIdList` sí— pero con `status4VO` y `subStatus4VO` en null; con la cubeta 1
+    # contesta `3/1`. Y con la cubeta EQUIVOCADA contesta vacío, en silencio. Se
+    # pregunta cubeta por cubeta, empezando por la 1, que es donde viven las que
+    # venden (2/8, 3/1, 3/2, 3/3, 2/4): casi siempre es una sola llamada.
     try:
-        res = fanout_stock._en_hilo(
-            lambda: tm.llamar("bg.local.goods.list.query",
-                              {"pageNo": 1, "pageSize": 10, "goodsIdList": [goods_id]}),
-            "seguro: lectura temu")
+        fila = None
+        for cubeta in tm.CUBETAS:
+            fila = pedir(cubeta)
+            if fila is not None:
+                break
+        if fila is None:
+            # En ninguna cubeta. Sin cubeta el listado contesta cualquier goods que
+            # exista: así se distingue «borrado» de «en una cubeta que no conozco».
+            if pedir(None) is None:
+                return {"ok": False, "motivo": "el goods no aparece en el listado (¿eliminado?)"}
+            return {"ok": False, "motivo": ("el goods existe pero no está en ninguna cubeta conocida ("
+                                            + ", ".join(str(c) for c in tm.CUBETAS) + "): estado ilegible")}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "motivo": f"{type(exc).__name__}: {exc}"}
-    fila = next((g for g in ((res or {}).get("goodsList") or [])
-                 if str(g.get("goodsId")) == str(goods_id)), None)
-    if fila is None:
-        return {"ok": False, "motivo": "el goods no aparece en el listado (¿eliminado?)"}
     if fila.get("status4VO") is None:
         return {"ok": False, "motivo": "el listado no trae status4VO"}
     ids = [i for i in (fila.get("skuIdList") or []) if i not in (None, "")]
@@ -1344,13 +1372,14 @@ def _inactivar(ctx: Contexto, a: dict[str, Any], canal: str) -> None:
                 "SKU padre: nunca se opera sobre el padre" if padre
                 else "SKU padre: no pude determinar si tiene variantes; no se toca")
         return
-    tope_vuelta = _entero("fanout_cero_tope_vuelta", 5)
-    tope_dia = _entero("fanout_cero_tope_dia", 5)
+    # Los topes son OPCIONALES: 0 = sin tope (así nacen). Ver la cabecera.
+    tope_vuelta = _entero("fanout_cero_tope_vuelta", 0)
+    tope_dia = _entero("fanout_cero_tope_dia", 0)
     vuelta = ctx.presupuesto
     # Tope de la VUELTA (el barrido de después del censo y sus excedentes):
     # agotado, ya ni se lee el canal. En ensayo no corta: ahí se quiere ver el
     # tamaño real.
-    if not en_ensayo and vuelta is not None and vuelta["reales"] >= tope_vuelta:
+    if not en_ensayo and tope_vuelta and vuelta is not None and vuelta["reales"] >= tope_vuelta:
         _anotar(ctx, a, ACC_OMITIR, f"tope de la vuelta ({tope_vuelta})")
         return
     # Un evento SUELTO del fan-out (fuera de un censo) no tiene vuelta: el mismo
@@ -1358,7 +1387,7 @@ def _inactivar(ctx: Contexto, a: dict[str, Any], canal: str) -> None:
     # censo, que lleva su propio tope. Sin esto, 40 SKUs que caen a 0 de golpe
     # eran 40 llamadas en una sola tanda (medido con el canal falseado).
     suelto = vuelta is None and not ctx.manual
-    if not en_ensayo and suelto and _sueltos_en_la_hora(canal) >= tope_vuelta:
+    if not en_ensayo and tope_vuelta and suelto and _sueltos_en_la_hora(canal) >= tope_vuelta:
         _anotar(ctx, a, ACC_OMITIR,
                 f"tope por hora ({tope_vuelta}): la apaga el barrido del siguiente censo")
         return
@@ -1425,9 +1454,9 @@ def _inactivar(ctx: Contexto, a: dict[str, Any], canal: str) -> None:
         #     no cortan, pero se dice desde cuál quedaría fuera (el tamaño real).
         if en_ensayo:
             extra = ""
-            if vuelta is not None and vuelta["ensayos"] >= tope_vuelta:
+            if tope_vuelta and vuelta is not None and vuelta["ensayos"] >= tope_vuelta:
                 extra = " · fuera de tope de la vuelta"
-            else:
+            elif tope_dia:
                 try:
                     if usadas_hoy(canal, ACC_INACTIVAR, ensayos=True) >= tope_dia:
                         extra = " · fuera de tope del día"
@@ -1439,20 +1468,22 @@ def _inactivar(ctx: Contexto, a: dict[str, Any], canal: str) -> None:
                 vuelta["ensayos"] += 1
             return
 
-        # 5 · Tope del día: se lee en kubera ANTES de llamar al canal; si esa
-        #     lectura falla, no se actúa. Cuenta INTENTOS (llamadas), no éxitos.
-        try:
-            usadas = _usadas(canal, ACC_INACTIVAR)
-        except Exception as exc:  # noqa: BLE001
-            _anotar(ctx, a, ACC_ERROR,
-                    f"ERROR: no pude leer el tope del día en kubera ({type(exc).__name__}); no se actúa",
-                    stock=stock)
-            return
-        if usadas >= tope_dia:
-            _anotar(ctx, a, ACC_OMITIR, f"tope del día ({tope_dia})", stock=stock)
-            # Llegar al tope es la señal de que algo masivo vació Woo: se avisa.
-            ctx.avisos["tope"].append((canal, ACC_INACTIVAR, tope_dia))
-            return
+        # 5 · Tope del día (sólo si hay uno: 0 = sin tope, y entonces ni se lee):
+        #     se lee en kubera ANTES de llamar al canal; si esa lectura falla, no
+        #     se actúa. Cuenta INTENTOS (llamadas), no éxitos.
+        if tope_dia:
+            try:
+                usadas = _usadas(canal, ACC_INACTIVAR)
+            except Exception as exc:  # noqa: BLE001
+                _anotar(ctx, a, ACC_ERROR,
+                        f"ERROR: no pude leer el tope del día en kubera ({type(exc).__name__}); no se actúa",
+                        stock=stock)
+                return
+            if usadas >= tope_dia:
+                _anotar(ctx, a, ACC_OMITIR, f"tope del día ({tope_dia})", stock=stock)
+                # Llegar al tope es la señal de que algo masivo vació Woo: se avisa.
+                ctx.avisos["tope"].append((canal, ACC_INACTIVAR, tope_dia))
+                return
 
         # 6 · EL INTENTO, sellado ANTES de llamar: sin esa fila no se llama. Es lo
         #     que cuenta el tope y lo que deja rastro si el proceso muere a media
@@ -1652,19 +1683,21 @@ def _reactivar(ctx: Contexto, a: dict[str, Any], canal: str,
                     f"ENSAYO (prendería; vivo {estado}, stock {stock if stock is not None else '?'})", stock=stock)
             return
 
-        # 6 · Tope del día (INTENTOS), leído en kubera antes de llamar al canal.
-        tope = _entero("fanout_cero_tope_reactivar_dia", 20)
-        try:
-            usadas = _usadas(canal, ACC_REACTIVAR)
-        except Exception as exc:  # noqa: BLE001
-            _anotar(ctx, a, ACC_ERROR,
-                    f"ERROR: no pude leer el tope del día en kubera ({type(exc).__name__}); no se reactiva",
-                    stock=stock)
-            return
-        if usadas >= tope:
-            _anotar(ctx, a, ACC_OMITIR, f"tope de reactivaciones del día ({tope})", stock=stock)
-            ctx.avisos["tope"].append((canal, ACC_REACTIVAR, tope))
-            return
+        # 6 · Tope del día (INTENTOS), sólo si hay uno (0 = sin tope, y ni se lee):
+        #     leído en kubera antes de llamar al canal.
+        tope = _entero("fanout_cero_tope_reactivar_dia", 0)
+        if tope:
+            try:
+                usadas = _usadas(canal, ACC_REACTIVAR)
+            except Exception as exc:  # noqa: BLE001
+                _anotar(ctx, a, ACC_ERROR,
+                        f"ERROR: no pude leer el tope del día en kubera ({type(exc).__name__}); no se reactiva",
+                        stock=stock)
+                return
+            if usadas >= tope:
+                _anotar(ctx, a, ACC_OMITIR, f"tope de reactivaciones del día ({tope})", stock=stock)
+                ctx.avisos["tope"].append((canal, ACC_REACTIVAR, tope))
+                return
 
         # 7 · El intento, sellado antes de llamar (igual que al apagar).
         if not _sellar_intento(ctx, a, canal, INTENTO_PRENDER, estado, stock, variante):
@@ -2311,7 +2344,7 @@ def resumen_panel() -> dict[str, Any]:
     pendientes_ = con_stock(marcas)
     sueltas = [s for s in soltadas(ultimas=ultimas)
                if s.get("stock_woo") is not None and int(s["stock_woo"]) > 0]
-    tope = _entero("fanout_cero_tope_dia", 5)
+    tope = _entero("fanout_cero_tope_dia", 0)      # 0 = sin tope
     for c in CANALES:
         canales[c]["apagadas"] = sum(1 for m in marcas if m["canal"] == c)
         canales[c]["con_stock"] = sum(1 for m in pendientes_ if m["canal"] == c)
@@ -2335,10 +2368,11 @@ def estado() -> dict[str, Any]:
         "ensayo": bool(getattr(settings, "fanout_cero_ensayo", True)),
         "reactivar": bool(getattr(settings, "fanout_cero_reactivar", False)),
         "espera_min": _entero("fanout_cero_espera_min", 30),
-        "topes": {"vuelta": _entero("fanout_cero_tope_vuelta", 5),
-                  "hora_fuera_de_censo": _entero("fanout_cero_tope_vuelta", 5),
-                  "dia": _entero("fanout_cero_tope_dia", 5),
-                  "reactivar_dia": _entero("fanout_cero_tope_reactivar_dia", 20),
+        # 0 = sin tope (así nacen los cuatro).
+        "topes": {"vuelta": _entero("fanout_cero_tope_vuelta", 0),
+                  "hora_fuera_de_censo": _entero("fanout_cero_tope_vuelta", 0),
+                  "dia": _entero("fanout_cero_tope_dia", 0),
+                  "reactivar_dia": _entero("fanout_cero_tope_reactivar_dia", 0),
                   "cuentan": "llamadas al canal (salgan bien o no), no éxitos"},
         "excluir": sorted(_excluidos()), "solo_skus": sorted(_solo_skus()),
         "temu_estados": sorted(estados_temu()),

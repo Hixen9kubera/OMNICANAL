@@ -1001,6 +1001,72 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.630.0 — Seguro stock 0: el canario destapó que Temu no dice el estado sin la cubeta, y los topes se quitan (nacen en 0 = sin tope)
+
+**Qué pidió Brandon (9-oct-2026).** Encender el seguro «stock 0 ⇒ fuera de la venta», probar que
+sólo INACTIVA la publicación y no la borra, y quitarle el tope: «puede ser que en un día se acaben
+20 SKUs de un jalón; déjalo sin tope». Esta entrada es la primera de dos: aquí va lo que el canario
+encontró y el tope; la siguiente le quita el interruptor para que quede siempre encendido.
+
+**El canario (06:54 UTC, dos SKUs con Woo en 0: `ACC-0574-LIL` y `DEC-0078-PLA`).**
+
+| Canal | Qué hizo | Evidencia en `ops.fanout_log` |
+|---|---|---|
+| TikTok | Apagó las dos, en ~10 s cada una | `cero_intento` «apagar (vivo ACTIVATE)» → `cero_inactivar` «ok (ACTIVATE→SELLER_DEACTIVATED)» |
+| Temu | No llamó: no pudo leer el estado | `cero_error` «lectura en vivo ilegible: el listado no trae status4VO» |
+
+En TikTok el producto **sigue existiendo**: el «ok» sólo se sella después de RELEER la publicación
+en el canal (`GET /product/202309/products/{id}`) y verla en `SELLER_DEACTIVATED`, que es el mismo
+estado en que queda lo que se apaga a mano en el Seller Center. Una borrada no contestaría eso.
+
+**Por qué falló la lectura de Temu (medido en vivo por `/investigacion`).**
+`bg.local.goods.list.query` filtrado a un goods (`goodsIdList`) contesta distinto según lleve o no
+la cubeta (`goodsSearchType`):
+
+| Petición | Respuesta para `ACC-0574-LIL` |
+|---|---|
+| `goodsIdList` solo | la fila, con `quantity` y `skuIdList`… y `status4VO: null`, `subStatus4VO: null` |
+| `goodsIdList` + `goodsSearchType: 1` | la misma fila con `status4VO: 3`, `subStatus4VO: 1` (agotada) |
+
+El escritor de stock del fan-out llevaba meses usando la primera forma sin problema porque sólo lee
+`quantity`. El seguro necesita el estado, y sin cubeta no lo hay. Ahora `_vivo_temu` pregunta cubeta
+por cubeta empezando por la 1 —donde viven las que venden: `2/8`, `3/1`, `3/2`, `3/3`, `2/4`—, así
+que casi siempre es una sola llamada. Si el goods no está en ninguna, una última petición sin cubeta
+distingue «borrado» de «en una cubeta que no conozco»; en los dos casos el seguro no actúa.
+
+**Los topes.** Eran tres (por censo y por hora en eventos sueltos, por día, y reactivaciones por
+día) y valían 5 / 5 / 20. Siguen en el código pero **nacen en 0, y 0 es SIN TOPE**; un número mayor
+que 0 vuelve a poner ese tope. Dos consecuencias que no son obvias:
+
+- Sin tope **ya no se lee la cuenta del día** en kubera antes de apagar. Antes, si esa consulta
+  fallaba, el seguro no apagaba («sin poder leer el tope no se actúa»): una publicación podía
+  quedarse a la venta por una consulta caída. Con tope puesto, esa regla sigue igual.
+- Lo que NO cambia: antes de cada llamada se sella la fila `cero_intento`, y sin poder sellarla no
+  se llama al canal. Tampoco cambian la pausa de una hora si el canal no confirma dos apagados
+  seguidos, ni el corte por tres errores seguidos en una publicación.
+
+El barrido sigue tomando hasta 60 candidatos por censo; lo que no quepa lo toma el siguiente.
+
+**En el panel.** El pie de Operaciones ya no dice «intentos hoy Temu 1/5»: dice «Temu 1 · TikTok 0
+(sin tope)». Con un tope puesto vuelve a salir la fracción.
+
+**Pruebas.** `tests/test_fanout_seguro.py`: 218 (18 nuevas).
+- `LecturaEnVivo`: el doble de Temu ahora contesta como Temu (estado sólo en su cubeta, vacío en
+  otra, null sin cubeta) y fija la petición exacta, que la cubeta viaje como ENTERO, el goods en
+  otra cubeta, el que no está en ninguna y el borrado.
+- `SinTope`: 20 de un jalón en un barrido y en 20 eventos sueltos de la misma hora; los excedentes
+  del mismo censo; que no dependa de leer la cuenta del día; reactivar sin tope; y que un número
+  mayor que 0 lo vuelva a poner.
+- `SoloInactivaNuncaBorra`: las únicas llamadas que mueven algo son
+  `bg.local.goods.sale.status.set {goodsId, onsale: 0|1}` y
+  `/product/202309/products/deactivate|activate`; el «ok» exige releer la publicación; y el módulo
+  no menciona ningún otro endpoint de `bg.local.goods.*` ni de borrado.
+
+**Estado al subir.** El seguro está encendido en producción en modo canario (los dos SKUs de
+arriba, variables `FANOUT_CERO_*` puestas a mano en Railway el 9-oct). Con esta versión el barrido
+que sigue al censo de Temu ya puede leer el estado y hacer la primera llamada real a
+`sale.status.set`.
+
 ### v0.629.0 — `almacen.locations`: las ubicaciones de TEXCO II salen de Odoo y ya viven en kubera (migración 0069, aplicada y cargada)
 
 Brandon, 9-oct: *"vas a utilizar el schema de almacén y crear una nueva tabla llamada locations donde vas a traer

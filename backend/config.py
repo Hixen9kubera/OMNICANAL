@@ -1367,14 +1367,13 @@ class Settings(BaseSettings):
     fanout_cero_temu: bool = False          # por canal
     fanout_cero_tiktok: bool = False
     fanout_cero_reactivar: bool = False     # sin ella el seguro sólo apaga
-    # INTENTOS de apagar por censo (barrido + sus excedentes), por canal. El mismo
-    # número vale POR HORA para los eventos sueltos del fan-out (fuera de un censo).
-    fanout_cero_tope_vuelta: int = 5
-    # INTENTOS de apagar por día (CDMX), por canal. Cuenta la LLAMADA al canal, salga
-    # bien o no. 5 y no 20: de lo que está a la venta, el peor día de 30 fueron 2 caídas
-    # a 0 por canal; llegar al tope es la señal de que algo masivo vació Woo, y avisa en rojo.
-    fanout_cero_tope_dia: int = 5
-    fanout_cero_tope_reactivar_dia: int = 20   # INTENTOS de reactivar por día (CDMX), por canal
+    # SIN TOPES (decisión de Brandon, 9-oct-2026: «puede ser que en un día se acaben 20
+    # SKUs de un jalón; déjalo sin tope»). Los tres siguen existiendo y nacen en 0, que
+    # es SIN TOPE; un número mayor que 0 vuelve a poner ese tope. Cuentan INTENTOS (la
+    # llamada al canal, salga bien o no), por canal.
+    fanout_cero_tope_vuelta: int = 0        # por censo (barrido + sus excedentes) y por hora en eventos sueltos
+    fanout_cero_tope_dia: int = 0           # apagados por día (CDMX)
+    fanout_cero_tope_reactivar_dia: int = 0    # reactivaciones por día (CDMX)
     fanout_cero_excluir: str = ""           # CSV de SKUs que el seguro nunca toca
     # A QUIÉN se le aplica DE VERDAD. Vacío = a nadie: todo el catálogo corre en ENSAYO
     # FORZADO, aunque FANOUT_CERO_ENSAYO esté en false (así el canario no depende del

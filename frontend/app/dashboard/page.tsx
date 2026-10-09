@@ -105,8 +105,9 @@ function ObservacionFull({ abierto }: { abierto: boolean }) {
 
 /**
  * «Temu en ensayo (FANOUT_TEMU apagado) · TikTok encendido · 2 apagadas (Temu 1 · TikTok 1),
- * 1 ya con stock · intentos hoy Temu 1/5 · TikTok 0/5 · sólo apaga».
- * El modo va POR CANAL y, si el ensayo es forzado, dice el primer porqué.
+ * 1 ya con stock · intentos hoy Temu 1 · TikTok 0 (sin tope)».
+ * El modo va POR CANAL y, si el ensayo es forzado, dice el primer porqué. `tope_dia` en 0
+ * es SIN TOPE (así nace desde el 9-oct-2026); con un tope puesto vuelve a salir «1/5».
  */
 function textoSeguro(s: SeguroCero): string {
   const canales = Object.values(s.canales);
@@ -118,7 +119,10 @@ function textoSeguro(s: SeguroCero): string {
   const conStock = s.con_stock?.length ?? 0;
   const apagadas = `${s.apagadas} ${s.apagadas === 1 ? "apagada" : "apagadas"} (${canales.map((c) => `${c.nombre} ${c.apagadas}`).join(" · ")})`
     + (conStock ? `, ${conStock} ya con stock` : "");
-  const hoy = activos.length ? ` · intentos hoy ${activos.map((c) => `${c.nombre} ${c.hoy}/${s.tope_dia}`).join(" · ")}` : "";
+  const tope = s.tope_dia > 0 ? `/${s.tope_dia}` : "";
+  const hoy = activos.length
+    ? ` · intentos hoy ${activos.map((c) => `${c.nombre} ${c.hoy}${tope}`).join(" · ")}${tope ? "" : " (sin tope)"}`
+    : "";
   return `${modo} · ${apagadas}${hoy}${s.modo !== "apagado" && !s.reactivar ? " · sólo apaga" : ""}`;
 }
 
