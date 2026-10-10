@@ -9,8 +9,9 @@
  *
  * Los errores salen como `ApiError` (lib/api.ts), que conserva el `detail` del
  * backend y el `status`. Un 409 tiene varios sentidos y TODOS traen su texto:
- * la orden cambió mientras tanto, no alcanzó el stock para apartar, la venta ya
- * tiene orden, o el módulo está en modo prueba. La pantalla relee y enseña el
+ * la orden cambió mientras tanto, no alcanzó el stock para apartar (al
+ * confirmar, o al guardar el cambio de una confirmada), la venta ya tiene
+ * orden, o el módulo está en modo prueba. La pantalla relee y enseña el
  * `detail`; no adivina.
  */
 
@@ -105,7 +106,12 @@ export function crearOrden(datos: DatosOrden, clave: string): Promise<RespOrden>
   return mandar<RespOrden>("POST", "", { ...datos, clave });
 }
 
-/** Guarda un BORRADOR (encabezado y renglones). Fuera de borrador la orden ya no cambia. */
+/**
+ * Guarda encabezado y renglones: de un BORRADOR o de una CONFIRMADA (0071). En
+ * la confirmada el servidor vuelve a apartar, todo o nada: si un renglón no
+ * alcanza contesta 409 diciendo cuál, no guarda nada y NO mueve la `rev` (así
+ * se distingue de «la orden cambió mientras tanto», que sí la mueve).
+ */
 export function guardarOrden(id: number, rev: number, datos: DatosOrden): Promise<RespOrden> {
   return mandar<RespOrden>("PUT", `/${id}`, { ...datos, rev });
 }

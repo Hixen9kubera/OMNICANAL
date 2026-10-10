@@ -17,8 +17,13 @@ EL MODELO (plan v3 de Eduardo, 5-oct-2026)
     `admite_ov`): hoy ENSAYO. La bodega va POR RENGLÓN.
   · Confirmar APARTA todo o nada contra `almacen.stock_almacen` (libre = fisico −
     apartado). Si un renglón no alcanza, no se confirma nada y se dice cuál.
-  · Fuera de borrador el CONTENIDO es inmutable (lo impone un trigger). Un error
-    en una confirmada se resuelve cancelando o borrando, no editando.
+  · Fuera de borrador el CONTENIDO lo congela un trigger… con UNA puerta, la de
+    la migración 0071 (9-oct-2026, pedido de Brandon): una CONFIRMADA se puede
+    corregir —lo que capturó una persona y los renglones que todavía no salen—
+    y el apartado se mueve por la diferencia, todo o nada, en la misma
+    sentencia (`SQL_EDITAR_CONFIRMADA`, la única que abre la puerta). Cada
+    edición deja su mensaje `editada` con el antes y el después. Entregada y
+    cancelada siguen sin cambiar: ahí un error de captura se borra (admin).
   · Entregar es por renglón y una sola vez por renglón, con piezas 0..cantidad;
     cada pieza que sale queda en el libro (`almacen.stock_mov`, motivo salida_ov).
   · Si salió alguna pieza, una cancelación ya no es `cancelada`: es
@@ -49,8 +54,15 @@ POR QUÉ ESTÁ ESCRITO ASÍ (lo que no es gusto)
    transición cierra su `with sdb.get_cursor()` ANTES de dar nada por hecho, y
    nada externo (Storage) depende de una sentencia que aún no confirmó.
 
-5. `rev` ES EL CANDADO OPTIMISTA DE LAS PERSONAS; los procesos (el canal) usan
-   compare-and-set POR ESTADO y aguantan ver la misma cancelación dos veces.
+5. `rev` ES EL CANDADO OPTIMISTA. Las PERSONAS mandan la que vieron. El proceso
+   (el canal) no trae ninguna —por eso aguanta ver la misma cancelación dos
+   veces—, pero su sentencia sobre una CONFIRMADA tampoco va «sólo por estado»:
+   exige, además del estado, la `rev` de la lectura que `canal_cancelo` hizo en
+   ESE intento (y relee y reintenta si ya no es ésa). Desde la 0071 el
+   contenido de una confirmada puede cambiar entre la lectura y el CAS —los
+   renglones, y hasta la venta a la que está ligada—: con el estado solo se
+   cancelaba una orden que ya era de OTRA venta y la bitácora contaba piezas
+   que ya no eran. Sobre una ENTREGADA sí basta el estado (ya no cambia).
    Y un reintento propio no es un conflicto: cada transición deja una marca
    (`datos.op`) en su mensaje; si el CAS falla y mi marca ya está, es mi
    escritura que sí entró (la conexión murió al contestar el COMMIT).
@@ -117,7 +129,8 @@ CANALES = ("temu", "tiktok", "mercado_libre", "amazon", "walmart", "shein", "dir
 TIPOS_ARCHIVO = ("comprobante", "factura", "envio_full")
 ORIGENES_CANCELACION = ("manual", "sistema", "marketplace")
 # El catálogo CERRADO de ventas.ov_mensajes.evento (ov_mensajes_evento_chk).
-EVENTOS = ("creada", "borrador_guardado", "descartada", "confirmada", "no_alcanzo",
+# `editada` lo agregó la migración 0071: es el rastro de editar una confirmada.
+EVENTOS = ("creada", "borrador_guardado", "descartada", "confirmada", "editada", "no_alcanzo",
            "entregada_parcial", "entregada", "cancelada", "borrada_admin", "canal_cancelo",
            "devolucion_esperada", "devolucion_recibida", "devolucion_aprobada",
            "devolucion_merma", "devolucion_cerrada")
@@ -147,6 +160,9 @@ _EN_MAYUSCULAS = frozenset({"mp_cuenta"})
 _FECHAS = ("fecha_venta", "entrega_limite")
 # TODO lo que un BORRADOR deja editar del encabezado. Son las ÚNICAS columnas
 # que `SQL_GUARDAR` nombra (los nombres jamás salen del cuerpo de la petición).
+# Y son las MISMAS catorce que la puerta de la 0071 deja corregir en una
+# confirmada (el arreglo `editables` de ops.tg_ov_ordenes_guarda): si aquí se
+# agrega una, sin su migración la base la rechaza con 42501.
 _CAMPOS = (*_TEXTOS, *_FECHAS, "moneda", "total", "comision", "precio_origen")
 _MP = ("mp_canal", "mp_cuenta", "mp_orden")
 _ETIQUETA = {"cliente": "cliente", "canal": "canal", "mp_canal": "canal de la venta",
@@ -176,8 +192,18 @@ _MSG_SIN_FISICO = ("No hay piezas físicas suficientes en la bodega para registr
                    "(un conteo dejó menos de lo apartado). Pide un conteo o entrega menos piezas.")
 _MSG_ESPERA_SALIO = ("El canal canceló esta venta con el paquete en camino: primero hay que "
                      "contestar si salió.")
-_MSG_YA_CONFIRMADA = ("La orden se confirmó mientras tanto: su contenido ya no cambia. "
+# Guardar un BORRADOR mientras otro lo confirmaba. Ya no dice «su contenido ya
+# no cambia»: desde la 0071 una confirmada sí se corrige, pero ESTE guardado
+# (hecho contra el borrador) no entró.
+_MSG_YA_CONFIRMADA = ("La orden se confirmó mientras tanto: este guardado no entró. "
                       "Se recargó.")
+_MSG_SIN_0071 = ("Editar una orden confirmada todavía no está habilitado en esta base: falta "
+                 "la migración 0071.")
+# No es lo mismo «falta» que «no se pudo preguntar» (kubera tropezó al leer el
+# catálogo): decir lo primero manda a buscar una migración que sí está.
+_MSG_SIN_SABER_0071 = ("No se pudo comprobar si esta base ya permite editar una orden "
+                       "confirmada (la migración 0071); intenta de nuevo en unos segundos.")
+_MSG_NO_ALCANZO_EDICION = "No alcanzó el stock para guardar el cambio. No se guardó nada."
 
 # Los motivos de KB001 (`ops.exigir`) DE NEGOCIO, dichos para una persona. Los
 # nombres son los del verificador (guía §4.6); los de sentencias propias de este
@@ -194,6 +220,8 @@ TEXTO_MOTIVO = {
                                      "bodega no tiene existencias registradas de ese SKU. "
                                      "No se apartó nada."),
     "no_alcanzo": "No alcanzó el stock para apartar. No se apartó nada.",
+    "bodega_no_admite_ov": ("Alguna bodega de la orden ya no admite órdenes de venta. "
+                            "No se guardó nada."),
     "entrega_no_cuadra": ("Algún renglón ya había salido o cambió mientras tanto; "
                           "se recargó la orden."),
     "salio_no_cuadra": "La orden ya no está esperando la respuesta de «¿salió?»; se recargó.",
@@ -601,7 +629,8 @@ def _transicion(operacion: str, sql: str, params: dict[str, Any],
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Lo que se pregunta UNA vez y se recuerda un rato: tablas, banderas y bucket
+# Lo que se pregunta UNA vez y se recuerda un rato: tablas, banderas, bucket y
+# si la base ya trae la puerta para editar una confirmada (la 0071)
 # ══════════════════════════════════════════════════════════════════════════════
 
 _TTL_TABLAS = 60.0
@@ -626,9 +655,16 @@ def _recordar(llave: str, valor: Any, ttl: float) -> None:
 
 
 def _olvidar_cache() -> None:
-    """Olvida tablas, banderas y bucket. Para las pruebas (y tras un acta, si urge)."""
+    """Olvida tablas, banderas, bucket y si está la 0071. Para las pruebas (y tras
+    un acta, si urge)."""
     with _cache_candado:
         _cache.clear()
+
+
+def _olvidar(llave: str) -> None:
+    """Olvida UNA de las cosas recordadas: la siguiente pregunta va a la base."""
+    with _cache_candado:
+        _cache.pop(llave, None)
 
 
 # Guía §4.8: mientras la 0064/0065 no estén en producción, quien las lee
@@ -768,6 +804,77 @@ def hay_bucket(refrescar: bool = False, cur: Any = None) -> bool:
         return False
     if cur is None:
         _recordar("bucket", valor, _TTL_BUCKET)
+    return valor
+
+
+# Editar una CONFIRMADA depende de la migración 0071: la puerta en las dos
+# guardias y el evento `editada`. La 0071 no crea un objeto nuevo que buscar con
+# `to_regclass` —reescribe dos funciones y un CHECK—, así que se pregunta por
+# LA PUERTA MISMA, en el catálogo de Postgres: que el texto de
+# `ops.tg_ov_ordenes_guarda` y el de `ops.tg_ov_lineas_guarda` nombren
+# `app.ov_edicion`, y que el CHECK del catálogo de eventos conozca `editada`.
+#
+# NO se pregunta por su renglón en `ops.migraciones`: ese registro es de sólo
+# agregar y dice que la 0071 se CORRIÓ, no que su puerta SIGA ahí. Volver a
+# correr la 0068 (recrea las dos guardias con su texto de entonces, y sin error)
+# o hacer la reversa de la 0071 se llevan la puerta y dejan el renglón: el
+# permiso decía que sí, cada guardado rebotaba con 409 y olvidar lo recordado no
+# servía de nada, porque la siguiente pregunta volvía a encontrar el renglón.
+#
+# Una sola consulta, y sin leer una tabla nuestra: `to_regprocedure` y
+# `to_regclass` contestan NULL si el objeto no está, y entonces la respuesta es
+# «no». Las guardias se buscan por su nombre en `ops`: si un día se mudan de
+# esquema, esto contesta «no» —falla cerrado— hasta que se actualice aquí.
+_SQL_HAY_EDICION = """
+select (select count(*) from pg_proc p
+         where p.oid in (to_regprocedure('ops.tg_ov_ordenes_guarda()'),
+                         to_regprocedure('ops.tg_ov_lineas_guarda()'))
+           and position('app.ov_edicion' in p.prosrc) > 0) = 2
+       and exists (select 1 from pg_constraint c
+                    where c.conrelid = to_regclass('ventas.ov_mensajes')
+                      and c.conname = 'ov_mensajes_evento_chk'
+                      and position('''editada''' in pg_get_constraintdef(c.oid)) > 0) as lista
+"""
+
+
+def _leer_edicion(cur: Any = None) -> bool:
+    """La pregunta a la base, sin caché. (Es lo que una prueba sustituye para
+    simular una base sin la 0071.)"""
+    fila = _fila(_SQL_HAY_EDICION, None, cur)
+    return bool(fila and fila.get("lista"))
+
+
+def edicion_lista(refrescar: bool = False, cur: Any = None) -> bool | None:
+    """¿Esta base deja EDITAR una orden confirmada (sus guardias traen la puerta
+    de la 0071)? Tres respuestas, como `_tablas`: True, False, o None si no se
+    pudo PREGUNTAR, que no es lo mismo que «falta». Con caché de 60 s. NUNCA
+    lanza, y la duda cierra: con False y con None la pantalla no ofrece editar;
+    lo que cambia es el porqué que se le dice a la persona (`_motivo`: «falta
+    la migración» o «no se pudo comprobar, intenta de nuevo»). El tropiezo se
+    recuerda sólo unos segundos.
+
+    Es la cortesía, no la guarda: sin la puerta la base rechaza la edición de
+    todos modos (42501), y `_editar_confirmada` lo traduce al mismo mensaje."""
+    if cur is None and not refrescar:
+        hay, valor = _recordado("edicion")
+        if hay:
+            return valor
+    if cur is None and en_pausa():
+        return None
+    try:
+        valor = _leer_edicion(cur)
+    except Exception as exc:  # noqa: BLE001 — sin saber, no se ofrece editar
+        # (Ya no se calla `FaltaMigracion`: esta lectura es del catálogo de
+        # Postgres, no de una tabla que pueda faltar.)
+        if not isinstance(exc, SinBase):
+            log.warning("ordenes_venta: no se pudo preguntar si la base trae la puerta de la "
+                        "migración 0071 (%s); mientras tanto no se ofrece editar una confirmada",
+                        type(exc).__name__)
+        if cur is None:
+            _recordar("edicion", None, _TTL_FALLO)
+        return None
+    if cur is None:
+        _recordar("edicion", valor, _TTL_TABLAS)
     return valor
 
 
@@ -1161,8 +1268,10 @@ ACCIONES = ("editar", "confirmar", "entregar", "cancelar", "borrar", "responder_
             "salio_tarde", "mensajes", "subir_archivo", "bajar_archivo", "borrar_archivo")
 
 # La CLASE del motivo decide el error: el rol es un 403, el estado un 400, la
-# bandera apagada el 409 de «modo prueba» y la falta del bucket otro 409.
-_ROL, _ESTADO, _APAGADO, _SIN_BUCKET = "rol", "estado", "apagado", "sin_bucket"
+# bandera apagada el 409 de «modo prueba», la falta del bucket otro 409 y la
+# falta de la 0071 (editar una confirmada) otro más.
+_ROL, _ESTADO, _APAGADO, _SIN_BUCKET, _SIN_0071 = ("rol", "estado", "apagado", "sin_bucket",
+                                                   "sin_0071")
 
 _SOLO_ADMIN = {"borrar": "Sólo un administrador puede borrar una orden",
                "borrar_archivo": "Sólo un administrador puede quitar un PDF",
@@ -1177,10 +1286,11 @@ def _no_escribe(quien: Quien) -> tuple[str, str]:
 
 
 def _motivo(accion: str, orden: dict[str, Any], quien: Quien, encendido: bool,
-            bucket: bool = False) -> tuple[str, str] | None:
+            bucket: bool = False, edicion: bool | None = False) -> tuple[str, str] | None:
     """Por qué NO se puede `accion`, o None si se puede. Primero el rol (es lo que
     no cambia recargando), luego si está borrada, luego el estado de la orden y
-    al final la bandera."""
+    al final la bandera (y, para editar una confirmada, si la base trae la 0071:
+    `edicion` es True, False —falta— o None —no se pudo comprobar—)."""
     estado = orden.get("estado") or "borrador"
     borrada = bool(orden.get("borrada_at"))
     rotulo = _ROTULO.get(estado, estado)
@@ -1207,9 +1317,31 @@ def _motivo(accion: str, orden: dict[str, Any], quien: Quien, encendido: bool,
     if accion == "subir_archivo":
         return None if bucket else (_SIN_BUCKET, _MSG_SIN_BUCKET)
     if accion == "editar":
-        if estado != "borrador":
-            return _ESTADO, (f"La orden ya está {rotulo}: su contenido no cambia. Para "
-                             "corregirla hay que cancelarla (o que un administrador la borre)")
+        if estado == "borrador":
+            return None
+        if estado != "confirmada":
+            return _ESTADO, (f"La orden ya está {rotulo}: su contenido no cambia. Si se "
+                             "capturó mal, un administrador puede borrarla")
+        # UNA CONFIRMADA SÍ SE CORRIGE (migración 0071, pedido de Brandon del
+        # 9-oct-2026), por cualquiera que escribe. Lo que la frena, en este orden:
+        if (orden.get("tipo") or "venta") == "full":
+            return _ESTADO, "Un envío a FULL ya confirmado no se edita desde esta pantalla"
+        if orden.get("canal_cancelo_at"):
+            # Con la pregunta abierta la orden sólo sale a cancelada o a entregada
+            # y cancelada: corregirla ahora sería editar una venta que el canal ya
+            # dio por muerta. (La base tampoco abre la puerta con la marca puesta.)
+            return _ESTADO, ("El canal canceló esta venta con el paquete en camino: "
+                             "primero hay que contestar si salió")
+        if not encendido:
+            # Editar puede APARTAR más (subir una cantidad, agregar un renglón):
+            # va con la misma bandera que confirmar.
+            return _APAGADO, ("Modo prueba: editar una confirmada está apagado (bandera "
+                              "«ordenes_venta»)")
+        if not edicion:
+            # Las dos cierran igual (409, no se ofrece editar); lo que cambia es la
+            # causa que se dice: None es un tropiezo al preguntar, y decirle a la
+            # persona «falta la migración» la mandaría a buscar una que sí está.
+            return _SIN_0071, (_MSG_SIN_SABER_0071 if edicion is None else _MSG_SIN_0071)
         return None
     if accion == "confirmar":
         if estado != "borrador":
@@ -1232,8 +1364,9 @@ def _motivo(accion: str, orden: dict[str, Any], quien: Quien, encendido: bool,
         if estado == "borrador":
             return None
         if estado == "confirmada":
-            if not quien.admin:
-                return _ROL, "Sólo un administrador puede cancelar una orden confirmada"
+            # La cancela CUALQUIERA que escribe (decisión de Brandon, 9-oct-2026;
+            # antes era sólo de administrador). El motivo sigue siendo obligatorio
+            # (lo exige `_cancelar`, y la base: ov_ordenes_canc_m_chk).
             if orden.get("canal_cancelo_at"):
                 # Con la pregunta abierta, cancelar a mano sería una tercera salida
                 # que se la salta y queda como cancelación manual: se contesta.
@@ -1259,16 +1392,19 @@ def _motivo(accion: str, orden: dict[str, Any], quien: Quien, encendido: bool,
 
 
 def permisos(orden: dict[str, Any], quien: Quien, encendido: bool,
-             bucket: bool = False) -> dict[str, Any]:
+             bucket: bool = False, edicion: bool | None = False) -> dict[str, Any]:
     """Qué puede hacer `quien` con esta orden (tipo Permisos de tipos.ts). PURA.
 
-    `encendido` es la bandera `ordenes_venta` y `bucket` si existe el bucket de
-    los PDF: los dos se preguntan afuera (aquí no se toca la base). `porque`
-    explica cada «no», para el `title` del botón apagado."""
+    `encendido` es la bandera `ordenes_venta`, `bucket` si existe el bucket de
+    los PDF y `edicion` si la base trae la 0071 (`edicion_lista()`: sin ella una
+    confirmada no se edita; None = no se pudo comprobar, que tampoco deja editar
+    pero se dice con otras palabras): los tres se preguntan afuera (aquí no se
+    toca la base) y por omisión fallan cerrado. `porque` explica cada «no», para
+    el `title` del botón apagado."""
     p: dict[str, Any] = {}
     porque: dict[str, str] = {}
     for accion in ACCIONES:
-        m = _motivo(accion, orden, quien, encendido, bucket)
+        m = _motivo(accion, orden, quien, encendido, bucket, edicion)
         p[accion] = m is None
         if m:
             porque[accion] = m[1]
@@ -1282,7 +1418,7 @@ def _error_de(m: tuple[str, str]) -> ErrorOV:
         return SinPermiso(texto + ".")
     if clase == _APAGADO:
         return Apagado()
-    if clase == _SIN_BUCKET:
+    if clase in (_SIN_BUCKET, _SIN_0071):
         return Conflicto(texto)
     return Invalido(texto + ".")
 
@@ -1371,11 +1507,21 @@ def _resumen(fila: dict[str, Any]) -> dict[str, Any]:
     return o
 
 
+def _edicion(fila: dict[str, Any], cur: Any = None) -> bool | None:
+    """El `edicion` de `permisos()` para ESTA orden. Sólo una confirmada depende
+    de la 0071: de las demás ni se pregunta (un viaje menos, y un tropiezo al
+    preguntarle a la base por la puerta no toca a los borradores). De una
+    confirmada sale lo que diga `edicion_lista`, con su None («no se pudo
+    comprobar») tal cual."""
+    return fila.get("estado") == "confirmada" and edicion_lista(cur=cur)
+
+
 def _orden(fila: dict[str, Any], quien: Quien, cur: Any = None) -> dict[str, Any]:
     o = _resumen(fila)
     o["lineas"] = list(fila.get("lineas") or [])
     o["archivos"] = list(fila.get("archivos") or [])
-    o["permisos"] = permisos(fila, quien, habilitado(cur=cur), hay_bucket(cur=cur))
+    o["permisos"] = permisos(fila, quien, habilitado(cur=cur), hay_bucket(cur=cur),
+                             _edicion(fila, cur))
     return o
 
 
@@ -1433,7 +1579,8 @@ def _preparar(orden_id: Any, rev: Any, quien: Quien, accion: str,
     el estado al final (400)."""
     _exigir_tablas(cur)
     o = _leer_id(orden_id, cur)
-    m = _motivo(accion, o, quien, habilitado(cur=cur))
+    m = _motivo(accion, o, quien, habilitado(cur=cur),
+                edicion=accion == "editar" and _edicion(o, cur))
     if m and m[0] == _ROL:
         raise _error_de(m)
     if _rev(rev) != o["rev"]:
@@ -1805,6 +1952,11 @@ def _huella_lineas(lineas: list[dict[str, Any]]) -> list[tuple]:
 
 
 def _dif_lineas(antes: list[dict[str, Any]], despues: list[dict[str, Any]]) -> dict[str, Any]:
+    """`datos.renglones` de la bitácora: qué (sku, bodega) se agregaron, cuáles se
+    quitaron y, de los que siguen, qué cambió, cada cosa como [antes, después].
+    Compara TODO lo que cuenta `_huella_lineas` (por ella se decide si hay algo
+    que escribir): si el título o la imagen no entraran aquí, un cambio que sí
+    se guardó quedaba en la bitácora como «renglones: reordenados», sin el antes."""
     def llave(r: dict[str, Any]) -> tuple[str, str | None]:
         return str(r["sku"]).lower(), r.get("almacen") or None
 
@@ -1820,6 +1972,12 @@ def _dif_lineas(antes: list[dict[str, Any]], despues: list[dict[str, Any]]) -> d
         if _d(a[k]["precio_unitario"]) != _d(r["precio_unitario"]):
             c["precio_unitario"] = [float(_d(a[k]["precio_unitario"])),
                                     float(_d(r["precio_unitario"]))]
+        for campo in ("titulo", "imagen"):
+            # Vacío y nulo son lo mismo, igual que en la huella. Un renglón que
+            # llega SIN título o sin imagen (son opcionales) los borra: eso
+            # también es un cambio, y el valor que se va queda escrito.
+            if (a[k].get(campo) or None) != (r.get(campo) or None):
+                c[campo] = [a[k].get(campo) or None, r.get(campo) or None]
         if len(c) > 1:
             cambiados.append(c)
     return {"agregados": [r["sku"] for k, r in d.items() if k not in a],
@@ -1827,7 +1985,8 @@ def _dif_lineas(antes: list[dict[str, Any]], despues: list[dict[str, Any]]) -> d
             "cambiados": cambiados}
 
 
-def _cuerpo_guardada(cambios: dict[str, Any], dif: dict[str, Any] | None) -> str:
+def _cuerpo_guardada(cambios: dict[str, Any], dif: dict[str, Any] | None,
+                     titulo: str = "Borrador guardado") -> str:
     partes = []
     if cambios:
         partes.append(", ".join(_ETIQUETA.get(c, c) for c in cambios))
@@ -1840,20 +1999,22 @@ def _cuerpo_guardada(cambios: dict[str, Any], dif: dict[str, Any] | None) -> str
         if dif["cambiados"]:
             r.append(f"{len(dif['cambiados'])} con cambios")
         partes.append("renglones: " + (", ".join(r) if r else "reordenados"))
-    return "Borrador guardado · " + "; ".join(partes)
+    return f"{titulo} · " + "; ".join(partes)
 
 
 def guardar(orden_id: int, rev: int, datos: dict[str, Any], quien: Quien,
             cur: Any = None) -> dict[str, Any]:
-    """Guarda un BORRADOR: encabezado y renglones. Lo que no se manda no se toca.
+    """Guarda un BORRADOR —encabezado y renglones— o EDITA una CONFIRMADA (misma
+    ruta, mismo cuerpo: `_editar_confirmada`). Lo que no se manda no se toca.
 
-    Fuera de borrador el contenido es inmutable (lo impone la base): no hay
-    «editar una confirmada». Quien lo intenta recibe un 400 que dice qué hacer
-    (cancelar, o que un administrador la borre), nunca un 500."""
+    En entregada o cancelada el contenido ya no cambia (lo impone la base):
+    quien lo intenta recibe un 400 que dice por qué, nunca un 500."""
     if not isinstance(datos, dict):
         raise Invalido("El cuerpo de la orden no es válido.")
     firma = _firma(quien)
     o = _preparar(orden_id, rev, quien, "editar", cur)
+    if o["estado"] == "confirmada":
+        return _editar_confirmada(o, datos, quien, firma, cur)
     nuevos = _encabezado(datos, parcial=True)
 
     actuales = list(o.get("lineas") or [])
@@ -1904,6 +2065,384 @@ def guardar(orden_id: int, rev: int, datos: dict[str, Any], quien: Quien,
         if r.es("23505", "ov_ordenes_mp_uq"):
             raise _choque_venta(*trio, excepto=o["id"], cur=cur) from r.exc
         return _fallo(r, "guardar", o["id"], op, quien, "Cambios guardados.", cur)
+    return _resp(o["id"], quien, "Cambios guardados.", cur)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Editar una CONFIRMADA (la puerta de la migración 0071), también en UNA sentencia
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ES LA ÚNICA SENTENCIA QUE ABRE LA PUERTA. Las dos guardias de la base siguen
+# congelando el contenido fuera de borrador; dejan pasar a ESTA porque la
+# transacción trae `set local app.ov_edicion = '<id de la orden>'` —para esa
+# orden y ninguna otra— y la orden sigue confirmada, sin borrar y sin la marca
+# del canal. El `set local` va en el MISMO envío que la sentencia (si el pool
+# repite el `execute` en otra conexión, la puerta viaja con él) y muere con la
+# transacción: no queda nada pegado en la conexión del pooler (regla 13).
+#
+# La guardia `o` es la de guardar, con lo que pide una confirmada: CAS de `rev`,
+# `estado = 'confirmada'`, sin el «¿salió?» pendiente y nunca un envío a FULL. Si
+# no encuentra la fila, nada más escribe.
+#
+# Los renglones. `x` es el conjunto NUEVO de renglones por entregar (Python ya
+# quitó los que salieron: ésos no se tocan nunca) y `ant` los que hoy no han
+# salido. Como en guardar, `d` borra, `u` actualiza e `i` inserta casando por
+# (sku, bodega), sobre filas disjuntas; la diferencia es que aquí TODO renglón
+# queda apartado completo (`reservado = cantidad`), porque al COMMIT
+# `ov_coherente` lo exige de una confirmada.
+#
+# El saldo. `dlt` es cuánto cambia el apartado de cada (sku, bodega): lo que
+# pide `x` menos lo que apartaba `ant`. Donde la cuenta da 0 (reordenar, o
+# cambiar sólo el precio o el título) ni se bloquea el saldo ni se pide stock.
+# Candados, en el orden de siempre: la orden → `alm` FOR SHARE (bodegas viejas y
+# nuevas; C11: `admite_ov` se vuelve a exigir aquí dentro) → `blq` FOR UPDATE
+# del saldo en orden (sku, almacen), sólo las filas que cambian → `s` suelta lo
+# que baja y aparta lo que sube, esto último sólo si `libre` alcanza. Si un solo
+# (sku, bodega) no alcanza —o no tiene fila de saldo—, `s` trae menos filas que
+# deltas, `no_alcanzo` truena y NADA cambia: ni el encabezado, ni la `rev`, ni la
+# bitácora. Soltar sí se puede en una bodega que un acta apagó después
+# (`delta < 0`); apartar más, no.
+#
+# Dos cosas que la sentencia NO revisa porque llegarían al COMMIT como un bug y
+# Python las frena antes con palabras: dejar la orden sin renglones por entregar
+# (23514 ov_coherente) y repetir el (sku, bodega) de un renglón que ya salió
+# (23505 ov_lineas_sku_alm_uq).
+SQL_EDITAR_CONFIRMADA = _una("""
+set local app.ov_edicion = %(puerta)s;
+with o as (
+  update ventas.ov_ordenes v
+     set cliente        = case when %(t_cliente)s        then %(cliente)s        else v.cliente end,
+         canal          = case when %(t_canal)s          then %(canal)s          else v.canal end,
+         mp_canal       = case when %(t_mp_canal)s       then %(mp_canal)s       else v.mp_canal end,
+         mp_cuenta      = case when %(t_mp_cuenta)s      then %(mp_cuenta)s      else v.mp_cuenta end,
+         mp_orden       = case when %(t_mp_orden)s       then %(mp_orden)s       else v.mp_orden end,
+         descripcion    = case when %(t_descripcion)s    then %(descripcion)s    else v.descripcion end,
+         guia           = case when %(t_guia)s           then %(guia)s           else v.guia end,
+         paqueteria     = case when %(t_paqueteria)s     then %(paqueteria)s     else v.paqueteria end,
+         fecha_venta    = case when %(t_fecha_venta)s    then %(fecha_venta)s::timestamptz
+                               else v.fecha_venta end,
+         entrega_limite = case when %(t_entrega_limite)s then %(entrega_limite)s::timestamptz
+                               else v.entrega_limite end,
+         moneda         = case when %(t_moneda)s         then %(moneda)s         else v.moneda end,
+         total          = case when %(t_total)s          then %(total)s::numeric else v.total end,
+         comision       = case when %(t_comision)s       then %(comision)s::numeric
+                               else v.comision end,
+         precio_origen  = case when %(t_precio_origen)s  then %(precio_origen)s
+                               else v.precio_origen end,
+         rev            = v.rev + 1
+   where v.id = %(id)s and v.rev = %(rev)s and v.estado = 'confirmada' and v.borrada_at is null
+     and v.canal_cancelo_at is null and v.tipo <> 'full'
+  returning v.id
+), x as materialized (
+  select * from jsonb_to_recordset(%(lineas)s::jsonb)
+         as x(linea int, sku citext, titulo text, imagen text, cantidad int,
+              precio_unitario numeric, almacen text)
+), ant as materialized (
+  select l.id, l.sku, l.almacen, l.reservado
+    from o join ventas.ov_lineas l on l.orden_id = o.id
+   where %(con_lineas)s and l.entregado_at is null
+), alm as (
+  select a.codigo, a.admite_ov from almacen.almacenes a
+   where a.fuente = 'kubera'
+     and a.codigo in (select x.almacen from x where %(con_lineas)s
+                      union select ant.almacen from ant)
+     for share
+), dlt as materialized (
+  select coalesce(n.sku, a.sku) as sku, coalesce(n.almacen, a.almacen) as almacen,
+         coalesce(n.n, 0) - coalesce(a.n, 0) as delta
+    from (select x.sku, x.almacen, sum(x.cantidad)::int as n
+            from x where %(con_lineas)s group by 1, 2) n
+    full join (select ant.sku, ant.almacen, sum(ant.reservado)::int as n
+                 from ant group by 1, 2) a
+      on n.sku = a.sku and n.almacen = a.almacen
+), blq as materialized (
+  select sa.sku, sa.almacen, d.delta
+    from dlt d
+    join alm on alm.codigo = d.almacen
+    join almacen.stock_almacen sa on sa.sku = d.sku and sa.almacen = d.almacen
+   where d.delta <> 0 and exists (select 1 from o)
+     and (d.delta < 0 or alm.admite_ov)
+   order by sa.sku, sa.almacen
+     for update of sa
+), s as (
+  update almacen.stock_almacen sa
+     set apartado = sa.apartado + b.delta
+    from blq b
+   where sa.sku = b.sku and sa.almacen = b.almacen
+     and (b.delta < 0 or sa.libre >= b.delta)
+  returning sa.sku, sa.almacen
+), d as (
+  delete from ventas.ov_lineas l using ant
+   where l.id = ant.id
+     and not exists (select 1 from x where x.sku = ant.sku and x.almacen = ant.almacen)
+  returning l.id
+), u as (
+  update ventas.ov_lineas l
+     set linea = x.linea, titulo = x.titulo, imagen = x.imagen, cantidad = x.cantidad,
+         precio_unitario = x.precio_unitario, reservado = x.cantidad
+    from ant, x
+   where l.id = ant.id and x.sku = ant.sku and x.almacen = ant.almacen
+  returning l.id
+), i as (
+  insert into ventas.ov_lineas (orden_id, linea, sku, titulo, imagen, cantidad, precio_unitario,
+                             almacen, reservado)
+  select o.id, x.linea, x.sku, x.titulo, x.imagen, x.cantidad, x.precio_unitario, x.almacen,
+         x.cantidad
+    from o, x
+   where %(con_lineas)s
+     and not exists (select 1 from ant where ant.sku = x.sku and ant.almacen = x.almacen)
+  returning id
+), msg as (
+  insert into ventas.ov_mensajes (orden_id, tipo, evento, cuerpo, datos, autor, autor_nombre, via)
+  select o.id, 'sistema', 'editada', %(cuerpo)s, %(datos)s::jsonb, %(q)s, %(nombre)s, %(via)s
+    from o
+  returning id
+)
+select ops.exigir((select count(*) from o) = 1, 'ov_no_esta_confirmada_o_cambio_rev')
+     + ops.exigir(not %(con_lineas)s
+                  or not exists (select 1 from x
+                                  where not exists (select 1 from alm
+                                                     where alm.codigo = x.almacen
+                                                       and alm.admite_ov)),
+                  'bodega_no_admite_ov')
+     + ops.exigir((select count(*) from s) = (select count(*) from dlt where delta <> 0),
+                  'no_alcanzo')
+     + ops.exigir(not %(con_lineas)s
+                  or (select count(*) from u) + (select count(*) from i)
+                     = jsonb_array_length(%(lineas)s::jsonb), 'renglones_no_cuadran')
+     + ops.exigir((select count(*) from msg) = 1, 'editar_escrituras_no_cuadran') as cuadra
+""")
+
+# Para EXPLICAR un «no alcanzó» al editar: lo libre, AHORA, de cada (SKU, bodega)
+# cuyo apartado tenía que subir.
+_SQL_DIAGNOSTICO_EDICION = """
+select d.sku::text as sku, d.almacen, d.delta, sa.sku is not null as con_saldo, sa.libre
+  from jsonb_to_recordset(%(deltas)s::jsonb) as d(n int, sku citext, almacen text, delta int)
+  left join almacen.stock_almacen sa on sa.sku = d.sku and sa.almacen = d.almacen
+ order by d.n
+"""
+
+
+def _pendientes_nuevos(crudas: Any, salidos: list[dict[str, Any]],
+                       mapa: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """Los renglones POR ENTREGAR de una confirmada como van a quedar, validados
+    y ya con su número de `linea`.
+
+    La pantalla manda el documento ENTERO, así que entre lo que llega vienen
+    también los renglones que ya salieron. Ésos están congelados (la base no
+    deja editarlos ni borrarlos, con o sin puerta):
+      · con la MISMA cantidad es el eco del renglón congelado: se descarta;
+      · con otra, alguien quiso cambiarlo —o sumarle piezas—, y se dice: el
+        mismo (sku, bodega) no puede ir en otro renglón de esta orden
+        (ov_lineas_sku_alm_uq).
+    Lo que queda es el conjunto nuevo. No puede quedar vacío, cada renglón sale
+    de una bodega que admite órdenes (va a quedar apartado), y la bodega se
+    revisa DESPUÉS de quitar los ecos: el renglón que ya salió de una bodega que
+    un acta apagó después no impide corregir los demás.
+
+    `linea`: los que ya salieron conservan su número; a los pendientes se les
+    dan, en el orden recibido, los enteros positivos más chicos que queden
+    libres (ov_lineas_linea_uq es por orden)."""
+    ya_salio = {(str(l["sku"]).lower(), l.get("almacen")): l for l in salidos}
+    nuevos: list[dict[str, Any]] = []
+    for r in _lineas(crudas):
+        salido = ya_salio.get((r["sku"].lower(), r["almacen"]))
+        if salido is None:
+            nuevos.append(r)
+        elif int(r["cantidad"]) != int(salido["cantidad"]):
+            raise Invalido(f"El renglón de {salido['sku']} ya salió de {salido['almacen']}: no "
+                           "se cambia. Si hace falta más, va en otra orden.")
+    if not nuevos:
+        raise Invalido("Una orden confirmada necesita al menos un renglón por entregar. "
+                       + ("Si ya salió todo, márcala DELIVERED." if salidos
+                          else "Si ya no va, cancélala."))
+    ocupados = {int(l["linea"]) for l in salidos}
+    n = 0
+    for r in nuevos:
+        if not r["almacen"]:
+            raise Invalido(f"El renglón de {r['sku']} no tiene bodega: elige de cuál sale "
+                           "antes de guardar.")
+        porque = _porque_no_bodega(r["almacen"], mapa)
+        if porque:
+            raise Invalido(f"{r['sku']}: {porque}.")
+        n += 1
+        while n in ocupados:
+            n += 1
+        r["linea"] = n
+    return nuevos
+
+
+def _deltas_apartado(antes: list[dict[str, Any]],
+                     despues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """`[{sku, almacen, delta}]`: cuánto cambia el apartado de cada (SKU, bodega)
+    al editar —lo que piden los renglones como QUEDAN menos lo que apartaban los
+    de ANTES—, sólo donde cambia. Es la misma cuenta que hace la sentencia
+    (`dlt`); aquí sirve para el rastro de la bitácora y para explicar un «no
+    alcanzó»."""
+    cuenta: dict[tuple[str, Any], dict[str, Any]] = {}
+
+    def de(r: dict[str, Any]) -> dict[str, Any]:
+        return cuenta.setdefault((str(r["sku"]).lower(), r.get("almacen") or None),
+                                 {"sku": r["sku"], "almacen": r.get("almacen"), "delta": 0})
+
+    for r in despues:
+        de(r)["delta"] += int(r["cantidad"])
+    for r in antes:
+        de(r)["delta"] -= int(r.get("reservado") or 0)
+    return [d for d in cuenta.values() if d["delta"]]
+
+
+def _texto_no_alcanzo_edicion(faltantes: list[dict[str, Any]]) -> str:
+    """«No alcanzó el stock para guardar el cambio: SKU X necesita 2 más y hay 1
+    libre en ENSAYO.» El hermano de `_texto_no_alcanzo`: aquí la orden YA aparta,
+    así que se dice lo que le FALTA, no lo que pide."""
+    partes = []
+    for f in faltantes[:3]:
+        if f.get("libre") is None:
+            partes.append(f"{f['sku']} necesita {f['falta']} más y no tiene existencias "
+                          f"registradas en {f['almacen']}")
+        else:
+            hay = max(0, int(f["libre"]))
+            partes.append(f"{f['sku']} necesita {f['falta']} más y hay {hay} "
+                          f"{'libre' if hay == 1 else 'libres'} en {f['almacen']}")
+    resto = len(faltantes) - len(partes)
+    if resto > 0:
+        partes.append(f"y {resto} SKU más" if resto == 1 else f"y otros {resto} SKU")
+    return ("No alcanzó el stock para guardar el cambio: " + "; ".join(partes)
+            + ". No se guardó nada.")
+
+
+def _no_alcanzo_edicion(deltas: list[dict[str, Any]], cur: Any = None) -> ErrorOV:
+    """La sentencia de editar dijo `no_alcanzo`: se relee el saldo de lo que tenía
+    que SUBIR para decir qué SKU no alcanza. A diferencia de confirmar, aquí NO
+    queda aviso en el chat: si no alcanza no cambia nada de la orden, ni su
+    `rev` ni su bitácora (y por la `rev` intacta la pantalla sabe que el 409 no
+    es «la orden cambió» y enseña este texto)."""
+    suben = [{"n": n, "sku": d["sku"], "almacen": d["almacen"], "delta": d["delta"]}
+             for n, d in enumerate(deltas) if d["delta"] > 0]
+    if not suben:
+        return Conflicto(_MSG_NO_ALCANZO_EDICION)
+    try:
+        saldo = _filas(_SQL_DIAGNOSTICO_EDICION, {"deltas": _json(suben)}, cur)
+    except Exception as exc:  # noqa: BLE001 — sin diagnóstico sale el texto general
+        log.warning("ordenes_venta.editar_confirmada: no se pudo releer el saldo para "
+                    "explicar «no_alcanzo» (%s)", type(exc).__name__)
+        return Conflicto(_MSG_NO_ALCANZO_EDICION)
+    faltantes = [{"sku": f["sku"], "almacen": f["almacen"], "falta": int(f["delta"]),
+                  "libre": int(f["libre"]) if f["con_saldo"] else None}
+                 for f in saldo if not f["con_saldo"] or int(f["libre"]) < int(f["delta"])]
+    if not faltantes:
+        # Entre el rechazo y esta lectura llegó stock (o lo soltó otra orden).
+        return Conflicto("No alcanzó el stock al intentar guardar el cambio, pero ya hay: "
+                         "vuelve a guardar.")
+    return Conflicto(_texto_no_alcanzo_edicion(faltantes))
+
+
+def _bodega_que_ya_no_admite(lineas: list[dict[str, Any]], cur: Any = None) -> ErrorOV:
+    """La sentencia de editar dijo `bodega_no_admite_ov`: un acta apagó la bodega
+    de algún renglón entre la validación de Python y el candado (C11). Se relee
+    el catálogo para decir cuál."""
+    try:
+        mapa = _bodegas_mapa(cur)
+    except Exception as exc:  # noqa: BLE001 — sin el catálogo sale el texto general
+        log.warning("ordenes_venta.editar_confirmada: no se pudo releer el catálogo de "
+                    "bodegas para explicar «bodega_no_admite_ov» (%s)", type(exc).__name__)
+        return Invalido(texto_de_motivo("bodega_no_admite_ov"))
+    for r in lineas:
+        porque = _porque_no_bodega(r.get("almacen") or "", mapa)
+        if porque:
+            return Invalido(f"{r['sku']}: {porque}.")
+    return Invalido(texto_de_motivo("bodega_no_admite_ov"))
+
+
+def _editar_confirmada(o: dict[str, Any], datos: dict[str, Any], quien: Quien,
+                       firma: dict[str, Any], cur: Any = None) -> dict[str, Any]:
+    """Corrige una orden CONFIRMADA (el permiso ya lo exigió `guardar`): lo que
+    capturó una persona en el encabezado y los renglones que todavía no salen.
+    El apartado se mueve por la diferencia, todo o nada, en la misma sentencia;
+    si no alcanza, 409 que dice cuál y nada cambia. Deja el mensaje `editada`
+    con el antes y el después: es el rastro que la inmutabilidad protegía."""
+    nuevos = _encabezado(datos, parcial=True)
+    if o.get("creado_via") == "automatico":
+        # La orden que nació de `crear_auto`: su cliente ES el canal de su venta
+        # (ov_ordenes_auto_cliente_chk, SEG-06: nunca el comprador).
+        for c in ("cliente", "mp_canal"):
+            if c in nuevos and not _igual(c, o[c], nuevos[c]):
+                raise Invalido("Esta orden se creó sola a partir de su venta: su cliente es "
+                               "el canal de esa venta, y ninguno de los dos se cambia.")
+
+    actuales = list(o.get("lineas") or [])
+    salidos = [l for l in actuales if l.get("entregado_at") is not None]
+    pendientes = [l for l in actuales if l.get("entregado_at") is None]
+    lineas: list[dict[str, Any]] | None = None
+    if datos.get("lineas") is not None:
+        lineas = _pendientes_nuevos(datos["lineas"], salidos, _bodegas_mapa(cur))
+        if _huella_lineas(lineas) == _huella_lineas(pendientes):
+            lineas = None          # la pantalla manda el documento entero: idénticos no es un cambio
+    if nuevos.get("total") is _TOTAL_AUTO:
+        # La suma es de TODA la orden: lo que ya salió también se vendió.
+        nuevos["total"] = _suma(salidos + lineas if lineas is not None else actuales)
+
+    # La LIGA con la venta se revalida igual que en un borrador.
+    trio = tuple(nuevos.get(c, o[c]) for c in _MP)
+    if any(c in nuevos and not _igual(c, o[c], nuevos[c]) for c in _MP):
+        trio = _ligar_venta(*trio, cur)
+        for c, valor in zip(_MP, trio):
+            nuevos[c] = valor
+
+    cambios = {c: [_plano(o[c]), _plano(v)] for c, v in nuevos.items()
+               if c in _CAMPOS and not _igual(c, o[c], v)}
+    if not cambios and lineas is None:
+        return {"ok": True, "orden": _orden(o, quien, cur), "mensaje": "Sin cambios."}
+    if any(c in cambios for c in _MP):
+        ligada = _venta_ligada(*trio, excepto=o["id"], cur=cur)
+        if ligada:
+            raise Conflicto(f"Esa venta ya tiene la orden {ligada['folio']}.")
+
+    op = _op()
+    bitacora: dict[str, Any] = {"op": op, "cambios": cambios}
+    dif = None
+    deltas: list[dict[str, Any]] = []
+    if lineas is not None:
+        dif = _dif_lineas(pendientes, lineas)
+        deltas = _deltas_apartado(pendientes, lineas)
+        bitacora["renglones"] = dif
+        bitacora["lineas"] = _lineas_bitacora(lineas, reservado=True)
+        bitacora["apartado"] = deltas
+    cuerpo = _cuerpo_guardada(cambios, dif, "Orden editada")
+    if deltas:
+        cuerpo += " · se movió el apartado"
+    params: dict[str, Any] = {**firma, "puerta": str(o["id"]), "id": o["id"], "rev": o["rev"],
+                              "con_lineas": lineas is not None,
+                              "lineas": _lineas_json(lineas or []),
+                              "cuerpo": cuerpo, "datos": _json(bitacora)}
+    for c in _CAMPOS:
+        params[f"t_{c}"] = c in cambios
+        params[c] = nuevos[c] if c in cambios else None
+    try:
+        _transicion("editar_confirmada", SQL_EDITAR_CONFIRMADA, params, cur)
+    except _Rechazo as r:
+        if r.es("23505", "ov_ordenes_mp_uq"):
+            raise _choque_venta(*trio, excepto=o["id"], cur=cur) from r.exc
+        if r.clase == "negocio" and r.detalle == "no_alcanzo":
+            raise _no_alcanzo_edicion(deltas, cur) from r.exc
+        if r.clase == "negocio" and r.detalle == "bodega_no_admite_ov":
+            raise _bodega_que_ya_no_admite(lineas or [], cur) from r.exc
+        if (r.es("42501", "ov_ordenes_inmutable", "ov_lineas_inmutable")
+                or r.es("23514", "ov_mensajes_evento_chk")):
+            # La base NO trae la puerta: sin la 0071 las guardias rechazan tocar
+            # una confirmada y el catálogo no conoce `editada`. No es un bug de la
+            # sentencia: es la migración que falta (o que alguien revirtió), y lo
+            # que `edicion_lista` recordaba ya no vale. Olvidarlo SÍ sirve: la
+            # siguiente pregunta va a la base y, como es por la puerta misma (no
+            # por el registro de migraciones, que no se borra), ya contesta que
+            # no; la pantalla relee tras este 409 y deja de ofrecer editar.
+            _olvidar("edicion")
+            log.warning("ordenes_venta.editar_confirmada: la base rechazó editar la orden %s "
+                        "(pgcode=%s regla=%s): no trae la puerta de la migración 0071.",
+                        o["folio"], r.pgcode, r.detalle)
+            raise Conflicto(_MSG_SIN_0071) from r.exc
+        return _fallo(r, "editar_confirmada", o["id"], op, quien, "Cambios guardados.", cur)
     return _resp(o["id"], quien, "Cambios guardados.", cur)
 
 
@@ -2260,9 +2799,12 @@ def entregar(orden_id: int, rev: int, quien: Quien, lineas: list[dict[str, Any]]
 # Cancelar (patrón f) y su hermana: cancelar cuando ya salió alguna pieza
 # ══════════════════════════════════════════════════════════════════════════════
 
-# `__GUARDIA__` es lo único que cambia entre la cancelación de una PERSONA (CAS
-# de `rev`) y la del CANAL (CAS por estado, sin rev: guía §4.2). Las constantes
-# se arman al importar; en tiempo de ejecución el texto es fijo.
+# `__GUARDIA__` es lo único que cambia entre la cancelación de una PERSONA (la
+# `rev` que ella vio) y la del CANAL. La guía §4.2 dejaba al canal «por estado,
+# sin rev», y así fue mientras una confirmada no cambiaba; desde la 0071 sí
+# cambia, y su guardia lleva TAMBIÉN `rev`: no la de quien llama (el barrido no
+# trae una) sino la de la lectura que `canal_cancelo` hizo en ese intento. Las
+# constantes se arman al importar; en tiempo de ejecución el texto es fijo.
 #
 # SQL_CANCELAR es el patrón (f) tal cual: desde borrador o confirmada, suelta
 # EXACTAMENTE lo reservado de cada renglón que no ha salido. Si algún renglón
@@ -2303,9 +2845,12 @@ select ops.exigir((select count(*) from o) = 1, 'ov_no_cancelable_o_cambio_rev')
 SQL_CANCELAR = _una(_CANCELAR.replace(
     "__GUARDIA__", "v.rev = %(rev)s and v.estado in ('borrador', 'confirmada')"))
 # El canal sólo cancela una CONFIRMADA que no espera el «¿salió?» (con la marca
-# puesta decide Bodega, no el sondeo).
+# puesta decide Bodega, no el sondeo)… y que sigue EXACTAMENTE como
+# `canal_cancelo` la acaba de leer (`rev`): si una edición o una entrega parcial
+# confirmó en medio, no encuentra la fila (KB001) y `canal_cancelo` relee. Así
+# lo que suelta y lo que deja escrito en la bitácora salen de la misma foto.
 SQL_CANCELAR_CANAL = _una(_CANCELAR.replace(
-    "__GUARDIA__", "v.estado = 'confirmada' and v.canal_cancelo_at is null"))
+    "__GUARDIA__", "v.rev = %(rev)s and v.estado = 'confirmada' and v.canal_cancelo_at is null"))
 
 # Cancelar una confirmada de la que YA SALIERON piezas (entrega parcial): queda
 # `entregada_cancelada`, la única que admite devolución. El verificador no trae
@@ -2358,7 +2903,7 @@ select ops.exigir((select count(*) from o) = 1, 'ov_no_cancelable_o_cambio_rev')
 """
 SQL_CANCELAR_CON_SALIDA = _una(_CANCELAR_CON_SALIDA.replace("__GUARDIA__", "v.rev = %(rev)s"))
 SQL_CANCELAR_CON_SALIDA_CANAL = _una(_CANCELAR_CON_SALIDA.replace(
-    "__GUARDIA__", "v.canal_cancelo_at is null"))
+    "__GUARDIA__", "v.rev = %(rev)s and v.canal_cancelo_at is null"))
 
 
 def _con_motivo(texto: str, motivo: str | None) -> str:
@@ -2428,9 +2973,10 @@ def cancelar(orden_id: int, rev: int, quien: Quien, motivo: str = "", origen: st
              cur: Any = None) -> dict[str, Any]:
     """Cancela. Un borrador o una confirmada sin salidas → `cancelada` (suelta
     exactamente lo apartado). Una confirmada de la que ya salió alguna pieza →
-    `entregada_cancelada`, con la devolución pendiente. Si estuvo confirmada el
-    motivo es obligatorio (5 caracteres o más). Nunca depende de la bandera:
-    soltar stock es seguro con el módulo apagado."""
+    `entregada_cancelada`, con la devolución pendiente. La cancela cualquiera
+    que escribe, también confirmada (ya no hace falta un administrador); si
+    estuvo confirmada el motivo es obligatorio (5 caracteres o más). Nunca
+    depende de la bandera: soltar stock es seguro con el módulo apagado."""
     if origen not in ORIGENES_CANCELACION:
         raise Invalido("«origen» es 'manual', 'sistema' o 'marketplace'.")
     o = _preparar(orden_id, rev, quien, "cancelar", cur)
@@ -2482,8 +3028,9 @@ select ops.exigir((select count(*) from o) = 1, 'ov_no_borrable_o_cambio_rev')
 def borrar(orden_id: int, rev: int, quien: Quien, motivo: str, cur: Any = None) -> dict[str, Any]:
     """Admin: «borra» la orden. No se elimina: queda quién, cuándo y por qué (10
     caracteres o más) y el folio no se recicla. Si apartaba, suelta en la misma
-    sentencia. Es la salida para una confirmada capturada mal: su contenido ya
-    no se puede editar."""
+    sentencia. Es la salida para una orden que de plano no debió existir (una
+    confirmada con un error se corrige editándola; una entregada o cancelada ya
+    no cambia)."""
     firma = _firma(quien)
     o = _preparar(orden_id, rev, quien, "borrar", cur)
     motivo_ = _motivo_texto(motivo, MIN_MOTIVO_BORRAR,
@@ -2508,7 +3055,8 @@ def borrar(orden_id: int, rev: int, quien: Quien, motivo: str, cur: Any = None) 
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# El canal cancela (patrones f y g de la guía): CAS por ESTADO, sin rev
+# El canal cancela (patrones f y g de la guía): sin `rev` de quien llama; el CAS
+# es por ESTADO y, sobre una confirmada, por la `rev` que se acaba de leer
 # ══════════════════════════════════════════════════════════════════════════════
 
 # Paso 1 del «¿salió?»: el canal canceló con el paquete ya en camino. La marca
@@ -2516,11 +3064,15 @@ def borrar(orden_id: int, rev: int, quien: Quien, motivo: str, cur: Any = None) 
 # Los dos filtros de más frente a la prueba (`canal_cancelo_at is null` y
 # `borrada_at is null`) son los que hacen que ver OTRA VEZ la misma cancelación
 # dé un KB001 con nombre y no un 42501 que se leería como bug en cada sondeo.
+# Y `rev` —la de la lectura de `canal_cancelo` en ese intento— es lo que impide
+# marcar una orden que cambió en medio: desde la 0071 pudo dejar de ser la de
+# esa venta (le corrigieron la liga), y con la marca puesta ya nadie la edita,
+# la entrega ni la cancela hasta que Bodega conteste por un paquete que no es suyo.
 SQL_CANAL_MARCA = _una("""
 with o as (
   update ventas.ov_ordenes
      set canal_cancelo_at = now(), canal_cancelo_ref = %(ref_canal)s, rev = rev + 1
-   where id = %(id)s and estado = 'confirmada' and canal_cancelo_at is null
+   where id = %(id)s and rev = %(rev)s and estado = 'confirmada' and canal_cancelo_at is null
      and borrada_at is null
   returning id
 ), m as (
@@ -2563,11 +3115,11 @@ _INTENTOS_CANAL = 3
 
 
 def canal_cancelo(orden_id: int, ref_canal: str | None, motivo: str | None, en_camino: bool,
-                  cur: Any = None) -> dict[str, Any]:
+                  cur: Any = None, venta: tuple[Any, Any, Any] | None = None) -> dict[str, Any]:
     """El CANAL canceló la venta de esta orden. Lo llama el barrido de
     cancelaciones (sondeo y webhook, que se REPITEN): ver la misma cancelación
-    dos veces es éxito, no error. Sin `rev`: compare-and-set por estado, firmado
-    `automatico`. Devuelve `{resultado, orden}`:
+    dos veces es éxito, no error. Quien llama NO manda `rev` (el proceso no trae
+    una) y va firmado `automatico`. Devuelve `{resultado, orden}`:
 
       cancelada            confirmada sin salir → `cancelada` (soltó el apartado)
       marcada              confirmada y `en_camino` → la marca `canal_cancelo`; la
@@ -2576,9 +3128,24 @@ def canal_cancelo(orden_id: int, ref_canal: str | None, motivo: str | None, en_c
                            `entregada_cancelada`, devolución pendiente
       ya_marcada           ya tenía la marca: la misma cancelación, vista otra vez
       ya_cancelada         ya estaba cancelada o entregada y cancelada
-      nada                 borrada, o todavía en borrador (no hay qué soltar)
+      nada                 borrada, todavía en borrador (no hay qué soltar), o ya
+                           no es la orden de esa venta (ver `venta`)
 
     `ref_canal` es el estado del canal al cancelar (IN_TRANSIT, 4 o 5 de Temu…).
+
+    `venta` es la liga `(mp_canal, mp_cuenta, mp_orden)` de la orden TAL COMO la
+    leyó quien llama cuando decidió que el canal la había cancelado. Desde la
+    0071 la liga de una confirmada se puede corregir: si al releer la orden ya
+    no es ésa —la ligaron a otra venta, o la desligaron—, la cancelación es de
+    una venta que ya no es la suya y la orden no se toca (`nada`). Sin `venta`
+    no se compara: quien llama responde de que la orden sigue siendo de esa venta.
+
+    EL COMPARE-AND-SET. Cada intento LEE la orden y manda UNA sentencia que exige
+    que siga como se leyó: por estado y, si está confirmada, también por la `rev`
+    de esa lectura. Si ya no es así (KB001) se relee y se decide de nuevo, hasta
+    `_INTENTOS_CANAL` veces. Así lo que la sentencia suelta y lo que su mensaje
+    dice que soltó salen siempre de la misma foto.
+
     No depende de la bandera: quién corre el barrido lo decide el barrido."""
     _exigir_tablas(cur)
     firma = _firma(AUTOMATICO)
@@ -2600,44 +3167,66 @@ def canal_cancelo(orden_id: int, ref_canal: str | None, motivo: str | None, en_c
             return fin("ya_cancelada", o)
         if estado == "confirmada" and o.get("canal_cancelo_at"):
             return fin("ya_marcada", o)
+        if venta is not None and tuple(o.get(c) for c in _MP) != tuple(venta):
+            # La orden YA NO ES de la venta que el canal canceló: entre la lectura
+            # de quien llama y ésta, alguien corrigió su liga (0071). Cancelarla
+            # —o dejarla esperando el «¿salió?»— sería hacerlo por una venta
+            # ajena, y cancelada no se deshace. Se compara en CADA vuelta: la
+            # corrección también puede entrar entre esta lectura y la sentencia,
+            # y entonces la `rev` de la guardia la frena y aquí se vuelve a ver.
+            return fin("nada", o)
         op = _op()
         base = {"op": op, "ref_canal": ref}
         try:
             if estado == "entregada":
+                # Una entregada ya no cambia (ni su liga): aquí sí basta el estado.
                 _transicion("canal_cancelo", SQL_CANAL_CANCELO_ENTREGADA, {
                     **firma, "id": o["id"], "motivo": motivo_,
                     "cuerpo": _con_motivo("El canal canceló una venta ya entregada: se espera "
                                           "la devolución", motivo_),
                     "datos": _json({**base, "motivo": motivo_})}, cur)
                 return fin("entregada_cancelada")
+            # De aquí en adelante la orden está CONFIRMADA y su contenido puede
+            # cambiar: las tres sentencias exigen la `rev` de ESTA lectura.
             if en_camino:
                 _transicion("canal_cancelo", SQL_CANAL_MARCA, {
-                    **firma, "id": o["id"], "ref_canal": ref,
+                    **firma, "id": o["id"], "rev": o["rev"], "ref_canal": ref,
                     "cuerpo": (f"El canal canceló con el paquete en camino ({ref}): "
                                "¿salió de la bodega?"),
                     "datos": _json({**base, "motivo": motivo_})}, cur)
                 return fin("marcada")
+            # (`_params_cancelar` ya manda `rev`: la de `o`, la misma foto con la
+            # que arma el cuerpo y los renglones del mensaje.)
             con_salida, params, _hecho = _params_cancelar(o, firma, motivo_, "marketplace", op)
             _transicion("canal_cancelo",
                         SQL_CANCELAR_CON_SALIDA_CANAL if con_salida else SQL_CANCELAR_CANAL,
                         params, cur)
             return fin("entregada_cancelada" if con_salida else "cancelada")
         except _Rechazo as r:
-            # 0 filas (KB001) = la orden se movió entre la lectura y el CAS; y un
-            # `ov_coherente` al COMMIT = salió un renglón justo en medio. Ninguno
-            # se pisa: se RELEE y se decide de nuevo (reintento acotado).
+            # 0 filas (KB001) = la orden ya no es la que se leyó en este intento:
+            # cambió de estado, le pusieron la marca o —como la guardia de una
+            # confirmada lleva la `rev` de esa lectura— una edición o una entrega
+            # parcial confirmó en medio. Y un `ov_coherente` al COMMIT = salió un
+            # renglón justo en medio. Ninguno se pisa: se RELEE y se decide de
+            # nuevo con lo que hay (reintento acotado).
             if r.clase == "negocio" or r.es("23514", "ov_coherente"):
                 continue
-            # La misma carrera, con otra cara: una entrega PARCIAL que confirma
-            # mientras el CAS espera la fila deja la orden `confirmada` y sin
-            # marca, así que la guardia por estado vuelve a cumplirse, pero los
-            # renglones se leen con la foto de antes (aún «apartados»). La base
-            # lo frena —el saldo no puede soltar lo que ya salió, o el renglón
-            # entregado ya no cambia— y lo deshace todo. Sólo es «se movió» si
-            # la `rev` de verdad cambió desde la lectura de este intento; con la
-            # misma rev es una sentencia mal hecha y sale como tal.
-            if ((r.es("23514", "stock_almacen_apartado_chk")
-                 or r.es("42501", "ov_lineas_inmutable"))
+            # LA RED DE ABAJO. Cuando la guardia iba sólo por estado, la carrera
+            # con una entrega PARCIAL —y, desde la 0071, con una EDICIÓN— no se
+            # veía en el CAS: la orden seguía `confirmada` y sin marca, así que la
+            # sentencia corría con los renglones de la foto de antes. La base lo
+            # frenaba y lo deshacía todo: el saldo no puede soltar lo que ya
+            # salió, el renglón entregado ya no cambia, se soltaría de más o de
+            # menos (23514 stock_apartado_cuadra, al COMMIT) o el renglón que la
+            # edición quitó ya no está para soltarlo (KB001 cancelar_no_cuadra).
+            # Con la `rev` en la guardia esa carrera sale por el KB001 de arriba
+            # y aquí ya no debería llegar; se queda por si alguna sentencia
+            # volviera a correr con una foto vieja. Sólo es «se movió» si la `rev`
+            # de verdad cambió desde la lectura de este intento; con la misma rev
+            # es una sentencia mal hecha y sale como tal.
+            if ((r.es("23514", "stock_almacen_apartado_chk", "stock_apartado_cuadra")
+                 or r.es("42501", "ov_lineas_inmutable")
+                 or r.es("KB001", "cancelar_no_cuadra"))
                     and _leer_id(orden_id, cur)["rev"] != o["rev"]):
                 continue
             raise _error_de_rechazo(r, "canal_cancelo") from r.exc
@@ -2856,9 +3445,10 @@ def salio_tarde(orden_id: int, rev: int, quien: Quien, cur: Any = None) -> dict[
 # ══════════════════════════════════════════════════════════════════════════════
 
 # La FORMA es la del verificador (candados, `previa`, folio y resultado); el
-# CONTENIDO va completo en el INSERT porque NO HAY SEGUNDA OPORTUNIDAD: la orden
-# nace `confirmada`, y fuera de borrador ya no cambian ni el total, ni la guía,
-# ni el precio o el título de un renglón.
+# CONTENIDO va completo en el INSERT porque EL PROCESO NO TIENE SEGUNDA
+# OPORTUNIDAD: la orden nace `confirmada`, y fuera de borrador ninguna sentencia
+# automática vuelve a tocar el total, la guía, ni el precio o el título de un
+# renglón (sólo una persona, editándola: `SQL_EDITAR_CONFIRMADA`).
 #
 # EL ORDEN DE CANDADOS ES LA EXCEPCIÓN DOCUMENTADA (guía §4.3): `alm` y el saldo
 # primero y `ov_folio` AL FINAL (`alm → x → s → fo`), porque el folio sólo sube
@@ -3044,8 +3634,9 @@ def crear_auto(venta: dict[str, Any], lineas: list[dict[str, Any]], almacen: str
 
     `venta` trae la llave (canal, cuenta, orden) y TODO el contenido (total,
     comisión, moneda, fecha, descripción, guía, paquetería): lo que no venga
-    aquí ya no se podrá anotar. `lineas` = `[{sku, cantidad, precio_unitario,
-    titulo, imagen}]`. Devuelve `{resultado, orden, mensaje}`:
+    aquí ya no lo anota ningún proceso (sólo una persona, editando la orden).
+    `lineas` = `[{sku, cantidad, precio_unitario, titulo, imagen}]`. Devuelve
+    `{resultado, orden, mensaje}`:
 
       creada      nació confirmada y apartada
       ya_existia  esa venta (o esa clave) ya tenía orden viva y APARTADA (o ya

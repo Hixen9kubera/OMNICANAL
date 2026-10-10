@@ -5,9 +5,13 @@
 > Eduardo (migraciones `0064` + `0065`, plan v3). El diseño del 2-oct —reserva
 > parcial contra la foto de Odoo, `ops.ov_stock`, «regresar a borrador»— **ya
 > no existe**.
+> **9-oct-2026**: las tablas se mudaron a los esquemas `ventas` y `almacen`
+> (migración `0068`), y una orden confirmada **ya se puede editar** y la cancela
+> cualquiera que escribe (migración `0071`).
 >
-> Quién manda, en este orden: (1) `supabase/migrations/0064_ops_ordenes_venta.sql`
-> y `0065_ops_inventario_kubera.sql`; (2) `docs/MIGRACION_0064_0065_GUIA_AGENTE.md`
+> Quién manda, en este orden: (1) `supabase/migrations/0064_ops_ordenes_venta.sql`,
+> `0065_ops_inventario_kubera.sql`, `0068_mudanza_ov_a_ventas_y_almacen.sql` y
+> `0071_ov_editar_confirmada.sql`; (2) `docs/MIGRACION_0064_0065_GUIA_AGENTE.md`
 > (el contrato de la base para el código); (3) este documento, que describe lo
 > que el CÓDIGO hace con ese contrato. Si este documento y la guía se
 > contradicen, gana la guía y aquí hay un bug.
@@ -24,8 +28,8 @@ WooCommerce ni en ningún marketplace.
 | Se captura | `borrador` | BORRADOR | cualquiera que escribe (operador o admin), la API |
 | Se confirma y **aparta stock** (un mismo paso) | `confirmada` | CONFIRMADA | operador o admin, con la bandera encendida |
 | Bodega la entrega a la paquetería | `entregada` | DELIVERED | operador o admin |
-| Se cancela sin que haya salido nada | `cancelada` | CANCELADO | el canal (automático), quien escribe si es borrador, un admin si ya estaba confirmada |
-| Se cancela con piezas ya afuera | `entregada_cancelada` | DELIVERED but CANCELLED | el canal o un admin. Abre `devolucion_estado = 'pendiente'` |
+| Se cancela sin que haya salido nada | `cancelada` | CANCELADO | el canal (automático) o cualquiera que escribe, esté en borrador o confirmada |
+| Se cancela con piezas ya afuera | `entregada_cancelada` | DELIVERED but CANCELLED | el canal o cualquiera que escribe. Abre `devolucion_estado = 'pendiente'` |
 
 Lo que cambió respecto a una orden de Odoo, y por qué:
 
@@ -35,10 +39,15 @@ Lo que cambió respecto a una orden de Odoo, y por qué:
 - **Apartar es todo o nada.** Si un solo renglón no alcanza, no se confirma
   nada y la pantalla dice cuál: «ACC-0250-NEG pide 4 y hay 2 libres en ENSAYO.
   No se apartó nada.» No hay reserva parcial ni «reintentar reserva».
-- **Fuera de borrador el contenido no cambia** (lo impone un trigger de la
-  base, no el código). Un error en una confirmada se resuelve **cancelándola**
-  o, si es de plano un error de captura, **borrándola** (sólo admin, con motivo;
-  queda el rastro de quién y por qué, y el folio no se recicla).
+- **Una confirmada se puede corregir** (desde la `0071`, 9-oct-2026; antes la
+  base lo impedía). Cualquiera que escribe cambia sus datos y los renglones que
+  **todavía no salen**. Al guardar, el stock se vuelve a apartar por la
+  diferencia, **todo o nada**: si sube una cantidad y no alcanza, no se guarda
+  nada y dice cuál SKU. Cada edición deja en la bitácora quién cambió qué (antes
+  y después). Lo que ya salió no se toca.
+- **Entregada y cancelada no se modifican.** Ahí un error se resuelve, si es de
+  captura, **borrándola** (sólo admin, con motivo; queda el rastro de quién y
+  por qué, y el folio no se recicla).
 - **La entrega es por renglón** y puede ser parcial: Bodega dice cuántas piezas
   salieron de cada renglón (de 0 a la cantidad). Cada pieza que sale queda en
   el libro (`almacen.stock_mov`, motivo `salida_ov`).
@@ -64,7 +73,7 @@ Encenderla es un flujo vivo: lo hace un acta de Eduardo con el dale de Brandon
 partir de la venta), que se muestra pero **no tiene todavía quién la use**: su
 llamador es el planeador, que es otra tarea (§9).
 
-## 3. Dónde vive (migraciones 0064 y 0065)
+## 3. Dónde vive (migraciones 0064, 0065, 0068 y 0071)
 
 `ventas.ov_folio` (contador), `ventas.ov_ordenes`, `ventas.ov_lineas`, `ventas.ov_mensajes`
 (chat y bitácora, sólo agregar), `ventas.ov_archivos` (índice de PDF),
@@ -72,10 +81,13 @@ llamador es el planeador, que es otra tarea (§9).
 `apartado`; **libre = fisico − apartado**) y `almacen.stock_mov` (el libro, sólo
 agregar).
 
-**Estado al 6-oct-2026:** aplicadas en el **sandbox**; **producción no las
-tiene**. Van por acta de Eduardo, y **antes** que el código. Mientras falten,
-nada truena: el servicio pregunta `to_regclass` (caché de 60 s), la pestaña
-dice «faltan las migraciones» y ninguna ruta escribe.
+**Estado al 9-oct-2026:** las cuatro están en **producción** (0064 y 0065
+desde el 6-oct; 0068 y 0071 el 9-oct, aplicadas desde el chat de órdenes de
+venta por instrucción de Brandon: ver `docs/MIGRACION_0068_NOTA_EDUARDO.md` y
+`docs/MIGRACION_0071_NOTA_EDUARDO.md`). Al **sandbox** le faltan la 0068 y la
+0071. Donde falten, nada truena: el servicio pregunta `to_regclass` (caché de
+60 s) y la pestaña dice «faltan las migraciones»; y sin la 0071 la orden
+confirmada simplemente no ofrece editar y dice por qué.
 
 `null` es «no se sabe», nunca cero: un SKU sin fila de saldo en su bodega se
 pinta «sin dato» y, para apartar, vale lo mismo que no tener (falla cerrado).
@@ -83,7 +95,7 @@ pinta «sin dato» y, para apartar, vale lo mismo que no tener (falla cerrado).
 ## 4. Las reglas de la escritura
 
 El SQL vigente son las constantes `SQL_*` de `backend/services/ordenes_venta.py`
-(18). Los patrones salen de `backend/scripts/verificar_0064_0065.py`.
+(19). Los patrones salen de `backend/scripts/verificar_0064_0065.py`.
 
 1. **Una transición = un solo `execute`**: estado, saldo, libro, renglones y
    mensaje de bitácora en un `WITH` que termina en `ops.exigir(...)`, con
@@ -94,8 +106,13 @@ El SQL vigente son las constantes `SQL_*` de `backend/services/ordenes_venta.py`
    `almacen.almacenes` `FOR SHARE` → `almacen.stock_almacen` `FOR UPDATE` en orden
    `(sku, almacen)` → escrituras → `ops.exigir`.
 3. **`rev` es el candado optimista de las personas.** Si la orden cambió, 409
-   «La orden cambió mientras tanto; se recargó». Los procesos (el canal) usan
-   compare-and-set **por estado** y aguantan ver la misma cancelación dos veces.
+   «La orden cambió mientras tanto; se recargó». Los procesos (el canal) no traen
+   la `rev` de nadie: releen la orden y su sentencia exige el estado **y la `rev`
+   de esa misma lectura**; si la orden cambió en medio, releen y reintentan. (Antes
+   iban sólo por estado; desde la 0071 el contenido de una confirmada puede cambiar
+   entre la lectura y la escritura, y «sólo por estado» soltaría un apartado que ya
+   no es el que se leyó.) Aguantan ver la misma cancelación dos veces, y el barrido
+   les pasa la venta que leyó: si la orden ya no está ligada a ella, no la tocan.
 4. **Un reintento propio no es un conflicto.** Cada transición deja su marca
    (`datos.op`) en el mensaje; si el candado falla y la marca está, es mi
    escritura que sí entró.
@@ -112,6 +129,7 @@ El SQL vigente son las constantes `SQL_*` de `backend/services/ordenes_venta.py`
 |---|---|---|---|---|
 | `crear_borrador` | — | `borrador` | toma folio en la misma sentencia; idempotente por `clave` | `creada` |
 | `guardar` | `borrador` | `borrador` | renglones renumerados y agrupados por (SKU, bodega) | `borrador_guardado` |
+| `guardar` (editar) | `confirmada` | `confirmada` | mueve el apartado por la diferencia de cada (SKU, bodega), todo o nada; sólo toca renglones que no han salido | `editada` |
 | `confirmar` | `borrador` | `confirmada` | aparta todo o nada; si no alcanza deja el aviso en el chat | `confirmada` / `no_alcanzo` |
 | `entregar` | `confirmada` | `confirmada` (parcial) o `entregada` | por renglón, una vez por renglón; baja `fisico` y `apartado`; escribe `salida_ov` | `entregada_parcial` / `entregada` |
 | `cancelar` | `borrador`, `confirmada` | `cancelada`, o `entregada_cancelada` si ya salió algo | suelta lo apartado que no salió | `cancelada` / `devolucion_esperada` |
@@ -121,6 +139,27 @@ El SQL vigente son las constantes `SQL_*` de `backend/services/ordenes_venta.py`
 | `salio_tarde` (admin) | `cancelada` que estuvo confirmada | `entregada_cancelada` | registra la salida que nadie marcó | `devolucion_esperada` |
 
 Mínimos de motivo: 5 caracteres para cancelar una confirmada, 10 para borrar.
+
+### Editar una confirmada (la puerta de la 0071)
+
+Las dos guardias de la base (`ops.tg_ov_ordenes_guarda`, `ops.tg_ov_lineas_guarda`)
+siguen congelando el contenido fuera de borrador. Tienen **una puerta**: si la
+transacción trae `set local app.ov_edicion = '<id de la orden>'` y esa orden
+sigue confirmada, sin borrar y sin el «¿salió?» pendiente, dejan cambiar los
+datos capturados y los renglones que no han salido. Sólo `SQL_EDITAR_CONFIRMADA`
+la abre, y sólo para esa orden; confirmar, entregar, cancelar y el canal no.
+
+La sentencia es una sola, con el mismo orden de candados: fila de la orden (CAS
+de `rev`) → bodegas `FOR SHARE` → saldo `FOR UPDATE` → mueve el apartado por la
+diferencia (lo que sube sólo si `libre` alcanza) → borra, actualiza e inserta
+renglones con `reservado = cantidad` → mensaje `editada` → `ops.exigir`. Los
+diferidos de la base (`ov_coherente`, `stock_apartado_cuadra`) no cambiaron y
+revisan el resultado al COMMIT.
+
+El mensaje `editada` es el rastro: `datos.cambios` (campo: antes → después),
+`datos.renglones` (agregados, quitados, cambiados) y `datos.apartado` (cuánto
+se movió por SKU y bodega). Si el stock no alcanza, la respuesta es un 409 que
+dice cuál, y no cambia nada: ni `rev`, ni la bitácora.
 
 ## 5. Quién es quién, y qué puede
 
@@ -142,9 +181,10 @@ estado de la orden; `core/rbac.py` sólo pone el piso por verbo (`GET` lectura,
 | Acción | Quién | Cuándo |
 |---|---|---|
 | crear, guardar | quien escribe | borrador |
+| editar una confirmada | quien escribe | confirmada, bandera encendida, sin «¿salió?» pendiente, con la 0071 en la base |
 | confirmar | quien escribe | borrador con renglones, bandera encendida |
 | entregar | quien escribe | confirmada, bandera encendida, sin «¿salió?» pendiente |
-| cancelar | quien escribe / **admin** | borrador / confirmada |
+| cancelar | quien escribe | borrador o confirmada (sin «¿salió?» pendiente); una entregada no la cancela una persona |
 | contestar «¿salió?» | quien escribe | confirmada que el canal canceló en camino |
 | «salió tarde» | **admin** | cancelada que estuvo confirmada |
 | borrar | **admin** | cualquiera no borrada |
@@ -171,7 +211,7 @@ Todas `async def` + `asyncio.to_thread` (regla 11). Las formas exactas están en
 | `GET /marketplace/pendientes?dias=&canal=` | ventas DROP recientes sin orden propia |
 | `POST /conciliar` | corre el barrido de cancelaciones ahora |
 | `GET /{ref}` | detalle; `ref` = id o folio |
-| `PUT /{id}` `DatosOrden + {rev}` | guarda el borrador |
+| `PUT /{id}` `DatosOrden + {rev}` | guarda el borrador, o **edita una confirmada** |
 | `POST /{id}/confirmar` `{rev}` | confirma y aparta |
 | `POST /{id}/entregar` `{rev, lineas?: [{id, n}]}` | DELIVERED; sin `lineas` = todo lo pendiente |
 | `POST /{id}/cancelar` `{rev, motivo}` | cancela |
@@ -270,9 +310,10 @@ entregadas de los últimos 45 días.
 
 | Pendiente | Por qué importa | Quién |
 |---|---|---|
-| Aplicar 0064 y 0065 en producción | Sin ellas la pestaña dice «faltan las migraciones» | Eduardo (acta), antes que el código |
-| Subir el código a `main` | Railway despliega lo que llega a `main` | Brandon da el OK |
-| Encender la bandera `ordenes_venta` | Habilita confirmar, entregar y el barrido | Acta + dale de Brandon (regla 3) |
+| Aplicar 0068 y 0071 en el sandbox | Sin la 0068 la pestaña dice «faltan las migraciones»; sin la 0071 no se puede editar una confirmada | Eduardo |
+| Que Eduardo revise la 0068 y la 0071 | Se aplicaron sin acta; la 0071 cambia una decisión suya (la inmutabilidad de la confirmada) | Eduardo: `docs/MIGRACION_0068_NOTA_EDUARDO.md`, `docs/MIGRACION_0071_NOTA_EDUARDO.md` |
+| La fila de la bandera `ordenes_venta` | Hoy está encendida por la variable de respaldo `ORDENES_VENTA_ENABLED=true` | Acta de Eduardo |
+| Quitar las vistas puente de `ops` | Quedaron de la 0068 para lo que aún dice `ops.<tabla>` | Eduardo |
 | **`inventario_libro`** (entradas, conteo, correcciones) | **Sin él no hay cómo meter stock a una bodega de kubera desde la pantalla**: no se puede confirmar ninguna orden real | Sistemas |
 | Bucket `ordenes-venta` | Sin él no se adjuntan PDF | Eduardo |
 | Devoluciones (recibir, dictaminar, cerrar) | Hoy la orden sólo muestra `devolucion_estado`; los pasos operativos no están definidos | Coordinador + ClickUp `86bcc3jf6` |
@@ -293,8 +334,8 @@ ClickUp `86bcbfnkw`.
 - `tests.test_ordenes_venta_api` — router, bus del chat, scheduler y barrido.
 - `tests.test_ordenes_venta_bd` — integración contra un Postgres **local y
   desechable**: con `OV_TEST_DSN` apuntando a `127.0.0.1` la suite tira y recrea
-  esa base con `tests/ov_fixture.sql` → `0064` → `0065`. Sin la variable se
-  omite. Tiene candado: no acepta un host que no sea local.
+  esa base con `tests/ov_fixture.sql` → `0064` → `0065` → `0068` → `0071`. Sin la
+  variable se omite. Tiene candado: no acepta un host que no sea local.
 
 Frontend: `npx tsc --noEmit` y `node components/ordenes/pruebas/*.prueba.cjs`.
 

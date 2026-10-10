@@ -12,17 +12,25 @@
  *   · CAT · El catálogo de eventos es un CHECK de la migración. Si la base
  *     aprende un evento y la pantalla no, ese movimiento saldría con un icono
  *     genérico y nadie lo notaría. Por eso la lista esperada NO está escrita
- *     aquí: se LEE del .sql de la 0064, que es la verdad.
+ *     aquí: se LEE del .sql —de la ÚLTIMA migración que define el CHECK—, que
+ *     es la verdad. (La 0064 lo creó; la 0071 le agregó `editada`.)
  *   · TAB · La mini-tabla de cada movimiento rotula según el evento. Con el
  *     modelo viejo decía «N de M reservadas»; ahora se aparta todo o nada y se
  *     entrega con 0..cantidad piezas por renglón. Un «salieron 0 de 3» no es lo
  *     mismo que «sin dato», y ninguno de los dos es un 3.
+ *   · ED · La corrección de una CONFIRMADA (0071) deja el mensaje `editada`: es
+ *     el rastro de quién cambió una orden que ya tenía stock apartado. Si el
+ *     chat lo pinta a medias —sin el antes y el después, o sin lo que se movió
+ *     el apartado—, ese rastro existe en la base pero nadie lo lee. Y si lo
+ *     pinta de más —«Quitado: X», tachado, de un renglón que sólo cambió de
+ *     bodega—, la bitácora dice que se quitó un producto que sigue en la orden.
  *   · TRZ · El riel pinta una entrega a medias y la alerta de «el canal
  *     canceló». Las dos salen de `planDe`; si se equivoca, la lista entera
  *     enseña órdenes que piden respuesta como si fueran normales (o al revés).
  *
  * Lo que NO se prueba aquí: el dibujo (lienzo y SVG) y el bucle del worker, que
- * sólo existen en un navegador.
+ * sólo existen en un navegador. Del chat se pinta UN movimiento suelto (con
+ * `react-dom/server`, que el frontend ya trae); el hilo en vivo, no.
  */
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -33,25 +41,45 @@ const cargar = require("./cargar.cjs");
 const chat = cargar("ChatOrden");
 const traza = cargar("Traza");
 
-const RAIZ = path.resolve(__dirname, "..", "..", "..", "..");
-const MIGRACION = path.join(RAIZ, "supabase", "migrations", "0064_ops_ordenes_venta.sql");
+const FRONTEND = path.resolve(__dirname, "..", "..", "..");
+const React = require(path.join(FRONTEND, "node_modules", "react"));
+const { renderToStaticMarkup } = require(path.join(FRONTEND, "node_modules", "react-dom", "server"));
 
-/** Los eventos que admite `ventas.ov_mensajes.evento`, leídos del CHECK de la 0064. */
+const RAIZ = path.resolve(__dirname, "..", "..", "..", "..");
+const MIGRACIONES = path.join(RAIZ, "supabase", "migrations");
+const CHECK_EVENTOS = /constraint\s+ov_mensajes_evento_chk\s+check\s*\(\s*evento\s+is\s+null\s+or\s+evento\s+in\s*\(([^)]*)\)/i;
+
+/** Los eventos del CHECK `ov_mensajes_evento_chk` tal como los define UNA migración (`null` si no lo define). */
+function eventosDe(archivo) {
+  const m = CHECK_EVENTOS.exec(fs.readFileSync(path.join(MIGRACIONES, archivo), "utf8"));
+  return m ? Array.from(m[1].matchAll(/'([a-z_]+)'/g), (x) => x[1]).sort() : null;
+}
+
+/**
+ * Los eventos que admite HOY `ventas.ov_mensajes.evento`: los de la última
+ * migración que define el CHECK (se aplican en orden de nombre). Así, la
+ * próxima que agregue un evento hace tronar CAT-1 sin que nadie toque esto.
+ */
 function catalogoDeLaBase() {
-  const sql = fs.readFileSync(MIGRACION, "utf8");
-  const m = /constraint\s+ov_mensajes_evento_chk\s+check\s*\(\s*evento\s+is\s+null\s+or\s+evento\s+in\s*\(([^)]*)\)/i.exec(sql);
-  assert.ok(m, "no se encontró el CHECK ov_mensajes_evento_chk en la 0064");
-  return Array.from(m[1].matchAll(/'([a-z_]+)'/g), (x) => x[1]).sort();
+  const definen = fs.readdirSync(MIGRACIONES).filter((f) => f.endsWith(".sql")).sort()
+    .map((f) => ({ archivo: f, eventos: eventosDe(f) })).filter((x) => x.eventos);
+  assert.ok(definen.length, "ninguna migración define el CHECK ov_mensajes_evento_chk");
+  return definen[definen.length - 1];
 }
 
 // ── CAT · el catálogo de eventos ─────────────────────────────────────────────
 
-test("CAT-1 · EVENTOS cubre EXACTAMENTE el catálogo del CHECK de la 0064 (ni falta ni sobra)", () => {
-  const base = catalogoDeLaBase();
-  assert.equal(base.length, 15, "el CHECK trae 15 eventos");
-  assert.deepEqual(Object.keys(chat.EVENTOS).sort(), base);
-  // Los del modelo del 2-oct ya no existen: no deben quedar pintables.
-  for (const viejo of ["editada", "reserva", "regresada", "borrada", "archivo", "archivo_borrado", "devolucion",
+test("CAT-1 · EVENTOS cubre EXACTAMENTE el catálogo del CHECK de la base (ni falta ni sobra)", () => {
+  const { archivo, eventos: base } = catalogoDeLaBase();
+  assert.deepEqual(Object.keys(chat.EVENTOS).sort(), base, `contra el CHECK de ${archivo}`);
+  // La 0064 lo creó con 15; la 0071 (editar una confirmada) sólo le agregó `editada`.
+  const de0064 = eventosDe("0064_ops_ordenes_venta.sql");
+  assert.equal(de0064.length, 15, "el CHECK de la 0064 trae 15 eventos");
+  assert.deepEqual(eventosDe("0071_ov_editar_confirmada.sql"), [...de0064, "editada"].sort());
+  assert.ok(chat.EVENTOS.editada, "la corrección de una confirmada tiene su icono");
+  // Los del modelo del 2-oct ya no existen: no deben quedar pintables. (`editada`
+  // volvió con la 0071, y es otra cosa: la corrección de una orden CONFIRMADA.)
+  for (const viejo of ["reserva", "regresada", "borrada", "archivo", "archivo_borrado", "devolucion",
                        "entregada_cancelada"]) {
     assert.equal(chat.EVENTOS[viejo], undefined, `«${viejo}» era del modelo viejo`);
   }
@@ -237,6 +265,245 @@ test("TAB-5 · «no alcanzó» dice qué se pidió y qué había: «sin existenc
   assert.deepEqual(tabla("entregada", [{ sku: "X", entregado: 2 }]), ["X sin dato"]);
   // Un evento sin regla propia dice las piezas, traiga lo que traiga.
   assert.deepEqual(tabla("devolucion_recibida", [{ sku: "X", cantidad: 3, reservado: 3, entregado: 3 }]), ["X 3 pzs"]);
+});
+
+// ── ED · la corrección de una confirmada (`editada`, 0071) ───────────────────
+//
+// Los `datos` son los del contrato de la 0071 (`_editar_confirmada` del
+// servicio): `cambios` y `renglones` con la misma forma de `borrador_guardado`,
+// `lineas` = los renglones POR ENTREGAR como quedaron (ya apartados), y
+// `apartado` = lo que el cambio movió el saldo (sólo los delta ≠ 0).
+
+const EDITADA = {
+  op: "x",
+  cambios: { guia: [null, "JT123"], paqueteria: ["J&T", "Estafeta"] },
+  renglones: {
+    agregados: ["ZZPRUEBA-3"], quitados: ["ZZPRUEBA-2"],
+    cambiados: [{ sku: "ZZPRUEBA-1", cantidad: [3, 5], precio_unitario: [10, 12.5] }],
+  },
+  lineas: [
+    { sku: "ZZPRUEBA-1", titulo: "Caja", cantidad: 5, precio_unitario: 12.5, almacen: "ENSAYO", reservado: 5 },
+    { sku: "ZZPRUEBA-3", titulo: "Tapa", cantidad: 3, precio_unitario: 4, almacen: "ENSAYO", reservado: 3 },
+  ],
+  apartado: [
+    { sku: "ZZPRUEBA-1", almacen: "ENSAYO", delta: 2 },
+    { sku: "ZZPRUEBA-2", almacen: "ENSAYO", delta: -2 },
+    { sku: "ZZPRUEBA-3", almacen: "ENSAYO", delta: 3 },
+  ],
+};
+
+test("ED-1 · `editada` tiene su icono y no grita; sus renglones se leen como los de la confirmación", () => {
+  const e = chat.EVENTOS.editada;
+  assert.match(e.rotulo, /editada/i);
+  assert.ok(!e.llama, "corregir una confirmada no le pide nada a nadie");
+  assert.doesNotMatch(e.tono, /amber|rose/);
+  // No se confunde con guardar un borrador (papeleo) ni con confirmar.
+  assert.notEqual(e.icono, chat.EVENTOS.borrador_guardado.icono);
+  assert.notEqual(e.icono, chat.EVENTOS.confirmada.icono);
+  assert.notEqual(e.tono, chat.EVENTOS.borrador_guardado.tono);
+  assert.equal(chat.eventoDe({ evento: "editada", datos: EDITADA }), e);
+  // `datos.lineas` = los renglones POR ENTREGAR como quedaron, ya con su apartado.
+  assert.deepEqual(tabla("editada", EDITADA.lineas),
+                   ["ZZPRUEBA-1 [ENSAYO] 5 apartadas", "ZZPRUEBA-3 [ENSAYO] 3 apartadas"]);
+  assert.deepEqual(tonos("editada", EDITADA.lineas), [VERDE, VERDE]);
+  // El encabezado se lee con el mismo lector de `borrador_guardado`, y con sus rótulos.
+  assert.deepEqual(chat.cambiosDe(EDITADA).map((c) => [chat.ROTULO_CAMPO[c.campo], c.antes, c.despues]),
+                   [["Guía", null, "JT123"], ["Paquetería", "J&T", "Estafeta"]]);
+});
+
+test("ED-2 · qué renglones entraron, salieron o cambiaron: con su antes → después, y sin inventar medio cambio", () => {
+  const r = chat.renglonesDe(EDITADA);
+  assert.deepEqual(r, {
+    agregados: ["ZZPRUEBA-3"], quitados: ["ZZPRUEBA-2"],
+    cambiados: [{ sku: "ZZPRUEBA-1", cantidad: [3, 5], precio_unitario: [10, 12.5] }],
+  });
+  assert.deepEqual(chat.cambiosDeRenglon(r.cambiados[0]), [
+    { rotulo: "cantidad", antes: "3", despues: "5" },
+    { rotulo: "precio unit.", antes: "$10.00", despues: "$12.50" },
+  ]);
+  // Sólo lo que cambió: si sólo vino la cantidad, del precio no se dice nada.
+  assert.deepEqual(chat.cambiosDeRenglon({ sku: "X", cantidad: [1, 2] }),
+                   [{ rotulo: "cantidad", antes: "1", despues: "2" }]);
+  // Es la misma forma que deja `borrador_guardado` (la arma `_dif_lineas`): se lee igual.
+  assert.deepEqual(chat.renglonesDe({ op: "x", cambios: {}, renglones: { agregados: ["A"], quitados: [], cambiados: [] } }),
+                   { agregados: ["A"], quitados: [], cambiados: [] });
+  // Los `numeric` de Postgres pueden llegar como texto.
+  assert.deepEqual(chat.renglonesDe({ renglones: { cambiados: [{ sku: "X", precio_unitario: ["10.00", "12.5"] }] } }).cambiados,
+                   [{ sku: "X", precio_unitario: [10, 12.5] }]);
+  // Lo que no es un cambio completo no se pinta: sin SKU, medio par, un par sin números, o nada que cambió.
+  assert.equal(chat.renglonesDe({ renglones: { agregados: [], quitados: [], cambiados: [
+    { cantidad: [1, 2] }, { sku: "X", cantidad: [1] }, { sku: "Y", cantidad: ["uno", 2] }, { sku: "Z" }, null, "basura",
+  ] } }), null);
+  // Sin `renglones` (o sólo reordenados, o con otra cosa en su lugar) no hay nada que decir.
+  for (const datos of [null, { op: "x" }, { renglones: null }, { renglones: "3 con cambios" }, { renglones: [] },
+                       { renglones: { agregados: [], quitados: [], cambiados: [] } }]) {
+    assert.equal(chat.renglonesDe(datos), null);
+  }
+  // Un SKU vacío, o que no es texto, no entra a las listas.
+  assert.deepEqual(chat.renglonesDe({ renglones: { agregados: ["A", "", null, 7, "  B "], quitados: "X" } }),
+                   { agregados: ["A", "B"], quitados: [], cambiados: [] });
+});
+
+test("ED-3 · la línea del apartado: el signo se dice SIEMPRE, y lo que no se movió no se pinta", () => {
+  assert.deepEqual(chat.apartadoDe(EDITADA).map(chat.textoApartado),
+                   ["+2 ZZPRUEBA-1 en ENSAYO", "−2 ZZPRUEBA-2 en ENSAYO", "+3 ZZPRUEBA-3 en ENSAYO"]);
+  // Un delta 0, sin número o sin SKU no dice nada. (Un `numeric` puede llegar como texto.)
+  assert.deepEqual(chat.apartadoDe({ apartado: [
+    { sku: "X", almacen: "ENSAYO", delta: 0 }, { sku: "Y", almacen: "ENSAYO" }, { almacen: "ENSAYO", delta: 2 },
+    { sku: "Z", almacen: "ENSAYO", delta: "3" }, null, 5,
+  ] }), [{ sku: "Z", almacen: "ENSAYO", delta: 3 }]);
+  // Sin bodega (no debería pasar) se dice lo que se sabe, sin inventarla.
+  assert.equal(chat.textoApartado({ sku: "X", almacen: "", delta: -1 }), "−1 X");
+  assert.equal(chat.textoApartado({ sku: "X", almacen: "TEX3", delta: 1200 }), "+1,200 X en TEX3");
+  // Corregir sólo el encabezado no mueve el apartado: no hay línea.
+  for (const datos of [null, { op: "x", cambios: { guia: [null, "JT1"] } }, { apartado: [] }, { apartado: "nada" }]) {
+    assert.deepEqual(chat.apartadoDe(datos), []);
+  }
+});
+
+/** El texto que se LEE de un movimiento del sistema ya pintado (sin etiquetas). */
+const leer = (m) => renderToStaticMarkup(React.createElement(chat.RenglonSistema, { m, fresco: false }))
+  .replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/\s+/g, " ").trim();
+
+const movimiento = (mas = {}) => ({
+  id: 12, orden_id: 1, tipo: "sistema", evento: "editada",
+  cuerpo: "Orden editada · guía, paquetería; renglones: 1 agregado(s), 1 quitado(s), 1 con cambios · se movió el apartado",
+  datos: EDITADA, autor: "gabriela@kubera.mx", autor_nombre: "Gabriela Ramírez", via: "panel",
+  creado_at: "2026-10-09T18:00:00Z", ...mas,
+});
+
+test("ED-4 · el movimiento `editada` se PINTA entero: quién, qué campo, qué renglón y cuánto se movió el apartado", () => {
+  const t = leer(movimiento());
+  assert.match(t, /Orden editada · guía, paquetería; renglones: 1 agregado\(s\)/);
+  // Quién y cuándo (hora de CDMX): es el rastro que antes cuidaba el «ya no se modifica».
+  assert.match(t, /Gabriela Ramírez · 09 oct 12:00/);
+  // El encabezado: campo, antes → después.
+  assert.match(t, /Guía: — → JT123/);
+  assert.match(t, /Paquetería: J&T → Estafeta/);
+  // Los renglones: lo que entró, lo que se quitó, y el que cambió con su antes → después.
+  assert.match(t, /Agregado: ZZPRUEBA-3/);
+  assert.match(t, /Quitado: ZZPRUEBA-2/);
+  assert.match(t, /ZZPRUEBA-1: cantidad 3 → 5 · precio unit\. \$10\.00 → \$12\.50/);
+  // El apartado, en UNA línea corta.
+  assert.match(t, /apartado: \+2 ZZPRUEBA-1 en ENSAYO · −2 ZZPRUEBA-2 en ENSAYO · \+3 ZZPRUEBA-3 en ENSAYO/);
+  // Y cómo quedaron los renglones por entregar.
+  assert.match(t, /ZZPRUEBA-1 Caja ENSAYO 5 apartadas/);
+  assert.match(t, /ZZPRUEBA-3 Tapa ENSAYO 3 apartadas/);
+
+  // Corregir SÓLO la guía: no hay renglones ni apartado que decir, y no se inventan.
+  const soloGuia = leer(movimiento({ cuerpo: "Orden editada · guía", datos: { op: "x", cambios: { guia: ["JT1", "JT2"] } } }));
+  assert.match(soloGuia, /Guía: JT1 → JT2/);
+  assert.doesNotMatch(soloGuia, /apartado:|Agregado|Quitado|apartadas/);
+  // Varios agregados van en una sola línea, en plural.
+  const varios = leer(movimiento({ datos: { op: "x", renglones: { agregados: ["A-1", "B-2"], quitados: ["C-3", "D-4"], cambiados: [] } } }));
+  assert.match(varios, /Agregados: A-1, B-2/);
+  assert.match(varios, /Quitados: C-3, D-4/);
+  // Un movimiento sin `datos` no truena ni pinta nada de esto.
+  assert.doesNotMatch(leer(movimiento({ evento: "confirmada", cuerpo: "Orden confirmada", datos: null })),
+                      /apartado:|Agregado|Quitado/);
+});
+
+// ── Tercera revisión (9-oct-2026) ─────────────────────────────────────────────
+
+/** El `<li>` ya pintado que contiene ese texto (con sus etiquetas: para ver qué va tachado). */
+const renglonPintado = (m, contiene) =>
+  renderToStaticMarkup(React.createElement(chat.RenglonSistema, { m, fresco: false }))
+    .split("<li").find((li) => li.includes(contiene)) ?? "";
+
+test("REV3 PANT-4 · el SKU que viene como «agregado» Y «quitado» sólo CAMBIÓ DE BODEGA: se dice así, y sale de las dos listas", () => {
+  // `_dif_lineas` casa los renglones por SKU + bodega: mover uno —o elegirle bodega al que no
+  // tenía— llega como quitado y agregado a la vez.
+  assert.deepEqual(chat.repartoDe({ agregados: ["ZZPRUEBA-B"], quitados: ["ZZPRUEBA-B"] }),
+                   { movidos: ["ZZPRUEBA-B"], agregados: [], quitados: [] });
+  // Junto con altas y bajas de verdad, sólo se aparta el que está en las dos.
+  assert.deepEqual(chat.repartoDe({ agregados: ["ZZPRUEBA-B", "ZZPRUEBA-C"], quitados: ["ZZPRUEBA-A", "ZZPRUEBA-B"] }),
+                   { movidos: ["ZZPRUEBA-B"], agregados: ["ZZPRUEBA-C"], quitados: ["ZZPRUEBA-A"] });
+  // Sin distinguir mayúsculas (la llave del servicio va en minúsculas).
+  assert.deepEqual(chat.repartoDe({ agregados: ["zzprueba-b"], quitados: ["ZZPRUEBA-B"] }),
+                   { movidos: ["zzprueba-b"], agregados: [], quitados: [] });
+  // UNO A UNO: de un SKU repartido en bodegas, lo que sobra de un lado sigue siendo un alta o una baja.
+  assert.deepEqual(chat.repartoDe({ agregados: ["X", "X"], quitados: ["X"] }), { movidos: ["X"], agregados: ["X"], quitados: [] });
+  assert.deepEqual(chat.repartoDe({ agregados: ["X"], quitados: ["X", "X"] }), { movidos: ["X"], agregados: [], quitados: ["X"] });
+  // Sin coincidencias no cambia nada, y lo que se leyó de la bitácora no se toca.
+  const leido = chat.renglonesDe(EDITADA);
+  assert.deepEqual(chat.repartoDe(leido), { movidos: [], agregados: ["ZZPRUEBA-3"], quitados: ["ZZPRUEBA-2"] });
+  assert.deepEqual([leido.agregados, leido.quitados], [["ZZPRUEBA-3"], ["ZZPRUEBA-2"]]);
+
+  // PINTADO. Un BORRADOR al que sólo se le eligió la bodega: no trae línea de apartado que lo
+  // explique, y decía «Agregado: B · Quitado: B» de un producto que seguía en la orden.
+  const borrador = movimiento({
+    evento: "borrador_guardado", cuerpo: "Borrador guardado · renglones: 1 agregado(s), 1 quitado(s)",
+    datos: { op: "x", cambios: {}, renglones: { agregados: ["ZZPRUEBA-B"], quitados: ["ZZPRUEBA-B"], cambiados: [] },
+             lineas: [{ sku: "ZZPRUEBA-B", titulo: "Bocina", cantidad: 2, precio_unitario: 10, almacen: "ENSAYO", reservado: 0 }] },
+  });
+  assert.match(leer(borrador), /Cambió de bodega: ZZPRUEBA-B/);
+  assert.doesNotMatch(leer(borrador), /Agregado|Quitado/);
+  assert.match(leer(borrador), /ZZPRUEBA-B Bocina ENSAYO 2 pzs/, "a cuál se fue lo dice la mini-tabla del mismo movimiento");
+  // Sigue en la orden: NO va tachado (tachado es lo que ya no está).
+  assert.ok(renglonPintado(borrador, "Cambió de bodega"));
+  assert.doesNotMatch(renglonPintado(borrador, "Cambió de bodega"), /line-through/);
+
+  // En `editada`, mezclado: B se mudó a TEX3, C entró y A se quitó. Cada cosa en su renglón.
+  const editada = movimiento({
+    cuerpo: "Orden editada · renglones: 2 agregado(s), 2 quitado(s) · se movió el apartado",
+    datos: { op: "x", cambios: {},
+             renglones: { agregados: ["ZZPRUEBA-B", "ZZPRUEBA-C"], quitados: ["ZZPRUEBA-B", "ZZPRUEBA-A"], cambiados: [] },
+             lineas: [{ sku: "ZZPRUEBA-B", titulo: "Bocina", cantidad: 2, precio_unitario: 10, almacen: "TEX3", reservado: 2 },
+                      { sku: "ZZPRUEBA-C", titulo: "Cable", cantidad: 1, precio_unitario: 5, almacen: "ENSAYO", reservado: 1 }],
+             apartado: [{ sku: "ZZPRUEBA-B", almacen: "TEX3", delta: 2 }, { sku: "ZZPRUEBA-B", almacen: "ENSAYO", delta: -2 },
+                        { sku: "ZZPRUEBA-C", almacen: "ENSAYO", delta: 1 }, { sku: "ZZPRUEBA-A", almacen: "ENSAYO", delta: -1 }] },
+  });
+  const t = leer(editada);
+  assert.match(t, /Cambió de bodega: ZZPRUEBA-B Agregado: ZZPRUEBA-C Quitado: ZZPRUEBA-A/);
+  assert.doesNotMatch(t, /(Agregado|Quitado)s?: [^:]*ZZPRUEBA-B/, "B ya no sale ni como alta ni como baja");
+  assert.match(renglonPintado(editada, "Quitado:"), /line-through[^>]*>ZZPRUEBA-A</, "lo que sí se quitó sigue tachado");
+  assert.match(t, /apartado: \+2 ZZPRUEBA-B en TEX3 · −2 ZZPRUEBA-B en ENSAYO/, "y el apartado lo sigue contando bodega por bodega");
+  // Varios: en plural, en una línea.
+  assert.match(leer(movimiento({ datos: { op: "x", renglones: { agregados: ["A-1", "B-2"], quitados: ["b-2", "A-1"], cambiados: [] } } })),
+               /Cambiaron de bodega: A-1, B-2/);
+});
+
+test("REV3 PANT-4 · el renglón al que le cambió el TÍTULO o la IMAGEN se dice en una línea corta, y no desaparece si es lo único", () => {
+  // Lo que deja `_dif_lineas` desde que compara título e imagen: [antes, después], con `null` = no tenía.
+  const datos = { op: "x", cambios: {}, renglones: { agregados: [], quitados: [], cambiados: [
+    { sku: "ZZPRUEBA-1", titulo: ["Audífonos", "OTRA COSA DISTINTA"] },
+    { sku: "ZZPRUEBA-2", imagen: [null, "https://cdn.prueba.test/b.jpg"] },
+    { sku: "ZZPRUEBA-3", cantidad: [3, 5], titulo: ["Cable", null], imagen: ["https://cdn.prueba.test/c.jpg", null] },
+  ] } };
+  const r = chat.renglonesDe(datos);
+  // Los tres se leen: antes, el que SÓLO traía título o imagen se perdía sin dejar nada.
+  assert.deepEqual(r.cambiados, datos.renglones.cambiados);
+  // En la línea va una nota corta; el antes y el después, en su detalle (el `title`).
+  assert.deepEqual(chat.notasDeRenglon(r.cambiados[0]),
+                   [{ texto: "título cambiado", detalle: "Audífonos → OTRA COSA DISTINTA" }]);
+  assert.deepEqual(chat.notasDeRenglon(r.cambiados[1]),
+                   [{ texto: "imagen cambiada", detalle: "sin imagen → https://cdn.prueba.test/b.jpg" }]);
+  assert.deepEqual(chat.notasDeRenglon(r.cambiados[2]), [
+    { texto: "título cambiado", detalle: "Cable → sin título" },
+    { texto: "imagen cambiada", detalle: "https://cdn.prueba.test/c.jpg → sin imagen" },
+  ]);
+  // No son números: no entran a los «antes → después» de cantidad y precio, ni al revés.
+  assert.deepEqual(chat.cambiosDeRenglon(r.cambiados[0]), []);
+  assert.deepEqual(chat.cambiosDeRenglon(r.cambiados[2]), [{ rotulo: "cantidad", antes: "3", despues: "5" }]);
+  assert.deepEqual(chat.notasDeRenglon({ sku: "X", cantidad: [1, 2], precio_unitario: [10, 12] }), []);
+
+  // PINTADO: una línea por renglón, y la nota después de los números.
+  const m = movimiento({ cuerpo: "Orden editada · renglones: 3 con cambios", datos });
+  const t = leer(m);
+  assert.match(t, /ZZPRUEBA-1: título cambiado/);
+  assert.match(t, /ZZPRUEBA-2: imagen cambiada/);
+  assert.match(t, /ZZPRUEBA-3: cantidad 3 → 5 · título cambiado · imagen cambiada/);
+  // El título entero (y la dirección de la imagen) no se vacían en la bitácora: quedan al pasar el cursor.
+  assert.doesNotMatch(t, /OTRA COSA DISTINTA|cdn\.prueba/);
+  assert.match(renglonPintado(m, "ZZPRUEBA-1"), /title="Audífonos → OTRA COSA DISTINTA"[^>]*> título cambiado</);
+
+  // Lo que NO es un cambio de texto: medio par, dos iguales (vacío y nulo son lo mismo), o algo que no es un par.
+  assert.equal(chat.renglonesDe({ renglones: { cambiados: [
+    { sku: "X", titulo: ["Uno"] }, { sku: "Y", titulo: ["Igual", " Igual "] }, { sku: "Z", imagen: [null, ""] },
+    { sku: "W", titulo: "Uno → Dos" }, { titulo: ["Uno", "Dos"] },
+  ] } }), null);
+  // Y lo de siempre no cambió: sólo cantidad y precio se siguen leyendo igual (ED-2).
+  assert.deepEqual(chat.renglonesDe(EDITADA).cambiados, [{ sku: "ZZPRUEBA-1", cantidad: [3, 5], precio_unitario: [10, 12.5] }]);
 });
 
 // ── TRZ · el plan del riel ───────────────────────────────────────────────────

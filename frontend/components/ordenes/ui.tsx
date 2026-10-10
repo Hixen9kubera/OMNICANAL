@@ -34,7 +34,7 @@ export const ROTULO_ESTADO: Record<EstadoOrden, string> = {
 
 export const AYUDA_ESTADO: Record<EstadoOrden, string> = {
   borrador: "Todavía se puede editar. No aparta stock.",
-  confirmada: "Confirmada: el stock de cada renglón quedó apartado en su bodega. Ya no se modifica.",
+  confirmada: "Confirmada: el stock de cada renglón quedó apartado en su bodega. Todavía se puede corregir: cada cambio vuelve a apartar y queda en la bitácora.",
   entregada: "Almacén ya la entregó a la paquetería.",
   cancelada: "Cancelada antes de salir del almacén. El apartado se soltó.",
   entregada_cancelada: "Se canceló DESPUÉS de entregarse a la paquetería: el producto tiene que regresar.",

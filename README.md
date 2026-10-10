@@ -1001,6 +1001,40 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.637.0 — Órdenes de venta: una orden CONFIRMADA ya se puede editar, y la cancela cualquiera que escribe (migración 0071)
+
+Brandon, 9-oct: *"puedes agregar el que cualquiera puede editar una orden ya confirmada, en caso de que se requiera
+hacer cualquier cambio"*, y decidió en la misma conversación que **cualquiera que escribe** (operador o admin)
+pueda cancelar una confirmada (antes: sólo admin).
+
+**Qué cambia para quien la usa.** Una orden confirmada se corrige con el mismo formulario del borrador: sus datos
+(cliente, canal, liga con la venta, guía, paquetería, fechas, descripción, importes) y los renglones que **todavía
+no salen** (cantidad, precio, bodega, quitar, agregar). Al guardar, el stock se vuelve a apartar **por la
+diferencia, todo o nada**: si sube una cantidad y no alcanza, no se guarda nada y dice cuál (*«ACC-0696 necesita 495
+más y hay 37 libres en ENSAYO. No se guardó nada.»*). Cada edición deja en la bitácora un mensaje `editada` con
+quién, y el antes y después de cada campo y renglón. Lo que ya salió no se toca; entregada y cancelada siguen sin
+poder modificarse. Mientras el canal espera el «¿salió?» no se edita ni se cancela.
+
+**Por qué necesitó una migración.** Desde la 0064 la base congelaba el contenido al confirmar (dos guardias). La
+`0071_ov_editar_confirmada.sql` les abre **una puerta**: sólo si la transacción trae
+`set local app.ov_edicion = '<id de la orden>'` y esa orden sigue confirmada, sin borrar y sin la marca del canal.
+Sin la puerta —o con la de otra orden— todo sigue igual de cerrado; los candados diferidos (`ov_coherente`,
+`stock_apartado_cuadra`) no se tocaron y revisan el resultado al COMMIT. El catálogo de eventos gana `editada`.
+
+**Piezas.**
+- `services/ordenes_venta.py`: `SQL_EDITAR_CONFIRMADA` (una sentencia; orden de candados de la guía; mueve el
+  apartado por el delta de cada SKU y bodega) y `guardar()`, que ahora también atiende una confirmada. Permisos:
+  `editar` vale en borrador y en confirmada; `cancelar` una confirmada ya no pide admin. Si la base no tiene la
+  0071, la orden no ofrece editar y dice por qué.
+- Frontend: el documento se edita estando confirmada (los renglones que ya salieron se ven con candado), la tabla
+  va compacta para que quepan los campos, y el chat pinta el evento `editada` con sus cambios.
+- De paso: el canal que cancela justo mientras alguien edita ya no sale como error (se relee y se aplica).
+
+**Aplicada en producción** el 9-oct desde este chat por instrucción de Brandon, sin acta. El sandbox no la tiene.
+Lo que Eduardo debe revisar: `docs/MIGRACION_0071_NOTA_EDUARDO.md` (cambia su decisión de inmutabilidad).
+
+**Verificado.** 2,723 pruebas del backend en verde salvo `test_regla_11_productos`, que ya fallaba en `main` por código ajeno; de ellas 375 son del módulo y 130 corren contra un Postgres 16 local con la cadena 0064 → 0065 → 0066 → 0067 → 0068 → 0071 (edición, re-apartado todo o nada, la puerta cerrada sin la migración, y carreras con entrega, cancelación, canal y confirmación de otra orden por el mismo saldo). El ejecutor de migraciones de Eduardo acepta la 0071 (sus 73 pruebas, dos ajustadas a la cadena nueva). Frontend: 120 pruebas, `tsc` limpio y `next build` en verde. Recorrido en Edge contra backend y base locales: editar una confirmada, «no alcanzó», operador cancela, entrega parcial. Revisión adversarial de tres lentes con verificador: 12 hallazgos confirmados (ninguno alto), los 12 atendidos con su prueba. No se probó contra el sandbox.
+
 ### v0.636.0 — Operaciones › Bodegas sin la mudanza a TEX3: fuera formatos, «puerta» y «qué falta para que TEX3 cuente»; la pestaña ya lee `almacen.*` y `ventas.*` (commit 1 de la limpieza de la Fase 1)
 
 **Por qué.** El 8-oct-2026 Eduardo decidió que el inventario es el mismo, que al dejar Odoo se toma su
@@ -3008,7 +3042,7 @@ truena); `inventario_libro` (sin él no hay cómo meter stock a una bodega de ku
 bucket de los PDF; las devoluciones (la orden sólo muestra `devolucion_estado`); el planeador que llamará a
 `crear_auto`; `stock_watch` leyendo kubera; las órdenes tipo `full`.
 
-**Verificado.** 1,862 pruebas del backend en verde (305 del módulo: unitarias, API con TestClient e integración contra un Postgres 16 local desechable con la 0064 y la 0065 aplicadas: ciclo completo, concurrencia, idempotencia, el canal y sus repeticiones, invariantes de la base tras cada prueba); 84 pruebas de frontend, `tsc` limpio y `next build` en verde; recorrido de punta a punta en Edge contra backend y base locales (crear → confirmar y apartar → chat → entrega por renglón → DELIVERED; «no alcanzó»; «¿salió?»). Revisión adversarial de tres lentes con verificador: 22 hallazgos confirmados (ninguno alto), 17 corregidos con su prueba; los 5 restantes están anotados como pendientes. No se probó contra el sandbox ni contra producción.
+**Verificado.** 1,862 pruebas del backend en verde (305 del módulo: unitarias, API con TestClient e integración contra un Postgres 16 local desechable con la 0064 y la 0065 aplicadas: ciclo completo, concurrencia, idempotencia, el canal y sus repeticiones, invariantes de la base tras cada prueba); 84 pruebas de frontend, `tsc` limpio y `next build` en verde; recorrido de punta a punta en Edge contra backend y base locales (crear → confirmar y apartar → chat → entrega por renglón → DELIVERED; «no alcanzó»; «¿salió?»). Revisión adversarial de tres lentes con verificador: 22 hallazgos confirmados (ninguno alto), 16 corregidos con su prueba; los 6 restantes están anotados como pendientes. No se probó contra el sandbox ni contra producción.
 
 ### v0.618.0 — Fan-out: lo que TikTok o Temu ofrecen de MÁS se baja al número de Woo tras cada censo; nunca se sube nada
 

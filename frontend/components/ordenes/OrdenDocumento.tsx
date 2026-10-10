@@ -16,10 +16,21 @@
  *  · Confirmar APARTA todo o nada. Si un renglón no alcanza, no se aparta
  *    ninguno y el servidor dice cuál: ya no existe la reserva parcial ni el
  *    «reintentar».
- *  · SÓLO EL BORRADOR SE EDITA. Fuera de borrador la base congela el contenido
- *    (un trigger, no una costumbre): ni un admin corrige la guía de una
- *    confirmada. Un error ahí se resuelve borrando y capturando de nuevo, y la
- *    pantalla lo dice en vez de ofrecer campos que el servidor va a rechazar.
+ *  · SE EDITAN EL BORRADOR Y LA CONFIRMADA. La confirmada, desde la 0071
+ *    (Brandon, 9-oct-2026: «que cualquiera pueda editar una orden ya
+ *    confirmada, en caso de que se requiera hacer cualquier cambio»). Es el
+ *    MISMO formulario, y lo que cambia sale de que la confirmada ya aparta:
+ *      – guardar VUELVE A APARTAR, todo o nada: si un renglón no alcanza no se
+ *        guarda ningún cambio y el servidor dice cuál (un 409 que NO mueve la
+ *        `rev`: se enseña su texto, como el de confirmar);
+ *      – cada renglón por entregar necesita su bodega y la orden no puede
+ *        quedarse sin ninguno: se dice aquí, antes de mandar;
+ *      – el renglón que YA SALIÓ se ve, pero no se toca ni se quita;
+ *      – cada cambio queda en el chat (`editada`) con quién lo hizo.
+ *    Lo entregado y lo cancelado siguen congelados por la base (un trigger, no
+ *    una costumbre), y la pantalla no ofrece campos que el servidor va a
+ *    rechazar. Si una confirmada NO se puede editar, se dice el porqué del
+ *    backend (el «¿salió?» pendiente, el modo prueba, el rol…).
  *  · Entregar es POR RENGLÓN y una sola vez por renglón: se dice cuántas
  *    piezas salieron de cada uno; lo que no sale se suelta. Un renglón que
  *    todavía no sale se deja pendiente y la orden sigue confirmada.
@@ -39,6 +50,11 @@
  *    negocio —no alcanzó el stock, la venta ya tiene orden, modo prueba— y se
  *    enseña el `detail` del servidor TAL CUAL: él sabe qué SKU no alcanzó.
  *    Nunca se reintenta a ciegas.
+ *  · La acción de un DIÁLOGO viaja con la `rev` de cuando se abrió, no con la
+ *    de ahora. El documento sigue releyendo debajo del diálogo (el chat avisa)
+ *    y éste se repinta solo: con la `rev` de ahora se confirmaría lo que nadie
+ *    vio al abrirlo. Si la orden cambió, el servidor contesta 409, no pasa
+ *    nada y el aviso queda a la vista con el diálogo ya cerrado.
  *  · El chat también avisa cuando otra persona —o el barrido— movió la orden.
  *    Como el aviso del chat puede llegar ANTES que la respuesta de la acción
  *    que yo mismo lancé, mientras hay una acción en vuelo no se relee: se
@@ -64,7 +80,7 @@ import {
 import type { LucideIcon } from "lucide-react";
 import {
   AlertTriangle, ArrowLeft, Ban, CircleCheck, CircleHelp, Download, Info, Lock, MoreHorizontal,
-  Package, PackageCheck, PackageX, RefreshCw, Save, Trash2, Truck, Undo2, X,
+  Package, PackageCheck, PackageX, PencilLine, RefreshCw, Save, Trash2, Truck, Undo2, X,
 } from "lucide-react";
 import { API_BASE, ApiError, mensajeDeError } from "@/lib/api";
 import { BotonCerrar, Ventana } from "@/components/fulfillment/ui";
@@ -202,6 +218,59 @@ const cuentaUnica = (canal: string): string => {
 const skuDe = (l: { sku: string }): string => l.sku.trim().toLowerCase();
 
 /**
+ * ¿Este renglón YA SALIÓ de la bodega? Entonces está congelado (la base no deja
+ * cambiarlo ni borrarlo, ni con la puerta de la 0071): al editar una confirmada
+ * se ve, pero no se toca. Salir con CERO piezas (se soltó) también es haber salido.
+ */
+export const renglonSalio = (l: Pick<Renglon, "entregado" | "entregado_at">): boolean =>
+  l.entregado !== null || !!l.entregado_at;
+
+/**
+ * Lo que la orden YA tiene apartado de ese SKU en ESA bodega, según lo guardado
+ * (`base`). Es la cuenta que hace el servidor al guardar una confirmada: por
+ * (SKU, bodega), lo que ahora piden los renglones menos lo que ya apartaban. Un
+ * renglón nuevo —o uno al que se le cambió la bodega— no tiene nada apartado
+ * donde está ahora: ahí le toca apartar su cantidad completa. En un borrador
+ * nadie aparta y siempre da 0.
+ */
+export function apartadoEn(l: Pick<Renglon, "sku" | "almacen">, base: Renglon[]): number {
+  if (!l.almacen) return 0;
+  return base.reduce((s, b) => (
+    !renglonSalio(b) && skuDe(b) === skuDe(l) && b.almacen === l.almacen ? s + b.reservado : s), 0);
+}
+
+/** Qué pasa con un SKU que se elige en el buscador de renglones: ver `dondeAgregar`. */
+export type Agregado =
+  | { tipo: "sumar"; renglon: Renglon }
+  | { tipo: "nuevo"; almacen: string }
+  | { tipo: "ya_salio"; bodegas: string[] };
+
+/**
+ * Dónde cae un SKU que se elige en el buscador. Repetir un SKU suma una pieza
+ * al renglón que ya está; si no está, entra como renglón nuevo en la bodega
+ * `sugerida`.
+ *
+ * Lo que cambió al poder editar una confirmada: un renglón que YA SALIÓ está
+ * congelado y no se le suma nada (el servidor lo rechazaría). Si el SKU sólo
+ * está en renglones que ya salieron, entra como renglón NUEVO, pero en otra
+ * bodega —SKU + bodega no se repite en la orden—; y si no queda ninguna donde
+ * ponerlo, no entra (quien llama dice por qué).
+ */
+export function dondeAgregar(lineas: Renglon[], sku: string, sugerida: string, elegibles: Bodega[]): Agregado {
+  const k = sku.trim().toLowerCase();
+  const mismos = lineas.filter((l) => skuDe(l) === k);
+  const vivos = mismos.filter((l) => !renglonSalio(l));
+  const ya = vivos.find((l) => l.almacen === sugerida) ?? vivos[0];
+  if (ya) return { tipo: "sumar", renglon: ya };
+  // Aquí `mismos` sólo trae renglones que ya salieron (o nada).
+  const tomadas = mismos.map((l) => l.almacen);
+  if (!tomadas.includes(sugerida)) return { tipo: "nuevo", almacen: sugerida };
+  const libres = elegibles.filter((b) => !tomadas.includes(b.codigo));
+  if (!libres.length) return { tipo: "ya_salio", bodegas: tomadas };
+  return { tipo: "nuevo", almacen: libres.length === 1 ? libres[0].codigo : "" };
+}
+
+/**
  * Lo que contestó el catálogo, puesto por bodega. El buscador trae UNA entrada
  * por bodega de kubera donde el SKU tiene fila de saldo, así que una bodega de
  * kubera que no viene es «sin fila de saldo» (`null`), no «no se sabe».
@@ -229,6 +298,34 @@ export function skusSinSaldo(lineas: Renglon[], elegibles: Bodega[]): string[] {
   for (const l of lineas) {
     if (l.conocido === false || !skuDe(l)) continue;
     if (elegibles.some((b) => !(b.codigo in l.saldos))) faltan.add(skuDe(l));
+  }
+  return [...faltan];
+}
+
+/**
+ * Los SKUs de los renglones por entregar que NO están guardados donde están
+ * ahora: los nuevos y los que cambiaron de bodega (la llave del renglón es SKU +
+ * bodega). De ésos hay que VOLVER a preguntarle el saldo al catálogo cuando un
+ * guardado rebota.
+ *
+ * Por qué: al releer la orden el servidor sólo manda el saldo de los renglones
+ * GUARDADOS, cada uno en su bodega (ver `formaDe`); del resto la pantalla
+ * conserva lo que el catálogo dijo cuando se agregaron, y ya no vuelve a
+ * preguntar (una vez por SKU). En un borrador da igual —guardar no aparta y la
+ * respuesta trae el saldo fresco—, pero en una confirmada el guardado que falla
+ * por «no alcanzó» es justo el momento en que ese dato es viejo: quedaba «libre
+ * 10», en gris, junto al aviso del servidor que decía «hay 1 libre».
+ *
+ * Los que ya salieron no cuentan (están congelados y ya no apartan), ni los que
+ * el catálogo dijo que no conoce (no tiene saldo que decir de ellos).
+ */
+export function skusSinGuardar(base: Renglon[], lineas: Renglon[]): string[] {
+  const llave = (l: Renglon) => `${skuDe(l)}|${l.almacen}`;
+  const guardados = new Set(base.map(llave));
+  const faltan = new Set<string>();
+  for (const l of lineas) {
+    if (renglonSalio(l) || l.conocido === false || !skuDe(l)) continue;
+    if (!guardados.has(llave(l))) faltan.add(skuDe(l));
   }
   return [...faltan];
 }
@@ -367,6 +464,10 @@ function mezclarRenglon(viejo: Renglon | undefined, mio: Renglon, nuevo: Renglon
  *   · lo quité yo                                → se va, aunque el otro lo haya cambiado;
  *   · lo cambiamos los dos (o lo agregamos)      → campo por campo: lo que yo toqué, mío;
  *   · lo agregué yo                              → entra, al final.
+ * Y una que nació con la edición de la confirmada, donde una persona corrige
+ * mientras Bodega entrega:
+ *   · YA SALIÓ en el servidor                    → se queda como está allá, lo
+ *     haya cambiado o quitado yo: está congelado y lo mío no se podría guardar.
  */
 export function fusionarLineas(viejos: Renglon[], mios: Renglon[], nuevos: Renglon[]): Renglon[] {
   const repartidos = new Set<string>();
@@ -385,6 +486,7 @@ export function fusionarLineas(viejos: Renglon[], mios: Renglon[], nuevos: Rengl
   for (const n of nuevos) {
     const v = viejo.get(k(n));
     const m = mio.get(k(n));
+    if (renglonSalio(n)) { salida.push(n); continue; }   // ya salió: manda el servidor
     if (v && !m) continue;   // lo quité yo
     salida.push(m ? mezclarRenglon(v, m, n) : n);
   }
@@ -401,20 +503,30 @@ export function fusionarLineas(viejos: Renglon[], mios: Renglon[], nuevos: Rengl
 }
 
 /**
- * ¿Esta orden se edita? Sólo el BORRADOR de una venta, vivo y con permiso. El
- * permiso lo da el backend; lo demás es el contrato de la base, y se revisa
- * aquí también para no pintar campos que el trigger va a rechazar. El envío a
- * FULL (`tipo = 'full'`) se captura en Crear FULL: aquí sólo se consulta.
+ * ¿Esta orden se edita? Lo decide EL PERMISO del backend (`permisos.editar`):
+ * un borrador, o una CONFIRMADA mientras él diga que sí. Él es quien sabe del
+ * rol, de la bandera, del «¿salió?» pendiente y de si la base ya tiene la 0071;
+ * aquí no se vuelve a deducir nada de eso. Lo único que se revisa además es lo
+ * que la base no le acepta a NADIE —una orden que ya se entregó o se canceló,
+ * una borrada, una confirmada que espera el «¿salió?»—, para no pintar campos
+ * que el trigger va a rechazar (el mismo cinturón que `accionesDe` le pone a
+ * DELIVERED y a Cancelar con la marca del canal). El envío a FULL
+ * (`tipo = 'full'`) se captura en Crear FULL: aquí sólo se consulta.
  */
-export function seEdita(o: Pick<Orden, "estado" | "tipo" | "borrada_at" | "permisos">): boolean {
-  return !!o.permisos.editar && o.estado === "borrador" && o.tipo !== "full" && !o.borrada_at;
+export function seEdita(
+  o: Pick<Orden, "estado" | "tipo" | "borrada_at" | "permisos"> & { canal_cancelo_at?: string | null },
+): boolean {
+  return !!o.permisos.editar && (o.estado === "borrador" || o.estado === "confirmada")
+    && o.tipo !== "full" && !o.borrada_at
+    && !(o.estado === "confirmada" && o.canal_cancelo_at);
 }
 
 /**
  * La orden cambió en el servidor mientras el usuario escribía: la forma nueva
  * es la del servidor, MÁS los campos que el usuario había tocado. Si ya no
- * puede editar (alguien la confirmó), lo suyo se descarta: no habría cómo
- * guardarlo.
+ * puede editar (alguien la entregó o la canceló, o el canal la canceló con el
+ * paquete en camino), lo suyo se descarta: no habría cómo guardarlo. Que otra
+ * persona la CONFIRME ya no lo descarta: una confirmada se sigue editando.
  */
 export function fusionar(baseVieja: Forma, forma: Forma, baseNueva: Forma, p: Pick<Permisos, "editar">): Forma {
   if (!p.editar) return baseNueva;
@@ -437,14 +549,23 @@ const CAMBIO = "La orden cambió mientras tanto; se recargó.";
  * y `p`, lo que quedó. Si sus renglones se mezclaron con los de otra persona
  * se dice con todas sus letras: es el momento de revisar la tabla, no después
  * de guardar. `tras409` = venía de un Guardar que rebotó (hay que repetirlo).
+ *
+ * Y si, corrigiendo una confirmada, Bodega entregó algo mientras tanto: lo que
+ * salió quedó congelado como está en el servidor, lo hubiera cambiado yo o no
+ * (ver `fusionarLineas`). Ahí no se promete que «se conservó» lo escrito.
  */
 export function avisoDeCambio(baseVieja: Forma, formaVieja: Forma, baseNueva: Forma,
                               p: Pick<Permisos, "editar"> | null, tras409: boolean): string {
   const habia = Object.keys(cambiosDe(baseVieja, formaVieja)).length > 0;
   if (!habia) return CAMBIO;
   if (!p?.editar) return `${CAMBIO} Lo que estabas escribiendo ya no se puede guardar.`;
-  const fusionados = !mismasLineas(baseVieja.lineas, formaVieja.lineas)
-    && !mismasLineas(baseVieja.lineas, baseNueva.lineas);
+  const tocoRenglones = !mismasLineas(baseVieja.lineas, formaVieja.lineas);
+  const salidos = (lineas: Renglon[]) => lineas.filter(renglonSalio).length;
+  if (tocoRenglones && salidos(baseNueva.lineas) > salidos(baseVieja.lineas)) {
+    return `${CAMBIO} Ya salió parte de la orden: los renglones que salieron no se tocan y quedaron como están. `
+      + (tras409 ? "Revisa los demás y vuelve a guardar." : "Revisa los demás antes de guardar.");
+  }
+  const fusionados = tocoRenglones && !mismasLineas(baseVieja.lineas, baseNueva.lineas);
   if (fusionados) {
     return `${CAMBIO} Tus renglones se fusionaron con los de la otra persona: `
       + (tras409 ? "revísalos y vuelve a guardar." : "revísalos antes de guardar.");
@@ -455,9 +576,12 @@ export function avisoDeCambio(baseVieja: Forma, formaVieja: Forma, baseNueva: Fo
 /**
  * Por qué NO se puede guardar así, o `null`. La bodega NO se exige aquí: un
  * borrador puede guardarse sin ella (la venta llegó y todavía no se decide de
- * dónde sale). Se exige al confirmar: ver `faltaParaConfirmar`.
+ * dónde sale). Se exige al confirmar (ver `faltaParaConfirmar`) y, en una
+ * confirmada, al guardar (ver `faltaParaGuardarConfirmada`).
  */
 export function validar(f: Forma): string | null {
+  const llaveDe = (l: Renglon) => `${skuDe(l)}|${l.almacen}`;
+  const salidos = new Set(f.lineas.filter(renglonSalio).map(llaveDe));
   const vistos = new Set<string>();
   for (const l of f.lineas) {
     const c = numero(l.cantidad);
@@ -468,8 +592,12 @@ export function validar(f: Forma): string | null {
     if ((numero(l.precio) ?? 0) < 0) return `Renglón ${l.sku}: el precio no puede ser negativo.`;
     // La llave del renglón en la base es SKU + bodega (`ov_lineas_sku_alm_uq`):
     // dos iguales truenan al guardar, y aquí se dice cuál y qué hacer.
-    const llave = `${skuDe(l)}|${l.almacen}`;
+    const llave = llaveDe(l);
     if (vistos.has(llave)) {
+      // Su gemelo ya salió: ése no se junta con nada ni se cambia (está congelado).
+      if (salidos.has(llave)) {
+        return `El renglón de ${l.sku} ya salió de ${l.almacen}: no se cambia. Si hace falta más, va en otra bodega o en otra orden.`;
+      }
       return l.almacen
         ? `El SKU ${l.sku} está dos veces en la bodega ${l.almacen}: junta los dos renglones o cambia la bodega de uno.`
         : `El SKU ${l.sku} está dos veces sin bodega: junta los dos renglones o elige la bodega de cada uno.`;
@@ -510,6 +638,44 @@ export function faltaParaConfirmar(lineas: Pick<LineaOrden, "sku" | "almacen">[]
     const fuera = lineas.find((l) => !elegibles.some((b) => b.codigo === l.almacen));
     if (fuera) {
       return `La bodega ${fuera.almacen} del renglón ${fuera.sku} no admite órdenes de venta: cámbiala por una que sí, guarda y vuelve a confirmar.`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Por qué todavía NO se puede guardar el cambio de una CONFIRMADA, o `null`.
+ *
+ * A un borrador lo que le falte se le pide al confirmar. Una confirmada no
+ * tiene ese segundo paso: ya aparta, y la base exige AL GUARDAR que le quede al
+ * menos un renglón por entregar y que cada uno aparte su cantidad completa en
+ * su bodega (`ov_coherente`). Aquí se dice antes de mandar, con el renglón y
+ * qué hacer; el servidor lo revisa de todos modos. Que el stock ALCANCE no se
+ * decide aquí: eso sólo lo sabe la base al mover el apartado (y lo dice el 409).
+ *
+ * Los renglones que ya salieron ni cuentan ni se revisan: están congelados. Y
+ * que la bodega admita órdenes sólo se exige cuando los renglones CAMBIAN, que
+ * es cuando el servidor los vuelve a apartar: corregir la guía de una orden
+ * cuya bodega se apagó después no tiene por qué rebotar.
+ */
+export function faltaParaGuardarConfirmada(base: Forma, f: Forma, elegibles: Bodega[]): string | null {
+  const pendientes = f.lineas.filter((l) => !renglonSalio(l));
+  if (!pendientes.length) {
+    // Las mismas palabras del servidor: sin renglones por entregar no hay nada
+    // que apartar, y eso ya no es corregir la orden: es cerrarla.
+    return "Una orden confirmada necesita al menos un renglón por entregar. "
+      + (f.lineas.some(renglonSalio) ? "Si ya salió todo, márcala DELIVERED." : "Si ya no va, cancélala.");
+  }
+  const sinBodega = pendientes.filter((l) => !l.almacen);
+  if (sinBodega.length) {
+    const skus = sinBodega.slice(0, 4).map((l) => l.sku).join(", ") + (sinBodega.length > 4 ? "…" : "");
+    return `${sinBodega.length === 1 ? "Falta elegir la bodega de un renglón" : `Falta elegir la bodega de ${sinBodega.length} renglones`} (${skus}). `
+      + "En una orden confirmada cada renglón por entregar aparta su stock en su bodega: elígela y vuelve a guardar.";
+  }
+  if (elegibles.length && !mismasLineas(base.lineas, f.lineas)) {
+    const fuera = pendientes.find((l) => !elegibles.some((b) => b.codigo === l.almacen));
+    if (fuera) {
+      return `La bodega ${fuera.almacen} del renglón ${fuera.sku} no admite órdenes de venta: cámbiala por una que sí y vuelve a guardar.`;
     }
   }
   return null;
@@ -593,13 +759,19 @@ export const notaSinSku = (n: number): string =>
  * La venta NO dice de qué bodega sale (eso se decide aquí, renglón por
  * renglón): sus renglones entran SIN bodega, salvo que sólo haya una donde
  * elegir (`elegibles`), que entonces no hay nada que decidir.
+ *
+ * Si de la orden YA SALIÓ algún renglón (una confirmada con entrega parcial),
+ * la venta NO cambia los renglones: cambiarlos por los de la venta borraría del
+ * formulario lo que ya salió —que está congelado— y no hay cómo saber qué parte
+ * de la venta es lo entregado. Trae lo demás (precio, guía, fechas) y lo que
+ * falta por entregar se corrige a mano.
  */
 export function aplicarVenta(f: Forma, v: VentaMarketplace, elegibles: Bodega[] = []): Forma {
   // El cliente sólo se cambia si nadie lo escribió (vacío o el rótulo del canal anterior).
   const clienteAuto = !f.cliente.trim() || f.cliente.trim() === rotuloCanal(f.canal);
   const unica = elegibles.length === 1 ? elegibles[0].codigo : "";
   let lineas = f.lineas;
-  if (v.lineas.length) {
+  if (v.lineas.length && !f.lineas.some(renglonSalio)) {
     const previos = new Map(f.lineas.map((l) => [skuDe(l), l]));
     const juntos = new Map<string, Renglon>();
     for (const l of v.lineas) {
@@ -747,7 +919,15 @@ export const AYUDA_DEVOLUCION: Record<DevolucionEstado, string> = {
 /** La nota fija que acompaña a la devolución: aquí sólo se MUESTRA su estado. */
 const NOTA_DEVOLUCIONES = "El proceso de devoluciones se define aparte.";
 
-const NOTA_INMUTABLE = "Una orden confirmada ya no se modifica: si tiene un error, un administrador la borra y se captura de nuevo.";
+// Una CONFIRMADA sí se corrige (0071). Cuando ÉSTA no se puede, el porqué es el
+// del backend (`permisos.porque.editar`): el «¿salió?» pendiente, el modo
+// prueba, el rol, la migración que falta. Esto es sólo por si llegara sin él.
+const NOTA_CONFIRMADA_FIJA = "Esta orden confirmada no se puede editar ahora.";
+
+// Lo que se le avisa a quien SÍ puede corregir una confirmada: que no es un
+// borrador. Guardar aquí mueve stock apartado y deja rastro de quién lo hizo.
+const NOTA_EDITAR_CONFIRMADA = "Esta orden ya está confirmada y se puede corregir. Al guardar se vuelve a apartar el stock, "
+  + "todo o nada: si un renglón no alcanza, no se guarda ningún cambio. Cada cambio queda en la bitácora con quién lo hizo.";
 
 // Lo que YA SALIÓ no se arregla con «borrar y capturar de nuevo»: borrar no
 // regresa las piezas al saldo (la salida se queda en el libro) y la recaptura
@@ -759,14 +939,31 @@ export function yaSalioAlgo(o: Pick<Orden, "estado" | "piezas_entregadas">): boo
   return o.estado === "entregada" || o.estado === "entregada_cancelada" || (o.piezas_entregadas ?? 0) > 0;
 }
 
-/** Por qué este documento es de sólo lectura aunque quien mira tenga permisos, o `null` si no aplica. */
-export function notaDeLectura(o: Pick<Orden, "estado" | "tipo" | "borrada_at">): string | null {
+/**
+ * Por qué este documento es de sólo lectura, o `null` si no aplica (se edita, o
+ * es un borrador: de ése lo dice la tarjeta de datos). En una CONFIRMADA sólo
+ * hay nota cuando de verdad no se puede editar, y es el porqué del backend: ya
+ * no existe el «una confirmada no se modifica» de antes.
+ */
+export function notaDeLectura(o: Pick<Orden, "estado" | "tipo" | "borrada_at" | "permisos">): string | null {
   if (o.borrada_at) return null;   // el aviso de «orden borrada» ya lo dice
   if (o.tipo === "full") return "Es un envío a FULL: se captura en Crear FULL y aquí sólo se consulta.";
   if (o.estado === "borrador") return null;
   if (o.estado === "cancelada") return "Una orden cancelada ya no se modifica: si hace falta, se captura de nuevo.";
   if (o.estado === "entregada" || o.estado === "entregada_cancelada") return NOTA_YA_SALIO;
-  return NOTA_INMUTABLE;
+  if (seEdita(o)) return null;
+  return o.permisos.porque.editar?.trim() || NOTA_CONFIRMADA_FIJA;
+}
+
+/**
+ * Lo que se le avisa, discreto, a quien SÍ puede corregir una CONFIRMADA, o
+ * `null` (un borrador no lo necesita: guardarlo no mueve nada). Con una entrega
+ * parcial dice además que lo que ya salió no se toca.
+ */
+export function notaDeEdicion(o: Pick<Orden, "estado" | "tipo" | "borrada_at" | "permisos" | "lineas">): string | null {
+  if (o.estado !== "confirmada" || !seEdita(o)) return null;
+  const salieron = renglonesPendientes(o.lineas).length < o.lineas.length;
+  return NOTA_EDITAR_CONFIRMADA + (salieron ? " Los renglones que ya salieron no se tocan." : "");
 }
 
 /** Cuántos caracteres exige la base de motivo para cancelar o borrar ESTA orden. */
@@ -781,9 +978,36 @@ type Destino =
   | { tipo: "salir" }
   | { tipo: "abrir"; folio: string };
 
+/**
+ * El diálogo abierto. El de una ACCIÓN guarda la `rev` de la orden que la
+ * persona tenía delante cuando lo abrió: con ésa viaja su acción, no con la de
+ * ahora (ver `revDeDialogo`).
+ */
 type Dialogo =
-  | { tipo: AccionOrden }
+  | { tipo: AccionOrden; rev: number }
   | { tipo: "sucio"; destino: Destino };
+
+/**
+ * Con qué `rev` viaja la acción de un diálogo: con la de la orden que la
+ * persona tenía DELANTE al abrirlo (`d.rev`), no con la de ahora (`actual`).
+ *
+ * Por qué: un diálogo abierto no detiene al documento. Si otra persona corrige
+ * la orden mientras tanto —desde la 0071 también una confirmada—, el chat
+ * avisa, el documento relee y el diálogo SE REPINTA solo con lo nuevo: renglones
+ * y piezas que quien va a dar clic no vio al abrirlo. Con la `rev` de ahora el
+ * candado dejaba pasar justo lo que tenía que atajar: «Marcar DELIVERED» abierto
+ * sobre 2 piezas registraba la salida de 8, y el físico bajaba 8 habiendo salido
+ * 2, en una orden que ya entregada no se corrige. Con la `rev` de al abrir, el
+ * servidor contesta su 409 «la orden cambió», no pasa nada, y el diálogo se
+ * vuelve a abrir ya sobre lo que hay. Vale igual para confirmar, cancelar,
+ * borrar, «¿salió?» y «salió tarde»: quien da clic confirma lo que VIO.
+ *
+ * Si no hay un diálogo de ESA acción abierto (no debería: sus botones viven
+ * dentro de él) queda la `rev` de ahora, que es lo que el servidor va a revisar.
+ */
+export function revDeDialogo(d: Dialogo | null, accion: AccionOrden, actual: number): number {
+  return d && d.tipo === accion && Number.isInteger(d.rev) ? d.rev : actual;
+}
 
 type Carga =
   | { estado: "lista" }
@@ -847,8 +1071,10 @@ export function accionesDe(o: Orden): { barra: BotonAccion[]; menu: BotonAccion[
     barra.push({ accion: "entregar", rotulo: "Marcar DELIVERED", icono: Truck, tono: "exito",
                  puede: p.entregar && !espera,
                  porque: espera ? (p.porque.entregar || ESPERA_SALIO) : p.porque.entregar });
-    // Lo que sólo hace un admin va a la barra si ESTE usuario puede; si no,
-    // al menú, apagado y con su porqué (no estorba, pero tampoco se esconde).
+    // Cancelar una confirmada ya no es sólo de admin: lo decide el permiso
+    // (hoy, cualquiera que escribe). Va a la barra si ESTE usuario puede; si
+    // no, al menú, apagado y con el porqué del backend (no estorba, pero
+    // tampoco se esconde).
     // Con la marca tampoco se cancela a mano: sería una tercera salida que se
     // salta la pregunta (quedaría como cancelación «manual», sin la referencia
     // del canal). «No salió» hace lo mismo y lo deja bien anotado. Va al menú,
@@ -1070,12 +1296,14 @@ export function OrdenDocumento({ refOrden, prefill, modulo, sucioRef, onCerrar, 
   const nueva = orden === null && refOrden === null;
   const borrada = !!orden?.borrada_at;
   const esFull = orden?.tipo === "full";
-  /** Sólo el BORRADOR se edita (encabezado y renglones a la vez): ver `seEdita`. */
+  /** Se editan el borrador y la confirmada (encabezado y renglones a la vez), si el permiso lo dice: ver `seEdita`. */
   const puedeEditar = orden ? seEdita(orden) : nueva && modulo.yo.escribe && !modulo.falta_migracion;
   const bloqueado = ocupado !== null;
   /** Sin permiso: el campo se pinta como dato («—» si está vacío). */
   const lectura = !puedeEditar;
   const notaLectura = orden ? notaDeLectura(orden) : null;
+  /** Se está corrigiendo una CONFIRMADA: guardar mueve el apartado (no es un borrador). */
+  const notaEdicion = orden ? notaDeEdicion(orden) : null;
   const porqueLectura = orden
     ? (notaLectura ?? orden.permisos.porque.editar ?? "")
     : modulo.falta_migracion ? (modulo.motivo || "Faltan las migraciones 0064/0065 en la base.")
@@ -1144,6 +1372,33 @@ export function OrdenDocumento({ refOrden, prefill, modulo, sucioRef, onCerrar, 
         .catch(() => { /* se queda en «sin dato» */ });
     }
   }, [claveSinSaldo, ponerSaldos]);
+
+  /**
+   * Vuelve a preguntarle al catálogo el saldo de los renglones que todavía no
+   * están guardados donde están (ver `skusSinGuardar`). Es para después de un
+   * guardado que el servidor rechazó sin que la orden cambiara —«no alcanzó el
+   * stock»—: la relectura trae fresco el saldo de lo GUARDADO, y a éstos, que ya
+   * se habían preguntado una vez, nadie les volvía a preguntar. Van a lo más
+   * `SALDOS_POR_TANDA`, como la primera vez; y si la pregunta falla se quedan
+   * con lo que tenían: el texto del servidor sigue a la vista.
+   */
+  const repreguntarSaldos = useCallback(() => {
+    const doc = documento.current;
+    const sinGuardar = () => skusSinGuardar(baseRef.current.lineas, formaRef.current.lineas);
+    for (const sku of sinGuardar().slice(0, SALDOS_POR_TANDA)) {
+      buscarSkus(sku)
+        .then((r) => {
+          if (!vivo.current || documento.current !== doc) return;
+          // Si mientras llegaba la respuesta el renglón ya se guardó (o se quitó),
+          // su saldo fresco es el que trajo el servidor con el guardado: una
+          // respuesta del catálogo de ANTES de eso lo pisaría con un dato viejo.
+          if (!sinGuardar().includes(sku)) return;
+          const o = (r.opciones ?? []).find((x) => skuDe(x) === sku);
+          if (o) ponerSaldos(sku, saldosDe(o.existencias, bodegasRef.current));
+        })
+        .catch(() => { /* se queda con lo que había */ });
+    }
+  }, [ponerSaldos]);
 
   // ── Releer (409 y avisos del chat) ──────────────────────────────────────────
   const releer = useCallback((): Promise<Relectura> => {
@@ -1238,7 +1493,10 @@ export function OrdenDocumento({ refOrden, prefill, modulo, sucioRef, onCerrar, 
         // ver si no alcanzó). Y sólo si la `rev` cambió es «la orden cambió»: se
         // avisa suave. Si no cambió, el 409 es de negocio —no alcanzó el stock,
         // esa venta ya tiene orden, modo prueba— y se enseña el `detail` del
-        // servidor tal cual: él dice qué SKU y en qué bodega.
+        // servidor tal cual: él dice qué SKU y en qué bodega. (También cae aquí
+        // el diálogo que se abrió ANTES de un cambio que el documento ya releyó
+        // —ver `revDeDialogo`—: el `detail` es el «la orden cambió» del servidor,
+        // y queda arriba, en rojo, con el diálogo ya cerrado.)
         const antes = { base: baseRef.current, forma: formaRef.current };
         const r = await releer();
         if (!vivo.current) return false;
@@ -1250,6 +1508,10 @@ export function OrdenDocumento({ refOrden, prefill, modulo, sucioRef, onCerrar, 
           setError(mensajeDeError(e, r === "fallo"
             ? "El servidor rechazó la acción y la orden no se pudo recargar. Vuelve a intentarlo."
             : "El servidor rechazó la acción sin decir por qué. Revisa la orden y vuelve a intentarlo."));
+          // La relectura refrescó el saldo de los renglones GUARDADOS. Si lo que
+          // rebotó fue un guardado, faltan los que todavía no lo están: sin esto
+          // se quedaban con el «libre» viejo junto al aviso que dice otra cosa.
+          if (accion === "guardar") repreguntarSaldos();
         }
       } else {
         setError(mensajeDeError(e, NO_SE_PUDO[accion]));
@@ -1258,14 +1520,20 @@ export function OrdenDocumento({ refOrden, prefill, modulo, sucioRef, onCerrar, 
     } finally {
       terminar();
     }
-  }, [aplicar, releer, terminar]);
+  }, [aplicar, releer, repreguntarSaldos, terminar]);
 
   const guardar = useCallback(async (): Promise<boolean> => {
     const o = ordenRef.current;
     if (!o) return false;
-    const falla = validar(formaRef.current) ?? fechaIncompleta();
+    const f = formaRef.current;
+    // Una confirmada ya aparta: lo que a un borrador se le pide hasta confirmar
+    // (bodega en cada renglón, al menos uno por entregar) a ella se le pide
+    // aquí, antes de mandar. Si el stock alcanza lo dice el servidor.
+    const falla = validar(f)
+      ?? (o.estado === "confirmada" ? faltaParaGuardarConfirmada(baseRef.current, f, elegiblesRef.current) : null)
+      ?? fechaIncompleta();
     if (falla) { setError(falla); return false; }
-    const datos = cambiosDe(baseRef.current, formaRef.current);
+    const datos = cambiosDe(baseRef.current, f);
     if (!Object.keys(datos).length) return true;
     const guardado = await ejecutar("guardar", (x) => guardarOrden(x.id, x.rev, datos), "Cambios guardados.");
     // «Se trajo la venta… revisa y guarda» ya se cumplió.
@@ -1311,20 +1579,33 @@ export function OrdenDocumento({ refOrden, prefill, modulo, sucioRef, onCerrar, 
     if (d.tipo === "salir") { onCerrar(); return; }
     // La página abre la orden que diga la dirección (`#OV-00012`, ver docs/ORDENES_VENTA.md §8).
     if (d.tipo === "abrir") { window.location.hash = d.folio; return; }
-    if (d.accion !== "confirmar") { setDialogo({ tipo: d.accion }); return; }
+    // Sin orden no hay acción que preguntar (sus botones ni se pintan).
+    const o = ordenRef.current;
+    if (!o) return;
+    // El diálogo se queda con la `rev` de la orden que la persona tiene DELANTE
+    // al abrirlo: con ésa viaja su acción, cambie lo que cambie mientras lo lee
+    // (ver `revDeDialogo`).
+    if (d.accion !== "confirmar") { setDialogo({ tipo: d.accion, rev: o.rev }); return; }
     // Confirmar aparta TODO O NADA, cada renglón en su bodega. Lo que se
     // confirma es lo GUARDADO (por eso se lee de la orden y no del formulario).
-    const o = ordenRef.current;
-    const falta = o ? faltaParaConfirmar(o.lineas, elegiblesRef.current) : null;
+    const falta = faltaParaConfirmar(o.lineas, elegiblesRef.current);
     if (falta) { setError(falta); return; }
-    // Confirmar tampoco tiene vuelta (la orden ya no se edita y sólo un admin
-    // la cancela): se pregunta, como en todas las demás. Lo que falta se dijo
-    // arriba, sin abrir nada.
-    setDialogo({ tipo: "confirmar" });
+    // Confirmar aparta stock de verdad (deja de estar libre para las demás
+    // órdenes): se pregunta, como en todas las demás. Ya no es un paso sin
+    // vuelta —una confirmada se corrige o se cancela—, y el diálogo lo dice.
+    // Lo que falta se dijo arriba, sin abrir nada.
+    setDialogo({ tipo: "confirmar", rev: o.rev });
   };
 
+  /**
+   * La `rev` con la que viaja la acción del diálogo abierto: la de cuando se
+   * ABRIÓ (ver `revDeDialogo`), no la de `o`, que es la orden de ahora.
+   */
+  const revVista = (accion: AccionOrden, o: Orden): number => revDeDialogo(dialogo, accion, o.rev);
+
   const confirmar = () => {
-    void ejecutar("confirmar", (x) => confirmarOrden(x.id, x.rev), "Orden confirmada: el stock quedó apartado.")
+    void ejecutar("confirmar", (x) => confirmarOrden(x.id, revVista("confirmar", x)),
+                  "Orden confirmada: el stock quedó apartado.")
       .then(() => { if (vivo.current) setDialogo(null); });
   };
 
@@ -1340,6 +1621,30 @@ export function OrdenDocumento({ refOrden, prefill, modulo, sucioRef, onCerrar, 
     if (await guardar()) ir(d);
   };
 
+  /**
+   * Vuelve el formulario a lo guardado. Con los cambios se van los avisos que
+   * hablaban de ellos (el porqué de un guardado que no pasó, la venta traída).
+   */
+  const deshacer = () => {
+    cambiar(() => baseRef.current);
+    setError(null);
+    setTraida(null);
+  };
+
+  /**
+   * La otra salida de «hay cambios sin guardar» ante una ACCIÓN: soltarlos y
+   * seguir. Hace falta porque en una confirmada guardar es volver a apartar, y
+   * puede no poderse: quien quitó todos los renglones («Si ya no va, cancélala»)
+   * o pidió más de lo que hay (409 «no alcanzó») era mandado a cancelar o a
+   * entregar, y «Guardar y continuar» lo regresaba al mismo rechazo sin llegar
+   * nunca a la acción. Ninguna necesita esos cambios: todas se aplican sobre lo
+   * GUARDADO.
+   */
+  const descartarYSeguir = (d: Destino) => {
+    deshacer();
+    ir(d);
+  };
+
   /** Toda acción con diálogo cierra el suyo al terminar, salga bien o mal (el porqué queda arriba). */
   const yCerrar = (p: Promise<boolean>) => {
     void p.then(() => { if (vivo.current) setDialogo(null); });
@@ -1347,28 +1652,32 @@ export function OrdenDocumento({ refOrden, prefill, modulo, sucioRef, onCerrar, 
 
   const conMotivo = (accion: "cancelar" | "borrar", motivo: string) => {
     const llamar = accion === "cancelar" ? cancelarOrden : borrarOrden;
-    yCerrar(ejecutar(accion, (o) => llamar(o.id, o.rev, motivo),
+    yCerrar(ejecutar(accion, (o) => llamar(o.id, revVista(accion, o), motivo),
                      accion === "cancelar" ? "Orden cancelada." : "Orden borrada."));
   };
 
   const entregar = (plan: Extract<PlanEntrega, { ok: true }>) => {
-    yCerrar(ejecutar("entregar", (o) => entregarOrden(o.id, o.rev, plan.lineas),
+    // El plan salió de los renglones que el diálogo pinta AHORA; la `rev`, de
+    // los que tenía al abrirse. Si entre una cosa y otra la orden cambió, el
+    // servidor rechaza la entrega entera (409) y no sale nada.
+    yCerrar(ejecutar("entregar", (o) => entregarOrden(o.id, revVista("entregar", o), plan.lineas),
                      plan.cierra ? "Orden entregada a la paquetería."
                        : "Entrega parcial registrada: lo que falta sigue apartado."));
   };
 
   /** Bodega contesta el «¿salió?» del canal. */
   const contestarSalio = (salio: boolean) => {
+    const accion: AccionSalio = salio ? "salio_si" : "salio_no";
     // «No salió» con piezas de una entrega anterior NO queda cancelada: lo que
     // ya salió tiene que regresar (el servidor la deja DELIVERED but CANCELLED).
     const yaSalieron = (ordenRef.current?.piezas_entregadas ?? 0) > 0;
-    yCerrar(ejecutar(salio ? "salio_si" : "salio_no", (o) => responderSalio(o.id, o.rev, salio),
+    yCerrar(ejecutar(accion, (o) => responderSalio(o.id, revVista(accion, o), salio),
                      salio || yaSalieron ? "Quedó como DELIVERED but CANCELLED: se espera la devolución."
                        : "Orden cancelada: el apartado se soltó."));
   };
 
   const registrarSalidaTardia = () => {
-    yCerrar(ejecutar("salio_tarde", (o) => salioTarde(o.id, o.rev),
+    yCerrar(ejecutar("salio_tarde", (o) => salioTarde(o.id, revVista("salio_tarde", o)),
                      "Salida registrada: quedó como DELIVERED but CANCELLED."));
   };
 
@@ -1410,9 +1719,15 @@ export function OrdenDocumento({ refOrden, prefill, modulo, sucioRef, onCerrar, 
       cacheSaldos.current.set(k, { ...cacheSaldos.current.get(k), ...saldos });
       preguntados.current.add(k);
     }
-    const mismos = formaRef.current.lineas.filter((l) => skuDe(l) === k);
-    const ya = mismos.find((l) => l.almacen === sugerida) ?? mismos[0];
-    if (ya) {
+    const donde = dondeAgregar(formaRef.current.lineas, sku, sugerida, elegiblesRef.current);
+    if (donde.tipo === "ya_salio") {
+      // Sólo en una confirmada con entrega parcial: el renglón de ese SKU ya
+      // salió (no se le suma) y no queda otra bodega donde abrirle uno nuevo.
+      setToast(`${sku} ya salió de ${donde.bodegas.join(", ")} en esta orden y ese renglón no se cambia. Si hace falta más, va en otra orden.`);
+      return;
+    }
+    if (donde.tipo === "sumar") {
+      const ya = donde.renglon;
       // Repetir un SKU suma una pieza al renglón que ya está (y refresca su saldo).
       cambiar((f) => ({ ...f, lineas: f.lineas.map((l) => (
         l.uid === ya.uid ? { ...l, cantidad: String((numero(l.cantidad) ?? 0) + 1), saldos: { ...l.saldos, ...saldos } }
@@ -1421,7 +1736,7 @@ export function OrdenDocumento({ refOrden, prefill, modulo, sucioRef, onCerrar, 
       return;
     }
     cambiar((f) => ({ ...f, lineas: [...f.lineas, renglonNuevo({
-      sku, titulo: o.nombre, almacen: sugerida, saldos, conocido: !fueraDeCatalogo,
+      sku, titulo: o.nombre, almacen: donde.almacen, saldos, conocido: !fueraDeCatalogo,
     })] }));
   }, [cambiar]);
 
@@ -1464,7 +1779,12 @@ export function OrdenDocumento({ refOrden, prefill, modulo, sucioRef, onCerrar, 
   const reserva = orden ? reservaDe(orden) : null;
   const folioEnError = error ? /OV-\d{5,}/.exec(error)?.[0] : undefined;
   const cuentasMp = cuentasDe(forma.mp_canal);
-  /** Todavía no aparta: el saldo «libre» se compara contra lo que pide el renglón. */
+  /**
+   * Todavía no aparta nada: no hay columnas de apartado ni de salida, y el
+   * «libre» de cada renglón se compara contra TODO lo que pide. (En una
+   * confirmada que se está corrigiendo se compara contra lo que le FALTA por
+   * apartar: ver `apartadoEn`.)
+   */
   const enBorrador = !orden || orden.estado === "borrador";
   /** El canal canceló con el paquete en camino y nadie ha contestado si salió. */
   const esperaSalio = !!orden && orden.estado === "confirmada" && !!orden.canal_cancelo_at && !borrada;
@@ -1473,7 +1793,17 @@ export function OrdenDocumento({ refOrden, prefill, modulo, sucioRef, onCerrar, 
   const devolucion = orden && (orden.estado === "entregada" || orden.estado === "entregada_cancelada")
     ? orden.devolucion_estado : null;
   const muestraDevolucion = !!orden && (orden.estado === "entregada_cancelada" || devolucion !== null);
-  const columnas = 5 + (enBorrador ? 0 : 2) + (puedeEditar ? 1 : 0);
+  /**
+   * Corrigiendo una confirmada la tabla lleva campos Y las columnas de apartado:
+   * no cabe en la tarjeta con el relleno normal (precio e importe quedaban tras
+   * el scroll). En ese caso va compacta, y «Salieron» sólo si algo ya salió
+   * (si no, sería una columna entera de «—»).
+   */
+  const compacta = puedeEditar && !enBorrador;
+  const verSalieron = !enBorrador && (!compacta || forma.lineas.some(renglonSalio));
+  const PX = compacta ? "px-2" : "px-3";
+  const TH_ = compacta ? TH.replace("px-3", "px-2") : TH;
+  const columnas = 5 + (enBorrador ? 0 : 1) + (verSalieron ? 1 : 0) + (puedeEditar ? 1 : 0);
   const variables = {
     "--ov-chat-top": `${68 + altoBarra + 16}px`,
     "--ov-chat-alto": `calc(100vh - ${68 + altoBarra + 32}px)`,
@@ -1539,8 +1869,7 @@ export function OrdenDocumento({ refOrden, prefill, modulo, sucioRef, onCerrar, 
           )}
           {orden && sucio && (
             <>
-              <Boton tono="fantasma" icono={Undo2} deshabilitado={bloqueado}
-                     onClick={() => { cambiar(() => baseRef.current); setError(null); setTraida(null); }}>
+              <Boton tono="fantasma" icono={Undo2} deshabilitado={bloqueado} onClick={deshacer}>
                 Deshacer
               </Boton>
               <Boton tono="primario" icono={Save} onClick={() => void guardar()} ocupado={ocupado === "guardar"}
@@ -1709,14 +2038,17 @@ export function OrdenDocumento({ refOrden, prefill, modulo, sucioRef, onCerrar, 
               monta el documento así; esto es por si algún día llega). */}
           {modulo.ok !== false && !modulo.habilitado && !borrada && (!orden || orden.estado === "borrador" || orden.estado === "confirmada") && (
             <Aviso tono="ambar" icono={Info}>
-              <b>Modo prueba:</b> puedes crear y editar borradores, pero no confirmar ni entregar hasta que se
-              encienda la bandera <span className="font-mono text-[12.5px]">ordenes_venta</span>.
+              <b>Modo prueba:</b> puedes crear y editar borradores, pero no confirmar, entregar ni corregir una
+              confirmada hasta que se encienda la bandera <span className="font-mono text-[12.5px]">ordenes_venta</span>.
             </Aviso>
           )}
           {modulo.ok !== false && puedeEditar && !elegibles.length && (
             <Aviso tono="ambar" icono={AlertTriangle}>
-              <b>No hay bodega para órdenes.</b> Ninguna bodega de kubera admite órdenes de venta ahora mismo:
-              puedes capturar el borrador, pero no se podrá confirmar mientras no haya una.
+              <b>No hay bodega para órdenes.</b> Ninguna bodega de kubera admite órdenes de venta ahora mismo:{" "}
+              {enBorrador
+                ? "puedes capturar el borrador, pero no se podrá confirmar mientras no haya una."
+                // La confirmada ya aparta: sin bodega que admita órdenes no hay dónde volver a apartar.
+                : "puedes corregir los datos de la orden, pero no sus renglones mientras no haya una."}
             </Aviso>
           )}
           {nueva && lectura && (
@@ -1736,6 +2068,13 @@ export function OrdenDocumento({ refOrden, prefill, modulo, sucioRef, onCerrar, 
               {notaLectura && (
                 <p className="flex items-start gap-1.5 px-1 text-xs leading-snug text-slate-400">
                   <Lock className="mt-0.5 h-3 w-3 shrink-0" /> {notaLectura}
+                </p>
+              )}
+              {/* Igual de discreta, para quien SÍ puede corregir una confirmada: aquí
+                  guardar no es lo de un borrador (mueve el apartado y deja rastro). */}
+              {notaEdicion && (
+                <p className="flex items-start gap-1.5 px-1 text-xs leading-snug text-slate-500">
+                  <PencilLine className="mt-0.5 h-3 w-3 shrink-0" /> {notaEdicion}
                 </p>
               )}
 
@@ -1809,6 +2148,7 @@ export function OrdenDocumento({ refOrden, prefill, modulo, sucioRef, onCerrar, 
                   {traida && traida.estado !== "buscando" && (
                     <div className="mt-3">
                       <VentaTraida traida={traida} ordenId={orden?.id ?? null} elegibles={elegibles}
+                                   renglonesFijos={forma.lineas.some(renglonSalio)}
                                    onUsar={usarVenta} onAbrir={(folio) => pedir({ tipo: "abrir", folio })}
                                    onCerrar={() => setTraida(null)} />
                     </div>
@@ -1825,7 +2165,8 @@ export function OrdenDocumento({ refOrden, prefill, modulo, sucioRef, onCerrar, 
                            apagado={bloqueado} rotulo="Entregar a la paquetería" />
                   </Campo>
                   <Campo rotulo="Guía"
-                         ayuda={lectura ? undefined : "Anótala antes de confirmar: después la orden ya no se modifica."}>
+                         ayuda={lectura || !enBorrador ? undefined
+                           : "Si todavía no la tienes, se puede anotar después de confirmar."}>
                     <Entrada valor={forma.guia} alCambiar={(v) => fijar("guia", v)} lectura={lectura}
                              apagado={bloqueado} mono max={TOPE.guia} placeholder="Número de guía" />
                   </Campo>
@@ -1864,26 +2205,26 @@ export function OrdenDocumento({ refOrden, prefill, modulo, sucioRef, onCerrar, 
                   <table className="w-full min-w-[760px] text-sm">
                     <thead className="border-b border-slate-100 bg-slate-50/60">
                       <tr>
-                        <th className={TH}>Producto</th>
-                        <th className={TH}
+                        <th className={TH_}>Producto</th>
+                        <th className={TH_}
                             title="De qué bodega de kubera sale el renglón, y cuánto hay libre de ese SKU ahí (físico menos apartado)">
                           Bodega
                         </th>
-                        <th className={`${TH} text-right`}>Cantidad</th>
+                        <th className={`${TH_} text-right`}>Cantidad</th>
                         {!enBorrador && (
-                          <>
-                            <th className={`${TH} text-right`}
-                                title="Piezas apartadas en su bodega: la cantidad completa o cero (se aparta todo o nada)">
-                              Apartado
-                            </th>
-                            <th className={`${TH} text-right`}
-                                title="Piezas que salieron al entregar el renglón. «—» = todavía no sale">
-                              Salieron
-                            </th>
-                          </>
+                          <th className={`${TH_} text-right`}
+                              title="Piezas apartadas en su bodega: la cantidad completa o cero (se aparta todo o nada)">
+                            Apartado
+                          </th>
                         )}
-                        <th className={`${TH} text-right`}>Precio unit.</th>
-                        <th className={`${TH} text-right`}>Importe</th>
+                        {verSalieron && (
+                          <th className={`${TH_} text-right`}
+                              title="Piezas que salieron al entregar el renglón. «—» = todavía no sale">
+                            Salieron
+                          </th>
+                        )}
+                        <th className={`${TH_} text-right`}>Precio unit.</th>
+                        <th className={`${TH_} text-right`}>Importe</th>
                         {puedeEditar && <th className="w-10" />}
                       </tr>
                     </thead>
@@ -1900,6 +2241,15 @@ export function OrdenDocumento({ refOrden, prefill, modulo, sucioRef, onCerrar, 
                       {forma.lineas.map((l) => {
                         const cant = numero(l.cantidad) ?? 0;
                         const precio = numero(l.precio);
+                        // El renglón que ya salió está congelado: se ve, pero no se toca ni se quita.
+                        const fijo = renglonSalio(l);
+                        const editable = puedeEditar && !fijo;
+                        // Corrigiendo una confirmada, lo que cuenta es lo que el renglón ya
+                        // tiene apartado DONDE ESTÁ AHORA (nada, si es nuevo o cambió de
+                        // bodega): lo demás es lo que le toca apartar al guardar. Fuera de
+                        // eso se enseña lo que dice el servidor.
+                        const corrige = editable && !enBorrador;
+                        const apartado = corrige ? apartadoEn(l, base.lineas) : l.reservado;
                         return (
                           <tr key={l.uid} className="align-middle">
                             <td className="px-5 py-2.5">
@@ -1907,47 +2257,58 @@ export function OrdenDocumento({ refOrden, prefill, modulo, sucioRef, onCerrar, 
                                 <Miniatura src={l.imagen} />
                                 <div className="min-w-0">
                                   <div className="truncate font-mono text-[13px] font-bold text-slate-800">{l.sku}</div>
-                                  <div className="max-w-[280px] truncate text-xs text-slate-500" title={l.titulo ?? undefined}>
+                                  <div className={`${compacta ? "max-w-[160px]" : "max-w-[280px]"} truncate text-xs text-slate-500`}
+                                       title={l.titulo ?? undefined}>
                                     {l.titulo || <span className="text-slate-400">sin título</span>}
                                   </div>
                                   {l.conocido === false && (
                                     <div className="mt-0.5 text-[11px] font-semibold text-amber-700"
-                                         title="El catálogo (core.products) no conoce este SKU: no tiene saldo en ninguna bodega, y sin saldo la orden no se puede confirmar.">
+                                         title={`El catálogo (core.products) no conoce este SKU: no tiene saldo en ninguna bodega, y sin saldo la orden no se puede ${corrige ? "guardar" : "confirmar"}.`}>
                                       SKU fuera del catálogo
+                                    </div>
+                                  )}
+                                  {/* Sólo donde los demás renglones sí se editan: dice por qué éste no. */}
+                                  {puedeEditar && fijo && (
+                                    <div className="mt-0.5 inline-flex items-center gap-1 text-[11px] font-semibold text-slate-500"
+                                         title="Este renglón ya salió de la bodega: no se cambia ni se quita. Si hace falta más de este producto, va en otra bodega o en otra orden.">
+                                      <Lock className="h-3 w-3 shrink-0" /> ya salió
                                     </div>
                                   )}
                                 </div>
                               </div>
                             </td>
-                            <td className="px-3 py-2.5">
-                              <CeldaBodega renglon={l} cantidad={cant} editable={puedeEditar} apagado={bloqueado}
-                                           avisa={enBorrador} elegibles={elegibles} bodegas={bodegas}
+                            <td className={`${PX} py-2.5`}>
+                              <CeldaBodega renglon={l} porApartar={cant - apartado} editable={editable} apagado={bloqueado}
+                                           avisa={enBorrador || editable} alGuardar={corrige} angosta={compacta}
+                                           elegibles={elegibles} bodegas={bodegas}
                                            ocupadas={forma.lineas.filter((x) => x.uid !== l.uid && skuDe(x) === skuDe(l))
                                              .map((x) => x.almacen)}
                                            alCambiar={(v) => fijarRenglon(l.uid, { almacen: v })} />
                             </td>
-                            <td className="px-3 py-2.5 text-right">
-                              {puedeEditar ? (
+                            <td className={`${PX} py-2.5 text-right`}>
+                              {editable ? (
                                 <input type="number" min="1" step="1" inputMode="numeric" value={l.cantidad}
                                        disabled={bloqueado} aria-label={`Cantidad de ${l.sku}`}
                                        onChange={(ev) => fijarRenglon(l.uid, { cantidad: ev.target.value })}
                                        onWheel={(ev) => ev.currentTarget.blur()}
-                                       className={`${CLASE_CAMPO} !w-20 text-right tabular-nums`} />
+                                       className={`${CLASE_CAMPO} ${compacta ? "!w-16" : "!w-20"} text-right tabular-nums`} />
                               ) : <span className="font-semibold tabular-nums text-slate-800">{num(cant)}</span>}
                             </td>
                             {!enBorrador && (
-                              <>
-                                <td className="px-3 py-2.5 text-right"><Apartado renglon={l} /></td>
-                                <td className="px-3 py-2.5 text-right"><Salieron renglon={l} cantidad={cant} /></td>
-                              </>
+                              <td className={`${PX} py-2.5 text-right`}>
+                                <Apartado renglon={l} apartado={apartado} porGuardar={corrige} />
+                              </td>
                             )}
-                            <td className="px-3 py-2.5 text-right">
-                              {puedeEditar ? (
+                            {verSalieron && (
+                              <td className={`${PX} py-2.5 text-right`}><Salieron renglon={l} cantidad={cant} /></td>
+                            )}
+                            <td className={`${PX} py-2.5 text-right`}>
+                              {editable ? (
                                 <input type="number" min="0" step="0.01" inputMode="decimal" value={l.precio}
                                        disabled={bloqueado} placeholder="0.00" aria-label={`Precio unitario de ${l.sku}`}
                                        onChange={(ev) => fijarRenglon(l.uid, { precio: ev.target.value })}
                                        onWheel={(ev) => ev.currentTarget.blur()}
-                                       className={`${CLASE_CAMPO} !w-28 text-right tabular-nums`} />
+                                       className={`${CLASE_CAMPO} ${compacta ? "!w-24" : "!w-28"} text-right tabular-nums`} />
                               ) : <span className="tabular-nums text-slate-700">{dinero(precio, moneda)}</span>}
                             </td>
                             <td className="px-5 py-2.5 text-right font-semibold tabular-nums text-slate-900">
@@ -1956,11 +2317,13 @@ export function OrdenDocumento({ refOrden, prefill, modulo, sucioRef, onCerrar, 
                             </td>
                             {puedeEditar && (
                               <td className="py-2.5 pr-3 text-right">
-                                <button type="button" onClick={() => quitarRenglon(l.uid)} disabled={bloqueado}
-                                        title="Quitar el renglón" aria-label={`Quitar ${l.sku}`}
-                                        className="rounded-lg p-1.5 text-slate-300 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-50">
-                                  <X className="h-4 w-4" />
-                                </button>
+                                {editable && (
+                                  <button type="button" onClick={() => quitarRenglon(l.uid)} disabled={bloqueado}
+                                          title="Quitar el renglón" aria-label={`Quitar ${l.sku}`}
+                                          className="rounded-lg p-1.5 text-slate-300 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-50">
+                                    <X className="h-4 w-4" />
+                                  </button>
+                                )}
                               </td>
                             )}
                           </tr>
@@ -2057,15 +2420,20 @@ export function OrdenDocumento({ refOrden, prefill, modulo, sucioRef, onCerrar, 
         <Confirmacion
           titulo="Hay cambios sin guardar"
           texto={dialogo.destino.tipo === "accion"
-            ? "Antes de mover la orden hay que guardar lo que cambiaste: la acción se aplica sobre lo que está guardado."
+            ? "Antes de mover la orden hay que guardar lo que cambiaste, o descartarlo: la acción se aplica sobre lo que está guardado."
             : orden ? "Si sales ahora, lo que cambiaste en esta orden se pierde."
               : "Si sales ahora, la orden nueva no se crea y lo capturado se pierde."}
           volver="Seguir editando"
           accion={dialogo.destino.tipo === "accion" ? "Guardar y continuar" : "Salir sin guardar"}
           tono={dialogo.destino.tipo === "accion" ? "primario" : "peligro"}
-          extra={orden && dialogo.destino.tipo !== "accion"
-            ? <Boton onClick={() => void guardarYSeguir(dialogo.destino)}>Guardar y salir</Boton>
-            : undefined}
+          // El botón de en medio es la OTRA salida. Para irse: guardar antes.
+          // Ante una acción: soltar los cambios y seguir (ver `descartarYSeguir`);
+          // va en rosa, como «Salir sin guardar», porque también pierde lo escrito,
+          // y el foco sigue naciendo en «Guardar y continuar» (el último).
+          extra={!orden ? undefined
+            : dialogo.destino.tipo === "accion"
+              ? <Boton tono="peligro" onClick={() => descartarYSeguir(dialogo.destino)}>Descartar cambios y continuar</Boton>
+              : <Boton onClick={() => void guardarYSeguir(dialogo.destino)}>Guardar y salir</Boton>}
           onConfirmar={() => (dialogo.destino.tipo === "accion" ? void guardarYSeguir(dialogo.destino) : ir(dialogo.destino))}
           onCerrar={() => setDialogo(null)}
         />
@@ -2118,7 +2486,10 @@ export function OrdenDocumento({ refOrden, prefill, modulo, sucioRef, onCerrar, 
                   {orden.devolucion_estado === "pendiente"
                     ? <> Su devolución está <b>pendiente</b>: al borrarla deja de contarse en «Por devolver», aunque el producto todavía tenga que regresar.</>
                     : null}</>
-              : <>Es la salida para una orden confirmada con un error: se borra y se captura de nuevo.</>}</>}
+              // Borrar ya no es LA salida para una confirmada con un error (ésa se
+              // corrige): es para la orden que no debió existir.
+              : <>Es para la orden que no debió existir (duplicada, o capturada por error).
+                  {seEdita(orden) ? <> Si sólo hay que corregirle algo, no hace falta borrarla: se puede editar.</> : null}</>}</>}
           accion="Borrar la orden" minimo={minimoDeMotivo("borrar", orden)} ocupado={ocupado === "borrar"}
           onConfirmar={(m) => conMotivo("borrar", m)}
           onCerrar={() => { if (!bloqueado) setDialogo(null); }}
@@ -2276,17 +2647,29 @@ function Miniatura({ src }: { src: string | null }) {
  *
  * El saldo tiene tres caras y cada una dice lo suyo: «libre N» (se sabe), «sin
  * dato» porque el SKU no tiene fila de saldo en esa bodega (no es un cero), y
- * «sin dato» porque todavía no se pregunta. `avisa` = el renglón todavía no
- * aparta (borrador): ahí «libre» se compara contra lo que pide y, si no
- * alcanza, va en ámbar —confirmar es todo o nada, mejor verlo antes—. Ya
- * apartado, «libre» es lo que queda para LOS DEMÁS y no se compara.
+ * «sin dato» porque todavía no se pregunta. `avisa` = el renglón todavía tiene
+ * algo que apartar (un borrador, o una confirmada que se está corrigiendo): ahí
+ * «libre» se compara contra lo que le falta (`porApartar`) y, si no alcanza, va
+ * en ámbar —se aparta todo o nada, mejor verlo antes—. En la que sólo se
+ * consulta, «libre» es lo que queda para LOS DEMÁS y no se compara.
  */
-function CeldaBodega({ renglon: l, cantidad, editable, apagado, avisa, elegibles, bodegas, ocupadas, alCambiar }: {
+function CeldaBodega({
+  renglon: l, porApartar, editable, apagado, avisa, alGuardar, angosta, elegibles, bodegas, ocupadas, alCambiar,
+}: {
   renglon: Renglon;
-  cantidad: number;
+  /**
+   * Piezas que al renglón le falta apartar EN ESA BODEGA: todas las que pide en
+   * un borrador; en una confirmada, las de más (lo que ya aparta ahí no cuenta:
+   * «libre» ya lo trae descontado). Cero o menos = no necesita nada.
+   */
+  porApartar: number;
   editable: boolean;
   apagado: boolean;
   avisa: boolean;
+  /** Se está corrigiendo una confirmada: el apartado se mueve al GUARDAR, no al confirmar. */
+  alGuardar: boolean;
+  /** La tabla va compacta (corrigiendo una confirmada): el selector ocupa menos. */
+  angosta?: boolean;
   elegibles: Bodega[];
   bodegas: Bodega[];
   /** Bodegas que ya usa OTRO renglón del mismo SKU: SKU + bodega no se repite. */
@@ -2295,21 +2678,28 @@ function CeldaBodega({ renglon: l, cantidad, editable, apagado, avisa, elegibles
 }) {
   const saldo = saldoDe(l);
   const fuera = !!l.almacen && elegibles.length > 0 && !elegibles.some((b) => b.codigo === l.almacen);
-  const corto = avisa && !!saldo && saldo.libre < cantidad;
+  const corto = avisa && !!saldo && saldo.libre < porApartar;
+  // Por qué va en ámbar (sólo se lee si `corto`).
+  const noAlcanza = alGuardar
+    ? `no alcanza para ${porApartar === 1 ? "la pieza que le falta" : `las ${num(porApartar)} piezas que le faltan`} por apartar: así no se podrá guardar`
+    : `no alcanza para ${porApartar === 1 ? "la pieza" : `las ${num(porApartar)} piezas`} del renglón: así no se podrá confirmar`;
   const nota = !l.almacen
     ? (editable
       ? <span className="font-semibold text-amber-700"
-              title="Sin bodega no se puede confirmar: el stock se aparta en la bodega de cada renglón.">elige la bodega</span>
+              title={`Sin bodega no se puede ${alGuardar ? "guardar" : "confirmar"}: el stock se aparta en la bodega de cada renglón.`}>
+          elige la bodega
+        </span>
       : <span className="text-slate-400">sin bodega</span>)
     : fuera && editable
       ? <span className="font-semibold text-amber-700"
-              title={`${rotuloBodega(l.almacen, bodegas)} no admite órdenes de venta: con ella no se podrá confirmar.`}>
+              title={`${rotuloBodega(l.almacen, bodegas)} no admite órdenes de venta: con ella no se ${
+                alGuardar ? "podrán guardar cambios en los renglones" : "podrá confirmar"}.`}>
           no admite órdenes
         </span>
       : saldo
         ? <span className={`tabular-nums ${corto ? "font-semibold text-amber-700" : "text-slate-500"}`}
                 title={`${l.almacen}: ${num(saldo.fisico)} físicas − ${num(saldo.apartado)} apartadas = ${num(saldo.libre)} libres`
-                  + (corto ? ` · no alcanza para ${cantidad === 1 ? "la pieza" : `las ${num(cantidad)} piezas`} del renglón: así no se podrá confirmar (se aparta todo o nada)` : "")}>
+                  + (corto ? ` · ${noAlcanza} (se aparta todo o nada)` : "")}>
             libre {num(saldo.libre)}
           </span>
         : <span className="text-slate-400"
@@ -2332,7 +2722,7 @@ function CeldaBodega({ renglon: l, cantidad, editable, apagado, avisa, elegibles
       <select value={l.almacen} disabled={apagado} aria-label={`Bodega de ${l.sku}`}
               title={l.almacen ? rotuloBodega(l.almacen, bodegas) : "De qué bodega sale este renglón"}
               onChange={(ev) => alCambiar(ev.target.value)}
-              className={`${CLASE_CAMPO} !w-40 !px-2 !py-1.5 font-mono text-[12.5px] ${
+              className={`${CLASE_CAMPO} ${angosta ? "!w-32" : "!w-40"} !px-2 !py-1.5 font-mono text-[12.5px] ${
                 !l.almacen || fuera ? "!border-amber-300" : ""}`}>
         <option value="">—</option>
         {fuera && <option value={l.almacen}>{l.almacen} (no admite órdenes)</option>}
@@ -2354,20 +2744,27 @@ function CeldaBodega({ renglon: l, cantidad, editable, apagado, avisa, elegibles
   );
 }
 
-/** Piezas apartadas del renglón: la cantidad completa o cero (se aparta todo o nada). */
-function Apartado({ renglon: l }: { renglon: Renglon }) {
-  if (l.reservado > 0) {
+/**
+ * Piezas apartadas del renglón: la cantidad completa o cero (se aparta todo o
+ * nada). `apartado` es lo que tiene HOY en la bodega que enseña; `porGuardar` =
+ * se está corrigiendo una confirmada, y entonces ese número es el de ANTES de
+ * guardar (un renglón nuevo, o movido de bodega, todavía no aparta nada ahí).
+ */
+function Apartado({ renglon: l, apartado, porGuardar }: { renglon: Renglon; apartado: number; porGuardar: boolean }) {
+  if (apartado > 0) {
     return (
       <span className="font-semibold tabular-nums text-emerald-700"
             title={`Apartadas en ${l.almacen || "su bodega"}: nadie más las puede tomar.`}>
-        {num(l.reservado)}
+        {num(apartado)}
       </span>
     );
   }
   return (
     <span className="tabular-nums text-slate-400"
           title={l.entregado !== null ? "Ya salió: el apartado se convirtió en salida y lo que no salió se soltó."
-            : "Sin apartado: se soltó, o la orden nunca lo apartó."}>
+            : !porGuardar ? "Sin apartado: se soltó, o la orden nunca lo apartó."
+              : l.almacen ? "Todavía no aparta nada en esta bodega: se aparta al guardar (todo o nada)."
+                : "Todavía no aparta nada: elige su bodega y se aparta al guardar (todo o nada)."}>
       0
     </span>
   );
@@ -2528,8 +2925,9 @@ function DialogoEntrega({ orden, ocupado, onConfirmar, onCerrar }: {
 
 /**
  * Lo que se le dice a quien va a confirmar: qué se aparta y dónde, con qué
- * guía, y que de ahí en adelante la orden ya no se edita. Se lee de la orden
- * GUARDADA, que es lo que el servidor va a confirmar.
+ * guía, y que después todavía se puede corregir (cada cambio vuelve a apartar
+ * y queda registrado). Se lee de la orden GUARDADA, que es lo que el servidor
+ * va a confirmar.
  */
 function ResumenConfirmar({ orden }: { orden: Orden }) {
   const renglones = orden.lineas.length;
@@ -2541,17 +2939,20 @@ function ResumenConfirmar({ orden }: { orden: Orden }) {
       {num(renglones)} {renglones === 1 ? "renglón" : "renglones"}
       {bodegas.length ? <> ({bodegas.join(" · ")})</> : null}, todo o nada.{" "}
       {orden.guia ? <>Guía: <b className="font-mono">{orden.guia}</b>.</> : <b>No tiene guía capturada.</b>}{" "}
-      Después de confirmar <b>la orden ya no se puede editar (ni la guía)</b>; deshacerlo requiere a un administrador.
+      Después de confirmar <b>la orden todavía se puede corregir</b> (también la guía): cada cambio vuelve a
+      apartar el stock, todo o nada, y queda registrado en la bitácora con quién lo hizo.
     </>
   );
 }
 
 /** Lo que contestó «Traer venta»: el aviso de lo aplicado, o la lista para elegir. */
-function VentaTraida({ traida, ordenId, elegibles, onUsar, onAbrir, onCerrar }: {
+function VentaTraida({ traida, ordenId, elegibles, renglonesFijos, onUsar, onAbrir, onCerrar }: {
   traida: Exclude<Traida, { estado: "buscando" }>;
   ordenId: number | null;
   /** Las bodegas donde se puede hacer la orden: de ahí sale qué decirle de la bodega de los renglones. */
   elegibles: Bodega[];
+  /** De la orden ya salieron renglones: la venta NO cambió los renglones (ver `aplicarVenta`). */
+  renglonesFijos: boolean;
   onUsar: (v: VentaMarketplace) => void;
   onAbrir: (folio: string) => void;
   onCerrar: () => void;
@@ -2570,18 +2971,21 @@ function VentaTraida({ traida, ordenId, elegibles, onUsar, onAbrir, onCerrar }: 
           {origenDeVenta(v)}: {num(v.piezas)} {v.piezas === 1 ? "pieza" : "piezas"}
           {v.total !== null ? <> · total {dinero(v.total)}</> : <> · sin precio registrado</>}
           {v.comision !== null ? <> · comisión {dinero(v.comision)}</> : null}.{" "}
-          {!v.lineas.length ? "La venta no trae renglones con SKU: los de la orden no se tocaron."
-            : sinSku > 0 ? "Los renglones traídos son SÓLO los que tienen SKU."
-              : "Los renglones son los de la venta."}{" "}
+          {renglonesFijos
+            ? "Los renglones no se cambiaron: de esta orden ya salieron piezas, y lo que falta por entregar se corrige a mano."
+            : !v.lineas.length ? "La venta no trae renglones con SKU: los de la orden no se tocaron."
+              : sinSku > 0 ? "Los renglones traídos son SÓLO los que tienen SKU."
+                : "Los renglones son los de la venta."}{" "}
           {/* La venta no dice de qué bodega sale: eso se decide aquí. */}
-          {!v.lineas.length ? null
+          {renglonesFijos || !v.lineas.length ? null
             : elegibles.length === 1 ? <>Salen de <span className="font-mono text-[12.5px]">{elegibles[0].codigo}</span>, la única bodega con órdenes. </>
               : elegibles.length > 1 ? <><b>Falta elegir la bodega de cada renglón.</b> </> : null}
           Revisa y guarda.
         </Aviso>
         {/* `piezas` cuenta TODA la venta, pero un renglón sin SKU no entra a la
-            orden: sin este aviso, almacén surtiría menos de lo que se vendió. */}
-        {sinSku > 0 && (
+            orden: sin este aviso, almacén surtiría menos de lo que se vendió.
+            (Si los renglones no se cambiaron, no «entró» ninguno: ya se dijo arriba.) */}
+        {sinSku > 0 && !renglonesFijos && (
           <Aviso tono="ambar" icono={AlertTriangle}>
             La venta trae <b>{num(sinSku)} {sinSku === 1 ? "renglón" : "renglones"} sin SKU</b> que no se{" "}
             {sinSku === 1 ? "pudo" : "pudieron"} traer: {sinSku === 1 ? "agrégalo" : "agrégalos"} a mano.{" "}

@@ -8,8 +8,9 @@
  * resolver el alias `@/` del tsconfig. Con eso las pruebas importan los
  * módulos REALES, no una copia recortada que se desfasa.
  *
- * Sólo sirve para lógica PURA (lo que no toca el DOM ni la red): los
- * componentes se cargan pero no se montan.
+ * Por sí solo sirve para lógica PURA (lo que no toca el DOM ni la red): los
+ * componentes se cargan pero no se montan. Montarlos es cosa de
+ * `documento_vivo.prueba.cjs`, que antes de cargar nada instala su DOM (`dom.cjs`).
  *
  * `import.meta.url` (el worker de la traza) no existe en CommonJS: se cambia
  * por un texto fijo. Nada de lo que se prueba aquí lo usa.

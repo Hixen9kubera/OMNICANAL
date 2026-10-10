@@ -13,7 +13,7 @@ en docs/MIGRACION_0064_0065_GUIA_AGENTE.md.
   GET    /api/ordenes-venta/marketplace/pendientes   ventas DROP recientes sin orden propia
   POST   /api/ordenes-venta/conciliar                revisa AHORA si el canal canceló alguna venta con orden
   GET    /api/ordenes-venta/{ref}                    el detalle; `ref` = id o folio
-  PUT    /api/ordenes-venta/{id}                     GUARDA UN BORRADOR (lo que no se manda no se toca)
+  PUT    /api/ordenes-venta/{id}                     GUARDA UN BORRADOR o EDITA UNA CONFIRMADA (sólo lo que llega)
   POST   /api/ordenes-venta/{id}/confirmar           borrador → confirmada: APARTA todo o nada
   POST   /api/ordenes-venta/{id}/entregar            DELIVERED; con `lineas`, lo que salió de cada renglón
   POST   /api/ordenes-venta/{id}/cancelar            cancela (suelta el apartado)
@@ -27,10 +27,11 @@ en docs/MIGRACION_0064_0065_GUIA_AGENTE.md.
   DELETE /api/ordenes-venta/{id}/archivos/{aid}      admin: quita el PDF
 
 LO QUE YA NO EXISTE, y no es un olvido: `/reservar` (apartar es todo o nada: no
-hay reserva a medias que reintentar), `/regresar` (fuera de borrador el
-contenido es inmutable: una confirmada mal capturada se cancela o se borra),
-`/devolucion` (las devoluciones se reciben por su propio flujo, que aún no está)
-y `/auto` (las banderas las enciende un acta, no la pantalla).
+hay reserva a medias que reintentar), `/regresar` (una confirmada no vuelve a
+borrador: desde la migración 0071 se corrige ahí mismo, con el mismo PUT, y el
+apartado se mueve por la diferencia), `/devolucion` (las devoluciones se reciben
+por su propio flujo, que aún no está) y `/auto` (las banderas las enciende un
+acta, no la pantalla).
 
 POR QUÉ ESTE ARCHIVO ES TAN DELGADO. Aquí no hay ni una regla de negocio: qué se
 puede y quién puede lo decide `services/ordenes_venta.py` (depende del ESTADO de
@@ -346,9 +347,16 @@ async def detalle(ref: str, request: Request) -> dict[str, Any]:
 
 @router.put("/{orden_id:int}")
 async def guardar(orden_id: int, body: _Guardado, request: Request) -> dict[str, Any]:
-    """Guarda un BORRADOR (encabezado y renglones). SÓLO viaja al servicio lo
-    que el cliente mandó: lo demás no se toca. Fuera de borrador la orden ya no
-    cambia, y el servicio lo contesta con un 400 que dice qué hacer."""
+    """Guarda un BORRADOR (encabezado y renglones) o EDITA una CONFIRMADA: es la
+    misma ruta y el mismo cuerpo, y cuál de las dos toca lo decide el servicio
+    con el estado de la orden. SÓLO viaja al servicio lo que el cliente mandó:
+    lo demás no se toca.
+
+    En una confirmada el apartado se mueve por la diferencia, todo o nada: si
+    no alcanza es un 409 que dice cuál, y NO avisa al bus —nada cambió, ni la
+    `rev` ni el chat—. Cuando sí entra, el aviso de siempre despierta al chat
+    de los demás, que ven el renglón `editada` con el antes y el después.
+    Entregada o cancelada, la orden ya no cambia: 400 con su porqué."""
     datos = body.model_dump(exclude_unset=True)
     rev = datos.pop("rev")
     return _avisar(await _hilo(_con_quien, request, ov.guardar, orden_id, rev, datos))

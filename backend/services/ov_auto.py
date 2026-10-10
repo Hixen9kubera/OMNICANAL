@@ -18,8 +18,9 @@ quien decide y escribe:
 
 LO QUE YA NO HACE (y por qué no hay que «devolvérselo»). Antes este módulo
 también generaba órdenes solas, rellenaba guía e importes y movía su propio
-interruptor. Con la 0064, fuera de borrador el contenido de una orden es
-INMUTABLE (no hay qué rellenar), la generación automática es `crear_auto` —la
+interruptor. Con la 0064 el barrido no rellena nada: el contenido de una
+confirmada sólo lo corrige una persona, por la edición de la 0071 (con su
+rastro en la bitácora); la generación automática es `crear_auto` —la
 llama el planeador, que es otra tarea— y las banderas son filas que enciende un
 ACTA, no la pantalla.
 
@@ -52,9 +53,16 @@ que pinta la pantalla. Se aplica en Python sobre lo leído (no hay una gemela en
 SQL que se pueda desfasar): así el barrido y la pantalla nunca opinan distinto.
 
 ES IDEMPOTENTE Y SE PUEDE REPETIR. El sondeo y el webhook de cada canal repiten
-la misma cancelación; `canal_cancelo` usa compare-and-set por ESTADO y contesta
-`ya_marcada` / `ya_cancelada` sin escribir. Una orden que alguien movió entre la
-lectura y la escritura va en la siguiente pasada.
+la misma cancelación; `canal_cancelo` no pide `rev` a quien llama (relee la
+orden y su compare-and-set va por estado y por la `rev` de ESA relectura) y
+contesta `ya_marcada` / `ya_cancelada` sin escribir. Una orden que alguien movió
+entre la lectura y la escritura va en la siguiente pasada.
+
+LA LIGA VIAJA CON EL AVISO. La lectura de aquí envejece: desde la 0071 una
+persona puede corregir la venta a la que está ligada una confirmada (o
+desligarla) después de que esta pasada la leyó. Por eso a `canal_cancelo` se le
+pasa la liga CON LA QUE se decidió (`venta`): si la orden ya no es de esa venta,
+no la toca. Sin eso se cancelaba —sin vuelta atrás— la orden de una venta viva.
 
 LA BANDERA SE PREGUNTA EN CADA PASADA (`ordenes_venta.habilitado()`, una fila de
 `ops.automatizacion_flags` con caché de 30 s): apagarla detiene el barrido sin
@@ -316,8 +324,12 @@ def _conciliar(canceladas: list[dict[str, Any]], marcadas: list[dict[str, Any]])
                                            origen="marketplace")["orden"]
                 resultado = "cancelada"
             else:
-                r = ordenes_venta.canal_cancelo(v["id"], v["ref_canal"], v["motivo"],
-                                                v["en_camino"])
+                # Con la liga que se LEYÓ: el veredicto es de esa venta. Si entre
+                # la lectura y este aviso alguien la corrigió (0071), el servicio
+                # contesta `nada` y la orden —que ya es de otra venta— no se toca.
+                r = ordenes_venta.canal_cancelo(
+                    v["id"], v["ref_canal"], v["motivo"], v["en_camino"],
+                    venta=(v["mp_canal"], v["mp_cuenta"], v["mp_orden"]))
                 o, resultado = r["orden"], r["resultado"]
         except ordenes_venta.Conflicto:
             log.info("ov_auto: %s cambió mientras se revisaba; va en la siguiente pasada",
@@ -342,7 +354,8 @@ def _conciliar(canceladas: list[dict[str, Any]], marcadas: list[dict[str, Any]])
             log.warning("ov_auto: %s espera el «¿salió?» de Bodega (el canal canceló la venta "
                         "%s con el paquete en camino: %s)", o["folio"], venta, v["ref_canal"])
         # ya_marcada / ya_cancelada / nada: otro llegó antes (el webhook, una
-        # persona). No hay nada que informar ni que avisar.
+        # persona), o la orden ya no es de esa venta. No hay nada que informar
+        # ni que avisar.
 
 
 # El job (cada 3 min) y el botón «Revisar cancelaciones» pueden coincidir. La

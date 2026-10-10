@@ -5,10 +5,11 @@
  *     node frontend/components/ordenes/pruebas/documento_pinta.prueba.cjs
  *
  * Por qué existe: `ordenes.prueba.cjs` prueba la lógica pura, pero lo que más
- * cambió con el modelo nuevo es QUÉ SE VE (la bodega por renglón, que una
- * confirmada ya no se edita, el «¿salió?», la entrega por renglón) y eso vive
- * en el JSX. Un `tsc` limpio no dice si el aviso sale, ni si el botón quedó
- * apagado, ni si la pantalla truena con una orden cancelada.
+ * cambió con el modelo nuevo es QUÉ SE VE (la bodega por renglón, el «¿salió?»,
+ * la entrega por renglón; y desde la 0071, que una confirmada se corrige con el
+ * mismo formulario del borrador y lo que ya salió no se toca) y eso vive en el
+ * JSX. Un `tsc` limpio no dice si el aviso sale, ni si el botón quedó apagado,
+ * ni si la pantalla truena con una orden cancelada.
  *
  * Cómo se pinta sin navegador ni dependencias nuevas: con `react-dom/server`,
  * que el frontend ya trae. Dos apaños, a la vista para que nadie los adivine:
@@ -18,15 +19,19 @@
  *     `React.useState` devuelve la orden (el primer estado que nace en `null`),
  *     «lista» en vez de «cargando», el formulario de esa orden (el primer
  *     estado con inicializador) y, si se pide, el diálogo abierto (el QUINTO
- *     que nace en `null`). Depende del ORDEN de los `useState` de
+ *     que nace en `null`) o lo que la persona ya CAMBIÓ en el formulario sin
+ *     guardar (`editar`: el SEGUNDO estado que nace de la forma sembrada; el
+ *     primero es `base`, lo guardado). Depende del ORDEN de los `useState` de
  *     `OrdenDocumento`: si alguien los mueve, `pintar` truena con un mensaje
  *     que lo dice (no falla callado).
  *   · `Ventana` (los diálogos) se pinta en un portal tras montarse: aquí se
  *     cambia por un `<div>` para que el cuerpo del diálogo salga en el HTML.
  *
  * Lo que NO prueba: nada que pase al hacer clic o al contestar el servidor
- * (guardar, el 409, la fusión en vivo, el foco, el arrastre de un PDF, la
- * pregunta de saldos al catálogo). Eso sólo existe en un navegador.
+ * (guardar, el 409, la fusión en vivo, la pregunta de saldos al catálogo). Aquí
+ * los efectos no corren y nadie da clic: eso se prueba con el documento
+ * MONTADO, en `documento_vivo.prueba.cjs`. El foco y el arrastre de un PDF
+ * sólo existen en un navegador.
  */
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -109,23 +114,35 @@ const venta = (mas = {}) => ({
 
 /**
  * Pinta el documento y devuelve su HTML. `o = null` es la orden NUEVA (ahí no
- * hay nada que sembrar: nace en blanco o con `prefill`).
+ * hay nada que sembrar: nace en blanco o con `prefill`). `editar` recibe la
+ * forma guardada y devuelve la que la persona tiene en pantalla SIN GUARDAR:
+ * así se pinta el documento con cambios pendientes («Guardar cambios», lo que
+ * faltaría apartar…), que de otro modo sólo existe tras teclear en un navegador.
  */
-function pintar(o, { dialogo = null, mod = modulo(), prefill = null } = {}) {
+function pintar(o, { dialogo = null, mod = modulo(), prefill = null, editar = null } = {}) {
   const real = React.useState;
   let nulos = 0;
   let inicializadores = 0;
+  let guardada = null;
+  let deLaGuardada = 0;
   React.useState = (ini) => {
     if (o) {
       if (ini === null) {
         nulos += 1;
         if (nulos === 1) return real(o);                        // la orden
-        if (nulos === 5 && dialogo) return real(dialogo);       // el diálogo abierto
+        // El diálogo abierto. El de una ACCIÓN guarda la `rev` con la que se abrió (aquí, la de la orden).
+        if (nulos === 5 && dialogo) return real(dialogo.tipo === "sucio" ? dialogo : { rev: o.rev, ...dialogo });
       } else if (ini && typeof ini === "object" && ini.estado === "cargando") {
         return real({ estado: "lista" });
       } else if (typeof ini === "function") {
         inicializadores += 1;
-        if (inicializadores === 1) return real(doc.formaDe(o)); // el formulario (base y forma nacen de él)
+        if (inicializadores === 1) {                            // el formulario (base y forma nacen de él)
+          guardada = doc.formaDe(o);
+          return real(guardada);
+        }
+      } else if (guardada && ini === guardada) {
+        deLaGuardada += 1;                                      // 1 = `base` (lo guardado) · 2 = `forma`
+        if (deLaGuardada === 2 && editar) return real(editar(guardada));
       }
     }
     return real(ini);
@@ -141,6 +158,7 @@ function pintar(o, { dialogo = null, mod = modulo(), prefill = null } = {}) {
   const guia = "¿cambió el orden de los useState de OrdenDocumento? (ver la cabecera de este archivo)";
   if (o) assert.ok(html.includes("Datos de la orden") && html.includes(o.folio), `la orden sembrada no se pintó: ${guia}`);
   if (dialogo) assert.ok(html.includes("data-ventana"), `el diálogo sembrado no se pintó: ${guia}`);
+  if (editar) assert.ok(deLaGuardada >= 2, `los cambios sembrados no entraron al formulario: ${guia}`);
   return html;
 }
 
@@ -176,7 +194,9 @@ test("PINTA-1 · la orden nueva: ya no hay «Almacén» de encabezado; la bodega
   assert.match(t, /Producto Bodega Cantidad Precio unit\. Importe/);
   // Sin orden no hay columnas de apartado ni de salida, ni nada que confirmar.
   assert.doesNotMatch(t, /Apartado|Salieron|Confirmar y apartar/);
-  assert.match(t, /Anótala antes de confirmar: después la orden ya no se modifica/);
+  // La guía ya no urge «antes de confirmar»: una confirmada se puede corregir (0071).
+  assert.match(t, /Guía Si todavía no la tienes, se puede anotar después de confirmar\./);
+  assert.doesNotMatch(t, /ya no se modifica/);
 });
 
 test("PINTA-2 · nace de una venta: con UNA bodega queda puesta; con dos, se pide elegirla", () => {
@@ -239,38 +259,160 @@ test("PINTA-5 · borrador de quien no puede escribir: sólo lectura, con el porq
   assert.equal(boton(html, "Traer venta"), null);
 });
 
-// ── Fuera de borrador: nada se edita ─────────────────────────────────────────
+// ── La confirmada: se corrige con el mismo formulario (0071) ─────────────────
 
-const NOTA = /Una orden confirmada ya no se modifica: si tiene un error, un administrador la borra y se captura de nuevo\./;
+/** El «ya no se modifica» de antes de la 0071: no debe quedar a la vista en ningún estado. */
+const NOTA_VIEJA = /Una orden confirmada ya no se modifica|un administrador la borra y se captura de nuevo/;
+const AVISO_EDICION = /Esta orden ya está confirmada y se puede corregir\. Al guardar se vuelve a apartar el stock, todo o nada: si un renglón no alcanza, no se guarda ningún cambio\. Cada cambio queda en la bitácora con quién lo hizo\./;
 
-test("PINTA-6 · confirmada: sólo lectura para TODOS (también admin), con su nota y sus tres columnas", () => {
-  // El permiso de editar llega encendido a propósito: la pantalla no se fía de él fuera de borrador.
-  const html = pintar(confirmada([linea(1, "AAA-1", 2, { reservado: 2 })]));
+/** Quien escribe y NO es admin: a quien la 0071 le abrió corregir y cancelar una confirmada. */
+const OPERADOR = { actor: "gaby@kubera.mx", nombre: "Gaby", rol: "operador", via: "panel", admin: false, escribe: true };
+/** Lo que el backend le manda a un operador en una confirmada: todo, menos lo que sigue siendo de admin. */
+const DE_OPERADOR = {
+  ...TODO, borrar: false, salio_tarde: false, borrar_archivo: false,
+  porque: { borrar: "Sólo un administrador puede borrar una orden" },
+};
+const comoOperador = { mod: modulo({ yo: OPERADOR }) };
+/** Una confirmada con la que el backend NO deja editar, y su porqué. */
+const sinEditar = (porque) => ({ ...TODO, editar: false, porque: { editar: porque } });
+
+/** Lo que se lee DEBAJO de la bodega del renglón de ese SKU cuando se puede elegir (su «libre N», en su color). */
+const notaBodega = (html, sku) =>
+  /<div class="mt-1[^"]*">(<span.*?<\/span>)<\/div>/.exec(html.slice(html.indexOf(`Bodega de ${sku}`)))?.[1] ?? "";
+/** Cambia la cantidad (o lo que se diga) de un renglón en la forma que la persona tiene en pantalla. */
+const tocar = (sku, parche) => (f) => ({ ...f, lineas: f.lineas.map((l) => (l.sku === sku ? { ...l, ...parche } : l)) });
+
+test("PINTA-6 · confirmada que se puede corregir: el MISMO formulario del borrador, con su aviso y sus columnas", () => {
+  // Un operador (no admin), con el permiso que le manda el backend.
+  const html = pintar(confirmada([linea(1, "AAA-1", 2, { reservado: 2, apartado: 2, libre: 48 })],
+                                 { permisos: DE_OPERADOR }), comoOperador);
   const t = texto(html);
-  assert.match(t, NOTA);
+  // El aviso discreto: está confirmada, guardar vuelve a apartar (todo o nada) y queda en la bitácora.
+  assert.match(t, AVISO_EDICION);
+  assert.doesNotMatch(t, NOTA_VIEJA);
+  assert.doesNotMatch(t, /ya salieron/, "sin entregas no se habla de renglones que salieron");
   assert.match(t, /CONFIRMADA Stock apartado/);
-  assert.match(t, /Producto Bodega Cantidad Apartado Salieron Precio unit\. Importe/);
+  // Corrigiendo, la tabla va compacta: «Salieron» sólo aparece si algún renglón ya salió
+  // (aquí ninguno; sería una columna entera de «—» y precio e importe no cabrían en la tarjeta).
+  assert.match(t, /Producto Bodega Cantidad Apartado Precio unit\. Importe/);
+  assert.doesNotMatch(t, /Apartado Salieron/);
+  // Los controles de captura de un borrador: fechas, descripción, bodega, cantidad, precio, quitar, buscador y «Traer venta».
+  assert.match(hoja(html), /type="datetime-local"/);
+  assert.match(hoja(html), /<textarea/);
+  assert.match(hoja(html), /role="combobox"/);
+  assert.equal(elegida(selectBodega(html, "AAA-1")), "ENSAYO");
+  assert.match(html, /<input type="number" min="1"[^>]*aria-label="Cantidad de AAA-1"[^>]*value="2"/);
+  assert.match(html, /<input type="number" min="0"[^>]*aria-label="Precio unitario de AAA-1"[^>]*value="10.00"/);
+  assert.match(html, /aria-label="Quitar AAA-1"/);
+  assert.ok(boton(html, "Traer venta"));
+  // Lo que ya aparta se sigue viendo (2), y su «libre» NO va en ámbar: no le falta nada por apartar.
+  assert.match(t, /AAA-1 Producto AAA-1 libre 48 2 \$20\.00/, "apartado 2 (sin la columna «Salieron»: nada ha salido)");
+  assert.match(notaBodega(html, "AAA-1"), /text-slate-500[^>]*>libre 48</);
+  // Sin cambios no hay nada que guardar; y lo demás de una confirmada sigue ahí.
+  assert.equal(boton(html, "Guardar cambios"), null);
+  assert.doesNotMatch(t, /Regresar a borrador|Reintentar reserva/);
+  assert.ok(boton(html, "Marcar DELIVERED") && !apagado(boton(html, "Marcar DELIVERED")));
+  // La guía ya no lleva la ayuda del borrador («se puede anotar después de confirmar»): ya está confirmada.
+  assert.doesNotMatch(t, /se puede anotar después de confirmar/);
+});
+
+test("PINTA-6b · corrigiendo una confirmada: «Guardar cambios», y lo libre se compara contra lo que FALTA apartar", () => {
+  // AAA-1 aparta 2 (50 físicas, 48 libres). BBB-2 aparta las 3 que hay (0 libres).
+  const o = confirmada([
+    linea(1, "AAA-1", 2, { reservado: 2, apartado: 2, libre: 48 }),
+    linea(2, "BBB-2", 3, { reservado: 3, fisico: 3, apartado: 3, libre: 0 }),
+  ], { permisos: DE_OPERADOR });
+  // Sin tocar nada, «libre 0» NO es un problema: sus 3 piezas ya están apartadas.
+  assert.match(notaBodega(pintar(o, comoOperador), "BBB-2"), /text-slate-500[^>]*>libre 0</);
+
+  // Sube AAA-1 de 2 a 60 (le faltan 58, hay 48) y BBB-2 de 3 a 4 (le falta 1, hay 0).
+  const html = pintar(o, { ...comoOperador, editar: (f) => tocar("BBB-2", { cantidad: "4" })(tocar("AAA-1", { cantidad: "60" })(f)) });
+  const guardar = boton(html, "Guardar cambios");
+  assert.ok(guardar && !apagado(guardar), "con cambios aparece «Guardar cambios», como en un borrador");
+  assert.ok(boton(html, "Deshacer"));
+  assert.match(notaBodega(html, "AAA-1"),
+               /text-amber-700[^>]*no alcanza para las 58 piezas que le faltan por apartar: así no se podrá guardar \(se aparta todo o nada\)[^>]*>libre 48</);
+  assert.match(notaBodega(html, "BBB-2"), /text-amber-700[^>]*no alcanza para la pieza que le falta por apartar[^>]*>libre 0</);
+  // «Apartado» sigue diciendo lo que HOY aparta cada uno (lo de antes de guardar), no lo tecleado.
+  // (sin la columna «Salieron»: ningún renglón ha salido y la tabla va compacta).
+  assert.match(texto(html), /AAA-1 Producto AAA-1 libre 48 2 \$600\.00/);
+  assert.match(texto(html), /BBB-2 Producto BBB-2 libre 0 3 \$40\.00/);
+
+  // Subir sólo lo que cabe (2 → 50: faltan 48 y hay 48) no avisa; bajar, tampoco.
+  assert.match(notaBodega(pintar(o, { ...comoOperador, editar: tocar("AAA-1", { cantidad: "50" }) }), "AAA-1"),
+               /text-slate-500[^>]*>libre 48</);
+  assert.match(notaBodega(pintar(o, { ...comoOperador, editar: tocar("BBB-2", { cantidad: "1" }) }), "BBB-2"),
+               /text-slate-500[^>]*>libre 0</);
+
+  // Mudar un renglón de bodega: en la nueva todavía no aparta nada (se dice), y ahí le toca apartar TODO.
+  const faseB = { mod: modulo({ yo: OPERADOR, bodegas: FASE_B }) };
+  const mudado = pintar(o, { ...faseB, editar: tocar("AAA-1", { almacen: "TEX3", saldos: { TEX3: { almacen: "TEX3", fisico: 1, apartado: 0, libre: 1 } } }) });
+  assert.equal(elegida(selectBodega(mudado, "AAA-1")), "TEX3");
+  assert.match(mudado, /title="Todavía no aparta nada en esta bodega: se aparta al guardar \(todo o nada\)\."[^>]*>0</);
+  assert.match(notaBodega(mudado, "AAA-1"), /text-amber-700[^>]*no alcanza para las 2 piezas que le faltan por apartar[^>]*>libre 1</);
+  // Un renglón al que se le quita la bodega: se pide, y se dice que así no se guarda.
+  const sinBodega = pintar(o, { ...comoOperador, editar: tocar("AAA-1", { almacen: "" }) });
+  assert.match(notaBodega(sinBodega, "AAA-1"), /title="Sin bodega no se puede guardar: [^"]*"[^>]*>\s*elige la bodega\s*</);
+});
+
+test("PINTA-6c · confirmada que NO se puede corregir: sólo lectura, con el porqué DEL BACKEND (no un «ya no se modifica»)", () => {
+  const PRUEBA = "Modo prueba: editar una confirmada está apagado (bandera «ordenes_venta»)";
+  const html = pintar(confirmada([linea(1, "AAA-1", 2, { reservado: 2 })], { permisos: sinEditar(PRUEBA) }));
+  const t = texto(html);
+  assert.match(t, /Modo prueba: editar una confirmada está apagado \(bandera «ordenes_venta»\)/);
+  assert.doesNotMatch(t, AVISO_EDICION);
+  assert.doesNotMatch(t, NOTA_VIEJA);
+  assert.match(t, /CONFIRMADA Stock apartado/);
   assert.match(t, /ENSAYO libre 50 2 2 — \$10\.00/, "cantidad 2 · apartado 2 · todavía no sale");
   // Ni un control de captura: ni cantidades, ni bodegas, ni buscador, ni «Traer venta», ni «Guardar».
   assert.doesNotMatch(hoja(html), /type="number"|type="datetime-local"|<textarea|role="combobox"/);
   assert.equal(selectBodega(html, "AAA-1"), null);
   assert.equal(boton(html, "Traer venta"), null);
   assert.equal(boton(html, "Guardar cambios"), null);
-  assert.doesNotMatch(t, /Regresar a borrador|Reintentar reserva/);
   assert.ok(boton(html, "Marcar DELIVERED") && !apagado(boton(html, "Marcar DELIVERED")));
+
+  // Con el «¿salió?» pendiente el backend tampoco deja editar: se dice ESE porqué.
+  const ESPERA = "El canal canceló esta venta con el paquete en camino: primero hay que contestar si salió";
+  const marcada = pintar(confirmada([linea(1, "AAA-1", 2, { reservado: 2 })], { ...CANAL_CANCELO, permisos: sinEditar(ESPERA) }));
+  assert.match(texto(marcada), /El canal canceló esta venta con el paquete en camino: primero hay que contestar si salió/);
+  assert.doesNotMatch(hoja(marcada), /type="number"|role="combobox"/);
+  // Si llegara sin porqué, se dice que no se puede (y nada más): no se inventa la razón.
+  const sinPorque = texto(pintar(confirmada([linea(1, "AAA-1", 2, { reservado: 2 })], { permisos: { ...TODO, editar: false } })));
+  assert.match(sinPorque, /Esta orden confirmada no se puede editar ahora\./);
+  assert.doesNotMatch(sinPorque, NOTA_VIEJA);
 });
 
-test("PINTA-7 · entrega parcial: sigue CONFIRMADA, con su chip, y lo que ya salió dice cuánto", () => {
-  const html = pintar(confirmada([linea(1, "AAA-1", 2, salido(1)), linea(2, "BBB-2", 3, { reservado: 3 })]));
+test("PINTA-7 · entrega parcial: sigue CONFIRMADA; lo que ya salió se ve pero NO se toca, y lo que falta se corrige", () => {
+  const lineas = [linea(1, "AAA-1", 2, salido(1)), linea(2, "BBB-2", 3, { reservado: 3 })];
+  const html = pintar(confirmada(lineas));
   const t = texto(html);
   assert.match(t, /CONFIRMADA Entrega parcial/);
-  assert.match(t, /AAA-1 Producto AAA-1 ENSAYO libre 50 2 0 1 de 2/, "salió 1 de 2: su apartado quedó en 0");
-  assert.match(t, /BBB-2 Producto BBB-2 ENSAYO libre 50 3 3 —/, "éste sigue apartado y sin salir");
+  assert.match(t, AVISO_EDICION);
+  assert.match(t, /Los renglones que ya salieron no se tocan\./);
+  // El que ya salió: marcado «ya salió», sin ningún control, y con lo que salió (1 de 2: su apartado quedó en 0).
+  assert.match(t, /AAA-1 Producto AAA-1 ya salió ENSAYO libre 50 2 0 1 de 2 \$10\.00 \$20\.00/);
+  assert.equal(selectBodega(html, "AAA-1"), null);
+  assert.doesNotMatch(html, /aria-label="(Cantidad de|Precio unitario de|Quitar) AAA-1"/);
+  // El que falta se corrige como cualquiera: bodega, cantidad, precio y quitar.
+  assert.equal(elegida(selectBodega(html, "BBB-2")), "ENSAYO");
+  assert.match(html, /aria-label="Cantidad de BBB-2"[^>]*value="3"/);
+  assert.match(html, /aria-label="Precio unitario de BBB-2"/);
+  assert.match(html, /aria-label="Quitar BBB-2"/);
+  assert.match(t, /BBB-2 Producto BBB-2 libre 50 3 — \$30\.00/, "éste sigue apartado (3) y sin salir");
   // Lo que falta todavía se puede entregar.
   assert.ok(!apagado(boton(html, "Marcar DELIVERED")));
+
+  // Quien sólo consulta ve la tabla de siempre: sin controles y sin la marca (no hay nada editable que explicar).
+  const consulta = pintar(confirmada(lineas, { permisos: sinEditar("Tu rol es de sólo lectura") }));
+  assert.match(texto(consulta), /AAA-1 Producto AAA-1 ENSAYO libre 50 2 0 1 de 2/, "salió 1 de 2: su apartado quedó en 0");
+  assert.match(texto(consulta), /BBB-2 Producto BBB-2 ENSAYO libre 50 3 3 —/, "éste sigue apartado y sin salir");
+  assert.doesNotMatch(texto(consulta), /ya salió ENSAYO/);
+  assert.doesNotMatch(consulta, /type="number"/);
 });
 
-test("PINTA-8 · cancelada, entregada y borrada: tampoco se editan, y no ofrecen lo que ya no existe", () => {
+test("PINTA-8 · cancelada, entregada y borrada: ésas NO se editan (ni con el permiso encendido), y no ofrecen lo que ya no existe", () => {
+  // El permiso de editar llega encendido a propósito (`TODO`): lo que ya se cerró no lo
+  // acepta la base de nadie, y la pantalla no pinta campos que el trigger va a rechazar.
   const cancelada = pintar(orden([linea(1, "AAA-1", 2)], {
     estado: "cancelada", confirmada_at: T, confirmada_por: "ana@kubera.mx", cancelada_at: T,
     cancelada_por: "ana@kubera.mx", cancelada_origen: "manual", cancelada_motivo: "duplicada",
@@ -279,6 +421,7 @@ test("PINTA-8 · cancelada, entregada y borrada: tampoco se editan, y no ofrecen
   assert.match(texto(cancelada), /Una orden cancelada ya no se modifica/);
   assert.match(texto(cancelada), /Cancelada por ana \(a mano\).*motivo: «duplicada»/);
   assert.doesNotMatch(cancelada, /type="number"/);
+  assert.doesNotMatch(texto(cancelada), AVISO_EDICION);
 
   const entregada = pintar(orden([linea(1, "AAA-1", 2, salido(2))], {
     estado: "entregada", confirmada_at: T, confirmada_por: "ana@kubera.mx", entregada_at: T, entregada_por: "ana@kubera.mx",
@@ -286,7 +429,9 @@ test("PINTA-8 · cancelada, entregada y borrada: tampoco se editan, y no ofrecen
   assert.match(texto(entregada), /DELIVERED Surtida/);
   // Lo que ya salió no se arregla con «borrar y capturar de nuevo» (saldría dos veces).
   assert.match(texto(entregada), /Esta orden ya salió de la bodega: no se modifica\. Borrarla no regresa las piezas al saldo/);
-  assert.doesNotMatch(texto(entregada), NOTA);
+  assert.doesNotMatch(texto(entregada), NOTA_VIEJA);
+  assert.doesNotMatch(texto(entregada), AVISO_EDICION);
+  assert.doesNotMatch(entregada, /type="number"/);
   assert.match(texto(entregada), /ENSAYO libre 50 2 0 2 \$10\.00/, "salieron las 2");
   // Una entregada ya no se cancela a mano: eso lo hace el canal.
   assert.equal(boton(entregada, "Cancelar"), null);
@@ -299,7 +444,8 @@ test("PINTA-8 · cancelada, entregada y borrada: tampoco se editan, y no ofrecen
   assert.match(texto(borrada), /BORRADA Orden borrada por ana .* Motivo: «capturada con error»/);
   assert.match(texto(borrada), /Apartado liberado/);
   assert.equal(boton(borrada, "Marcar DELIVERED"), null);
-  assert.doesNotMatch(texto(borrada), NOTA, "de la borrada ya habla su propio aviso");
+  assert.doesNotMatch(texto(borrada), NOTA_VIEJA, "de la borrada ya habla su propio aviso");
+  assert.doesNotMatch(texto(borrada), AVISO_EDICION);
 });
 
 test("PINTA-9 · un envío a FULL se enseña de sólo lectura, con su etiqueta y sus dos campos", () => {
@@ -415,6 +561,35 @@ test("PINTA-13 · cancelar pide motivo (5 si estuvo confirmada); borrar, 10; y e
   assert.match(titulo(boton(borrar, "Borrar la orden")), /al menos 10 caracteres/);
 });
 
+test("PINTA-13b · un OPERADOR cancela una confirmada: el botón sigue al PERMISO (ya no es sólo de admin) y pide su motivo", () => {
+  const o = confirmada([linea(1, "AAA-1", 2, { reservado: 2 })], { permisos: DE_OPERADOR });
+  const html = pintar(o, comoOperador);
+  const cancelar = boton(html, "Cancelar orden");
+  assert.ok(cancelar && !apagado(cancelar), "en la barra y encendido, sin ser admin");
+  // El motivo es obligatorio, y en una confirmada lleva al menos 5 caracteres.
+  const dialogo = pintar(o, { ...comoOperador, dialogo: { tipo: "cancelar" } });
+  assert.match(ventana(dialogo), /Cancelar OV-00012 Se cancela la orden y se suelta su apartado \(2 piezas vuelven a quedar libres en su bodega\)/);
+  assert.match(ventana(dialogo), /Motivo \(queda en la bitácora\)/);
+  assert.match(ventana(dialogo), /El motivo lleva al menos 5 caracteres\. Faltan 5\./);
+  assert.ok(apagado(boton(dialogo, "Cancelar la orden")), "sin motivo no se manda");
+  assert.match(titulo(boton(dialogo, "Cancelar la orden")), /al menos 5 caracteres/);
+  // Borrar sigue siendo de admin: al operador no se le ofrece en la barra.
+  assert.equal(boton(html, "Borrar la orden"), null);
+
+  // A quien el backend le dice que no (sólo lectura), «Cancelar orden» no le sale en la barra:
+  // queda en el menú «…», apagado y con el porqué que mande el backend.
+  const lector = pintar(confirmada([linea(1, "AAA-1", 2, { reservado: 2 })], {
+    permisos: { ...NADA, porque: { cancelar: "Tu rol es de sólo lectura", editar: "Tu rol es de sólo lectura" } },
+  }), { mod: modulo({ yo: { actor: "luis@kubera.mx", nombre: "Luis", rol: "lectura", via: "panel", admin: false, escribe: false } }) });
+  assert.equal(boton(lector, "Cancelar orden"), null);
+  assert.match(texto(lector), /Tu rol es de sólo lectura/, "el porqué de no poder editar es el del backend");
+  // Y a nadie se le dice ya que cancelar una confirmada es «sólo de un administrador».
+  for (const pantalla of [html, lector, dialogo]) {
+    assert.doesNotMatch(texto(pantalla), /administrador puede cancelar|cancel\w* (requiere|es de) (a )?un administrador/i);
+    assert.doesNotMatch(texto(pantalla), NOTA_VIEJA);
+  }
+});
+
 test("PINTA-14 · «Sí salió», «No salió» y «Salió tarde» se confirman diciendo la consecuencia", () => {
   const marcada = confirmada([linea(1, "AAA-1", 2, { reservado: 2 })], CANAL_CANCELO);
   const si = ventana(pintar(marcada, { dialogo: { tipo: "salio_si" } }));
@@ -483,16 +658,24 @@ test("REV2 FE-01 · borrar una orden que YA SALIÓ no promete «se captura de nu
   });
   const v = ventana(pintar(entregada, { dialogo: { tipo: "borrar" } }));
   assert.match(v, /Lo que ya salió de la bodega NO regresa al saldo \(4 piezas\): borrarla no deshace la salida, y no hay que capturarla de nuevo/);
-  assert.doesNotMatch(v, /se borra y se captura de nuevo|deja de contarse/);
+  assert.doesNotMatch(v, /se borra y se captura de nuevo|no debió existir|se puede editar|deja de contarse/);
 
   const porDevolver = ventana(pintar({ ...entregada, estado: "entregada_cancelada", devolucion_estado: "pendiente" },
                                      { dialogo: { tipo: "borrar" } }));
   assert.match(porDevolver, /NO regresa al saldo/);
   assert.match(porDevolver, /Su devolución está pendiente: al borrarla deja de contarse en «Por devolver»/);
-  // La confirmada que no ha salido conserva su texto (PINTA-13 lo revisa completo).
+  // La confirmada que no ha salido: borrar ya NO es «la salida para una orden con un error»
+  // (ésa se corrige, 0071). Es para la orden que no debió existir, y se dice que se puede editar.
   const sinSalir = ventana(pintar(confirmada([linea(1, "AAA-1", 2, { reservado: 2 })]), { dialogo: { tipo: "borrar" } }));
-  assert.match(sinSalir, /se borra y se captura de nuevo/);
-  assert.doesNotMatch(sinSalir, /NO regresa al saldo/);
+  assert.match(sinSalir, /Es para la orden que no debió existir \(duplicada, o capturada por error\)\. Si sólo hay que corregirle algo, no hace falta borrarla: se puede editar\./);
+  assert.doesNotMatch(sinSalir, /NO regresa al saldo|se borra y se captura de nuevo/);
+  // Donde NO se puede editar (una cancelada que nunca salió) no se promete eso.
+  const cancelada = ventana(pintar(orden([linea(1, "AAA-1", 2)], {
+    estado: "cancelada", confirmada_at: T, confirmada_por: "ana@kubera.mx", cancelada_at: T,
+    cancelada_por: "ana@kubera.mx", cancelada_origen: "manual", cancelada_motivo: "duplicada",
+  }), { dialogo: { tipo: "borrar" } }));
+  assert.match(cancelada, /Es para la orden que no debió existir/);
+  assert.doesNotMatch(cancelada, /se puede editar/);
 });
 
 test("REV2 FE-03 · con la marca del canal no hay «Cancelar orden» en la barra, ni para el admin", () => {
@@ -530,13 +713,46 @@ test("REV2 FE-05 · con un `/estado` que no se leyó no se afirma «modo prueba�
                /No hay bodega para órdenes\./);
 });
 
-test("REV2 FE-08 · «Confirmar y apartar» pregunta antes: qué se aparta, dónde, la guía y que ya no se edita", () => {
+test("REV2 FE-08 · «Confirmar y apartar» pregunta antes: qué se aparta, dónde, la guía, y que después TODAVÍA se puede corregir", () => {
   const o = orden([linea(1, "AAA-1", 2), linea(2, "BBB-2", 3, { almacen: "TEX3" })]);
   const html = pintar(o, { dialogo: { tipo: "confirmar" } });
   const v = ventana(html);
-  assert.match(v, /Confirmar OV-00012 Se apartan 5 piezas en 2 renglones \(ENSAYO · TEX3\), todo o nada\. Guía: JT1\. Después de confirmar la orden ya no se puede editar \(ni la guía\) ?; deshacerlo requiere a un administrador\./);
-  // Sin guía se dice, que es justo lo que ya no se va a poder anotar.
+  // La verdad nueva (0071): se aparta todo o nada; después se puede corregir y cada cambio queda registrado.
+  assert.match(v, /Confirmar OV-00012 Se apartan 5 piezas en 2 renglones \(ENSAYO · TEX3\), todo o nada\. Guía: JT1\. Después de confirmar la orden todavía se puede corregir \(también la guía\): cada cambio vuelve a apartar el stock, todo o nada, y queda registrado en la bitácora con quién lo hizo\./);
+  assert.doesNotMatch(v, /ya no se puede editar|administrador/);
+  // Sin guía se sigue diciendo (ya se puede anotar después, pero conviene saberlo antes de apartar).
   assert.match(ventana(pintar({ ...o, guia: null }, { dialogo: { tipo: "confirmar" } })), /No tiene guía capturada\./);
   // El botón del diálogo es el segundo «Confirmar y apartar» (el primero es el de la barra).
   assert.equal(html.match(/Confirmar y apartar/g).length, 2);
+});
+
+// ── Tercera revisión (9-oct-2026) ─────────────────────────────────────────────
+
+test("REV3 PANT-2 · «hay cambios sin guardar» ante una ACCIÓN ofrece también descartarlos y seguir; para salir, no cambió", () => {
+  const o = confirmada([linea(1, "AAA-1", 2, { reservado: 2, apartado: 2, libre: 48 })], { permisos: DE_OPERADOR });
+  // La orden ya no va: quitó su único renglón. Ese cambio NO se puede guardar («…Si ya no va, cancélala»).
+  const sinRenglones = (f) => ({ ...f, lineas: [] });
+  const sucio = (destino, de = o) =>
+    pintar(de, { ...comoOperador, editar: sinRenglones, dialogo: { tipo: "sucio", destino } });
+
+  // Va a cancelarla y se le pregunta por sus cambios. Antes sólo podía guardarlos (imposible) o seguir
+  // editando: ahora hay una tercera salida, en medio, y el texto la nombra.
+  const cancelar = sucio({ tipo: "accion", accion: "cancelar" });
+  assert.match(ventana(cancelar), /Hay cambios sin guardar Antes de mover la orden hay que guardar lo que cambiaste, o descartarlo: la acción se aplica sobre lo que está guardado\. Seguir editando Descartar cambios y continuar Guardar y continuar\s*$/);
+  // Descartar pierde lo escrito: va en rosa, como «Salir sin guardar». La acción principal sigue siendo guardar.
+  assert.match(boton(cancelar, "Descartar cambios y continuar"), /text-rose-600/);
+  assert.match(boton(cancelar, "Guardar y continuar"), /bg-indigo-600/);
+  // Vale para cualquier acción (marcar DELIVERED tras un 409 «no alcanzó», confirmar un borrador…).
+  for (const accion of ["entregar", "borrar"]) {
+    assert.ok(boton(sucio({ tipo: "accion", accion }), "Descartar cambios y continuar"), accion);
+  }
+  const borrador = orden([linea(1, "AAA-1", 2)], { permisos: DE_OPERADOR });
+  assert.ok(boton(sucio({ tipo: "accion", accion: "confirmar" }, borrador), "Descartar cambios y continuar"));
+
+  // Para SALIR (o abrir otra orden) nada cambió: ahí descartar ya es la acción, y el de en medio es guardar.
+  for (const destino of [{ tipo: "salir" }, { tipo: "abrir", folio: "OV-00099" }]) {
+    const salir = sucio(destino);
+    assert.match(ventana(salir), /Si sales ahora, lo que cambiaste en esta orden se pierde\. Seguir editando Guardar y salir Salir sin guardar\s*$/);
+    assert.equal(boton(salir, "Descartar cambios y continuar"), null);
+  }
 });

@@ -588,7 +588,14 @@ class HuellasTest(unittest.TestCase):
                                         "ov_ordenes", "ov_lineas", "ov_mensajes", "ov_archivos")}
         self.assertEqual(e["0068_mudanza_ov_a_ventas_y_almacen"]["relaciones"], puentes)
         self.assertEqual(e["0068_mudanza_ov_a_ventas_y_almacen"]["invoker"], puentes)
-        self.assertEqual(len(e["0068_mudanza_ov_a_ventas_y_almacen"]["funciones"]), 14)
+        # La 0071 (editar una confirmada) vuelve a definir dos de las 14 guardias que
+        # recreó la 0068, ya con su puerta: la huella de una función es de la ÚLTIMA
+        # que la define, así que a la 0068 le quedan 12 y esas dos son de la 0071.
+        self.assertEqual(len(e["0068_mudanza_ov_a_ventas_y_almacen"]["funciones"]), 12)
+        self.assertEqual(set(e["0071_ov_editar_confirmada"]["funciones"]),
+                         {("ops", "tg_ov_ordenes_guarda", 0), ("ops", "tg_ov_lineas_guarda", 0)})
+        for cuerpo in e["0071_ov_editar_confirmada"]["funciones"].values():
+            self.assertIn("app.ov_edicion", cuerpo)
         self.assertTrue({("ventas", "ov_ordenes"), ("ventas", "ov_folio"), ("almacen", "almacenes"),
                          ("almacen", "almacenes_hist")} <= e["0064_ops_ordenes_venta"]["relaciones"])
         self.assertTrue({("almacen", "stock_almacen"), ("almacen", "stock_mov")}
@@ -966,16 +973,17 @@ class MainTest(unittest.TestCase):
         b = BaseFalsa(tabla=True, filas=[{"migracion": n, "detalle": {}}
                                          for n in [m.nombre for m in A.listar_migraciones(MIGRACIONES)]
                                          if n < "0068"])
-        # Las reales 0068-0070 se registran solas (la base falsa entiende sus tres
-        # formas de insert): una fila cada una, la suya.
+        # Las reales 0068-0071 se registran solas (la base falsa entiende sus tres
+        # formas de insert; la 0071 usa `values`, como la 0064): una fila cada una, la suya.
         rc, out, paridad = self._correr([], b)
         self.assertEqual(rc, 0)
-        nuevas = ["0068_mudanza_ov_a_ventas_y_almacen", "0069_almacen_locations", "0070_almacen_historial_movimientos"]
-        self.assertEqual([f["migracion"] for f in b.filas[-3:]], nuevas)
-        self.assertEqual([f["detalle"] for f in b.filas[-3:]], [{"propia": True}] * 3)
+        nuevas = ["0068_mudanza_ov_a_ventas_y_almacen", "0069_almacen_locations",
+                  "0070_almacen_historial_movimientos", "0071_ov_editar_confirmada"]
+        self.assertEqual([f["migracion"] for f in b.filas[-4:]], nuevas)
+        self.assertEqual([f["detalle"] for f in b.filas[-4:]], [{"propia": True}] * 4)
         for n in nuevas:
             self.assertEqual(sum(1 for f in b.filas if f["migracion"] == n), 1, n)
-        self.assertEqual(b.commits, 3)
+        self.assertEqual(b.commits, 4)
         paridad.assert_called_once()
 
     def _sandbox_del_9_oct(self) -> BaseFalsa:

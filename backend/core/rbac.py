@@ -274,8 +274,9 @@ REGLAS: tuple[tuple[str, str, str], ...] = (
     # de quien opera → `operador`. BORRAR (la orden o un PDF) → `admin`.
     #
     # Esto es SÓLO EL PISO POR VERBO. Los permisos finos dependen del ESTADO de
-    # la orden —un operador cancela su borrador pero no una confirmada; «salió
-    # tarde» (POST /salio-tarde) es un `POST` y es de admin— y esta tabla, que
+    # la orden —desde el 9-oct (0071) un operador también edita y cancela una
+    # confirmada, pero no una entregada; «salió tarde» (POST /salio-tarde) es un
+    # `POST` y es de admin— y esta tabla, que
     # mira prefijos, no puede verlo: se deciden DENTRO del servicio
     # (`services/ordenes_venta.permisos`), que contesta el 403 con su porqué.
     # Ojo con el GET: BAJAR UN PDF también es GET, pero el servicio lo sube a

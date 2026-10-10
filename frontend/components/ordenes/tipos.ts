@@ -10,7 +10,10 @@
  * EL MODELO (plan v3 de Eduardo, 5-oct-2026; contrato en
  * docs/MIGRACION_0064_0065_GUIA_AGENTE.md): la orden sólo existe en BODEGAS DE
  * KUBERA y la bodega va POR RENGLÓN. Confirmar APARTA todo o nada contra
- * `almacen.stock_almacen`; fuera de borrador el contenido ya no cambia.
+ * `almacen.stock_almacen`. Una CONFIRMADA todavía se puede corregir (0071,
+ * 9-oct-2026): guardar vuelve a apartar, también todo o nada, y deja en la
+ * bitácora quién cambió qué. Lo que ya salió, y la orden entregada o cancelada,
+ * no cambian.
  *
  * La regla que atraviesa todos los tipos: `null` significa «no lo sabemos» y
  * NUNCA se colapsa a 0. `libre: null` es un SKU sin fila de saldo en esa
@@ -41,9 +44,12 @@ export type Via = "panel" | "api" | "claude" | "automatico";
 
 export type DevolucionEstado = "pendiente" | "recibida" | "cerrada";
 
-/** El catálogo CERRADO de `ventas.ov_mensajes.evento` (CHECK de la 0064). */
+/**
+ * El catálogo CERRADO de `ventas.ov_mensajes.evento` (CHECK de la 0064, más
+ * `editada` —la corrección de una confirmada— que agregó la 0071).
+ */
 export type EventoOrden =
-  | "creada" | "borrador_guardado" | "descartada" | "confirmada" | "no_alcanzo"
+  | "creada" | "borrador_guardado" | "descartada" | "confirmada" | "editada" | "no_alcanzo"
   | "entregada_parcial" | "entregada" | "cancelada" | "borrada_admin" | "canal_cancelo"
   | "devolucion_esperada" | "devolucion_recibida" | "devolucion_aprobada"
   | "devolucion_merma" | "devolucion_cerrada";
@@ -58,14 +64,17 @@ export interface Bodega {
   cuenta_para_woo: boolean;
 }
 
-/** Un renglón tal como se CAPTURA (alta y guardado de un borrador). */
+/** Un renglón tal como se CAPTURA (el alta, y el guardado de un borrador o de una confirmada). */
 export interface LineaEntrada {
   sku: string;
   cantidad: number;
   precio_unitario: number;
   titulo?: string | null;
   imagen?: string | null;
-  /** Código de la bodega de kubera de la que sale. Obligatoria para confirmar. */
+  /**
+   * Código de la bodega de kubera de la que sale. Obligatoria para confirmar, y
+   * en todo renglón por entregar de una confirmada (ahí se aparta al guardar).
+   */
   almacen?: string | null;
 }
 
@@ -86,6 +95,7 @@ export interface LineaOrden {
   reservado: number;
   /** Piezas que salieron al entregar este renglón (`null` = todavía no sale). */
   entregado: number | null;
+  /** Con fecha, el renglón YA SALIÓ: al editar una confirmada se ve, pero no se toca ni se quita. */
   entregado_at: string | null;
   entregado_por: string | null;
   /** Saldo del SKU EN SU BODEGA (`almacen.stock_almacen`). `null` = sin bodega o sin fila de saldo. */
@@ -175,10 +185,16 @@ export interface OrdenResumen {
 
 /** Qué puede hacer QUIEN PREGUNTA con esta orden. Lo decide el backend; aquí sólo se pinta. */
 export interface Permisos {
-  /** Editar encabezado y renglones: sólo en borrador. Fuera de borrador nada cambia. */
+  /**
+   * Editar encabezado y renglones: un borrador, o una CONFIRMADA (0071) mientras
+   * el backend lo permita —quien escribe, con la bandera encendida, sin el
+   * «¿salió?» pendiente y con la migración aplicada—. Cuando no, el porqué
+   * viene en `porque.editar`. Entregada y cancelada no se editan.
+   */
   editar: boolean;
   confirmar: boolean;
   entregar: boolean;
+  /** Cancelar: un borrador o una confirmada, quien escribe (la confirmada ya no es sólo de admin). */
   cancelar: boolean;
   /** Admin: borrado lógico (queda quién y por qué). */
   borrar: boolean;
@@ -225,7 +241,12 @@ export interface RespOrden {
   mensaje?: string;
 }
 
-/** El cuerpo del alta y del guardado de un borrador. Lo que no se manda no se toca. */
+/**
+ * El cuerpo del alta y del guardado (de un borrador o de una confirmada). Lo
+ * que no se manda no se toca. `lineas`, si viaja, es el documento ENTERO: en
+ * una confirmada incluye los renglones que ya salieron, tal cual (el servidor
+ * los reconoce y no los toca).
+ */
 export interface DatosOrden {
   cliente?: string | null;
   canal?: string | null;
@@ -302,7 +323,7 @@ export interface EstadoModulo {
     nombre: string;
     rol: string;
     via: Via;
-    /** Puede cancelar una confirmada y borrar. */
+    /** Puede borrar, quitar un PDF y registrar un «salió tarde». (Cancelar una confirmada ya es de quien escribe.) */
     admin: boolean;
     /** Puede crear y mover órdenes (operador o admin). */
     escribe: boolean;
@@ -322,6 +343,43 @@ export interface Mensaje {
   autor_nombre: string | null;
   via: Via;
   creado_at: string;
+}
+
+/**
+ * Lo que traen los `datos` de un mensaje cuando se guardaron cambios en los
+ * renglones (`borrador_guardado`, y `editada` al corregir una confirmada).
+ * `datos` es un jsonb que sólo se agrega: el chat lo LEE con cuidado
+ * (`renglonesDe` y `apartadoDe` de ChatOrden.tsx) y lo deja en estas formas.
+ */
+export interface RenglonCambiado {
+  sku: string;
+  /** [antes, después]. Sólo viene lo que cambió. */
+  cantidad?: [number, number];
+  precio_unitario?: [number, number];
+  /**
+   * [antes, después] del título y de la imagen del renglón (`null` = no tenía,
+   * o se quedó sin). No son números: el chat sólo dice QUE cambiaron.
+   */
+  titulo?: [string | null, string | null];
+  imagen?: [string | null, string | null];
+}
+
+/** `datos.renglones`: qué SKUs entraron, cuáles se quitaron y cuáles cambiaron. */
+export interface RenglonesEditados {
+  agregados: string[];
+  quitados: string[];
+  cambiados: RenglonCambiado[];
+}
+
+/**
+ * Una entrada de `datos.apartado` (sólo en `editada`): cuánto se movió el
+ * apartado de un SKU en una bodega al guardar. Positivo = se apartaron más
+ * piezas; negativo = se soltaron. Sólo vienen los que se movieron.
+ */
+export interface ApartadoMovido {
+  sku: string;
+  almacen: string;
+  delta: number;
 }
 
 /**

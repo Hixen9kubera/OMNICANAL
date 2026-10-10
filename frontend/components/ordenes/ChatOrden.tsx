@@ -15,15 +15,21 @@
  *     así que no puede faltar ni contradecir a la orden.
  *   · USUARIO: lo que escribe una persona. Burbujas, las propias a la derecha.
  *
- * EL CATÁLOGO DE EVENTOS ES CERRADO (CHECK `ov_mensajes_evento_chk` de la 0064;
- * `EventoOrden` en tipos.ts) y `EVENTOS` lo cubre entero: TypeScript no deja
- * compilar si a la base se le agrega un evento y aquí falta su icono. Tres cosas
- * que cambiaron con el modelo del 6-oct-2026 y que este chat tiene que decir:
+ * EL CATÁLOGO DE EVENTOS ES CERRADO (CHECK `ov_mensajes_evento_chk`: el de la
+ * 0064 más `editada`, que agregó la 0071; `EventoOrden` en tipos.ts) y `EVENTOS`
+ * lo cubre entero: TypeScript no deja compilar si a la base se le agrega un
+ * evento y aquí falta su icono. Lo que cambió con el modelo del 6-oct-2026 (y
+ * con la 0071) y que este chat tiene que decir:
  *   · Se aparta TODO O NADA. Si no alcanzó, la orden NO se confirmó: el evento
  *     `no_alcanzo` va en ámbar (alguien tiene que hacer algo), no como un paso más.
  *   · Se entrega renglón por renglón, con 0..cantidad piezas: la mini-tabla dice
  *     «salieron N de M», no «N entregadas».
  *   · `canal_cancelo` es una PREGUNTA a Bodega («¿salió?»), también en ámbar.
+ *   · Una CONFIRMADA se puede corregir (0071). `editada` es el rastro de quién
+ *     tocó una orden que ya tenía stock apartado: dice qué campo cambió (antes →
+ *     después), qué renglones entraron, salieron o cambiaron, y cuánto se movió
+ *     el apartado en cada bodega. El renglón que sólo CAMBIÓ DE BODEGA se dice
+ *     así, no como una baja y un alta (la bitácora lo trae en las dos listas).
  * Un mensaje del sistema SIN evento (hoy, el aviso de un PDF adjuntado o
  * quitado) es un aviso neutro: no es una transición de la orden.
  *
@@ -61,12 +67,15 @@ import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent, ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
-  ArrowDown, Ban, CheckCheck, CircleCheck, CircleHelp, FilePlus2, FileX, Info, Loader2, PackageCheck,
-  PackageMinus, PackageOpen, PackagePlus, PackageX, Paperclip, Pencil, Send, Trash2, Truck, Undo2,
+  ArrowDown, Ban, CheckCheck, CircleCheck, CircleHelp, FilePen, FilePlus2, FileX, Info, Loader2,
+  PackageCheck, PackageMinus, PackageOpen, PackagePlus, PackageX, Paperclip, Pencil, Send, Trash2, Truck,
+  Undo2,
 } from "lucide-react";
 import { ApiError, mensajeDeError } from "@/lib/api";
 import { enviarMensaje, leerMensajes } from "./api";
-import type { EstadoOrden, EventoOrden, Mensaje, RespMensajes } from "./tipos";
+import type {
+  ApartadoMovido, EstadoOrden, EventoOrden, Mensaje, RenglonCambiado, RenglonesEditados, RespMensajes,
+} from "./tipos";
 import {
   Boton, CLASE_CAMPO, ROTULO_VIA, claveDeIntento, dinero, fechaHora, fechaLarga, num, quien,
   rotuloCanal, type ClaveIntento,
@@ -568,6 +577,11 @@ export const EVENTOS: Record<EventoOrden, Evento> = {
   // lo escribe (§5.3, punto 23): se pinta neutro, sin inventarle un sentido.
   descartada: { icono: FileX, tono: TONO_SLATE, rotulo: "Descartada" },
   confirmada: { icono: CircleCheck, tono: TONO_INDIGO, rotulo: "Confirmada: stock apartado" },
+  // La corrección de una CONFIRMADA (0071). No es el papeleo de un borrador:
+  // tocó una orden que ya tenía su stock apartado (y, si cambiaron renglones,
+  // lo movió). Va con el color de la confirmada y no en ámbar: no le pide nada
+  // a nadie.
+  editada: { icono: FilePen, tono: TONO_INDIGO, rotulo: "Orden confirmada editada" },
   // No es un paso de la orden: es el intento que NO pasó. Sigue en borrador.
   no_alcanzo: { icono: PackageX, tono: TONO_AMBAR, rotulo: "No alcanzó el stock", llama: true },
   entregada_parcial: { icono: PackageCheck, tono: TONO_INDIGO, rotulo: "Entrega parcial" },
@@ -604,11 +618,20 @@ export function eventoDe(m: Pick<Mensaje, "evento" | "datos">): Evento {
   return esDePdf(m.datos) ? AVISO_PDF : AVISO_NEUTRO;
 }
 
-function RenglonSistema({ m, fresco }: { m: Mensaje; fresco: boolean }) {
+/** Hasta `MAX_RENGLONES` SKUs en una línea; de los demás se dice cuántos son. */
+const listaCorta = (skus: string[]): string => skus.slice(0, MAX_RENGLONES).join(", ")
+  + (skus.length > MAX_RENGLONES ? ` y ${num(skus.length - MAX_RENGLONES)} más` : "");
+
+/** Un movimiento de la bitácora. Se exporta sólo para pintarlo en las pruebas (`chat_traza.prueba.cjs`). */
+export function RenglonSistema({ m, fresco }: { m: Mensaje; fresco: boolean }) {
   const ev = eventoDe(m);
   const Icono = ev.icono;
   const lineas = lineasDe(m.datos);
   const cambios = cambiosDe(m.datos);
+  const renglones = renglonesDe(m.datos);
+  // Lo que entró y lo que se quitó, ya sin los que sólo cambiaron de bodega.
+  const reparto = renglones ? repartoDe(renglones) : null;
+  const apartado = apartadoDe(m.datos);
   // Un aviso pesa menos que una transición; lo que pide una respuesta, más.
   const letra = !m.evento ? "font-medium text-slate-600"
     : ev.llama ? "font-semibold text-amber-900" : "font-semibold text-slate-800";
@@ -667,6 +690,72 @@ function RenglonSistema({ m, fresco }: { m: Mensaje; fresco: boolean }) {
               ))}
             </ul>
           )}
+          {renglones && reparto && (
+            // Qué pasó con los renglones, con el mismo código de los campos de
+            // arriba: lo que ya no está va tachado; lo nuevo, en negro.
+            <ul className="mt-1.5 space-y-0.5 text-[11.5px] text-slate-600">
+              {reparto.movidos.length > 0 && (
+                // Ni entró ni salió: sigue en la orden (sin tachar), en otra bodega.
+                <li className="break-words"
+                    title="Sigue en la orden: sólo cambió la bodega de la que sale. La de ahora se ve en los renglones de este movimiento.">
+                  <span className="font-semibold text-slate-700">
+                    {reparto.movidos.length === 1 ? "Cambió de bodega:" : "Cambiaron de bodega:"}
+                  </span>{" "}
+                  <span className="font-mono font-semibold text-slate-800">{listaCorta(reparto.movidos)}</span>
+                </li>
+              )}
+              {reparto.agregados.length > 0 && (
+                <li className="break-words">
+                  <span className="font-semibold text-slate-700">
+                    {reparto.agregados.length === 1 ? "Agregado:" : "Agregados:"}
+                  </span>{" "}
+                  <span className="font-mono font-semibold text-slate-800">{listaCorta(reparto.agregados)}</span>
+                </li>
+              )}
+              {reparto.quitados.length > 0 && (
+                <li className="break-words">
+                  <span className="font-semibold text-slate-700">
+                    {reparto.quitados.length === 1 ? "Quitado:" : "Quitados:"}
+                  </span>{" "}
+                  <span className="font-mono text-slate-400 line-through decoration-slate-300">{listaCorta(reparto.quitados)}</span>
+                </li>
+              )}
+              {renglones.cambiados.slice(0, MAX_RENGLONES).map((c, i) => {
+                const numeros = cambiosDeRenglon(c);
+                return (
+                  <li key={`${c.sku}|${i}`} className="break-words">
+                    <span className="font-mono font-semibold text-slate-700">{c.sku}:</span>
+                    {numeros.map((x, j) => (
+                      <span key={x.rotulo}>
+                        {j > 0 ? " · " : " "}{x.rotulo}{" "}
+                        <span className="text-slate-400 line-through decoration-slate-300">{x.antes}</span>
+                        {" → "}
+                        <span className="font-semibold text-slate-800">{x.despues}</span>
+                      </span>
+                    ))}
+                    {/* El título y la imagen no llevan antes → después a la vista: sólo que cambiaron. */}
+                    {notasDeRenglon(c).map((n, j) => (
+                      <span key={n.texto} title={n.detalle}>{numeros.length + j > 0 ? " · " : " "}{n.texto}</span>
+                    ))}
+                  </li>
+                );
+              })}
+              {renglones.cambiados.length > MAX_RENGLONES && (
+                <li className="text-slate-400">
+                  y {num(renglones.cambiados.length - MAX_RENGLONES)} más con cambios
+                </li>
+              )}
+            </ul>
+          )}
+          {apartado.length > 0 && (
+            // Sólo al corregir una confirmada: lo que el cambio movió en el saldo.
+            <p className="mt-1.5 break-words text-[11.5px] leading-snug text-slate-600"
+               title="Cuánto se movió el apartado de cada SKU en su bodega al guardar este cambio: + se apartaron más piezas, − se soltaron.">
+              <span className="font-semibold text-slate-700">apartado:</span>{" "}
+              <span className="tabular-nums">{apartado.slice(0, MAX_RENGLONES).map(textoApartado).join(" · ")}</span>
+              {apartado.length > MAX_RENGLONES ? ` · y ${num(apartado.length - MAX_RENGLONES)} más` : ""}
+            </p>
+          )}
         </div>
       </div>
     </div>
@@ -680,8 +769,9 @@ function RenglonSistema({ m, fresco }: { m: Mensaje; fresco: boolean }) {
  * `services/ordenes_venta.py` (léase junto con ese archivo). Todas traen `sku`,
  * `titulo`, `cantidad` y `almacen`; lo demás depende del evento:
  *   · `reservado` viene SIEMPRE, y vale 0 donde no aplica. Es lo que el renglón
- *     apartó (confirmada; y `creada` sólo en la orden automática, que nace
- *     confirmada) o lo que TENÍA apartado y se soltó (cancelada, borrada_admin,
+ *     apartó (confirmada; `editada`, que trae los renglones por entregar como
+ *     quedaron; y `creada` sólo en la orden automática, que nace confirmada) o
+ *     lo que TENÍA apartado y se soltó (cancelada, borrada_admin,
  *     devolucion_esperada).
  *   · `entregado` es lo que salió del renglón: en `entregada`/`entregada_parcial`
  *     vienen sólo los renglones de ESA entrega; al cancelar vienen todos, con
@@ -765,8 +855,11 @@ export function detalleLinea(evento: string | null, l: LineaDato): { texto: stri
         ? { texto: `${num(r)} ${r === 1 ? "apartada" : "apartadas"}`, tono: VERDE }
         : { texto: piezas, tono: GRIS };
     case "confirmada":
+    case "editada":
       // Se aparta todo o nada: en una confirmada lo apartado ES la cantidad.
       // Si la bitácora dijera otra cosa, se pinta lo que dice, en ámbar.
+      // (`editada` trae los renglones POR ENTREGAR como quedaron tras el cambio,
+      // ya con su apartado: se leen igual que los de la confirmación.)
       if (r === null) return { texto: piezas, tono: GRIS };
       return r >= c ? { texto: `${num(r)} ${r === 1 ? "apartada" : "apartadas"}`, tono: VERDE }
         : { texto: `${num(r)} de ${num(c)} apartadas`, tono: AMBAR };
@@ -809,11 +902,11 @@ interface Cambio {
 }
 
 /**
- * `datos.cambios` de un mensaje (hoy, el de `borrador_guardado`): el antes y el
- * después de cada campo del encabezado. Se aceptan las tres formas razonables de
- * un jsonb —lista de {campo, antes, despues}, objeto {campo: {antes, despues}} u
- * objeto {campo: [antes, después]}— porque la bitácora sólo se agrega: lo que ya
- * se escribió con una forma no se reescribe con otra.
+ * `datos.cambios` de un mensaje (los de `borrador_guardado` y `editada`): el
+ * antes y el después de cada campo del encabezado. Se aceptan las tres formas
+ * razonables de un jsonb —lista de {campo, antes, despues}, objeto {campo:
+ * {antes, despues}} u objeto {campo: [antes, después]}— porque la bitácora sólo
+ * se agrega: lo que ya se escribió con una forma no se reescribe con otra.
  */
 export function cambiosDe(datos: Record<string, unknown> | null): Cambio[] {
   const crudos = datos?.cambios;
@@ -843,9 +936,149 @@ export function cambiosDe(datos: Record<string, unknown> | null): Cambio[] {
 }
 
 /**
- * Las columnas de `ventas.ov_ordenes` que un borrador puede cambiar, como se
- * llaman en la pantalla. Ya no está «Almacén»: la bodega dejó de ser del
- * encabezado y va por renglón (se ve en la mini-tabla de cada movimiento).
+ * `datos.renglones` de un mensaje (`borrador_guardado` y `editada`; lo arma
+ * `_dif_lineas` del servicio): qué SKUs entraron, cuáles se quitaron y, de los
+ * que siguen, qué les cambió: el antes y el después de su cantidad y de su
+ * precio, y de su título y su imagen. `null` si el mensaje no trae nada de eso
+ * que decir (no vino, o sólo se reordenaron).
+ *
+ * Aquí se LEE lo que dice la bitácora, tal cual. Un renglón que cambió de
+ * BODEGA viene como quitado y agregado a la vez (la llave del renglón es SKU +
+ * bodega): eso lo aparta `repartoDe`, al pintar.
+ */
+export function renglonesDe(datos: Record<string, unknown> | null): RenglonesEditados | null {
+  const crudo = datos?.renglones;
+  if (!crudo || typeof crudo !== "object" || Array.isArray(crudo)) return null;
+  const o = crudo as Record<string, unknown>;
+  const skus = (v: unknown): string[] =>
+    (Array.isArray(v) ? v : []).map(cadena).filter((s): s is string => s !== null);
+  // [antes, después], los dos con número: medio par no es un cambio que se pueda decir.
+  const par = (v: unknown): [number, number] | null => {
+    if (!Array.isArray(v) || v.length < 2) return null;
+    const antes = numero(v[0]);
+    const despues = numero(v[1]);
+    return antes === null || despues === null ? null : [antes, despues];
+  };
+  // [antes, después] de un TEXTO (el título, la imagen). Aquí `null` sí dice algo
+  // —no tenía, o se quedó sin—; lo que no es un cambio es medio par o dos iguales.
+  const parDeTexto = (v: unknown): [string | null, string | null] | null => {
+    if (!Array.isArray(v) || v.length < 2) return null;
+    const antes = cadena(v[0]);
+    const despues = cadena(v[1]);
+    return antes === despues ? null : [antes, despues];
+  };
+  const cambiados: RenglonCambiado[] = [];
+  for (const x of Array.isArray(o.cambiados) ? o.cambiados : []) {
+    if (!x || typeof x !== "object") continue;
+    const c = x as Record<string, unknown>;
+    const sku = cadena(c.sku);
+    const cantidad = par(c.cantidad);
+    const precio = par(c.precio_unitario);
+    const titulo = parDeTexto(c.titulo);
+    const imagen = parDeTexto(c.imagen);
+    // El renglón al que SÓLO le cambió el título o la imagen también se dice: el
+    // `cuerpo` del mensaje ya lo cuenta («1 con cambios»), y sin su línea ese
+    // rastro quedaba en la base sin que nadie pudiera leerlo.
+    if (!sku || (!cantidad && !precio && !titulo && !imagen)) continue;
+    const cambiado: RenglonCambiado = { sku };
+    if (cantidad) cambiado.cantidad = cantidad;
+    if (precio) cambiado.precio_unitario = precio;
+    if (titulo) cambiado.titulo = titulo;
+    if (imagen) cambiado.imagen = imagen;
+    cambiados.push(cambiado);
+  }
+  const r: RenglonesEditados = { agregados: skus(o.agregados), quitados: skus(o.quitados), cambiados };
+  return r.agregados.length || r.quitados.length || r.cambiados.length ? r : null;
+}
+
+/**
+ * Lo que entró y lo que se quitó, como se PINTA: aparte los renglones que sólo
+ * CAMBIARON DE BODEGA.
+ *
+ * El servicio casa los renglones por SKU + bodega (`_dif_lineas`), así que
+ * mover uno de bodega —o elegírsela al que todavía no tenía— llega como
+ * «quitado» y «agregado» a la vez. Pintado tal cual, la bitácora decía «Quitado:
+ * X», tachado, de un producto que seguía en la orden; en `editada` lo explicaba
+ * la línea del apartado, en un borrador nada. El SKU que viene en las DOS listas
+ * sale de ambas y se dice lo que pasó: cambió de bodega (a cuál, lo dice la
+ * mini-tabla del mismo movimiento).
+ *
+ * Se emparejan UNO A UNO y sin distinguir mayúsculas: un SKU puede ir repartido
+ * en varias bodegas, y lo que sobra de un lado sigue siendo un alta o una baja.
+ */
+export function repartoDe(r: Pick<RenglonesEditados, "agregados" | "quitados">): {
+  movidos: string[]; agregados: string[]; quitados: string[];
+} {
+  const quitados = [...r.quitados];
+  const movidos: string[] = [];
+  const agregados: string[] = [];
+  for (const sku of r.agregados) {
+    const i = quitados.findIndex((q) => q.toLowerCase() === sku.toLowerCase());
+    if (i < 0) { agregados.push(sku); continue; }
+    quitados.splice(i, 1);
+    movidos.push(sku);
+  }
+  return { movidos, agregados, quitados };
+}
+
+/** Los cambios de UN renglón, listos para pintar: «cantidad 3 → 5», «precio unit. $10.00 → $12.00». */
+export function cambiosDeRenglon(c: RenglonCambiado): { rotulo: string; antes: string; despues: string }[] {
+  const salida: { rotulo: string; antes: string; despues: string }[] = [];
+  if (c.cantidad) salida.push({ rotulo: "cantidad", antes: num(c.cantidad[0]), despues: num(c.cantidad[1]) });
+  if (c.precio_unitario) {
+    salida.push({ rotulo: "precio unit.", antes: dinero(c.precio_unitario[0]), despues: dinero(c.precio_unitario[1]) });
+  }
+  return salida;
+}
+
+/**
+ * Lo que le cambió a UN renglón y no es un número: su título o su imagen. En la
+ * línea sólo se dice QUE cambiaron («título cambiado»): un título entero —y
+ * menos la dirección de una imagen— no cabe en un renglón de la bitácora. El
+ * antes y el después van en `detalle`, que es el `title` de la nota.
+ */
+export function notasDeRenglon(c: RenglonCambiado): { texto: string; detalle: string }[] {
+  const salida: { texto: string; detalle: string }[] = [];
+  const detalle = (par: [string | null, string | null], vacio: string): string =>
+    `${par[0] ?? vacio} → ${par[1] ?? vacio}`;
+  if (c.titulo) salida.push({ texto: "título cambiado", detalle: detalle(c.titulo, "sin título") });
+  if (c.imagen) salida.push({ texto: "imagen cambiada", detalle: detalle(c.imagen, "sin imagen") });
+  return salida;
+}
+
+/**
+ * `datos.apartado` de `editada`: cuánto movió el cambio el apartado de cada SKU
+ * en su bodega. Sólo lo que de verdad se movió: un delta 0 —o que no es un
+ * número— no dice nada y no se pinta.
+ */
+export function apartadoDe(datos: Record<string, unknown> | null): ApartadoMovido[] {
+  const crudo = datos?.apartado;
+  if (!Array.isArray(crudo)) return [];
+  const salida: ApartadoMovido[] = [];
+  for (const x of crudo) {
+    if (!x || typeof x !== "object") continue;
+    const o = x as Record<string, unknown>;
+    const sku = cadena(o.sku);
+    const delta = numero(o.delta);
+    if (!sku || delta === null || delta === 0) continue;
+    salida.push({ sku, almacen: cadena(o.almacen) ?? "", delta });
+  }
+  return salida;
+}
+
+/**
+ * «+2 ACC-0696 en ENSAYO». El signo se dice SIEMPRE: un «2» solo no dice si se
+ * apartaron dos piezas más o se soltaron dos.
+ */
+export function textoApartado(a: ApartadoMovido): string {
+  return `${a.delta > 0 ? "+" : "−"}${num(Math.abs(a.delta))} ${a.sku}${a.almacen ? ` en ${a.almacen}` : ""}`;
+}
+
+/**
+ * Las columnas de `ventas.ov_ordenes` que cambia una persona al guardar (un
+ * borrador, o una confirmada al corregirla), como se llaman en la pantalla. Ya
+ * no está «Almacén»: la bodega dejó de ser del encabezado y va por renglón (se
+ * ve en la mini-tabla de cada movimiento).
  */
 export const ROTULO_CAMPO: Record<string, string> = {
   cliente: "Cliente",

@@ -18,14 +18,29 @@ se revisan los invariantes de la base entera (ver `Base.tearDown`).
      dice cuál, y queda el aviso `no_alcanzo` en el chat.
   3. La bodega va por renglón y sólo las de kubera con `admite_ov` (TEX3 apagada,
      REVISION y las de Odoo se rechazan con palabras).
-  4. Entrega parcial y total; cancelar (suelta exacto), cancelar con piezas ya
-     afuera (entregada_cancelada + devolución pendiente), borrar (admin, motivo).
-  5. Fuera de borrador el contenido no cambia: 400/409 claros, nunca un 500.
+  4. Entrega parcial y total; cancelar (suelta exacto; una confirmada la cancela
+     cualquiera que escribe), cancelar con piezas ya afuera (entregada_cancelada
+     + devolución pendiente), borrar (admin, motivo).
+  5. Entregada y cancelada ya no cambian: 400/409 claros, nunca un 500.
+  5b. EDITAR UNA CONFIRMADA (migración 0071, que el arranque aplica al final y dos
+     veces): el encabezado; subir, bajar, quitar, agregar y cambiar de bodega con
+     el apartado movido EXACTO por la diferencia; si no alcanza no cambia nada
+     —ni la `rev` ni el chat— y dice cuánto falta; lo que ya salió no se toca;
+     no puede quedar sin renglones por entregar; con el «¿salió?» pendiente, la
+     bandera apagada o la base sin la 0071, no (y por la puerta se le pregunta
+     al CATÁLOGO de la base, no al registro de migraciones; no haber podido
+     preguntar no se dice como «falta»); el rastro `editada`, también del título
+     y la imagen de un renglón; el reintento propio; dos ediciones a la vez, una
+     edición contra la confirmación de OTRA orden por el mismo saldo, y el canal
+     cancelando a media edición.
   6. `rev` vieja → 409. El alta es idempotente por clave, también a la vez.
   7. La liga con la venta (mp_*): todo o nada, formas, FULL rechazada, y la misma
      venta dos veces dice el folio de la que ya la tiene.
-  8. El canal cancela (CAS por estado, repetible): sin salir, en camino (la marca
-     y el «¿salió?» sí/no), ya entregada; borrada o cancelada, nada. Y el tardío.
+  8. El canal cancela (repetible, sin `rev` de quien llama): sin salir, en camino
+     (la marca y el «¿salió?» sí/no), ya entregada; borrada o cancelada, nada. Y
+     el tardío. Sobre una CONFIRMADA su guardia va por estado Y por la `rev` de
+     su propia relectura (lo que suelta y lo que deja escrito salen de la misma
+     foto), y no toca una orden que ya no es de la venta que el canal canceló.
   9. crear_auto, dentro de una transacción que termina en ROLLBACK (como el
      verificador): creada / ya_existia / no_alcanzo, con TODO su contenido.
  10. Permisos por rol, la bandera apagada (sólo borradores), tablas ausentes
@@ -53,7 +68,7 @@ por delante la base de otro (p. ej. una `ov_k` sembrada a mano) por un DSN mal
 puesto. JAMÁS contra kubera ni contra el sandbox.
 Datos: SKUs ZZPRUEBA-*, cuentas CUENTAPRUEBA, correos @prueba.test (repo público).
 
-    cd backend && OV_TEST_DSN=postgresql://postgres@127.0.0.1:54329/ov_b1 \\
+    cd backend && OV_TEST_DSN=postgresql://postgres@127.0.0.1:54341/ov_b1 \\
         python -m unittest tests.test_ordenes_venta_bd -v
 """
 from __future__ import annotations
@@ -68,6 +83,7 @@ import unittest
 import uuid
 from contextlib import contextmanager
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from unittest import mock
 
@@ -116,6 +132,23 @@ M65 = MIGRACIONES / "0065_ops_inventario_kubera.sql"
 M66 = MIGRACIONES / "0066_esquemas_ventas_almacen.sql"
 M67 = MIGRACIONES / "0067_ops_quitar_devoluciones_vs_canal_v.sql"
 M68 = MIGRACIONES / "0068_mudanza_ov_a_ventas_y_almacen.sql"
+M71 = MIGRACIONES / "0071_ov_editar_confirmada.sql"
+
+
+def _guardias(migracion: Path) -> dict[str, str]:
+    """Las dos guardias de la orden —`ops.tg_ov_ordenes_guarda` y
+    `ops.tg_ov_lineas_guarda`— tal como las crea esa migración: la 0068 SIN la
+    puerta de la edición, la 0071 con ella. Sirve para quitar y reponer la puerta
+    en una prueba sin correr la migración entera (que trae su propio COMMIT)."""
+    texto = migracion.read_text(encoding="utf-8")
+    bloques = {}
+    for nombre in ("tg_ov_ordenes_guarda", "tg_ov_lineas_guarda"):
+        m = re.search(r"CREATE OR REPLACE FUNCTION ops\." + nombre + r"\(\).*?\$function\$\s*;",
+                      texto, flags=re.S)
+        assert m, f"{migracion.name} ya no crea ops.{nombre}"
+        bloques[nombre] = m.group(0)
+    return bloques
+
 
 ADMIN = ov.Quien("admin@prueba.test", "Ada Admin", "panel", "admin")
 OPER = ov.Quien("oper@prueba.test", "Olga Operadora", "panel", "operador")
@@ -198,8 +231,8 @@ def _recrear_base() -> None:
 
 def setUpModule() -> None:
     """Una vez por corrida: la base se tira y se recrea (fixture → 0064 → 0065 →
-    0066 → 0067, y otra vez las cuatro: idempotencia), y el pool del backend
-    apunta a ella."""
+    0066 → 0067, y otra vez las cuatro: idempotencia; después la 0068 y la 0071,
+    cada una dos veces), y el pool del backend apunta a ella."""
     global _CN, _PARCHE_DSN
     if not DSN:
         return
@@ -212,13 +245,17 @@ def setUpModule() -> None:
         # Todo dos veces (idempotencia), pero la 0068 va AL FINAL de las dos vueltas:
         # después de la mudanza la 0064 y la 0065 ya no se pueden repetir (en `ops`
         # quedan vistas con esos nombres, no tablas). El runner nunca las repite.
-        for archivo in (FIXTURE, M64, M65, M66, M67, M64, M65, M66, M67, M68, M68):
+        # Y la 0071 (editar una confirmada) después de la 0068, también dos veces:
+        # reescribe las dos guardias que dejó la 0068 y el CHECK del catálogo de
+        # eventos (re-correr la 0068 DESPUÉS de la 0071 quitaría la puerta).
+        for archivo in (FIXTURE, M64, M65, M66, M67, M64, M65, M66, M67, M68, M68, M71, M71):
             cur.execute(archivo.read_text(encoding="utf-8"))
         cur.execute("select migracion, count(*) from ops.migraciones group by 1 order by 1")
         assert cur.fetchall() == [("0064_ops_ordenes_venta", 2), ("0065_ops_inventario_kubera", 2),
                                   ("0066_esquemas_ventas_almacen", 2),
                                   ("0067_ops_quitar_devoluciones_vs_canal_v", 2),
-                                  ("0068_mudanza_ov_a_ventas_y_almacen", 2)]
+                                  ("0068_mudanza_ov_a_ventas_y_almacen", 2),
+                                  ("0071_ov_editar_confirmada", 2)]
         # La 0065 re-aplicada vuelve a crear la vista; la 0067 que va después la quita.
         cur.execute("select to_regclass('ops.devoluciones_vs_canal_v') is null")
         assert cur.fetchone() == (True,), "la 0067 no quitó ops.devoluciones_vs_canal_v"
@@ -392,6 +429,24 @@ class Base(unittest.TestCase):
         [h.join(60) for h in hilos]
         return salida
 
+    @contextmanager
+    def rechazos_del_canal(self):
+        """Lo que la base le rechazó a `canal_cancelo` mientras dura el bloque, en
+        orden: `[(clase, detalle)]`. No sustituye nada: es la `_transicion` de
+        verdad, con un apuntador. Sirve para fijar POR DÓNDE salió una carrera."""
+        real, vistos = ov._transicion, []
+
+        def apunta(operacion, sql, params, cur=None):
+            try:
+                return real(operacion, sql, params, cur)
+            except ov._Rechazo as r:
+                if operacion == "canal_cancelo":
+                    vistos.append((r.clase, r.detalle))
+                raise
+
+        with mock.patch.object(ov, "_transicion", apunta):
+            yield vistos
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 class Ciclo(Base):
@@ -453,10 +508,11 @@ class Ciclo(Base):
                          [(5, 10, 5, 5), (3, 4, 3, 1)])
         self.assertEqual((self.saldo(a), self.saldo(b)), ((10, 5, 5), (4, 3, 1)))
         p = o["permisos"]
-        self.assertTrue(p["entregar"])
-        self.assertFalse(p["editar"] or p["confirmar"] or p["cancelar"])
-        self.assertIn("su contenido no cambia", p["porque"]["editar"])
-        self.assertIn("administrador", p["porque"]["cancelar"])
+        # Confirmada, quien escribe la entrega, la EDITA y la CANCELA (0071): ya no
+        # hace falta un administrador. Lo que no vuelve es confirmarla.
+        self.assertTrue(p["entregar"] and p["editar"] and p["cancelar"])
+        self.assertFalse(p["confirmar"] or p["borrar"])
+        self.assertEqual(p["porque"]["confirmar"], "Sólo un borrador se puede confirmar")
 
         e = ov.entregar(o["id"], 3, OPER)
         self.assertEqual(e["mensaje"], "Entregada a la paquetería.")
@@ -465,6 +521,9 @@ class Ciclo(Base):
                           o["renglones_entregados"]), ("entregada", 4, 0, 8, 2))
         self.assertEqual((o["entregada_por"], o["entregada_nombre"]),
                          ("oper@prueba.test", "Olga Operadora"))
+        # Entregada, ya no se edita ni se cancela a mano, y dice por qué.
+        self.assertFalse(o["permisos"]["editar"] or o["permisos"]["cancelar"])
+        self.assertIn("su contenido no cambia", o["permisos"]["porque"]["editar"])
         for l in o["lineas"]:
             self.assertEqual((l["reservado"], l["entregado"], l["entregado_por"]),
                              (0, l["cantidad"], "oper@prueba.test"))
@@ -787,26 +846,36 @@ class Cancelar(Base):
         otra = self.crear([L(a, 1)], clave=clave)
         self.assertNotEqual(otra["id"], o["id"])
 
-    def test_una_confirmada_la_cancela_un_admin_con_motivo_y_suelta_exacto(self):
+    def test_una_confirmada_la_cancela_quien_escribe_con_motivo_y_suelta_exacto(self):
+        """Decisión de Brandon (9-oct-2026): cancelar una confirmada ya NO es sólo
+        de administrador. Lo que se conserva: quien sólo lee no puede, y el motivo
+        (5 caracteres o más) sigue siendo obligatorio."""
         a, b = self.sku("A"), self.sku("B")
         self.siembra(a, 6)
         self.siembra(b, 2)
         o = self.confirmada([L(a, 4), L(b, 2)])
         self.assertEqual((self.saldo(a), self.saldo(b)), ((6, 4, 2), (2, 2, 0)))
-        with self.assertRaises(ov.SinPermiso):
-            ov.cancelar(o["id"], o["rev"], OPER, "El cliente ya no la quiere")
-        for corto in ("", "no", "    x   "):
-            with self.assertRaises(ov.Invalido) as e:
-                ov.cancelar(o["id"], o["rev"], ADMIN, corto)
-            self.assertIn("5 caracteres", str(e.exception))
+        self.assertTrue(o["permisos"]["cancelar"], "el operador que la confirmó la puede cancelar")
+        for quien in (LECT, NADIE):
+            with self.assertRaises(ov.SinPermiso):
+                ov.cancelar(o["id"], o["rev"], quien, "El cliente ya no la quiere")
+        for quien in (OPER, ADMIN):
+            for corto in ("", "no", "    x   "):
+                with self.assertRaises(ov.Invalido) as e:
+                    ov.cancelar(o["id"], o["rev"], quien, corto)
+                self.assertIn("5 caracteres", str(e.exception))
         with self.assertRaises(ov.Invalido):
-            ov.cancelar(o["id"], o["rev"], ADMIN, "Motivo válido", origen="otro")
-        r = ov.cancelar(o["id"], o["rev"], ADMIN, "  El cliente ya no la quiere  ", origen="sistema")
+            ov.cancelar(o["id"], o["rev"], OPER, "Motivo válido", origen="otro")
+        self.assertEqual((self.saldo(a), ov.obtener(o["id"], OPER)["rev"]), ((6, 4, 2), o["rev"]),
+                         "ninguno de los rechazos movió nada")
+        r = ov.cancelar(o["id"], o["rev"], OPER, "  El cliente ya no la quiere  ", origen="sistema")
         c = r["orden"]
         self.assertEqual(r["mensaje"], "Orden cancelada. Se soltaron 6 piezas.")
         self.assertEqual((c["estado"], c["cancelada_origen"], c["cancelada_motivo"],
                           c["piezas_apartadas"], c["devolucion_estado"]),
                          ("cancelada", "sistema", "El cliente ya no la quiere", 0, None))
+        self.assertEqual((c["cancelada_por"], c["cancelada_nombre"]),
+                         ("oper@prueba.test", "Olga Operadora"), "queda escrito quién fue")
         self.assertEqual((self.saldo(a), self.saldo(b)), ((6, 0, 6), (2, 0, 2)))
         self.assertEqual([l["reservado"] for l in c["lineas"]], [0, 0])
         m = ov.mensajes(o["id"])["mensajes"][-1]
@@ -814,7 +883,9 @@ class Cancelar(Base):
         self.assertIn("se soltaron 6 piezas", m["cuerpo"])
         self.assertEqual([(x["sku"], x["reservado"]) for x in m["datos"]["lineas"]],
                          [(a, 4), (b, 2)])
-        self.assertTrue(c["permisos"]["salio_tarde"], "una cancelada que estuvo confirmada")
+        # «Salió tarde» —una cancelada que estuvo confirmada— sí sigue siendo de admin.
+        self.assertFalse(c["permisos"]["salio_tarde"])
+        self.assertTrue(ov.obtener(o["id"], ADMIN)["permisos"]["salio_tarde"])
 
     def test_cancelar_con_piezas_ya_entregadas_espera_devolucion(self):
         a, b = self.sku("A"), self.sku("B")
@@ -904,34 +975,88 @@ class Borrar(Base):
 
 
 class Inmutable(Base):
-    def test_fuera_de_borrador_guardar_es_un_400_claro_nunca_un_500(self):
+    def test_entregada_o_cancelada_guardar_es_un_400_claro_nunca_un_500(self):
+        """Una CONFIRMADA sí se corrige (clase EditarConfirmada). Lo que ya no
+        cambia es la entregada y la cancelada: ni el administrador, ni la guía."""
         a = self.sku("A")
-        o = self.confirmada([L(a, 2)])
-        for quien in (OPER, ADMIN):       # ni el administrador edita una confirmada
-            with self.assertRaises(ov.Invalido) as e:
-                ov.guardar(o["id"], o["rev"], {"descripcion": "cambio", "lineas": [L(a, 9)]}, quien)
-            self.assertEqual(e.exception.status, 400)
-            self.assertEqual(str(e.exception),
-                             "La orden ya está confirmada: su contenido no cambia. Para corregirla "
-                             "hay que cancelarla (o que un administrador la borre).")
-        entregada = ov.entregar(o["id"], o["rev"], OPER)["orden"]
-        with self.assertRaises(ov.Invalido) as e:
-            ov.guardar(o["id"], entregada["rev"], {"guia": "GUIA-TARDE"}, ADMIN)
-        self.assertIn("entregada", str(e.exception))
-        self.assertEqual(ov.obtener(o["id"], OPER)["guia"], None)
+        self.siembra(a, 9)
+        entregada = self.confirmada([L(a, 2)])
+        entregada = ov.entregar(entregada["id"], entregada["rev"], OPER)["orden"]
+        cancelada = self.confirmada([L(a, 2)])
+        cancelada = ov.cancelar(cancelada["id"], cancelada["rev"], OPER, "Ya no se va a surtir")["orden"]
+        con_salida = self.confirmada([L(a, 2), L(self.sku("B"), 1)])
+        con_salida = ov.entregar(con_salida["id"], con_salida["rev"], OPER,
+                                 [{"id": con_salida["lineas"][0]["id"], "n": 2}])["orden"]
+        con_salida = ov.cancelar(con_salida["id"], con_salida["rev"], OPER, "Canceló el resto")["orden"]
+        for o, rotulo in ((entregada, "entregada"), (cancelada, "cancelada"),
+                          (con_salida, "entregada y cancelada")):
+            self.assertEqual(o["estado"], rotulo.replace(" y ", "_"))
+            for quien in (OPER, ADMIN):
+                for datos in ({"guia": "GUIA-TARDE"}, {"descripcion": "cambio", "lineas": [L(a, 9)]}):
+                    with self.assertRaises(ov.Invalido) as e:
+                        ov.guardar(o["id"], o["rev"], datos, quien)
+                    self.assertEqual(e.exception.status, 400)
+                    self.assertEqual(str(e.exception),
+                                     f"La orden ya está {rotulo}: su contenido no cambia. Si se "
+                                     "capturó mal, un administrador puede borrarla.")
+            tras = ov.obtener(o["id"], OPER)
+            self.assertEqual((tras["guia"], tras["rev"], tras["n_mensajes"]),
+                             (None, o["rev"], o["n_mensajes"]))
+            self.assertFalse(tras["permisos"]["editar"])
+        self.assertEqual(self.saldo(a), (5, 0, 5), "9 − 2 − 2 que salieron; nada apartado")
 
-    def test_si_la_orden_se_confirma_entre_la_lectura_y_el_guardado_es_un_409(self):
-        """La guarda de verdad es el CAS de la sentencia: aunque Python creyera que
-        sigue en borrador, la base contesta KB001 y sale «cambió, se recargó»."""
+    def test_si_python_no_la_frena_la_base_si_una_entregada_no_abre_la_puerta(self):
+        """La red de abajo: la puerta de la 0071 sólo se abre para una orden que
+        SIGUE confirmada. Con el permiso de Python apagado a propósito, la
+        sentencia de editar no encuentra una entregada (su CAS pide
+        `estado = 'confirmada'`) y la de guardar no encuentra nada que no sea un
+        borrador: KB001, o sea «cambió, se recargó», y nada se movió."""
         a = self.sku("A")
         o = self.confirmada([L(a, 2)])
+        e_ = ov.entregar(o["id"], o["rev"], OPER)["orden"]
         with mock.patch.object(ov, "_motivo", return_value=None):      # Python no la frena
             with self.assertRaises(ov.Conflicto) as e:
-                ov.guardar(o["id"], o["rev"], {"descripcion": "tarde"}, OPER)
+                ov.guardar(o["id"], e_["rev"], {"descripcion": "tarde"}, OPER)
+            self.assertEqual((e.exception.status, str(e.exception)),
+                             (409, "La orden cambió mientras tanto; se recargó."))
+            # …y aunque alguien llamara a la sentencia de editar con esa entregada:
+            with self.assertRaises(ov.Conflicto):
+                ov._editar_confirmada(ov._leer_id(o["id"]), {"descripcion": "tarde"}, OPER,
+                                      ov._firma(OPER))
+        tras = ov.obtener(o["id"], OPER)
+        self.assertEqual((tras["descripcion"], tras["rev"], tras["estado"]),
+                         (None, e_["rev"], "entregada"))
+
+    def test_si_la_orden_se_confirma_entre_la_lectura_y_el_guardado_es_un_409(self):
+        """La guarda de verdad es el CAS de la sentencia. La carrera, tal cual: quien
+        guarda leyó un BORRADOR (y por eso va por la sentencia de guardar), y antes
+        de que su sentencia corra otro lo confirma. La base contesta KB001 y sale
+        «cambió, se recargó»: lo que iba a guardar NO pisa a la confirmada."""
+        a = self.sku("A")
+        self.siembra(a, 5)
+        o = self.crear([L(a, 2)])
+        real = ov._preparar
+        carrera: list[dict] = []
+
+        def leo_y_me_la_confirman(orden_id, rev, quien, accion, cur=None):
+            leida = real(orden_id, rev, quien, accion, cur)
+            if accion == "editar" and not carrera:
+                carrera.append(ov.confirmar(orden_id, leida["rev"], ADMIN)["orden"])
+            return leida
+
+        with mock.patch.object(ov, "_preparar", leo_y_me_la_confirman):
+            with self.assertRaises(ov.Conflicto) as e:
+                ov.guardar(o["id"], o["rev"], {"descripcion": "tarde", "lineas": [L(a, 4)]}, OPER)
         self.assertEqual((e.exception.status, str(e.exception)),
                          (409, "La orden cambió mientras tanto; se recargó."))
         tras = ov.obtener(o["id"], OPER)
-        self.assertEqual((tras["descripcion"], tras["rev"]), (None, o["rev"]))
+        self.assertEqual((tras["estado"], tras["descripcion"], tras["rev"], tras["piezas"]),
+                         ("confirmada", None, carrera[0]["rev"], 2))
+        self.assertEqual((self.saldo(a), self.eventos(o["id"])), ((5, 2, 3), ["creada", "confirmada"]))
+        # Recargada, la MISMA corrección entra ya como edición de la confirmada.
+        ok = ov.guardar(o["id"], tras["rev"], {"descripcion": "tarde", "lineas": [L(a, 4)]}, OPER)
+        self.assertEqual((ok["orden"]["descripcion"], ok["orden"]["piezas_apartadas"], self.saldo(a)),
+                         ("tarde", 4, (5, 4, 1)))
 
     def test_la_rev_vieja_es_un_409_en_toda_escritura(self):
         a = self.sku("A")
@@ -950,11 +1075,1220 @@ class Inmutable(Base):
         self.siembra(a, 1)
         c = ov.confirmar(o["id"], 2, OPER)["orden"]
         for fn in (lambda: ov.entregar(o["id"], 2, OPER),
-                   lambda: ov.cancelar(o["id"], 2, ADMIN, "Motivo válido"),
+                   lambda: ov.guardar(o["id"], 2, {"guia": "GUIA-PRUEBA-1"}, OPER),
+                   lambda: ov.guardar(o["id"], 2, {"lineas": [L(a, 1, 99)]}, OPER),
+                   lambda: ov.cancelar(o["id"], 2, OPER, "Motivo válido"),
                    lambda: ov.responder_salio(o["id"], 2, OPER, True)):
-            with self.assertRaises(ov.Conflicto):
+            with self.assertRaises(ov.Conflicto) as e:
                 fn()
-        self.assertEqual(ov.obtener(o["id"], OPER)["rev"], c["rev"])
+            self.assertEqual(str(e.exception), "La orden cambió mientras tanto; se recargó.")
+        tras = ov.obtener(o["id"], OPER)
+        self.assertEqual((tras["rev"], tras["guia"], tras["total"]), (c["rev"], None, 10.0))
+
+
+class EditarConfirmada(Base):
+    """Editar una orden CONFIRMADA (migración 0071) contra la base de verdad: las
+    dos guardias con su puerta y, al COMMIT, `ov_coherente` y
+    `stock_apartado_cuadra`. Después de CADA prueba `Base.tearDown` revisa que la
+    vista vigía siga vacía y que cada orden, cada libro y cada apartado cuadren."""
+
+    def ver(self, o: dict) -> list[tuple]:
+        """(linea, sku, bodega, cantidad, reservado, entregado) de cada renglón."""
+        return [(l["linea"], l["sku"], l["almacen"], l["cantidad"], l["reservado"], l["entregado"])
+                for l in o["lineas"]]
+
+    def editada(self, orden_id: int) -> dict:
+        """El último mensaje `editada` de la orden."""
+        return [m for m in ov.mensajes(orden_id)["mensajes"] if m["evento"] == "editada"][-1]
+
+    # Lo que es DEL renglón (su saldo —fisico, apartado, libre— es de la bodega, y lo
+    # mueven también las demás órdenes).
+    _DEL_RENGLON = ("id", "linea", "sku", "titulo", "imagen", "cantidad", "precio_unitario",
+                    "almacen", "reservado", "entregado", "entregado_at", "entregado_por")
+
+    def intacta(self, o: dict, msg: str = "") -> dict:
+        """La orden sigue EXACTAMENTE como estaba: ni `rev`, ni encabezado, ni
+        renglones, ni un mensaje más en el chat."""
+        tras = ov.obtener(o["id"], OPER)
+        suyo = ("rev", "estado", "n_mensajes", "total", "comision", "cliente", "guia",
+                "descripcion", "mp_orden", "piezas", "piezas_apartadas", "actualizado_at")
+        self.assertEqual({k: tras[k] for k in suyo}, {k: o[k] for k in suyo}, msg)
+        self.assertEqual([{k: l[k] for k in self._DEL_RENGLON} for l in tras["lineas"]],
+                         [{k: l[k] for k in self._DEL_RENGLON} for l in o["lineas"]], msg)
+        return tras
+
+    # ── el encabezado ────────────────────────────────────────────────────────
+    def test_solo_el_encabezado_no_toca_renglones_ni_apartado(self):
+        a = self.sku("A")
+        self.siembra(a, 5)
+        o = self.confirmada([L(a, 2, 100, titulo="Audífonos")], cliente="directa", canal="directa")
+        self.assertTrue(o["permisos"]["editar"], "una confirmada ya se puede corregir")
+        nuevo = {"cliente": " Cliente de mostrador ", "canal": "OTRO", "descripcion": "Corregida",
+                 "guia": "GUIA-PRUEBA-1", "paqueteria": "Paquetería de prueba",
+                 "fecha_venta": "2026-10-09T10:00:00-06:00",
+                 "entrega_limite": "2026-10-12T18:00:00-06:00", "moneda": "usd", "total": 250,
+                 "comision": "12.50", "precio_origen": "marketplace"}
+        r = ov.guardar(o["id"], o["rev"], nuevo, OPER)
+        self.assertEqual(r["mensaje"], "Cambios guardados.")
+        e = r["orden"]
+        self.assertEqual((e["estado"], e["rev"], e["cliente"], e["canal"], e["descripcion"], e["guia"],
+                          e["paqueteria"], e["moneda"], e["total"], e["comision"], e["neto"],
+                          e["precio_origen"]),
+                         ("confirmada", o["rev"] + 1, "Cliente de mostrador", "otro", "Corregida",
+                          "GUIA-PRUEBA-1", "Paquetería de prueba", "USD", 250.0, 12.5, 237.5,
+                          "marketplace"))
+        self.assertEqual((datetime.fromisoformat(e["fecha_venta"]),
+                          datetime.fromisoformat(e["entrega_limite"])),
+                         (datetime.fromisoformat("2026-10-09T10:00:00-06:00"),
+                          datetime.fromisoformat("2026-10-12T18:00:00-06:00")))
+        # Lo que NO es de quien corrige sigue fijo: el alta, la confirmación, el tipo.
+        for fijo in ("id", "folio", "tipo", "creado_at", "creado_por", "creado_via", "confirmada_at",
+                     "confirmada_por", "confirmada_nombre", "entregada_at", "cancelada_at",
+                     "canal_cancelo_at", "devolucion_estado"):
+            self.assertEqual(e[fijo], o[fijo], fijo)
+        self.assertEqual((e["lineas"], e["piezas_apartadas"], self.saldo(a)),
+                         (o["lineas"], 2, (5, 2, 3)), "ni un renglón ni una pieza se movieron")
+        self.assertTrue(e["permisos"]["editar"] and e["permisos"]["entregar"])
+        # El rastro: UN mensaje `editada`, con el antes y el después de cada campo.
+        self.assertEqual(self.eventos(o["id"]), ["creada", "confirmada", "editada"])
+        m = self.editada(o["id"])
+        self.assertEqual((m["tipo"], m["autor"], m["autor_nombre"], m["via"]),
+                         ("sistema", "oper@prueba.test", "Olga Operadora", "panel"))
+        self.assertEqual(m["cuerpo"], "Orden editada · cliente, canal, descripción, guía, paquetería, "
+                                      "fecha de venta, entrega límite, moneda, total, comisión, "
+                                      "origen del precio")
+        self.assertEqual(set(m["datos"]), {"cambios"}, "sin renglones: sólo el encabezado")
+        cambios = m["datos"]["cambios"]
+        self.assertEqual(set(cambios), set(nuevo))
+        self.assertEqual((cambios["cliente"], cambios["canal"], cambios["guia"], cambios["moneda"],
+                          cambios["total"], cambios["comision"], cambios["precio_origen"]),
+                         (["directa", "Cliente de mostrador"], ["directa", "otro"],
+                          [None, "GUIA-PRUEBA-1"], ["MXN", "USD"], [200.0, 250.0], [0.0, 12.5],
+                          ["manual", "marketplace"]))
+        self.assertEqual(datetime.fromisoformat(cambios["fecha_venta"][1]),
+                         datetime.fromisoformat("2026-10-09T10:00:00-06:00"))
+        # Lo mismo otra vez (la pantalla manda el documento entero): no es un cambio.
+        igual = ov.guardar(o["id"], e["rev"], {**nuevo, "lineas": [L(a, 2, 100, titulo="Audífonos")]},
+                           ADMIN)
+        self.assertEqual((igual["mensaje"], igual["orden"]["rev"], igual["orden"]["n_mensajes"]),
+                         ("Sin cambios.", e["rev"], e["n_mensajes"]))
+        # Lo que no se manda no se toca; un campo se vacía mandándolo vacío; y el
+        # administrador corrige igual que el operador.
+        f = ov.guardar(o["id"], e["rev"], {"guia": " ", "total": None}, ADMIN)["orden"]
+        self.assertEqual((f["guia"], f["total"], f["paqueteria"], f["cliente"], f["rev"]),
+                         (None, 200.0, "Paquetería de prueba", "Cliente de mostrador", e["rev"] + 1))
+        self.assertEqual(self.editada(o["id"])["datos"]["cambios"],
+                         {"guia": ["GUIA-PRUEBA-1", None], "total": [250.0, 200.0]})
+        self.assertEqual(self.editada(o["id"])["autor"], "admin@prueba.test")
+
+    # ── los renglones y el apartado ──────────────────────────────────────────
+    def test_subir_y_bajar_la_cantidad_mueve_el_apartado_exacto(self):
+        a, b = self.sku("A"), self.sku("B")
+        self.siembra(a, 10)
+        self.siembra(b, 6)
+        o = self.confirmada([L(a, 3, 100, titulo="Audífonos"), L(b, 4, 50)])
+        self.assertEqual((self.saldo(a), self.saldo(b)), ((10, 3, 7), (6, 4, 2)))
+        ids = [l["id"] for l in o["lineas"]]
+        e = ov.guardar(o["id"], o["rev"], {"total": None, "lineas": [
+            L(a, 7, 100, titulo="Audífonos"), L(b, 1, 50)]}, OPER)["orden"]
+        self.assertEqual(self.ver(e), [(1, a, "ENSAYO", 7, 7, None), (2, b, "ENSAYO", 1, 1, None)])
+        self.assertEqual([l["id"] for l in e["lineas"]], ids, "el renglón que sigue conserva su id")
+        self.assertEqual((e["estado"], e["rev"], e["piezas"], e["piezas_apartadas"], e["total"]),
+                         ("confirmada", o["rev"] + 1, 8, 8, 750.0))
+        # EL SALDO: subió 4 de `a` y soltó 3 de `b`. Ni una pieza de más ni de menos.
+        self.assertEqual((self.saldo(a), self.saldo(b)), ((10, 7, 3), (6, 1, 5)))
+        self.assertEqual([(l["fisico"], l["apartado"], l["libre"]) for l in e["lineas"]],
+                         [(10, 7, 3), (6, 1, 5)])
+        self.assertEqual((self.libro(a), self.libro(b)),
+                         ([("correccion", 10, 10)], [("correccion", 6, 6)]),
+                         "editar no saca ni mete piezas: el libro no se toca")
+        m = self.editada(o["id"])
+        self.assertEqual(m["cuerpo"], "Orden editada · total; renglones: 2 con cambios · se movió "
+                                      "el apartado")
+        self.assertEqual(m["datos"]["apartado"], [{"sku": a, "almacen": "ENSAYO", "delta": 4},
+                                                  {"sku": b, "almacen": "ENSAYO", "delta": -3}])
+        self.assertEqual(m["datos"]["renglones"],
+                         {"agregados": [], "quitados": [],
+                          "cambiados": [{"sku": a, "cantidad": [3, 7]}, {"sku": b, "cantidad": [4, 1]}]})
+        self.assertEqual(m["datos"]["cambios"], {"total": [500.0, 750.0]})
+        # Hasta el tope EXACTO de lo libre (quedaban 3) sí entra…
+        tope = ov.guardar(o["id"], e["rev"], {"lineas": [L(a, 10, 100, titulo="Audífonos"),
+                                                         L(b, 1, 50)]}, ADMIN)["orden"]
+        self.assertEqual((self.saldo(a), tope["piezas_apartadas"]), ((10, 10, 0), 11))
+        # …y bajarlo todo lo suelta todo menos lo que queda pedido.
+        baja = ov.guardar(o["id"], tope["rev"], {"lineas": [L(a, 1, 100, titulo="Audífonos"),
+                                                            L(b, 1, 50)]}, OPER)["orden"]
+        self.assertEqual((self.saldo(a), self.saldo(b), baja["piezas_apartadas"]),
+                         ((10, 1, 9), (6, 1, 5), 2))
+        self.assertEqual(self.editada(o["id"])["datos"]["apartado"],
+                         [{"sku": a, "almacen": "ENSAYO", "delta": -9}])
+        # La orden editada se entrega como cualquiera: sale lo que quedó pedido.
+        fin = ov.entregar(o["id"], baja["rev"], OPER)["orden"]
+        self.assertEqual((fin["estado"], fin["piezas_entregadas"], self.saldo(a), self.saldo(b)),
+                         ("entregada", 2, (9, 0, 9), (5, 0, 5)))
+
+    def test_quitar_agregar_y_reordenar_renglones(self):
+        a, b, c = self.sku("A"), self.sku("B"), self.sku("C")
+        for sku in (a, b, c):
+            self.siembra(sku, 5)
+        o = self.confirmada([L(a, 2), L(b, 3)])
+        de_a = o["lineas"][0]["id"]
+        e = ov.guardar(o["id"], o["rev"], {"total": None, "lineas": [
+            L(c, 4, 30, titulo="Cable"), L(a, 2)]}, OPER)["orden"]
+        self.assertEqual(self.ver(e), [(1, c, "ENSAYO", 4, 4, None), (2, a, "ENSAYO", 2, 2, None)],
+                         "en el orden recibido; el nuevo nace apartado completo")
+        self.assertEqual((e["lineas"][1]["id"], e["lineas"][0]["titulo"], e["total"], e["renglones"]),
+                         (de_a, "Cable", 140.0, 2))
+        self.assertEqual((self.saldo(a), self.saldo(b), self.saldo(c)),
+                         ((5, 2, 3), (5, 0, 5), (5, 4, 1)), "soltó `b` entero y apartó `c`")
+        m = self.editada(o["id"])
+        self.assertEqual(m["datos"]["renglones"], {"agregados": [c], "quitados": [b], "cambiados": []})
+        self.assertEqual(m["datos"]["apartado"], [{"sku": c, "almacen": "ENSAYO", "delta": 4},
+                                                  {"sku": b, "almacen": "ENSAYO", "delta": -3}])
+        self.assertEqual([(x["sku"], x["cantidad"], x["reservado"], x["almacen"], x["precio_unitario"])
+                          for x in m["datos"]["lineas"]],
+                         [(c, 4, 4, "ENSAYO", 30.0), (a, 2, 2, "ENSAYO", 10.0)],
+                         "los renglones por entregar como QUEDAN, apartados completos")
+        self.assertEqual(m["cuerpo"], "Orden editada · total; renglones: 1 agregado(s), 1 quitado(s) "
+                                      "· se movió el apartado")
+        # Sólo reordenar o cambiar el precio NO mueve el apartado (ni pide stock: de
+        # `c` no queda más que 1 libre y aun así entra).
+        orden = ov.guardar(o["id"], e["rev"], {"lineas": [L(a, 2, 12.5), L(c.lower(), 4, 30,
+                                                                         titulo="Cable")]},
+                           OPER)["orden"]
+        self.assertEqual(self.ver(orden), [(1, a, "ENSAYO", 2, 2, None), (2, c, "ENSAYO", 4, 4, None)])
+        self.assertEqual((orden["lineas"][0]["precio_unitario"], orden["lineas"][0]["id"]),
+                         (12.5, de_a))
+        self.assertEqual((self.saldo(a), self.saldo(c)), ((5, 2, 3), (5, 4, 1)))
+        m = self.editada(o["id"])
+        self.assertEqual((m["datos"]["apartado"], m["datos"]["renglones"]["cambiados"], m["cuerpo"]),
+                         ([], [{"sku": a, "precio_unitario": [10.0, 12.5]}],
+                          "Orden editada · renglones: 1 con cambios"))
+        # El mismo SKU repetido en la captura se SUMA, como en un borrador.
+        suma = ov.guardar(o["id"], orden["rev"], {"lineas": [L(a, 1, 12.5), L(a, 2, 12.5)]},
+                          OPER)["orden"]
+        self.assertEqual((self.ver(suma), self.saldo(a), self.saldo(c)),
+                         ([(1, a, "ENSAYO", 3, 3, None)], (5, 3, 2), (5, 0, 5)))
+
+    def test_cambiar_el_titulo_o_la_imagen_de_un_renglon_deja_el_antes_y_el_despues(self):
+        """El título y la imagen de un renglón también se guardan al editar (la
+        sentencia los escribe). Su rastro decía «renglones: reordenados», con
+        `cambiados` vacío: el cambio no quedaba en ningún lado y la imagen de antes
+        no se recuperaba de ningún mensaje. Es el camino de la llave de máquina y de
+        Claude, que pueden mandar los renglones sin título ni imagen (son
+        opcionales) y con eso BORRARLOS."""
+        a, b = self.sku("A"), self.sku("B")
+        self.siembra(a, 10)
+        self.siembra(b, 10)
+        foto, otra_foto = "https://img.prueba.test/a.jpg", "https://img.prueba.test/a2.jpg"
+        o = self.confirmada([L(a, 3, 100, titulo="Audífonos", imagen=foto),
+                             L(b, 2, 50, titulo="Cable")])
+        saldos = (self.saldo(a), self.saldo(b))
+
+        def editar(lineas: list[dict]) -> tuple[dict, str, dict, list]:
+            nonlocal o
+            o = ov.guardar(o["id"], o["rev"], {"lineas": lineas}, API)["orden"]
+            m = self.editada(o["id"])
+            self.assertEqual((self.saldo(a), self.saldo(b)), saldos, "ni pide ni suelta stock")
+            return o, m["cuerpo"], m["datos"]["renglones"], m["datos"]["apartado"]
+
+        def cambiados(*entradas: dict) -> dict:
+            return {"agregados": [], "quitados": [], "cambiados": list(entradas)}
+
+        # Sólo el título.
+        e, cuerpo, renglones, apartado = editar([L(a, 3, 100, titulo="Audífonos BT", imagen=foto),
+                                                 L(b, 2, 50, titulo="Cable")])
+        self.assertEqual((e["lineas"][0]["titulo"], cuerpo, renglones, apartado),
+                         ("Audífonos BT", "Orden editada · renglones: 1 con cambios",
+                          cambiados({"sku": a, "titulo": ["Audífonos", "Audífonos BT"]}), []))
+        # Sólo la imagen: queda la de antes, que no está en ningún otro mensaje.
+        e, cuerpo, renglones, _ = editar([L(a, 3, 100, titulo="Audífonos BT", imagen=otra_foto),
+                                          L(b, 2, 50, titulo="Cable")])
+        self.assertEqual((e["lineas"][0]["imagen"], cuerpo, renglones),
+                         (otra_foto, "Orden editada · renglones: 1 con cambios",
+                          cambiados({"sku": a, "imagen": [foto, otra_foto]})))
+        # Sin título ni imagen: los BORRA de los dos renglones, y lo que se va queda escrito.
+        e, cuerpo, renglones, _ = editar([L(a, 3, 100), L(b, 2, 50)])
+        self.assertEqual([(l["titulo"], l["imagen"]) for l in e["lineas"]], [(None, None)] * 2)
+        self.assertEqual((cuerpo, renglones),
+                         ("Orden editada · renglones: 2 con cambios",
+                          cambiados({"sku": a, "titulo": ["Audífonos BT", None],
+                                     "imagen": [otra_foto, None]},
+                                    {"sku": b, "titulo": ["Cable", None]})))
+        # «Reordenados» queda para cuando lo ÚNICO que cambió fue el orden…
+        e, cuerpo, renglones, _ = editar([L(b, 2, 50), L(a, 3, 100)])
+        self.assertEqual(([l["sku"] for l in e["lineas"]], cuerpo, renglones),
+                         ([b, a], "Orden editada · renglones: reordenados", cambiados()))
+        # …y junto con la cantidad va todo en la misma entrada (aquí sí se mueve el apartado).
+        f = ov.guardar(o["id"], o["rev"], {"lineas": [L(b, 3, 50, titulo="Cable USB-C"),
+                                                      L(a, 3, 100)]}, OPER)["orden"]
+        m = self.editada(o["id"])
+        self.assertEqual((m["cuerpo"], m["datos"]["renglones"], f["piezas_apartadas"]),
+                         ("Orden editada · renglones: 1 con cambios · se movió el apartado",
+                          cambiados({"sku": b, "cantidad": [2, 3],
+                                     "titulo": [None, "Cable USB-C"]}), 6))
+        # Un BORRADOR usa la misma diferencia: tampoco dice «reordenados» por un título.
+        d = self.crear([L(a, 1, 100, titulo="Audífonos")])
+        ov.guardar(d["id"], d["rev"], {"lineas": [L(a, 1, 100, titulo="Audífonos BT")]}, OPER)
+        g = ov.mensajes(d["id"])["mensajes"][-1]
+        self.assertEqual((g["evento"], g["cuerpo"], g["datos"]["renglones"]["cambiados"]),
+                         ("borrador_guardado", "Borrador guardado · renglones: 1 con cambios",
+                          [{"sku": a, "titulo": ["Audífonos", "Audífonos BT"]}]))
+
+    def test_cambiar_un_renglon_de_bodega_y_lo_que_pasa_si_un_acta_la_apaga(self):
+        """El fixture sólo trae ENSAYO con `admite_ov`. Para tener otra bodega que
+        admita órdenes se enciende TEX3 DENTRO de la transacción de la prueba (un
+        cambio a `almacen.almacenes`, con motivo y quién) y el ROLLBACK lo deshace,
+        como hace el verificador y la clase CrearAuto: por eso va con `cur=`."""
+        a = self.sku("A")
+
+        def tex3(cur, admite: bool) -> None:
+            cur.execute("""select set_config('app.usuario', 'pruebas@prueba.test', true);
+                           update almacen.almacenes set admite_ov = %s, motivo = %s
+                            where codigo = 'TEX3'""",
+                        (admite, f"Prueba: TEX3 {'admite' if admite else 'ya no admite'} órdenes"))
+
+        def saldo(cur, almacen: str) -> tuple | None:
+            cur.execute("select fisico, apartado, libre from almacen.stock_almacen "
+                        "where sku = %s and almacen = %s", (a, almacen))
+            f = cur.fetchone()
+            return (f["fisico"], f["apartado"], f["libre"]) if f else None
+
+        with self.conexion() as cn:
+            cur = cn.cursor()
+            tex3(cur, True)
+            self.siembra(a, 5, cur=cur)
+            self.siembra(a, 3, "TEX3", cur=cur)
+            o = ov.crear_borrador({"lineas": [L(a, 2)]}, OPER, self.clave(), cur=cur)["orden"]
+            o = ov.confirmar(o["id"], o["rev"], OPER, cur=cur)["orden"]
+            self.assertEqual((saldo(cur, "ENSAYO"), saldo(cur, "TEX3")), ((5, 2, 3), (3, 0, 3)))
+
+            # De ENSAYO a TEX3: suelta en una y aparta en la otra, en la MISMA sentencia.
+            e = ov.guardar(o["id"], o["rev"], {"lineas": [L(a, 2, almacen="tex3")]}, OPER,
+                           cur=cur)["orden"]
+            self.assertEqual((self.ver(e), e["bodegas"]), ([(1, a, "TEX3", 2, 2, None)], ["TEX3"]))
+            self.assertEqual((saldo(cur, "ENSAYO"), saldo(cur, "TEX3")), ((5, 0, 5), (3, 2, 1)))
+            m = [x for x in ov.mensajes(o["id"], cur=cur)["mensajes"] if x["evento"] == "editada"][-1]
+            self.assertEqual(m["datos"]["renglones"], {"agregados": [a], "quitados": [a],
+                                                       "cambiados": []},
+                             "cambiar la bodega de un renglón es quitarlo y ponerlo")
+            self.assertEqual(m["datos"]["apartado"], [{"sku": a, "almacen": "TEX3", "delta": 2},
+                                                      {"sku": a, "almacen": "ENSAYO", "delta": -2}])
+            # El mismo SKU puede salir de DOS bodegas: dos renglones, cada uno con su apartado.
+            e = ov.guardar(o["id"], e["rev"], {"lineas": [L(a, 2, almacen="TEX3"), L(a, 4)]}, OPER,
+                           cur=cur)["orden"]
+            self.assertEqual(self.ver(e), [(1, a, "TEX3", 2, 2, None), (2, a, "ENSAYO", 4, 4, None)])
+            self.assertEqual((saldo(cur, "ENSAYO"), saldo(cur, "TEX3")), ((5, 4, 1), (3, 2, 1)))
+            # Si no alcanza, dice en CUÁL bodega (lo libre es por bodega, no del SKU).
+            with self.assertRaises(ov.Conflicto) as x:
+                ov.guardar(o["id"], e["rev"], {"lineas": [L(a, 4, almacen="TEX3"), L(a, 4)]}, OPER,
+                           cur=cur)
+            self.assertEqual(str(x.exception), f"No alcanzó el stock para guardar el cambio: {a} "
+                                               "necesita 2 más y hay 1 libre en TEX3. No se guardó nada.")
+            self.assertEqual((saldo(cur, "ENSAYO"), saldo(cur, "TEX3")), ((5, 4, 1), (3, 2, 1)))
+
+            # UN ACTA APAGA TEX3 con piezas apartadas ahí. Python decidió con el
+            # catálogo de antes; la sentencia lo vuelve a exigir DENTRO del candado
+            # (C11) y sale un 400 que dice cuál bodega, no un 500.
+            de_antes = ov._bodegas_mapa(cur)
+            tex3(cur, False)
+            real, vistas = ov._bodegas_mapa, []
+
+            def catalogo_de_antes(c=None):
+                vistas.append(1)
+                return de_antes if len(vistas) == 1 else real(c)
+
+            with mock.patch.object(ov, "_bodegas_mapa", catalogo_de_antes):
+                with self.assertRaises(ov.Invalido) as x:
+                    ov.guardar(o["id"], e["rev"], {"lineas": [L(a, 3, almacen="TEX3"), L(a, 4)]},
+                               OPER, cur=cur)
+            self.assertEqual((x.exception.status, str(x.exception), len(vistas)),
+                             (400, f"{a}: la bodega TEX3 no admite órdenes de venta (está apagada).",
+                              2))
+            # Con el catálogo de AHORA ni llega a la base: en TEX3 ya no se captura.
+            with self.assertRaises(ov.Invalido) as x:
+                ov.guardar(o["id"], e["rev"], {"lineas": [L(a, 1, almacen="TEX3"), L(a, 4)]}, OPER,
+                           cur=cur)
+            self.assertIn("la bodega TEX3 no admite órdenes de venta", str(x.exception))
+            self.assertEqual((saldo(cur, "ENSAYO"), saldo(cur, "TEX3"),
+                              ov.obtener(o["id"], OPER, cur=cur)["rev"]), ((5, 4, 1), (3, 2, 1), e["rev"]))
+            # El encabezado sí se sigue corrigiendo, y SACAR el renglón de la bodega
+            # apagada también: soltar siempre se puede.
+            e = ov.guardar(o["id"], e["rev"], {"guia": "GUIA-PRUEBA-1"}, OPER, cur=cur)["orden"]
+            e = ov.guardar(o["id"], e["rev"], {"lineas": [L(a, 5)]}, OPER, cur=cur)["orden"]
+            self.assertEqual(self.ver(e), [(1, a, "ENSAYO", 5, 5, None)])
+            self.assertEqual((saldo(cur, "ENSAYO"), saldo(cur, "TEX3")), ((5, 5, 0), (3, 0, 3)))
+            cur.execute("set constraints all immediate")        # lo que revisaría el COMMIT
+            cur.execute("select count(*) as n from ops.stock_apartado_descuadre_v")
+            self.assertEqual(cur.fetchone()["n"], 0)
+        self.assertEqual(self.saldo(a), None, "el ROLLBACK lo deshizo todo")
+        self.assertEqual(self.sql("select admite_ov from almacen.almacenes where codigo = 'TEX3'"),
+                         [{"admite_ov": False}])
+
+    # ── todo o nada ──────────────────────────────────────────────────────────
+    def test_si_no_alcanza_no_cambia_nada_ni_la_rev_ni_el_chat_y_dice_cuanto_falta(self):
+        a, b, c = self.sku("A"), self.sku("B"), self.sku("C")
+        self.siembra(a, 5)
+        self.siembra(b, 2)
+        o = self.confirmada([L(a, 2), L(b, 1)], guia="GUIA-PRUEBA-0")
+        self.confirmada([L(a, 2)])                      # OTRA orden aparta 2 de `a`: queda 1 libre
+        self.assertEqual((self.saldo(a), self.saldo(b), self.saldo(c)), ((5, 4, 1), (2, 1, 1), None))
+        with self.assertRaises(ov.Conflicto) as e:
+            ov.guardar(o["id"], o["rev"], {"guia": "GUIA-NUEVA", "total": None, "lineas": [
+                L(a, 5), L(b, 2), L(c, 1)]}, OPER)       # `b` SÍ alcanzaba; `c` ni tiene saldo
+        texto = str(e.exception)
+        self.assertEqual((e.exception.status, texto),
+                         (409, f"No alcanzó el stock para guardar el cambio: {a} necesita 3 más y "
+                               f"hay 1 libre en ENSAYO; {c} necesita 1 más y no tiene existencias "
+                               "registradas en ENSAYO. No se guardó nada."))
+        self.assertNotIn("no_alcanzo", texto, "nunca el nombre técnico")
+        # NADA cambió: ni el renglón que sí alcanzaba, ni la guía, ni la rev (por eso la
+        # pantalla sabe que el 409 no es «la orden cambió»), ni un mensaje en el chat.
+        self.intacta(o)
+        self.assertEqual((self.saldo(a), self.saldo(b), self.saldo(c)), ((5, 4, 1), (2, 1, 1), None))
+        self.assertEqual(self.eventos(o["id"]), ["creada", "confirmada"],
+                         "a diferencia de confirmar, aquí no queda aviso `no_alcanzo`")
+        # Con la MISMA rev, lo que sí cabe entra: `a` sube justo la pieza libre.
+        ok = ov.guardar(o["id"], o["rev"], {"lineas": [L(a, 3), L(b, 2)]}, OPER)["orden"]
+        self.assertEqual((ok["rev"], self.saldo(a), self.saldo(b)), (o["rev"] + 1, (5, 5, 0), (2, 2, 0)))
+        # En el tope, una pieza más ya no entra: hay 0 libres (y se dice en plural).
+        with self.assertRaises(ov.Conflicto) as e:
+            ov.guardar(o["id"], ok["rev"], {"lineas": [L(a, 4), L(b, 2)]}, ADMIN)
+        self.assertEqual(str(e.exception), f"No alcanzó el stock para guardar el cambio: {a} "
+                                           "necesita 1 más y hay 0 libres en ENSAYO. No se guardó nada.")
+        self.intacta(ok)
+        # Soltar de un SKU y apartar más de otro en la MISMA edición: una sola
+        # sentencia, y cada saldo se mueve por su diferencia.
+        self.siembra(b, 1)
+        mixto = ov.guardar(o["id"], ok["rev"], {"lineas": [L(a, 1), L(b, 3)]}, OPER)["orden"]
+        self.assertEqual((self.saldo(a), self.saldo(b), mixto["piezas_apartadas"]),
+                         ((5, 3, 2), (3, 3, 0), 4))
+
+    def test_un_conteo_que_dejo_libre_negativo_no_deja_subir_pero_si_soltar(self):
+        """Un conteo puede dejar menos físico que lo apartado (libre < 0; lo escribe
+        inventario_libro). Subir ahí no se puede —y se dice «hay 0 libres», no un
+        número negativo—; bajar sí, y con eso el saldo vuelve a cuadrar."""
+        a = self.sku("A")
+        self.siembra(a, 5)
+        o = self.confirmada([L(a, 4)])
+        self.sql("""with x as (select sa.sku, sa.almacen, sa.fisico from almacen.stock_almacen sa
+                                where sa.sku = %(sku)s and sa.almacen = 'ENSAYO' for update),
+                         s as (update almacen.stock_almacen sa set fisico = 3 from x
+                                where sa.sku = x.sku and sa.almacen = x.almacen
+                               returning sa.sku, sa.almacen, sa.fisico, x.fisico as antes)
+                    insert into almacen.stock_mov (sku, almacen, delta, saldo_despues, motivo, clave,
+                                               nota, quien, via)
+                    select s.sku, s.almacen, s.fisico - s.antes, s.fisico, 'ajuste_conteo',
+                           'conteo:' || %(sesion)s || ':' || s.sku || ':' || s.almacen,
+                           'Conteo de la prueba', 'pruebas@prueba.test', 'automatico' from s""",
+                 {"sku": a, "sesion": uuid.uuid4().hex})
+        self.assertEqual(self.saldo(a), (3, 4, -1))
+        with self.assertRaises(ov.Conflicto) as e:
+            ov.guardar(o["id"], o["rev"], {"lineas": [L(a, 5)]}, OPER)
+        self.assertIn(f"{a} necesita 1 más y hay 0 libres en ENSAYO", str(e.exception))
+        self.assertEqual(self.saldo(a), (3, 4, -1))
+        baja = ov.guardar(o["id"], o["rev"], {"lineas": [L(a, 3)]}, OPER)["orden"]
+        self.assertEqual((self.saldo(a), baja["piezas_apartadas"]), ((3, 3, 0), 3),
+                         "ya cuadra: al terminar, la vista vigía vuelve a estar vacía")
+
+    # ── lo que ya salió ──────────────────────────────────────────────────────
+    def test_tras_una_entrega_parcial_se_edita_lo_que_queda_y_lo_que_salio_no_se_toca(self):
+        a, b, c = self.sku("A"), self.sku("B"), self.sku("C")
+        for sku in (a, b, c):
+            self.siembra(sku, 10)
+        o = self.confirmada([L(a, 3, 100, titulo="Audífonos"), L(b, 2, 50)])
+        o = ov.entregar(o["id"], o["rev"], OPER, [{"id": o["lineas"][0]["id"], "n": 2}])["orden"]
+        salio = o["lineas"][0]
+        self.assertEqual((self.ver(o), self.saldo(a)),
+                         ([(1, a, "ENSAYO", 3, 0, 2), (2, b, "ENSAYO", 2, 2, None)], (8, 0, 8)))
+        self.assertTrue(o["permisos"]["editar"], "sigue confirmada: queda un renglón por salir")
+        # La pantalla manda el documento ENTERO: el eco del que salió, `b` con otra
+        # cantidad y un renglón nuevo.
+        e = ov.guardar(o["id"], o["rev"], {"total": None, "lineas": [
+            L(a, 3, 100, titulo="Audífonos"), L(b, 5, 50), L(c, 1, 10)]}, OPER)["orden"]
+        self.assertEqual(self.ver(e), [(1, a, "ENSAYO", 3, 0, 2), (2, b, "ENSAYO", 5, 5, None),
+                                       (3, c, "ENSAYO", 1, 1, None)])
+        self.assertEqual(e["lineas"][0], salio, "el renglón que ya salió quedó IDÉNTICO")
+        self.assertEqual((e["total"], e["piezas_entregadas"], e["piezas_apartadas"]),
+                         (560.0, 2, 6), "el total es de TODA la orden: 3×100 + 5×50 + 1×10")
+        self.assertEqual((self.saldo(a), self.saldo(b), self.saldo(c)),
+                         ((8, 0, 8), (10, 5, 5), (10, 1, 9)))
+        m = self.editada(o["id"])
+        self.assertEqual([(x["sku"], x["cantidad"], x["reservado"]) for x in m["datos"]["lineas"]],
+                         [(b, 5, 5), (c, 1, 1)], "sólo los que siguen por entregar")
+        self.assertEqual(m["datos"]["renglones"], {"agregados": [c], "quitados": [],
+                                                   "cambiados": [{"sku": b, "cantidad": [2, 5]}]})
+        # TOCAR el que ya salió: 400 con qué hacer. Ni otra cantidad, ni «sumarle» piezas.
+        for malas in ([L(a, 2, 100), L(b, 5, 50), L(c, 1, 10)],
+                      [L(a, 3, 100), L(a.lower(), 1, 100), L(b, 5, 50)]):
+            with self.assertRaises(ov.Invalido) as x:
+                ov.guardar(o["id"], e["rev"], {"lineas": malas}, ADMIN)
+            self.assertEqual(str(x.exception), f"El renglón de {a} ya salió de ENSAYO: no se "
+                                               "cambia. Si hace falta más, va en otra orden.")
+        # QUITAR lo que queda dejaría la orden sin nada por entregar: 400 que dice qué hacer.
+        for vacias in ([], [L(a, 3, 100)]):
+            with self.assertRaises(ov.Invalido) as x:
+                ov.guardar(o["id"], e["rev"], {"lineas": vacias}, OPER)
+            self.assertEqual(str(x.exception), "Una orden confirmada necesita al menos un renglón "
+                                               "por entregar. Si ya salió todo, márcala DELIVERED.")
+        self.intacta(e)
+        # No mandar el que salió NO lo borra; y si su eco trae otro precio, no lo cambia.
+        f = ov.guardar(o["id"], e["rev"], {"lineas": [L(b, 4, 50)]}, OPER)["orden"]
+        self.assertEqual(self.ver(f), [(1, a, "ENSAYO", 3, 0, 2), (2, b, "ENSAYO", 4, 4, None)])
+        self.assertEqual((f["lineas"][0], self.saldo(b), self.saldo(c)), (salio, (10, 4, 6), (10, 0, 10)))
+        g = ov.guardar(o["id"], f["rev"], {"guia": "GUIA-PRUEBA-1", "lineas": [
+            L(a, 3, 999, titulo="Otro título"), L(b, 4, 50)]}, OPER)["orden"]
+        self.assertEqual((g["lineas"][0], g["guia"], self.editada(o["id"])["datos"]),
+                         (salio, "GUIA-PRUEBA-1", {"cambios": {"guia": [None, "GUIA-PRUEBA-1"]}}))
+        # Lo que queda se entrega como siempre, y entregada ya no se edita.
+        fin = ov.entregar(o["id"], g["rev"], OPER)["orden"]
+        self.assertEqual((fin["estado"], fin["piezas_entregadas"], self.saldo(b)),
+                         ("entregada", 6, (6, 0, 6)))
+        self.assertEqual(self.libro(a), [("correccion", 10, 10), ("salida_ov", -2, 8)])
+        with self.assertRaises(ov.Invalido):
+            ov.guardar(o["id"], fin["rev"], {"guia": "GUIA-TARDE"}, ADMIN)
+
+    def test_no_puede_quedar_sin_renglones_por_entregar_y_no_llega_a_la_base(self):
+        a = self.sku("A")
+        o = self.confirmada([L(a, 2)])
+        with mock.patch.object(ov, "_transicion", side_effect=AssertionError("llegó a la base")):
+            with self.assertRaises(ov.Invalido) as e:
+                ov.guardar(o["id"], o["rev"], {"guia": "GUIA-PRUEBA-1", "lineas": []}, OPER)
+            self.assertEqual((e.exception.status, str(e.exception)),
+                             (400, "Una orden confirmada necesita al menos un renglón por entregar. "
+                                   "Si ya no va, cancélala."))
+            for datos, dice in (({"lineas": [L(a, 2, almacen=None)]}, "no tiene bodega"),
+                                ({"lineas": [L(a, 2, almacen="TEX3")]}, "no admite órdenes de venta"),
+                                ({"lineas": [L(a, 2, almacen="TEXCO")]}, "bodega de Odoo"),
+                                ({"lineas": [L(a, 0)]}, "la cantidad debe ser un entero"),
+                                ({"lineas": [L(a, 1, 10), L(a, 1, 11)]}, "precios distintos"),
+                                ({"canal": "facebook"}, "El canal debe ser uno de")):
+                with self.assertRaises(ov.Invalido, msg=str(datos)) as e:
+                    ov.guardar(o["id"], o["rev"], datos, OPER)
+                self.assertIn(dice, str(e.exception))
+        self.intacta(o)
+        self.assertEqual(self.saldo(a), (2, 2, 0))
+
+    def test_si_python_no_lo_frenara_la_base_si_y_nada_queda_a_medias(self):
+        """Las dos cosas que Python valida ANTES porque la base sólo las ve AL COMMIT.
+        Con esa validación apagada a propósito: la sentencia corre, el COMMIT truena
+        (constraint triggers y únicos diferidos) y TODO se deshace —saldo incluido—.
+        Sale como lo que sería entonces: un bug nuestro (502, con su regla en el log)."""
+        a, b = self.sku("A"), self.sku("B")
+        self.siembra(a, 5)
+        self.siembra(b, 5)
+        o = self.confirmada([L(a, 2), L(b, 2)])
+        o = ov.entregar(o["id"], o["rev"], OPER, [{"id": o["lineas"][0]["id"], "n": 2}])["orden"]
+        self.assertEqual((self.saldo(a), self.saldo(b)), ((3, 0, 3), (5, 2, 3)))
+        repetido = {"linea": 2, "sku": a, "titulo": None, "imagen": None, "cantidad": 1,
+                    "precio_unitario": Decimal("10.00"), "almacen": "ENSAYO"}
+        for nuevos, regla in (([], "ov_coherente"),                    # sin nada por entregar
+                              ([repetido], "ov_lineas_sku_alm_uq")):   # el (sku, bodega) que ya salió
+            with mock.patch.object(ov, "_pendientes_nuevos", return_value=nuevos):
+                with self.assertLogs("omnicanal.ordenes_venta", level="ERROR") as logs:
+                    with self.assertRaises(ov.ErrorOV) as e:
+                        ov.guardar(o["id"], o["rev"], {"lineas": [L(b, 2)]}, OPER)
+            self.assertEqual((type(e.exception), e.exception.status), (ov.ErrorOV, 502), regla)
+            self.assertIn(f"regla={regla}", "\n".join(logs.output))
+            self.assertNotIn(regla, str(e.exception))
+            self.intacta(o, regla)
+            self.assertEqual((self.saldo(a), self.saldo(b)), ((3, 0, 3), (5, 2, 3)), regla)
+
+    # ── quién, y cuándo no ───────────────────────────────────────────────────
+    def test_el_operador_edita_y_cancela_una_confirmada_y_quien_solo_lee_no(self):
+        a = self.sku("A")
+        self.siembra(a, 6)
+        o = self.confirmada([L(a, 2)], quien=ADMIN)          # la confirmó un administrador
+        for quien in (LECT, NADIE):
+            p = ov.obtener(o["id"], quien)["permisos"]
+            self.assertFalse(p["editar"] or p["cancelar"])
+            for fn in (lambda: ov.guardar(o["id"], o["rev"], {"guia": "GUIA-PRUEBA-1"}, quien),
+                       lambda: ov.guardar(o["id"], o["rev"], {"lineas": [L(a, 6)]}, quien),
+                       lambda: ov.cancelar(o["id"], o["rev"], quien, "Motivo válido")):
+                with self.assertRaises(ov.SinPermiso) as e:
+                    fn()
+                self.assertEqual(e.exception.status, 403)
+        self.intacta(o)
+        # El OPERADOR la corrige —y la llave de la API también: queda escrito por dónde—.
+        e = ov.guardar(o["id"], o["rev"], {"guia": "GUIA-PRUEBA-1", "lineas": [L(a, 3)]}, OPER)["orden"]
+        e = ov.guardar(o["id"], e["rev"], {"paqueteria": "Paquetería de prueba"}, API)["orden"]
+        firmas = [(m["autor"], m["autor_nombre"], m["via"])
+                  for m in ov.mensajes(o["id"])["mensajes"] if m["evento"] == "editada"]
+        self.assertEqual(firmas, [("oper@prueba.test", "Olga Operadora", "panel"),
+                                  ("servicio", "API", "api")])
+        self.assertEqual((e["confirmada_por"], e["creado_por"], self.saldo(a)),
+                         ("admin@prueba.test", "admin@prueba.test", (6, 3, 3)),
+                         "quien confirmó sigue siendo quien confirmó")
+        # …y el OPERADOR la cancela (ya no hace falta un administrador), con su motivo.
+        self.assertTrue(ov.obtener(o["id"], OPER)["permisos"]["cancelar"])
+        with self.assertRaises(ov.Invalido):
+            ov.cancelar(o["id"], e["rev"], OPER, "no")
+        c = ov.cancelar(o["id"], e["rev"], OPER, "El cliente ya no la quiso")["orden"]
+        self.assertEqual((c["estado"], c["cancelada_por"], c["cancelada_origen"], self.saldo(a)),
+                         ("cancelada", "oper@prueba.test", "manual", (6, 0, 6)),
+                         "soltó lo que la EDICIÓN había dejado apartado (3), no lo de antes")
+        self.assertEqual(self.eventos(o["id"]), ["creada", "confirmada", "editada", "editada",
+                                                 "cancelada"])
+        self.assertFalse(c["permisos"]["editar"])
+
+    def test_esperando_el_salio_no_se_edita(self):
+        a = self.sku("A")
+        self.siembra(a, 5)
+        o = self.confirmada([L(a, 2)], mp_canal="tiktok", mp_cuenta=CUENTA,
+                            mp_orden=f"V-{self.t}")
+        m = ov.canal_cancelo(o["id"], "IN_TRANSIT", "", True)["orden"]
+        self.assertEqual(m["estado"], "confirmada")
+        for quien in (OPER, ADMIN):
+            p = ov.obtener(o["id"], quien)["permisos"]
+            self.assertTrue(p["responder_salio"])
+            self.assertFalse(p["editar"] or p["cancelar"] or p["entregar"])
+            self.assertEqual(p["porque"]["editar"], "El canal canceló esta venta con el paquete "
+                                                    "en camino: primero hay que contestar si salió")
+            for datos in ({"guia": "GUIA-PRUEBA-1"}, {"lineas": [L(a, 1)]}):
+                with self.assertRaises(ov.Invalido) as e:
+                    ov.guardar(o["id"], m["rev"], datos, quien)
+                self.assertIn("contestar si salió", str(e.exception))
+        # Y si Python no la frenara, la sentencia tampoco la encuentra (su CAS pide
+        # que el canal NO la haya cancelado): 409, y nada se movió.
+        with mock.patch.object(ov, "_motivo", return_value=None):
+            with self.assertRaises(ov.Conflicto):
+                ov.guardar(o["id"], m["rev"], {"lineas": [L(a, 1)]}, ADMIN)
+        self.intacta(m)
+        self.assertEqual(self.saldo(a), (5, 2, 3))
+        # Contestada (no salió), queda cancelada: tampoco.
+        c = ov.responder_salio(o["id"], m["rev"], OPER, False)["orden"]
+        with self.assertRaises(ov.Invalido) as e:
+            ov.guardar(o["id"], c["rev"], {"guia": "GUIA-PRUEBA-1"}, ADMIN)
+        self.assertIn("cancelada", str(e.exception))
+
+    def test_un_envio_a_full_confirmado_no_se_edita_desde_aqui(self):
+        """Las órdenes `full` nacen en «Crear FULL» (este servicio las rechaza al
+        crear), así que aquí se siembra una a mano, como la dejaría ese módulo: un
+        borrador `full` con su número de envío. En borrador se guarda como
+        cualquiera; confirmada, ni Python ni la sentencia (`v.tipo <> 'full'`) la
+        dejan pasar por la puerta."""
+        a = self.sku("A")
+        self.siembra(a, 5)
+        fila = self.sql("""
+            with f as (update ventas.ov_folio set ultimo = ultimo + 1 where id = 1 returning ultimo)
+            insert into ventas.ov_ordenes (folio, estado, tipo, canal, full_tienda, envio_ref,
+                                           creado_por, creado_nombre, creado_via)
+            select 'OV-' || lpad(f.ultimo::text, greatest(5, length(f.ultimo::text)), '0'),
+                   'borrador', 'full', 'amazon', 'amazon', 'ENVIO-PRUEBA-1',
+                   'pruebas@prueba.test', 'Pruebas', 'panel'
+              from f
+            returning id, rev""")[0]
+        o = ov.guardar(fila["id"], fila["rev"], {"lineas": [L(a, 2)]}, OPER)["orden"]
+        self.assertTrue(o["permisos"]["editar"], "en borrador se edita como cualquiera")
+        o = ov.confirmar(o["id"], o["rev"], OPER)["orden"]
+        self.assertEqual((o["tipo"], o["estado"], self.saldo(a)), ("full", "confirmada", (5, 2, 3)))
+        p = o["permisos"]
+        self.assertFalse(p["editar"])
+        self.assertEqual(p["porque"]["editar"],
+                         "Un envío a FULL ya confirmado no se edita desde esta pantalla")
+        self.assertTrue(p["cancelar"] and p["entregar"], "lo demás sigue igual")
+        for quien in (OPER, ADMIN):
+            for datos in ({"guia": "GUIA-PRUEBA-1"}, {"lineas": [L(a, 5)]}):
+                with self.assertRaises(ov.Invalido) as e:
+                    ov.guardar(o["id"], o["rev"], datos, quien)
+                self.assertIn("FULL", str(e.exception))
+        with mock.patch.object(ov, "_motivo", return_value=None):      # Python no la frena
+            with self.assertRaises(ov.Conflicto) as e:
+                ov.guardar(o["id"], o["rev"], {"lineas": [L(a, 5)]}, ADMIN)
+        self.assertEqual(str(e.exception), "La orden cambió mientras tanto; se recargó.")
+        self.intacta(o)
+        self.assertEqual(self.saldo(a), (5, 2, 3))
+
+    # El renglón que la 0071 deja en el registro de migraciones (de sólo agregar).
+    _CORRIO_LA_0071 = ("select count(*) as n from ops.migraciones "
+                       "where migracion = '0071_ov_editar_confirmada'")
+    _FALTA_LA_0071 = ("Editar una orden confirmada todavía no está habilitado en esta base: falta "
+                      "la migración 0071.")
+
+    def _reponer_la_puerta(self) -> None:
+        """Las dos guardias con el texto de la 0071, CONFIRMADO. (La red de las
+        pruebas que quitan la puerta de verdad: se registra ANTES de quitarla.)"""
+        self.sql("\n".join(_guardias(M71).values()))
+        ov._olvidar_cache()
+
+    def _texto_de_las_guardias(self) -> list[dict]:
+        """La huella del texto de cada guardia, para comprobar que una prueba que
+        les mete mano deja la base EXACTAMENTE como la encontró."""
+        return self.sql("""select p.proname, md5(p.prosrc) as huella,
+                                  position('app.ov_edicion' in p.prosrc) > 0 as con_puerta
+                             from pg_proc p
+                            where p.oid in ('ops.tg_ov_ordenes_guarda()'::regprocedure,
+                                            'ops.tg_ov_lineas_guarda()'::regprocedure)
+                            order by 1""")
+
+    def test_por_la_puerta_se_le_pregunta_a_la_base_no_al_registro_de_migraciones(self):
+        """`edicion_lista()` contra el catálogo de verdad, pieza por pieza. Cada caso
+        corre en una transacción que termina en ROLLBACK (en Postgres el DDL es
+        transaccional): se le quita UNA cosa de las que pone la 0071 y la respuesta
+        tiene que ser «no». En todos, el renglón de la 0071 SIGUE en
+        `ops.migraciones` —es de sólo agregar—: por eso ya no se le pregunta a él
+        (decía que sí con la puerta quitada, y el permiso mentía para siempre)."""
+        sin = _guardias(M68)                 # como las deja la 0068: sin la puerta
+        con = _guardias(M71)
+        self.assertNotIn("app.ov_edicion", "".join(sin.values()))
+        self.assertTrue(all("app.ov_edicion" in texto for texto in con.values()))
+        self.assertIs(ov.edicion_lista(refrescar=True), True, "la suite aplicó la 0071")
+        como_estaban = self._texto_de_las_guardias()
+        self.assertEqual([g["con_puerta"] for g in como_estaban], [True, True])
+        casos = (
+            ("la guardia del encabezado, sin la puerta", sin["tg_ov_ordenes_guarda"]),
+            ("la guardia de los renglones, sin la puerta", sin["tg_ov_lineas_guarda"]),
+            ("las dos: volver a correr la 0068, o la reversa", "\n".join(sin.values())),
+            ("el catálogo de eventos sin `editada`",
+             """alter table ventas.ov_mensajes drop constraint ov_mensajes_evento_chk;
+                alter table ventas.ov_mensajes add constraint ov_mensajes_evento_chk
+                  check (evento is null or evento in ('creada', 'confirmada', 'cancelada'))
+                  not valid"""),
+            # Las guardias se buscan por su nombre en `ops`: si un día se mudan o se
+            # renombran, la respuesta es «no» —falla cerrado— hasta actualizar la consulta.
+            ("una guardia que ya no se llama así",
+             "alter function ops.tg_ov_lineas_guarda() rename to tg_ov_lineas_guarda_de_antes"))
+        for nombre, ddl in casos:
+            with self.subTest(nombre), self.conexion() as cn:
+                cur = cn.cursor()
+                self.assertIs(ov.edicion_lista(cur=cur), True)
+                cur.execute(ddl)
+                self.assertIs(ov.edicion_lista(cur=cur), False)
+                cur.execute(self._CORRIO_LA_0071)
+                self.assertEqual(cur.fetchone()["n"], 2, "el registro sigue diciendo que se corrió")
+                # Y con todo en su lugar otra vez (como volver a correr la 0071), es «sí».
+                if "sin la puerta" in nombre or "las dos" in nombre:
+                    cur.execute("\n".join(con.values()))
+                    self.assertIs(ov.edicion_lista(cur=cur), True)
+        self.assertIs(ov.edicion_lista(refrescar=True), True, "cada ROLLBACK la dejó como estaba")
+        self.assertEqual(self._texto_de_las_guardias(), como_estaban)
+        self.assertEqual(ov._recordado("edicion"), (True, True),
+                         "lo leído con un cursor prestado no se recuerda; esto sí")
+
+    def test_sin_la_0071_no_se_ofrece_y_si_se_intenta_es_un_409_que_lo_dice(self):
+        """Dos formas de «no tener» la 0071, sin buscar una base aparte:
+        (1) LA BASE NO TRAE LA PUERTA, de verdad: dentro de una transacción que
+            termina en ROLLBACK se reponen las dos guardias con el texto de la 0068
+            (lo que hace volver a correrla, o la reversa). No se ofrece editar y se
+            dice; y si Python no lo frenara, la base sí (42501). El renglón del
+            registro de migraciones sigue ahí: no es a él a quien se le pregunta.
+        (2) la base SÍ la trae, pero la sentencia no la abre —va sin la puerta, o
+            con la de OTRA orden—: el mismo 42501 de antes de la migración. Y un
+            catálogo sin `editada` (23514) es el tercer síntoma."""
+        a, b, c = self.sku("A"), self.sku("B"), self.sku("C")
+        self.siembra(a, 5)
+        self.siembra(b, 5)
+        self.siembra(c, 1)
+        o = self.confirmada([L(a, 2), L(c, 1)])
+        otra = self.confirmada([L(b, 1)])
+        saldos = ((5, 2, 3), (5, 1, 4), (1, 1, 0))
+        falta = (409, self._FALTA_LA_0071)
+        self.assertTrue(ov.edicion_lista(refrescar=True), "la suite sí la aplicó")
+        with self.conexion() as cn:
+            cur = cn.cursor()
+            cur.execute("\n".join(_guardias(M68).values()))         # ← se va la puerta
+            cur.execute(self._CORRIO_LA_0071)
+            self.assertEqual(cur.fetchone()["n"], 2, "el registro dice que la 0071 se corrió…")
+            self.assertIs(ov.edicion_lista(cur=cur), False, "…y la base, que la puerta no está")
+            p = ov.obtener(o["id"], OPER, cur=cur)["permisos"]
+            self.assertFalse(p["editar"])
+            self.assertEqual(p["porque"]["editar"], falta[1])
+            self.assertTrue(p["cancelar"] and p["entregar"], "lo demás no depende de la 0071")
+            for datos in ({"guia": "GUIA-PRUEBA-1"}, {"lineas": [L(a, 4), L(c, 1)]}):
+                with self.assertRaises(ov.Conflicto) as e:
+                    ov.guardar(o["id"], o["rev"], datos, ADMIN, cur=cur)
+                self.assertEqual((e.exception.status, str(e.exception)), falta)
+                # Y si Python no lo frenara (lo recordaba de antes), la base sí: la
+                # guardia sin puerta rechaza la sentencia aunque traiga su `set local`.
+                with mock.patch.object(ov, "edicion_lista", return_value=True), \
+                        self.assertLogs("omnicanal.ordenes_venta", level="WARNING") as logs:
+                    with self.assertRaises(ov.Conflicto) as e:
+                        ov.guardar(o["id"], o["rev"], datos, ADMIN, cur=cur)
+                self.assertEqual((e.exception.status, str(e.exception)), falta)
+                self.assertIn("pgcode=42501", logs.output[0])
+            # Un BORRADOR se guarda igual: no pasa por la puerta.
+            d = ov.crear_borrador({"lineas": [L(a, 1)]}, OPER, self.clave(), cur=cur)["orden"]
+            self.assertEqual(ov.guardar(d["id"], d["rev"], {"guia": "GUIA-PRUEBA-1"}, OPER, cur=cur)
+                             ["orden"]["guia"], "GUIA-PRUEBA-1")
+            tras = ov.obtener(o["id"], OPER, cur=cur)
+            self.assertEqual((tras["rev"], tras["guia"], tras["piezas_apartadas"]),
+                             (o["rev"], None, 3), "nada se movió")
+        ov._olvidar_cache()
+        self.intacta(o)
+
+        puerta = "set local app.ov_edicion = %(puerta)s;\n"
+        self.assertIn(puerta, ov.SQL_EDITAR_CONFIRMADA)
+        sin_puerta = ov.SQL_EDITAR_CONFIRMADA.replace(puerta, "")
+        sin_evento = ov.SQL_EDITAR_CONFIRMADA.replace("'editada'", "'editada_que_no_esta'")
+        real = ov._transicion
+
+        def con_la_puerta_de_otra(operacion, sql, params, cur=None):
+            return real(operacion, sql, {**params, "puerta": str(otra["id"])}, cur)
+
+        # Cada caso tropieza con una guardia distinta: la del encabezado (UPDATE), y
+        # la de los renglones al cambiar (UPDATE), agregar (INSERT) y quitar (DELETE).
+        casos = (("sin puerta: el encabezado", {"guia": "GUIA-PRUEBA-1"}, sin_puerta, real,
+                  "ov_ordenes_inmutable"),
+                 ("sin puerta: cambiar un renglón", {"lineas": [L(a, 4), L(c, 1)]}, sin_puerta, real,
+                  "ov_lineas_inmutable"),
+                 ("sin puerta: agregar un renglón", {"lineas": [L(a, 2), L(c, 1), L(b, 1)]},
+                  sin_puerta, real, "ov_lineas_inmutable"),
+                 ("sin puerta: quitar un renglón", {"lineas": [L(a, 2)]}, sin_puerta, real,
+                  "ov_lineas_inmutable"),
+                 ("la puerta de OTRA orden", {"guia": "GUIA-PRUEBA-1", "lineas": [L(a, 4), L(c, 1)]},
+                  ov.SQL_EDITAR_CONFIRMADA, con_la_puerta_de_otra, "ov_ordenes_inmutable"),
+                 ("el catálogo sin `editada`", {"guia": "GUIA-PRUEBA-1"}, sin_evento, real,
+                  "ov_mensajes_evento_chk"))
+        for nombre, datos, sql, transicion, regla in casos:
+            with self.subTest(nombre):
+                self.assertTrue(ov.edicion_lista(), "la base SÍ trae la puerta: quien no la abre "
+                                                    "es esta sentencia")
+                with mock.patch.object(ov, "SQL_EDITAR_CONFIRMADA", sql), \
+                        mock.patch.object(ov, "_transicion", transicion), \
+                        self.assertLogs("omnicanal.ordenes_venta", level="WARNING") as logs:
+                    with self.assertRaises(ov.Conflicto) as e:
+                        ov.guardar(o["id"], o["rev"], datos, OPER)
+                self.assertEqual((e.exception.status, str(e.exception)), falta)
+                self.assertEqual([r.levelname for r in logs.records], ["WARNING"])
+                self.assertIn(f"regla={regla}", logs.output[0])
+                self.assertEqual(ov._recordado("edicion"), (False, None),
+                                 "lo recordado ya no vale: se vuelve a preguntar")
+                self.intacta(o, nombre)
+                self.assertEqual((self.saldo(a), self.saldo(b), self.saldo(c)), saldos, nombre)
+        # Con la sentencia de verdad y SU puerta, la misma corrección entra.
+        ok = ov.guardar(o["id"], o["rev"], {"guia": "GUIA-PRUEBA-1", "lineas": [L(a, 4), L(b, 1)]},
+                        OPER)["orden"]
+        self.assertEqual((ok["guia"], self.saldo(a), self.saldo(b), self.saldo(c)),
+                         ("GUIA-PRUEBA-1", (5, 4, 1), (5, 2, 3), (1, 0, 1)))
+        self.intacta(otra, "la otra orden ni se enteró")
+
+    def test_si_la_base_pierde_la_puerta_el_primer_rechazo_deja_de_ofrecer_editar(self):
+        """El caso entero, con el caché de verdad (por eso aquí el DDL SÍ se
+        confirma; se repone pase lo que pase). Alguien vuelve a correr la 0068 —su
+        encabezado dice «idempotente»— o hace la reversa de la 0071: las dos
+        guardias quedan sin la puerta y el renglón de la 0071 sigue en el registro.
+        Cuando se preguntaba por ese renglón el permiso seguía en True PARA SIEMPRE,
+        cada guardado rebotaba con 409 y olvidar lo recordado no servía (la
+        siguiente pregunta lo volvía a encontrar). Ahora lo recordado sobrevive, a
+        lo más, a UN guardado: la relectura que hace la pantalla tras el 409 ya no
+        ofrece editar, y dice por qué."""
+        a = self.sku("A")
+        self.siembra(a, 5)
+        o = self.confirmada([L(a, 2)])
+        otra = self.confirmada([L(a, 1)])
+        corregida = {"guia": "GUIA-PRUEBA-1", "lineas": [L(a, 4)]}
+        como_estaban = self._texto_de_las_guardias()
+        self.addCleanup(self._reponer_la_puerta)             # ANTES de quitarla
+        self.assertIs(ov.edicion_lista(refrescar=True), True)                # recordado: 60 s
+        self.sql("\n".join(_guardias(M68).values()))                         # ← se va la puerta
+        self.assertEqual([g["con_puerta"] for g in self._texto_de_las_guardias()], [False, False])
+        self.assertEqual(self.sql(self._CORRIO_LA_0071)[0]["n"], 2)
+        # 1) Mientras dura lo recordado la pantalla todavía la ofrece (es la cortesía)…
+        self.assertTrue(ov.obtener(o["id"], OPER)["permisos"]["editar"])
+        # …y la guarda es la base: 42501 → 409 que lo dice, nada se mueve, y lo
+        # recordado se olvida.
+        with self.assertLogs("omnicanal.ordenes_venta", level="WARNING") as logs:
+            with self.assertRaises(ov.Conflicto) as e:
+                ov.guardar(o["id"], o["rev"], corregida, OPER)
+        self.assertEqual((e.exception.status, str(e.exception)), (409, self._FALTA_LA_0071))
+        self.assertIn("pgcode=42501 regla=ov_ordenes_inmutable", logs.output[0])
+        self.assertEqual(ov._recordado("edicion"), (False, None))
+        # 2) LA RELECTURA ya no la ofrece. (Esto es lo que antes no pasaba nunca.)
+        p = ov.obtener(o["id"], OPER)["permisos"]
+        self.assertEqual((p["editar"], p["porque"]["editar"]), (False, self._FALTA_LA_0071))
+        self.assertTrue(p["cancelar"] and p["entregar"], "lo demás no depende de la puerta")
+        # 3) Otro intento ya ni llega a la base: lo frena el permiso, con el mismo texto.
+        with self.assertNoLogs("omnicanal.ordenes_venta", level="WARNING"):
+            for quien in (OPER, ADMIN):
+                with self.assertRaises(ov.Conflicto) as e:
+                    ov.guardar(o["id"], o["rev"], corregida, quien)
+                self.assertEqual(str(e.exception), self._FALTA_LA_0071)
+        self.intacta(o)
+        self.assertEqual(self.saldo(a), (5, 3, 2))
+        # Sin la puerta todo lo demás sigue como antes de la 0071: un borrador se
+        # guarda y otra confirmada se entrega.
+        d = self.crear([L(a, 1)])
+        self.assertEqual(ov.guardar(d["id"], d["rev"], {"guia": "GUIA-PRUEBA-2"}, OPER)
+                         ["orden"]["guia"], "GUIA-PRUEBA-2")
+        self.assertEqual(ov.entregar(otra["id"], otra["rev"], OPER)["orden"]["estado"], "entregada")
+        # 4) Se vuelve a correr la 0071 (sus dos guardias). El «no» también se
+        # recuerda un minuto; vencido, la misma corrección entra.
+        self.sql("\n".join(_guardias(M71).values()))
+        self.assertEqual(self._texto_de_las_guardias(), como_estaban,
+                         "la base quedó EXACTAMENTE como la dejó la migración")
+        self.assertFalse(ov.obtener(o["id"], OPER)["permisos"]["editar"], "todavía recordado")
+        ov._olvidar("edicion")                               # (= pasó el minuto)
+        self.assertTrue(ov.obtener(o["id"], OPER)["permisos"]["editar"])
+        ok = ov.guardar(o["id"], o["rev"], corregida, OPER)["orden"]
+        self.assertEqual((ok["guia"], ok["piezas_apartadas"], self.saldo(a)),
+                         ("GUIA-PRUEBA-1", 4, (4, 4, 0)))
+        self.assertEqual(self.sql(self._CORRIO_LA_0071)[0]["n"], 2, "el registro ni se enteró")
+
+    def test_un_tropiezo_al_preguntar_por_la_puerta_no_se_dice_como_que_falta(self):
+        """La pregunta de verdad, tronando de verdad en Postgres (pasa por `_fila` →
+        `_tx` → el reintento del pool: el camino de producción). No saber no es
+        «falta»: la orden no ofrece editar —la duda cierra— y un PUT en esa ventana
+        es un 409, pero lo que se le dice a la persona es que no se pudo comprobar
+        y que lo intente de nuevo, no que busque una migración que sí está."""
+        a = self.sku("A")
+        self.siembra(a, 5)
+        o = self.confirmada([L(a, 2)])
+        borrador = self.crear([L(a, 1)])
+        sin_saber = ("No se pudo comprobar si esta base ya permite editar una orden confirmada "
+                     "(la migración 0071); intenta de nuevo en unos segundos.")
+        self.assertTrue(ov.obtener(o["id"], OPER)["permisos"]["editar"])
+        ov._olvidar("edicion")                               # venció lo recordado: toca preguntar
+        truena = "select 1 / (select count(*) from pg_class where false) as lista"
+        # (El tropiezo se recuerda `_TTL_FALLO`, unos segundos. Aquí se alarga para
+        # que la prueba no dependa de lo rápido que corra la máquina.)
+        with mock.patch.object(ov, "_SQL_HAY_EDICION", truena), \
+                mock.patch.object(ov, "_TTL_FALLO", 600.0):
+            with self.assertLogs("omnicanal.ordenes_venta", level="WARNING") as logs:
+                p = ov.obtener(o["id"], OPER)["permisos"]
+            self.assertEqual(len(logs.output), 1)
+            self.assertIn("DivisionByZero", logs.output[0])
+            self.assertIsNone(ov.edicion_lista(), "ni sí ni no: no se sabe")
+        self.assertEqual(ov._recordado("edicion"), (True, None))
+        self.assertEqual((p["editar"], p["porque"]["editar"]), (False, sin_saber))
+        self.assertTrue(p["cancelar"] and p["entregar"] and p["mensajes"], "lo demás no se entera")
+        # La base ya contesta, pero el tropiezo se recuerda unos segundos: un PUT en
+        # esa ventana es un 409 con ESE texto, y no cambia nada.
+        with self.assertRaises(ov.Conflicto) as e:
+            ov.guardar(o["id"], o["rev"], {"guia": "GUIA-PRUEBA-1"}, OPER)
+        self.assertEqual((e.exception.status, str(e.exception)), (409, sin_saber))
+        self.intacta(o)
+        # Un BORRADOR ni pregunta por la puerta: se edita igual.
+        self.assertTrue(ov.obtener(borrador["id"], OPER)["permisos"]["editar"])
+        guardado = ov.guardar(borrador["id"], borrador["rev"], {"guia": "GUIA-PRUEBA-2"}, OPER)
+        self.assertEqual(guardado["orden"]["guia"], "GUIA-PRUEBA-2")
+        # Vencido el recuerdo del tropiezo, la misma corrección entra.
+        ov._olvidar("edicion")
+        ok = ov.guardar(o["id"], o["rev"], {"guia": "GUIA-PRUEBA-1"}, OPER)["orden"]
+        self.assertEqual((ok["guia"], ok["permisos"]["editar"]), ("GUIA-PRUEBA-1", True))
+
+    def test_la_puerta_no_se_queda_abierta_en_la_conexion_del_pool(self):
+        """Regla 13: `app.ov_edicion` va como SET LOCAL en el mismo envío y muere con
+        la transacción. Si se quedara pegada en una conexión del pool, la SIGUIENTE
+        sentencia sobre esa orden —venga de quien venga— podría tocar su contenido
+        sin abrir la puerta."""
+        a = self.sku("A")
+        self.siembra(a, 9)
+        o = self.confirmada([L(a, 2)])
+        for n in (3, 4, 5):                                  # varias, para pasear por el pool
+            o = ov.guardar(o["id"], o["rev"], {"lineas": [L(a, n)]}, OPER)["orden"]
+        vistos = {ov._fila("select current_setting('app.ov_edicion', true) as puerta")["puerta"]
+                  for _ in range(12)}
+        self.assertLessEqual(vistos, {None, ""}, "ninguna conexión conserva la puerta")
+        sin_puerta = ov.SQL_EDITAR_CONFIRMADA.replace("set local app.ov_edicion = %(puerta)s;\n", "")
+        for _ in range(8):
+            with mock.patch.object(ov, "SQL_EDITAR_CONFIRMADA", sin_puerta), \
+                    self.assertLogs("omnicanal.ordenes_venta", level="WARNING"):
+                with self.assertRaises(ov.Conflicto) as e:
+                    ov.guardar(o["id"], o["rev"], {"lineas": [L(a, 6)]}, OPER)
+            self.assertIn("0071", str(e.exception))
+        self.assertEqual((self.saldo(a), ov.obtener(o["id"], OPER)["rev"]), ((9, 5, 4), o["rev"]))
+
+    # ── la liga con la venta y la orden automática ───────────────────────────
+    def test_la_liga_con_la_venta_se_revalida_igual_que_en_un_borrador(self):
+        a = self.sku("A")
+        suya, ajena, full = f"V1-{self.t}", f"V2-{self.t}", f"VF-{self.t}"
+        self.venta_canal(suya, [(a, 2, 10, False)])                       # en UNA sola cuenta
+        self.venta_canal(full, [(a, 1, 10, True)], canal="mercado_libre")
+        self.siembra(a, 9)
+        o = self.confirmada([L(a, 2)])
+        otra = self.confirmada([L(a, 1)], mp_canal="tiktok", mp_cuenta=CUENTA, mp_orden=ajena)
+        # Todo o nada, y una venta FULL no lleva orden propia: tampoco una confirmada.
+        with self.assertRaises(ov.Invalido) as e:
+            ov.guardar(o["id"], o["rev"], {"mp_orden": suya}, OPER)
+        self.assertIn("los tres o ninguno", str(e.exception))
+        with self.assertRaises(ov.Invalido) as e:
+            ov.guardar(o["id"], o["rev"], {"mp_canal": "mercado_libre", "mp_cuenta": CUENTA,
+                                           "mp_orden": full}, OPER)
+        self.assertIn("FULL", str(e.exception))
+        # A una venta que YA tiene orden: 409 con su folio. También si la revisión
+        # previa no la ve (dos capturas a la vez) y quien la frena es el índice único.
+        mp_ajena = {"mp_canal": "tiktok", "mp_cuenta": CUENTA, "mp_orden": ajena}
+        for parche in (mock.patch.object(ov, "_venta_ligada", wraps=ov._venta_ligada),
+                       mock.patch.object(ov, "_venta_ligada", side_effect=[None, otra])):
+            with parche, self.assertRaises(ov.Conflicto) as e:
+                ov.guardar(o["id"], o["rev"], mp_ajena, OPER)
+            self.assertEqual((e.exception.status, str(e.exception)),
+                             (409, f"Esa venta ya tiene la orden {otra['folio']}."))
+        self.intacta(o)
+        # La suya: la cuenta se completa sola, y las formas (canal en minúsculas).
+        e = ov.guardar(o["id"], o["rev"], {"mp_canal": " TikTok ", "mp_orden": suya}, OPER)["orden"]
+        self.assertEqual((e["mp_canal"], e["mp_cuenta"], e["mp_orden"], e["estado"]),
+                         ("tiktok", CUENTA, suya, "confirmada"))
+        m = self.editada(o["id"])
+        self.assertEqual((m["cuerpo"], m["datos"]["cambios"]),
+                         ("Orden editada · canal de la venta, orden de marketplace, cuenta",
+                          {"mp_canal": [None, "tiktok"], "mp_cuenta": [None, CUENTA],
+                           "mp_orden": [None, suya]}))
+        # Ligada, el barrido de cancelaciones ya la ve como la orden de esa venta…
+        self.assertEqual(ov.venta_marketplace(suya)["ventas"][0]["ov"],
+                         {"id": o["id"], "folio": o["folio"], "estado": "confirmada"})
+        # …y se desliga mandando los tres en nulo.
+        suelta = ov.guardar(o["id"], e["rev"], dict.fromkeys(mp_ajena), OPER)["orden"]
+        self.assertEqual((suelta["mp_canal"], suelta["mp_cuenta"], suelta["mp_orden"]),
+                         (None, None, None))
+        self.assertEqual(self.saldo(a), (9, 3, 6), "la liga no mueve el apartado")
+
+    def test_la_orden_que_nacio_sola_no_cambia_de_cliente_ni_de_canal_de_venta(self):
+        """`crear_auto` aparta en una bodega que SURTE VENTAS, y ENSAYO no lo hace:
+        se enciende dentro de la transacción de la prueba (ROLLBACK), como CrearAuto."""
+        a = self.sku("A")
+        venta = {"canal": "tiktok", "cuenta": CUENTA, "orden": f"5780{self.t}", "total": 400,
+                 "comision": 40, "guia": "GUIA-PRUEBA-7"}
+        with self.conexion() as cn:
+            cur = cn.cursor()
+            cur.execute("""select set_config('app.usuario', 'pruebas@prueba.test', true);
+                           update almacen.almacenes
+                              set surte_ventas = true, preferencia = 9,
+                                  motivo = 'Prueba: ENSAYO surte ventas (editar una automática)'
+                            where codigo = 'ENSAYO'""")
+            cur.execute("""insert into ops.automatizacion_flags (flag, valor, motivo, actualizado_por)
+                           values ('ov_generacion_auto', true, 'Prueba de editar una automática',
+                                   'pruebas@prueba.test')""")
+            self.siembra(a, 5, cur=cur)
+            r = ov.crear_auto(venta, [{"sku": a, "cantidad": 2, "precio_unitario": 200}], "ENSAYO",
+                              cur=cur)
+            self.assertEqual((r["resultado"], r["orden"]["estado"], r["orden"]["creado_via"],
+                              r["orden"]["cliente"]), ("creada", "confirmada", "automatico", "tiktok"))
+            o = ov.obtener(r["orden"]["id"], OPER, cur=cur)
+            self.assertTrue(o["permisos"]["editar"], "una automática también se corrige")
+            for datos in ({"cliente": "Cliente de mostrador"}, {"cliente": None},
+                          {"mp_canal": "temu"}, {"cliente": "temu", "mp_canal": "temu"}):
+                with self.assertRaises(ov.Invalido, msg=str(datos)) as e:
+                    ov.guardar(o["id"], o["rev"], datos, ADMIN, cur=cur)
+                self.assertEqual(str(e.exception), "Esta orden se creó sola a partir de su venta: su "
+                                                   "cliente es el canal de esa venta, y ninguno de "
+                                                   "los dos se cambia.")
+            # Lo demás sí: la guía, y los renglones con su apartado (el eco del cliente
+            # y del canal, que la pantalla manda siempre, no es cambiarlos).
+            e = ov.guardar(o["id"], o["rev"], {"cliente": "tiktok", "mp_canal": "tiktok",
+                                               "guia": "GUIA-PRUEBA-8", "total": None,
+                                               "lineas": [L(a, 3, 200)]}, OPER, cur=cur)["orden"]
+            self.assertEqual((e["guia"], e["total"], e["piezas_apartadas"], e["cliente"],
+                              e["creado_via"], e["confirmada_por"]),
+                             ("GUIA-PRUEBA-8", 600.0, 3, "tiktok", "automatico", "automatico"))
+            cur.execute("select fisico, apartado, libre from almacen.stock_almacen "
+                        "where sku = %s and almacen = 'ENSAYO'", (a,))
+            self.assertEqual(tuple(cur.fetchone().values()), (5, 3, 2))
+            # Y `crear_auto` de la MISMA venta la sigue viendo: ya existía, sin apartar otra vez.
+            r2 = ov.crear_auto(venta, [{"sku": a, "cantidad": 2, "precio_unitario": 200}], "ENSAYO",
+                               cur=cur)
+            self.assertEqual((r2["resultado"], r2["orden"]["id"], r2["orden"]["piezas_apartadas"]),
+                             ("ya_existia", o["id"], 3))
+            cur.execute("set constraints all immediate")        # lo que revisaría el COMMIT
+
+    # ── reintentos y concurrencia ────────────────────────────────────────────
+    def test_el_reintento_que_repite_una_edicion_que_si_entro_es_el_exito_que_fue(self):
+        """El COMMIT entró y la conexión murió al contestar: el pool repite el cuerpo
+        y el CAS falla… contra MI propia edición. La marca `op` del mensaje `editada`
+        lo distingue de «la movió otro»: se contesta el éxito, y se aplicó UNA vez."""
+        a = self.sku("A")
+        self.siembra(a, 9)
+        o = self.confirmada([L(a, 2)])
+        with mock.patch.object(ov.sdb, "reintentar_transitorio", lambda fn: (fn(), fn())[1]):
+            r = ov.guardar(o["id"], o["rev"], {"guia": "GUIA-PRUEBA-1", "lineas": [L(a, 5)]}, OPER)
+        self.assertEqual((r["ok"], r["mensaje"], r["orden"]["rev"], r["orden"]["guia"]),
+                         (True, "Cambios guardados.", o["rev"] + 1, "GUIA-PRUEBA-1"))
+        self.assertEqual((self.saldo(a), self.eventos(o["id"])),
+                         ((9, 5, 4), ["creada", "confirmada", "editada"]), "apartó +3 UNA sola vez")
+        # La marca es fontanería: no sale por la API.
+        self.assertNotIn("op", self.editada(o["id"])["datos"])
+        self.assertEqual(self.sql("select count(*) as n from ventas.ov_mensajes where orden_id = %s "
+                                  "and evento = 'editada' and datos ? 'op'", (o["id"],))[0]["n"], 1)
+
+    def test_dos_ediciones_a_la_vez_de_la_misma_orden_gana_una(self):
+        a = self.sku("A")
+        self.siembra(a, 30)
+        for vuelta in range(4):
+            o = self.confirmada([L(a, 2)])
+            antes = self.saldo(a)
+            r = self.a_la_vez(lambda: ov.guardar(o["id"], o["rev"], {"lineas": [L(a, 5)]}, OPER),
+                              lambda: ov.guardar(o["id"], o["rev"], {"lineas": [L(a, 1)],
+                                                                     "guia": "GUIA-PRUEBA-1"}, ADMIN))
+            ganan = [x for x in r if isinstance(x, dict)]
+            pierden = [x for x in r if isinstance(x, Exception)]
+            self.assertEqual((len(ganan), len(pierden)), (1, 1), f"vuelta {vuelta}: {r}")
+            self.assertIsInstance(pierden[0], ov.Conflicto)
+            self.assertEqual(str(pierden[0]), "La orden cambió mientras tanto; se recargó.")
+            fin = ov.obtener(o["id"], OPER)
+            pidio = fin["lineas"][0]["cantidad"]
+            self.assertIn((pidio, fin["guia"]), ((5, None), (1, "GUIA-PRUEBA-1")),
+                          "quedó UNA de las dos, entera: nunca una mezcla")
+            self.assertEqual((fin["rev"], fin["piezas_apartadas"], self.eventos(o["id"]).count("editada")),
+                             (o["rev"] + 1, pidio, 1))
+            self.assertEqual(self.saldo(a), (antes[0], antes[1] - 2 + pidio, antes[2] + 2 - pidio))
+
+    def test_una_edicion_y_la_confirmacion_de_otra_orden_pelean_el_mismo_saldo(self):
+        """Hay 3 piezas libres y dos que las quieren A LA VEZ: una edición que sube 3
+        y la confirmación de OTRA orden que pide 3. Entra una; la otra recibe su
+        «no alcanzó» con palabras. Pase lo que pase, ni una pieza apartada de más."""
+        ganaron = set()
+        for vuelta in range(6):
+            a = self.sku(f"A{vuelta}")
+            self.siembra(a, 5)
+            o1 = self.confirmada([L(a, 2)])
+            o2 = self.crear([L(a, 3)])
+            r = self.a_la_vez(lambda: ov.guardar(o1["id"], o1["rev"], {"lineas": [L(a, 5)]}, OPER),
+                              lambda: ov.confirmar(o2["id"], o2["rev"], ADMIN))
+            self.assertEqual([isinstance(x, dict) for x in r].count(True), 1, f"vuelta {vuelta}: {r}")
+            self.assertEqual(self.saldo(a), (5, 5, 0), "ni una pieza de más")
+            e1, e2 = ov.obtener(o1["id"], OPER), ov.obtener(o2["id"], OPER)
+            if isinstance(r[0], dict):                   # ganó la edición
+                ganaron.add("edicion")
+                self.assertEqual((e1["piezas_apartadas"], e2["estado"]), (5, "borrador"))
+                self.assertIsInstance(r[1], ov.Conflicto)
+                self.assertEqual(str(r[1]), f"No alcanzó el stock para apartar: {a} pide 3 y hay 0 "
+                                            "libres en ENSAYO. No se apartó nada.")
+            else:                                        # ganó la confirmación
+                ganaron.add("confirmacion")
+                self.assertEqual((e1["piezas_apartadas"], e1["rev"], e2["estado"]),
+                                 (2, o1["rev"], "confirmada"))
+                self.assertIsInstance(r[0], ov.Conflicto)
+                self.assertEqual(str(r[0]), f"No alcanzó el stock para guardar el cambio: {a} "
+                                            "necesita 3 más y hay 0 libres en ENSAYO. No se guardó "
+                                            "nada.")
+                self.assertNotIn("editada", self.eventos(o1["id"]))
+        self.assertTrue(ganaron, "alguna de las dos tuvo que ganar")
+
+    def test_la_edicion_espera_el_candado_del_saldo_y_luego_no_alcanza(self):
+        """La misma pelea, a cámara lenta y en los DOS sentidos: quien llega segundo
+        se queda esperando la fila de saldo —se ve en pg_stat_activity— y, cuando el
+        primero confirma (COMMIT), decide con el saldo de AHORA, no con su foto."""
+        for primero in ("confirmacion", "edicion"):
+            with self.subTest(primero=primero):
+                a = self.sku(f"A-{primero[:4].upper()}")
+                self.siembra(a, 5)
+                o1 = self.confirmada([L(a, 2)])
+                o2 = self.crear([L(a, 3)])
+                salida: dict = {}
+
+                def editar(cur=None):
+                    return ov.guardar(o1["id"], o1["rev"], {"lineas": [L(a, 5)]}, OPER, cur=cur)
+
+                def confirmar(cur=None):
+                    return ov.confirmar(o2["id"], o2["rev"], ADMIN, cur=cur)
+
+                # Quién espera se reconoce por el ARRANQUE de su sentencia: pg_stat_activity
+                # recorta el texto a 1024 bytes, y en la de editar el saldo queda más
+                # allá (antes van los catorce campos del encabezado). Las dos órdenes
+                # son distintas, así que lo único que comparten —y por lo que una puede
+                # esperar a la otra— es la fila de saldo.
+                gana, espera_, la_que_espera = (
+                    (confirmar, editar, "%%set local app.ov_edicion%%") if primero == "confirmacion"
+                    else (editar, confirmar, "%%almacen.stock_almacen%%"))
+
+                def segundo() -> None:
+                    try:
+                        salida["r"] = espera_()
+                    except Exception as exc:  # noqa: BLE001
+                        salida["r"] = exc
+
+                with self.conexion() as cn:
+                    cur = cn.cursor()
+                    self.assertTrue(gana(cur)["ok"])
+                    self.assertEqual(self.saldo(a), (5, 2, 3), "fuera de su transacción aún no se ve")
+                    hilo = threading.Thread(target=segundo)
+                    hilo.start()
+                    espero = False
+                    for _ in range(100):
+                        time.sleep(0.05)
+                        espero = self.sql(f"""select count(*) as n from pg_stat_activity
+                                               where datname = current_database()
+                                                 and wait_event_type = 'Lock'
+                                                 and query like '{la_que_espera}'""")[0]["n"] >= 1
+                        if espero:
+                            break
+                    cn.commit()                          # el primero gana
+                    hilo.join(30)
+                self.assertTrue(espero, "el segundo nunca esperó el candado del saldo")
+                self.assertIsInstance(salida["r"], ov.Conflicto, repr(salida["r"]))
+                self.assertIn("y hay 0 libres en ENSAYO", str(salida["r"]))
+                self.assertEqual(self.saldo(a), (5, 5, 0))
+                e1, e2 = ov.obtener(o1["id"], OPER), ov.obtener(o2["id"], OPER)
+                self.assertEqual((e1["piezas_apartadas"], e2["estado"]),
+                                 (2, "confirmada") if primero == "confirmacion" else (5, "borrador"))
+
+    def test_el_canal_cancela_mientras_se_confirma_una_edicion(self):
+        """La carrera que trajo la 0071, a cámara lenta: una persona edita y no ha
+        hecho COMMIT; el barrido lee la orden (con los renglones y la `rev` de
+        ANTES), decide cancelar y se queda esperando la fila. Al confirmar la
+        edición la orden sigue `confirmada` y sin marca, pero ya no tiene la `rev`
+        que el canal leyó: su guardia no encuentra la fila (KB001). Eso NO es un bug
+        ni un 409: es «se movió», se relee y se cancela lo que HAY.
+
+        (Cuando la guardia iba sólo por estado, la sentencia pasaba con los
+        renglones de la foto vieja y quien la frenaba era la base —el apartado no
+        cuadraría, o el renglón que la edición quitó ya no está—; y si la edición
+        sólo tocaba el encabezado, ni eso. Aquí se fija que TODAS las variantes
+        salen por la `rev`, sin llegar a esa red.)"""
+        variantes = (("baja la cantidad", [("A", 5)], [("A", 2)]),
+                     ("sube la cantidad", [("A", 2)], [("A", 5)]),
+                     ("quita un renglón", [("A", 2), ("B", 2)], [("A", 2)]),
+                     ("agrega un renglón", [("A", 2)], [("A", 2), ("B", 2)]),
+                     ("cambia de SKU", [("A", 2)], [("C", 2)]),
+                     ("sólo el encabezado", [("A", 2)], None))
+        for otra_aparta in (False, True):
+            for nombre, antes, despues in variantes:
+                with self.subTest(nombre, otra_aparta=otra_aparta):
+                    sku = {k: self.sku(f"{k}{uuid.uuid4().hex[:4]}") for k in "ABC"}
+                    for s in sku.values():
+                        self.siembra(s, 20)
+                    if otra_aparta:                     # otra orden aparta los mismos SKU
+                        self.confirmada([L(s, 3) for s in sku.values()])
+                    base = 3 if otra_aparta else 0
+                    o = self.confirmada([L(sku[k], n) for k, n in antes], mp_canal="tiktok",
+                                        mp_cuenta=CUENTA, mp_orden=f"V-{uuid.uuid4().hex[:10]}")
+                    cuerpo = ({"guia": "GUIA-PRUEBA-1"} if despues is None
+                              else {"lineas": [L(sku[k], n) for k, n in despues]})
+                    salida: dict = {}
+
+                    def canal() -> None:
+                        try:
+                            salida["r"] = ov.canal_cancelo(o["id"], "CANCELLED",
+                                                           "El comprador canceló en el canal", False)
+                        except Exception as exc:  # noqa: BLE001
+                            salida["r"] = exc
+
+                    with self.assertNoLogs("omnicanal.ordenes_venta", level="ERROR"), \
+                            self.rechazos_del_canal() as rechazos, self.conexion() as cn:
+                        cur = cn.cursor()
+                        e = ov.guardar(o["id"], o["rev"], cuerpo, OPER, cur=cur)["orden"]
+                        self.assertEqual(e["rev"], o["rev"] + 1)
+                        hilo = threading.Thread(target=canal)
+                        hilo.start()
+                        espero = False
+                        for _ in range(100):
+                            time.sleep(0.05)
+                            espero = self.sql(
+                                """select count(*) as n from pg_stat_activity
+                                    where datname = current_database() and wait_event_type = 'Lock'
+                                      and query like '%%update ventas.ov_ordenes%%'""")[0]["n"] >= 1
+                            if espero:
+                                break
+                        cn.commit()                      # la edición gana
+                        hilo.join(30)
+                    self.assertTrue(espero, "el barrido nunca esperó la fila de la orden")
+                    self.assertIsInstance(salida["r"], dict, f"salió {salida['r']!r}")
+                    self.assertEqual(rechazos, [("negocio", "ov_no_cancelable_o_cambio_rev")],
+                                     "UN rechazo, y por la `rev`: no por la foto vieja")
+                    c = salida["r"]["orden"]
+                    self.assertEqual((salida["r"]["resultado"], c["estado"], c["cancelada_origen"],
+                                      c["piezas_apartadas"], c["rev"]),
+                                     ("cancelada", "cancelada", "marketplace", 0, o["rev"] + 2))
+                    self.assertEqual([self.saldo(s) for s in sku.values()],
+                                     [(20, base, 20 - base)] * 3, "soltó EXACTO lo que había")
+                    self.assertEqual(self.eventos(o["id"])[-2:], ["editada", "cancelada"])
+                    # Y la bitácora dice lo que se soltó DESPUÉS de la edición, no antes.
+                    quedo = ov.obtener(o["id"], OPER)["lineas"]
+                    dicho = ov.mensajes(o["id"])["mensajes"][-1]
+                    self.assertEqual([(l["sku"], l["cantidad"]) for l in dicho["datos"]["lineas"]],
+                                     [(l["sku"], l["cantidad"]) for l in quedo])
+                    self.assertEqual(sum(l["reservado"] for l in dicho["datos"]["lineas"]),
+                                     e["piezas_apartadas"])
 
 
 class Alta(Base):
@@ -1271,13 +2605,19 @@ class ElCanalCancela(Base):
         """La guarda de verdad está en el SQL (la de Python sólo ahorra el viaje):
         dos pasadas del sondeo pueden leer lo mismo a la vez. La segunda tiene que
         dar un KB001 CON NOMBRE —que se relee— y no un 42501 «la cancelación del
-        canal ya está anotada», que se leería como bug en cada repetición."""
+        canal ya está anotada», que se leería como bug en cada repetición.
+
+        Desde que la guardia de una confirmada lleva también la `rev` de la lectura,
+        la segunda pasada —que leyó la MISMA rev— ya no encuentra la fila por eso.
+        Pero los filtros de estado siguen ahí y siguen bastando solos: cada caso se
+        prueba con la rev que se leyó Y con la de ahora."""
         firma = ov._firma(ov.AUTOMATICO)
         o, a = self.confirmada_de_venta()
-        marca = {**firma, "id": o["id"], "ref_canal": "IN_TRANSIT", "datos": "{}",
+        marca = {**firma, "id": o["id"], "rev": o["rev"], "ref_canal": "IN_TRANSIT", "datos": "{}",
                  "cuerpo": "El canal canceló con el paquete en camino: ¿salió?"}
-        cancela = {**firma, "id": o["id"], "origen": "marketplace", "datos": "{}",
+        cancela = {**firma, "id": o["id"], "rev": o["rev"], "origen": "marketplace", "datos": "{}",
                    "motivo": "Cancelada en el canal", "cuerpo": "Cancelada por el marketplace"}
+        no_esta = ("negocio", "ov_no_cancelable_o_cambio_rev")
 
         def rechazo(sql: str, params: dict) -> tuple:
             with self.assertRaises(ov._Rechazo) as e:
@@ -1285,12 +2625,16 @@ class ElCanalCancela(Base):
             return e.exception.clase, e.exception.detalle
 
         ov._transicion("canal_cancelo", ov.SQL_CANAL_MARCA, marca)
-        self.assertEqual(rechazo(ov.SQL_CANAL_MARCA, marca), ("negocio", "canal_cancelo_no_aplica"))
-        # Con la marca puesta el sondeo ya no cancela solo: decide Bodega.
-        self.assertEqual(rechazo(ov.SQL_CANCELAR_CANAL, cancela),
-                         ("negocio", "ov_no_cancelable_o_cambio_rev"))
+        ahora = ov.obtener(o["id"], OPER)["rev"]
+        self.assertEqual(ahora, o["rev"] + 1)
+        for rev in (o["rev"], ahora):       # la otra pasada leyó lo mismo… o releyó sin mirar
+            self.assertEqual(rechazo(ov.SQL_CANAL_MARCA, {**marca, "rev": rev}),
+                             ("negocio", "canal_cancelo_no_aplica"))
+            # Con la marca puesta el sondeo ya no cancela solo: decide Bodega.
+            self.assertEqual(rechazo(ov.SQL_CANCELAR_CANAL, {**cancela, "rev": rev}), no_esta)
         self.assertEqual(self.saldo(a), (5, 2, 3))
         # Una entregada: la primera pasada la deja entregada_cancelada; la segunda, KB001.
+        # (Ésta va sólo por estado: una entregada ya no cambia, no hay `rev` que mandar.)
         e, _ = self.confirmada_de_venta()
         ov.entregar(e["id"], e["rev"], OPER)
         entregada = {**firma, "id": e["id"], "motivo": "Reembolso en el canal", "datos": "{}",
@@ -1298,22 +2642,194 @@ class ElCanalCancela(Base):
         ov._transicion("canal_cancelo", ov.SQL_CANAL_CANCELO_ENTREGADA, entregada)
         self.assertEqual(rechazo(ov.SQL_CANAL_CANCELO_ENTREGADA, entregada),
                          ("negocio", "canal_cancelo_entregada_no_aplica"))
-        # Y una borrada no se toca (sin el filtro sería un 42501 de «está borrada»).
+        # Y una borrada no se toca (sin el filtro sería un 42501 de «está borrada»),
+        # traiga la rev que traiga.
         b, _ = self.confirmada_de_venta()
-        ov.borrar(b["id"], b["rev"], ADMIN, "Capturada por error")
-        for sql, params in ((ov.SQL_CANAL_MARCA, {**marca, "id": b["id"]}),
-                            (ov.SQL_CANCELAR_CANAL, {**cancela, "id": b["id"]}),
-                            (ov.SQL_CANAL_CANCELO_ENTREGADA, {**entregada, "id": b["id"]})):
-            self.assertEqual(rechazo(sql, params)[0], "negocio")
+        borrada = ov.borrar(b["id"], b["rev"], ADMIN, "Capturada por error")["orden"]
+        for rev in (b["rev"], borrada["rev"]):
+            for sql, params in ((ov.SQL_CANAL_MARCA, {**marca, "id": b["id"], "rev": rev}),
+                                (ov.SQL_CANCELAR_CANAL, {**cancela, "id": b["id"], "rev": rev}),
+                                (ov.SQL_CANAL_CANCELO_ENTREGADA, {**entregada, "id": b["id"]})):
+                self.assertEqual(rechazo(sql, params)[0], "negocio")
+
+    def test_la_rev_de_la_lectura_frena_al_canal_si_la_confirmada_cambio(self):
+        """Las tres sentencias del canal sobre una CONFIRMADA, de una en una y contra
+        la base: la orden sigue confirmada y sin marca —o sea que «por estado»
+        pasaría—, pero ya no es la que se leyó (alguien la editó: desde la 0071 se
+        puede). Con la rev de la lectura no encuentran la fila y no se mueve nada;
+        con la de ahora, entran. Es la guardia que `canal_cancelo` usa para que
+        cada reintento decida con lo que HAY."""
+        firma = ov._firma(ov.AUTOMATICO)
+        cuadra = {**firma, "datos": "{}", "origen": "marketplace", "ref_canal": "IN_TRANSIT",
+                  "motivo": "Cancelada en el canal", "cuerpo": "Cancelada por el marketplace"}
+
+        def rechazo(sql: str, orden: dict, rev: int) -> tuple:
+            with self.assertRaises(ov._Rechazo) as e:
+                ov._transicion("canal_cancelo", sql, {**cuadra, "id": orden["id"], "rev": rev})
+            return e.exception.clase, e.exception.detalle
+
+        def entra(sql: str, orden: dict, rev: int) -> dict:
+            ov._transicion("canal_cancelo", sql, {**cuadra, "id": orden["id"], "rev": rev})
+            return ov.obtener(orden["id"], OPER)
+
+        def editada(orden: dict) -> dict:
+            """La misma orden después de que una persona le corrige la guía."""
+            e = ov.guardar(orden["id"], orden["rev"], {"guia": "GUIA-PRUEBA-1"}, OPER)["orden"]
+            self.assertEqual((e["estado"], e["canal_cancelo_at"], e["rev"]),
+                             ("confirmada", None, orden["rev"] + 1), "por estado, sigue igual")
+            return e
+
+        # 1) Cancelar sin salidas.
+        leida, a = self.confirmada_de_venta()
+        ya = editada(leida)
+        self.assertEqual(rechazo(ov.SQL_CANCELAR_CANAL, leida, leida["rev"]),
+                         ("negocio", "ov_no_cancelable_o_cambio_rev"))
+        self.assertEqual((ov.obtener(leida["id"], OPER)["rev"], self.saldo(a)),
+                         (ya["rev"], (5, 2, 3)), "ni la rev ni el apartado se movieron")
+        c = entra(ov.SQL_CANCELAR_CANAL, leida, ya["rev"])
+        self.assertEqual((c["estado"], self.saldo(a)), ("cancelada", (5, 0, 5)))
+        # 2) La marca del «¿salió?».
+        leida, a = self.confirmada_de_venta()
+        ya = editada(leida)
+        self.assertEqual(rechazo(ov.SQL_CANAL_MARCA, leida, leida["rev"]),
+                         ("negocio", "canal_cancelo_no_aplica"))
+        self.assertIsNone(ov.obtener(leida["id"], OPER)["canal_cancelo_at"])
+        m = entra(ov.SQL_CANAL_MARCA, leida, ya["rev"])
+        self.assertEqual((m["estado"], m["canal_cancelo_ref"], self.saldo(a)),
+                         ("confirmada", "IN_TRANSIT", (5, 2, 3)))
+        # 3) Cancelar con piezas ya afuera (tras una entrega parcial).
+        a, b = self.sku(f"A{uuid.uuid4().hex[:4]}"), self.sku(f"B{uuid.uuid4().hex[:4]}")
+        self.siembra(a, 5)
+        self.siembra(b, 5)
+        leida = self.confirmada([L(a, 2), L(b, 1)])
+        leida = ov.entregar(leida["id"], leida["rev"], OPER,
+                            [{"id": leida["lineas"][0]["id"], "n": 2}])["orden"]
+        ya = editada(leida)
+        self.assertEqual(rechazo(ov.SQL_CANCELAR_CON_SALIDA_CANAL, leida, leida["rev"]),
+                         ("negocio", "ov_no_cancelable_o_cambio_rev"))
+        self.assertEqual((ov.obtener(leida["id"], OPER)["estado"], self.saldo(b)),
+                         ("confirmada", (5, 1, 4)))
+        f = entra(ov.SQL_CANCELAR_CON_SALIDA_CANAL, leida, ya["rev"])
+        self.assertEqual((f["estado"], f["devolucion_estado"], self.saldo(a), self.saldo(b)),
+                         ("entregada_cancelada", "pendiente", (3, 0, 3), (5, 0, 5)))
+
+    def test_el_mensaje_de_la_cancelacion_dice_lo_que_de_verdad_se_solto(self):
+        """`canal_cancelo` lee la orden, arma con ESA lectura el cuerpo y los
+        renglones del mensaje, y manda una sentencia que relee los renglones por su
+        cuenta. Si una edición confirma en ese hueco (son milisegundos, sin espera
+        de candado), con la guardia sólo por estado la sentencia pasaba, soltaba
+        bien… y la bitácora decía otra cantidad y otros renglones: «se soltaron 5
+        piezas» habiendo soltado 2. Con la `rev` de la lectura en la guardia esa
+        sentencia no entra; entra la del reintento, armada con lo que hay."""
+        casos = (("baja A de 5 a 2", lambda A, C: [L(A, 2)], "2 piezas"),
+                 ("sube A a 9 y agrega C×4", lambda A, C: [L(A, 9), L(C, 4)], "13 piezas"),
+                 ("cambia A por C×3", lambda A, C: [L(C, 3)], "3 piezas"))
+        for nombre, despues, soltadas in casos:
+            with self.subTest(nombre):
+                A, C = self.sku(f"A{uuid.uuid4().hex[:4]}"), self.sku(f"C{uuid.uuid4().hex[:4]}")
+                self.siembra(A, 20)
+                self.siembra(C, 20)
+                o = self.confirmada([L(A, 5)], mp_canal="tiktok", mp_cuenta=CUENTA,
+                                    mp_orden=f"V-{uuid.uuid4().hex[:10]}")
+                real = ov._params_cancelar
+                ediciones: list[dict] = []
+
+                def la_editan_justo_despues_de_la_lectura(*a, **k):
+                    # `_params_cancelar` corre entre la lectura de `canal_cancelo` y su
+                    # sentencia: aquí entra (y confirma) la edición de la persona.
+                    if not ediciones:
+                        ediciones.append(ov.guardar(o["id"], o["rev"],
+                                                    {"lineas": despues(A, C)}, OPER)["orden"])
+                    return real(*a, **k)
+
+                with mock.patch.object(ov, "_params_cancelar",
+                                       la_editan_justo_despues_de_la_lectura), \
+                        self.assertNoLogs("omnicanal.ordenes_venta", level="ERROR"):
+                    r = ov.canal_cancelo(o["id"], "CANCELLED", "El comprador canceló en el canal",
+                                         False)
+                e, = ediciones
+                self.assertEqual((r["resultado"], r["orden"]["estado"], r["orden"]["rev"]),
+                                 ("cancelada", "cancelada", o["rev"] + 2))
+                self.assertEqual((self.saldo(A), self.saldo(C)), ((20, 0, 20), (20, 0, 20)))
+                self.assertEqual(self.eventos(o["id"])[-2:], ["editada", "cancelada"])
+                m = ov.mensajes(o["id"])["mensajes"][-1]
+                self.assertEqual(m["cuerpo"], f"Cancelada por el marketplace · se soltaron {soltadas}"
+                                              " · Motivo: El comprador canceló en el canal")
+                self.assertEqual([(l["sku"], l["cantidad"], l["reservado"])
+                                  for l in m["datos"]["lineas"]],
+                                 [(l["sku"], l["cantidad"], l["reservado"]) for l in e["lineas"]],
+                                 "los renglones que dejó la edición, no los de antes")
+                self.assertEqual(sum(l["reservado"] for l in m["datos"]["lineas"]),
+                                 e["piezas_apartadas"])
+
+    def test_si_la_orden_ya_no_es_de_esa_venta_el_canal_no_la_toca(self):
+        """`venta=` es la liga con la que quien llama decidió que el canal canceló.
+        Si la orden ya no es de esa venta —alguien corrigió su liga (0071)—, no se
+        cancela ni se marca: `nada`. También cuando la corrección entra en el hueco
+        más angosto, ENTRE la relectura de `canal_cancelo` y su sentencia: ahí la
+        frena la `rev` de la guardia (KB001), se relee, y ya no es de esa venta."""
+        motivo = "Venta cancelada en TikTok"
+        # Sin carrera: con SU liga se cancela; con la de otra venta, no.
+        o, a = self.confirmada_de_venta()
+        suya = (o["mp_canal"], o["mp_cuenta"], o["mp_orden"])
+        for ajena in (("tiktok", CUENTA, "V-OTRA"), ("tiktok", "OTRACUENTAPRUEBA", o["mp_orden"]),
+                      ("temu", CUENTA, o["mp_orden"]), (None, None, None)):
+            for en_camino in (False, True):
+                r = ov.canal_cancelo(o["id"], "CANCELLED", motivo, en_camino, venta=ajena)
+                c = r["orden"]
+                self.assertEqual((r["resultado"], c["estado"], c["rev"], c["canal_cancelo_at"]),
+                                 ("nada", "confirmada", o["rev"], None))
+        self.assertEqual((self.saldo(a), self.eventos(o["id"])),
+                         ((5, 2, 3), ["creada", "confirmada"]))
+        r = ov.canal_cancelo(o["id"], "CANCELLED", motivo, False, venta=suya)
+        self.assertEqual((r["resultado"], self.saldo(a)), ("cancelada", (5, 0, 5)))
+        # Con carrera: la persona corrige la liga cuando `canal_cancelo` YA releyó la
+        # orden (y la vio suya) y va a mandar su sentencia.
+        for en_camino, por_la_rev in ((False, "ov_no_cancelable_o_cambio_rev"),
+                                      (True, "canal_cancelo_no_aplica")):
+            with self.subTest(en_camino=en_camino):
+                o, a = self.confirmada_de_venta()
+                suya = (o["mp_canal"], o["mp_cuenta"], o["mp_orden"])
+                otra = f"V-{uuid.uuid4().hex[:10]}"
+                corregidas: list[dict] = []
+                with self.assertNoLogs("omnicanal.ordenes_venta", level="ERROR"), \
+                        self.rechazos_del_canal() as rechazos:
+                    apuntada = ov._transicion
+
+                    def la_corrigen_justo_antes_de_la_sentencia(operacion, sql, params, cur=None):
+                        if operacion == "canal_cancelo" and not corregidas:
+                            corregidas.append(ov.guardar(o["id"], o["rev"], {"mp_orden": otra},
+                                                         OPER)["orden"])
+                        return apuntada(operacion, sql, params, cur)
+
+                    with mock.patch.object(ov, "_transicion",
+                                           la_corrigen_justo_antes_de_la_sentencia):
+                        r = ov.canal_cancelo(o["id"], "IN_TRANSIT" if en_camino else "CANCELLED",
+                                             motivo, en_camino, venta=suya)
+                e, = corregidas
+                self.assertEqual(rechazos, [("negocio", por_la_rev)],
+                                 "la sentencia armada con la lectura vieja no entró")
+                c = r["orden"]
+                self.assertEqual((r["resultado"], c["estado"], c["canal_cancelo_at"], c["rev"],
+                                  c["mp_orden"], c["piezas_apartadas"]),
+                                 ("nada", "confirmada", None, e["rev"], otra, 2))
+                self.assertEqual((self.saldo(a), self.eventos(o["id"])[-1]), ((5, 2, 3), "editada"))
+                p = ov.obtener(o["id"], OPER)["permisos"]
+                self.assertTrue(p["editar"] and p["entregar"] and p["cancelar"],
+                                "la orden de la otra venta sigue viva y en manos de la gente")
 
     def test_el_canal_cancela_mientras_se_confirma_una_entrega_parcial(self):
         """La carrera, a cámara lenta: una persona entrega UN renglón y no ha hecho
         COMMIT; el barrido lee la orden (aún sin salidas), elige cancelar «sin
         salidas» y se queda esperando la fila. Al confirmar la entrega la orden
-        sigue `confirmada`, así que el CAS por estado pasa, pero con los renglones
-        de la foto vieja: la base lo frena (23514 del saldo si nadie más aparta
-        ese SKU, 42501 del renglón si otra orden lo aparta). Eso NO es un bug ni
-        un 409: es «se movió», se relee y sale por la sentencia que sí toca."""
+        sigue `confirmada`, pero ya no tiene la `rev` que el canal leyó: su guardia
+        no encuentra la fila (KB001). Eso NO es un bug ni un 409: es «se movió», se
+        relee y sale por la sentencia que sí toca.
+
+        (Con la guardia sólo por estado el CAS pasaba, con los renglones de la foto
+        vieja, y quien lo frenaba era la base: 23514 del saldo si nadie más aparta
+        ese SKU, 42501 del renglón si otra orden lo aparta. Las dos variantes
+        siguen aquí; lo que se fija es que ya salen por la `rev`.)"""
         for otra_aparta in (False, True):
             with self.subTest(otra_aparta=otra_aparta):
                 a, b = self.sku(f"A{uuid.uuid4().hex[:4]}"), self.sku(f"B{uuid.uuid4().hex[:4]}")
@@ -1334,7 +2850,7 @@ class ElCanalCancela(Base):
                         salida["r"] = exc
 
                 with self.assertNoLogs("omnicanal.ordenes_venta", level="ERROR"), \
-                        self.conexion() as cn:
+                        self.rechazos_del_canal() as rechazos, self.conexion() as cn:
                     cur = cn.cursor()
                     p = ov.entregar(o["id"], o["rev"], OPER, [{"id": de_a["id"], "n": 2}], cur=cur)
                     self.assertEqual(p["orden"]["estado"], "confirmada", "parcial: sigue confirmada")
@@ -1353,6 +2869,8 @@ class ElCanalCancela(Base):
                     hilo.join(30)
                 self.assertTrue(espera, "el barrido nunca esperó la fila de la orden")
                 self.assertIsInstance(salida["r"], dict, f"salió {salida['r']!r}")
+                self.assertEqual(rechazos, [("negocio", "ov_no_cancelable_o_cambio_rev")],
+                                 "UN rechazo, y por la `rev`: no por la foto vieja")
                 c = salida["r"]["orden"]
                 self.assertEqual((salida["r"]["resultado"], c["estado"], c["cancelada_origen"],
                                   c["piezas_entregadas"], c["piezas_apartadas"],
@@ -1609,8 +3127,10 @@ class Permisos(Base):
         for quien in (LECT, NADIE):
             for fn in (lambda: ov.crear_borrador({"lineas": []}, quien, self.clave()),
                        lambda: ov.guardar(d["id"], d["rev"], {"descripcion": "x"}, quien),
+                       lambda: ov.guardar(o["id"], o["rev"], {"guia": "GUIA-PRUEBA-1"}, quien),
                        lambda: ov.confirmar(d["id"], d["rev"], quien),
                        lambda: ov.cancelar(d["id"], d["rev"], quien),
+                       lambda: ov.cancelar(o["id"], o["rev"], quien, "Motivo válido"),
                        lambda: ov.entregar(o["id"], o["rev"], quien),
                        lambda: ov.borrar(o["id"], o["rev"], quien, "Motivo suficientemente largo"),
                        lambda: ov.salio_tarde(o["id"], o["rev"], quien),
@@ -1623,12 +3143,20 @@ class Permisos(Base):
                 self.assertEqual(e.exception.status, 403)
         self.assertEqual(self.folio_contador(), antes)
         # El rol se dice AUNQUE la rev sea vieja (es lo que no cambia recargando).
-        with self.assertRaises(ov.SinPermiso):
-            ov.cancelar(o["id"], 1, OPER, "Motivo válido")
+        for fn in (lambda: ov.borrar(o["id"], 1, OPER, "Motivo suficientemente largo"),
+                   lambda: ov.cancelar(o["id"], 1, LECT, "Motivo válido"),
+                   lambda: ov.guardar(o["id"], 1, {"guia": "GUIA-PRUEBA-1"}, LECT)):
+            with self.assertRaises(ov.SinPermiso):
+                fn()
+        tras = ov.obtener(o["id"], OPER)
+        self.assertEqual((tras["estado"], tras["rev"], tras["guia"], self.saldo(a)),
+                         ("confirmada", o["rev"], None, (1, 1, 0)), "nadie movió la confirmada")
         # Leer sí pueden, y ven por qué no pueden lo demás.
         p = ov.obtener(o["id"], LECT)["permisos"]
         self.assertEqual([k for k, v in p.items() if v is True], [])
         self.assertEqual(p["porque"]["entregar"], "Tu rol es de sólo lectura")
+        self.assertEqual((p["porque"]["editar"], p["porque"]["cancelar"]),
+                         ("Tu rol es de sólo lectura", "Tu rol es de sólo lectura"))
         self.assertEqual(ov.estado_modulo(LECT)["yo"],
                          {"actor": "lectura@prueba.test", "nombre": "Leo Lectura", "rol": "lectura",
                           "via": "panel", "admin": False, "escribe": False})
@@ -1645,17 +3173,27 @@ class Permisos(Base):
         ov.enviar_mensaje(o["id"], OPER, "¿ya se puede confirmar?")
         self.assertFalse(o["permisos"]["confirmar"])
         self.assertIn("Modo prueba", o["permisos"]["porque"]["confirmar"])
-        # Confirmar y entregar: no (409 de modo prueba), y no se tocó el saldo.
+        # Confirmar, entregar y EDITAR UNA CONFIRMADA (que puede apartar más): no
+        # (409 de modo prueba), y no se tocó el saldo.
         for fn in (lambda: ov.confirmar(o["id"], o["rev"], OPER),
-                   lambda: ov.entregar(confirmada["id"], confirmada["rev"], OPER)):
+                   lambda: ov.entregar(confirmada["id"], confirmada["rev"], OPER),
+                   lambda: ov.guardar(confirmada["id"], confirmada["rev"],
+                                      {"guia": "GUIA-PRUEBA-1"}, OPER),
+                   lambda: ov.guardar(confirmada["id"], confirmada["rev"],
+                                      {"lineas": [L(a, 4)]}, ADMIN)):
             with self.assertRaises(ov.Apagado) as e:
                 fn()
             self.assertEqual(e.exception.status, 409)
             self.assertIn("modo prueba", str(e.exception))
         self.assertEqual(self.saldo(a), (5, 2, 3))
+        p = ov.obtener(confirmada["id"], OPER)["permisos"]
+        self.assertFalse(p["editar"] or p["entregar"])
+        self.assertEqual(p["porque"]["editar"], "Modo prueba: editar una confirmada está apagado "
+                                                "(bandera «ordenes_venta»)")
+        self.assertTrue(p["cancelar"])
         # Soltar SIEMPRE se puede: es lo que hace seguro apagar el módulo.
         ov.cancelar(o["id"], o["rev"], OPER)
-        ov.cancelar(confirmada["id"], confirmada["rev"], ADMIN, "Se apagó el módulo")
+        ov.cancelar(confirmada["id"], confirmada["rev"], OPER, "Se apagó el módulo")
         self.assertEqual(self.saldo(a), (5, 0, 5))
         est = ov.estado_modulo(OPER)
         self.assertEqual((est["habilitado"], est["banderas"]["ordenes_venta"]["encendido"],
@@ -2298,6 +3836,13 @@ class ContratoConTipos(Base):
         self.sql("insert into core.products (sku, name) values (%s, 'Producto de prueba')", (a,))
         self.venta_canal(orden, [(a, 2, 10, False)])
         c = self.confirmada([L(a, 2, 10)], mp_canal="tiktok", mp_cuenta=CUENTA, mp_orden=orden)
+        # Editar la confirmada contesta lo mismo que guardar un borrador (RespOrden), y
+        # su renglón `editada` es un Mensaje más (se revisa abajo, con todo el chat).
+        editada = ov.guardar(c["id"], c["rev"], {"guia": "GUIA-PRUEBA-1", "lineas": [L(a, 2, 12)]},
+                             OPER)
+        self.cuadra(editada, "RespOrden")
+        self.cuadra(editada["orden"]["permisos"], "Permisos")
+        c = editada["orden"]
         r = ov.subir_archivo(c["id"], OPER, "comprobante", "pago.pdf", PDF)
         self.cuadra(r, "RespOrden")
         o = r["orden"]
@@ -2643,6 +4188,82 @@ class BarridoDelCanal(VentasDelCanal):
         self.assertEqual(self.pasada(o, o2), ([self.quedo(o2, "cancelada")], []))
         self.assertEqual(self.saldo(a2), (5, 0, 5))
 
+    def test_si_corrigen_la_liga_despues_de_la_lectura_no_se_toca_la_orden_de_otra_venta(self):
+        """La lectura del barrido ENVEJECE: lee una vez todas las órdenes vivas con
+        su venta y después avisa orden por orden. Desde la 0071 la liga de una
+        confirmada se puede corregir, así que en ese hueco una persona puede haberla
+        pasado a OTRA venta —viva— o haberla desligado, y su PUT ya contestó
+        «Cambios guardados». El veredicto era de la venta de antes: cancelar la
+        orden ahora, o dejarla esperando el «¿salió?» sin poder editarla, entregarla
+        ni cancelarla, sería por una venta ajena. Y cancelada no se deshace.
+
+        La pasada es la de verdad (`ov_auto.revisar`, nada sustituido de lo que
+        decide o escribe); sólo se le mete la corrección justo DESPUÉS de su lectura."""
+        leer = ov_auto._leer
+
+        def pasada_tras(lo_que_hace_la_persona, *ordenes) -> tuple:
+            def lee_y_luego_la_corrigen() -> list[dict]:
+                filas = leer()
+                lo_que_hace_la_persona()
+                return filas
+
+            with mock.patch.object(ov_auto, "_leer", lee_y_luego_la_corrigen):
+                return self.pasada(*ordenes)
+
+        casos = (("la ligan a otra venta, que está viva", "CANCELLED",
+                  lambda viva: {"mp_orden": viva}),
+                 ("la desligan", "CANCELLED", lambda viva: dict.fromkeys(ov._MP)),
+                 ("iba en camino y la ligan a otra venta", "IN_TRANSIT",
+                  lambda viva: {"mp_orden": viva}))
+        for nombre, dice_el_canal, correccion in casos:
+            with self.subTest(nombre):
+                o, a, venta = self.orden_ligada()
+                viva = f"V-{uuid.uuid4().hex[:10]}"
+                self.venta_canal(viva, [(a, 2, 10, False)], estado_canal="AWAITING_SHIPMENT")
+                self.el_canal_dice(venta, dice_el_canal)
+                corregidas: list[dict] = []
+                self.assertEqual(
+                    pasada_tras(lambda: corregidas.append(
+                        ov.guardar(o["id"], o["rev"], correccion(viva), OPER)["orden"]), o),
+                    ([], []), "ni cancelada ni marcada")
+                e, = corregidas
+                tras = ov.obtener(o["id"], OPER)
+                self.assertEqual((tras["estado"], tras["canal_cancelo_at"], tras["rev"],
+                                  tras["mp_orden"], tras["piezas_apartadas"]),
+                                 ("confirmada", None, e["rev"], e["mp_orden"], 2))
+                self.assertEqual((self.saldo(a), self.eventos(o["id"])[-1]), ((5, 2, 3), "editada"),
+                                 "su apartado sigue ahí, y lo último que le pasó fue la corrección")
+                self.assertTrue(tras["permisos"]["editar"] and tras["permisos"]["entregar"]
+                                and tras["permisos"]["cancelar"])
+                # La SIGUIENTE pasada ya la lee con su liga de ahora: la venta viva (o
+                # ninguna) no la mueve.
+                self.assertEqual(self.pasada(o), ([], []))
+                self.assertEqual(ov.obtener(o["id"], OPER)["rev"], e["rev"])
+        # CONTROL: sin la corrección, esa misma pasada sí la cancela (o la marca).
+        o, a, venta = self.orden_ligada()
+        self.el_canal_dice(venta, "CANCELLED")
+        self.assertEqual(pasada_tras(lambda: None, o), ([self.quedo(o, "cancelada")], []))
+        # Y si además de corregirla la ENTREGAN: una entregada ya no cambia, así que
+        # su sentencia va sólo por estado; lo que la protege es que se compara la liga.
+        o, a, venta = self.orden_ligada()
+        viva = f"V-{uuid.uuid4().hex[:10]}"
+        self.venta_canal(viva, [(a, 2, 10, False)], estado_canal="AWAITING_SHIPMENT")
+        self.el_canal_dice(venta, "CANCELLED")
+
+        def la_corrigen_y_la_entregan() -> None:
+            e = ov.guardar(o["id"], o["rev"], {"mp_orden": viva}, OPER)["orden"]
+            ov.entregar(o["id"], e["rev"], OPER)
+
+        self.assertEqual(pasada_tras(la_corrigen_y_la_entregan, o), ([], []))
+        tras = ov.obtener(o["id"], OPER)
+        self.assertEqual((tras["estado"], tras["devolucion_estado"], tras["mp_orden"],
+                          self.eventos(o["id"])[-1]), ("entregada", None, viva, "entregada"))
+        # Cuando el canal cancele ESA venta —la de ahora—, entonces sí.
+        self.el_canal_dice(viva, "CANCELLED")
+        self.assertEqual(self.pasada(o), ([self.quedo(o, "entregada_cancelada")], []))
+        self.assertEqual(ov.obtener(o["id"], OPER)["cancelada_motivo"],
+                         f"Venta cancelada en TikTok ({viva})")
+
     def test_una_entregada_vieja_ya_no_se_vigila(self):
         o, _, venta = self.orden_ligada("entregada")
         self.el_canal_dice(venta, "CANCELLED")
@@ -2903,10 +4524,9 @@ class ApiDePuntaAPunta(VentasDelCanal):
                          ("confirmada", 3, 5, "Olga Operadora"))
         self.assertEqual((self.saldo(a), self.saldo(b)), ((5, 3, 2), (2, 2, 0)))
 
-        # «PUT sólo en borrador»: fuera de él, 400 con qué hacer, y nada cambia.
-        texto = self.detalle(self.c.put(url, json={"rev": 3, "guia": "GUIA-PRUEBA-1"}), 400)
-        self.assertIn("su contenido no cambia", texto)
-        self.assertEqual(self.ok(self.c.get(url))["rev"], 3)
+        # (El PUT sobre la CONFIRMADA —editarla— tiene su prueba: test_editar_y_cancelar_
+        # una_confirmada_por_http. Aquí la orden sigue su camino sin correcciones.)
+        self.assertTrue(c["permisos"]["editar"] and c["permisos"]["cancelar"])
 
         # Entregar CON lineas: de `a` salieron 2 de 3 (la otra se suelta); `b` sigue pendiente.
         la, lb = c["lineas"]
@@ -2929,6 +4549,11 @@ class ApiDePuntaAPunta(VentasDelCanal):
         self.assertEqual((self.saldo(a), self.saldo(b)), ((3, 0, 3), (0, 0, 0)))
         self.assertEqual(self.libro(a), [("correccion", 5, 5), ("salida_ov", -2, 3)])
 
+        # ENTREGADA, el PUT ya no entra: 400 con su porqué, y nada cambia.
+        texto = self.detalle(self.c.put(url, json={"rev": 5, "guia": "GUIA-PRUEBA-1"}), 400)
+        self.assertIn("su contenido no cambia", texto)
+        self.assertEqual((self.ok(self.c.get(url))["rev"], f["permisos"]["editar"]), (5, False))
+
         # El detalle por folio, la lista y la bitácora completa.
         self.assertEqual(self.ok(self.c.get(f"{RAIZ}/{o['folio'].lower()}"))["id"], o["id"])
         lista = self.ok(self.c.get(RAIZ, params={"q": o["folio"], "estado": "entregada"}))
@@ -2939,6 +4564,98 @@ class ApiDePuntaAPunta(VentasDelCanal):
                          ["creada", "borrador_guardado", "no_alcanzo", "confirmada",
                           "entregada_parcial", "entregada"])
         self.assertEqual((chat["rev"], chat["estado"]), (5, "entregada"))
+
+    # ── editar una confirmada ────────────────────────────────────────────────
+    def test_editar_y_cancelar_una_confirmada_por_http(self):
+        """El mismo PUT del borrador, sobre una CONFIRMADA (contrato con la pantalla):
+        200 con RespOrden; 409 con su `detail` cuando no alcanza —y la `rev` NO
+        cambia: así la pantalla lo distingue de «la orden cambió»—; 400 en las
+        validaciones; y el renglón `editada` se ve EN VIVO en el chat de los demás."""
+        a = self.sku("A")
+        self.siembra(a, 5)
+        o = self.confirmada_http(a, 2)
+        url = f"{RAIZ}/{o['id']}"
+        self.assertTrue(o["permisos"]["editar"] and o["permisos"]["cancelar"],
+                        "al operador que la confirmó se le ofrece corregirla y cancelarla")
+        # 1) El encabezado. Otra persona tiene el chat abierto y esperando: despierta
+        #    con el renglón `editada`, sin esperar a que venza su petición.
+        chat = self.ok(self.c.get(f"{url}/mensajes"))
+        salida: dict = {}
+        hilo = threading.Thread(target=lambda: salida.update(r=self.c.get(
+            f"{url}/mensajes", params={"desde_id": chat["ultimo_id"], "esperar": 20})))
+        hilo.start()
+        self.hasta(lambda: ov_bus.en_espera() == 1, "la petición nunca llegó a esperar")
+        t0 = time.monotonic()
+        g = self.ok(self.c.put(url, json={"rev": o["rev"], "guia": "GUIA-PRUEBA-1",
+                                          "paqueteria": "Paquetería de prueba"}))
+        self.assertEqual(set(g), {"ok", "orden", "mensaje"})
+        self.assertEqual(g["mensaje"], "Cambios guardados.")
+        g = g["orden"]
+        self.assertEqual((g["estado"], g["rev"], g["guia"], g["paqueteria"], g["piezas_apartadas"]),
+                         ("confirmada", o["rev"] + 1, "GUIA-PRUEBA-1", "Paquetería de prueba", 2))
+        hilo.join(15)
+        self.assertFalse(hilo.is_alive(), "la edición no despertó a quien esperaba")
+        self.assertLess(time.monotonic() - t0, 10, "despertó por el aviso, no porque venciera")
+        vivo = salida["r"].json()
+        self.assertEqual(([m["evento"] for m in vivo["mensajes"]], vivo["rev"], vivo["estado"]),
+                         (["editada"], g["rev"], "confirmada"))
+        self.assertEqual(vivo["mensajes"][0]["datos"],
+                         {"cambios": {"guia": [None, "GUIA-PRUEBA-1"],
+                                      "paqueteria": [None, "Paquetería de prueba"]}})
+        # 2) Los renglones: sube hasta lo que alcanza, y el apartado se mueve.
+        linea = {"sku": a, "cantidad": 5, "precio_unitario": 10, "almacen": "ENSAYO"}
+        h = self.ok(self.c.put(url, json={"rev": g["rev"], "total": None, "lineas": [linea]}))["orden"]
+        self.assertEqual((h["rev"], h["piezas_apartadas"], h["total"], self.saldo(a)),
+                         (g["rev"] + 1, 5, 50.0, (5, 5, 0)))
+        # 3) No alcanza: 409 con el detalle, la rev NO se movió, el chat no tiene nada
+        #    nuevo y —a diferencia de confirmar— no hay a quién avisar.
+        bus = ov_bus.version(o["id"])
+        texto = self.detalle(self.c.put(url, json={"rev": h["rev"], "guia": "GUIA-QUE-NO-ENTRA",
+                                                   "lineas": [{**linea, "cantidad": 6}]}), 409)
+        self.assertEqual(texto, f"No alcanzó el stock para guardar el cambio: {a} necesita 1 más y "
+                                "hay 0 libres en ENSAYO. No se guardó nada.")
+        tras = self.ok(self.c.get(url))
+        self.assertEqual((tras["rev"], tras["guia"], tras["piezas"], tras["n_mensajes"],
+                          self.saldo(a), ov_bus.version(o["id"])),
+                         (h["rev"], "GUIA-PRUEBA-1", 5, h["n_mensajes"], (5, 5, 0), bus))
+        # 4) La rev vieja SÍ es «la orden cambió»; y las validaciones son 400 con palabras.
+        self.assertEqual(self.detalle(self.c.put(url, json={"rev": o["rev"], "guia": "x"}), 409),
+                         "La orden cambió mientras tanto; se recargó.")
+        for cuerpo, dice in (({"lineas": []}, "al menos un renglón por entregar"),
+                             ({"lineas": [{**linea, "almacen": None}]}, "no tiene bodega"),
+                             ({"lineas": [{**linea, "almacen": "TEX3"}]}, "no admite órdenes de venta"),
+                             ({"lineas": [{**linea, "cantidad": 2.5}]}, "la cantidad debe ser un entero"),
+                             ({"canal": "facebook"}, "El canal debe ser uno de")):
+            self.assertIn(dice, self.detalle(self.c.put(url, json={"rev": h["rev"], **cuerpo}), 400))
+        # 5) Quien sólo lee no corrige ni cancela: 403 del servicio, con su porqué.
+        self.identidad = ID_LECT
+        self.assertIn("sólo lectura", self.detalle(
+            self.c.put(url, json={"rev": h["rev"], "guia": "x"}), 403))
+        self.assertFalse(self.ok(self.c.get(url))["permisos"]["editar"])
+        self.identidad = ID_ADMIN                       # el administrador, igual que el operador
+        i = self.ok(self.c.put(url, json={"rev": h["rev"], "lineas": [{**linea, "cantidad": 3}]}))["orden"]
+        self.assertEqual((i["piezas_apartadas"], self.saldo(a)), (3, (5, 3, 2)))
+        # 6) La bitácora completa, con quién hizo cada cambio y sin la marca interna.
+        eventos = self.ok(self.c.get(f"{url}/mensajes"))["mensajes"]
+        self.assertEqual([m["evento"] for m in eventos],
+                         ["creada", "confirmada", "editada", "editada", "editada"])
+        self.assertEqual([(m["autor"], m["autor_nombre"], m["via"]) for m in eventos[2:]],
+                         [("oper@prueba.test", "Olga Operadora", "panel")] * 2
+                         + [("admin@prueba.test", "Ada Admin", "panel")])
+        self.assertEqual((eventos[3]["datos"]["apartado"], eventos[4]["datos"]["apartado"]),
+                         ([{"sku": a, "almacen": "ENSAYO", "delta": 3}],
+                          [{"sku": a, "almacen": "ENSAYO", "delta": -2}]))
+        for m in eventos:
+            self.assertNotIn("op", m["datos"] or {})
+        # 7) El OPERADOR la cancela (ya no hace falta un administrador), con su motivo;
+        #    cancelada, el PUT ya no entra.
+        self.identidad = ID_OPER
+        c = self.ok(self.c.post(f"{url}/cancelar", json={
+            "rev": i["rev"], "motivo": "El cliente ya no la quiso"}))["orden"]
+        self.assertEqual((c["estado"], c["cancelada_por"], c["cancelada_nombre"], self.saldo(a)),
+                         ("cancelada", "oper@prueba.test", "Olga Operadora", (5, 0, 5)))
+        self.assertIn("su contenido no cambia", self.detalle(
+            self.c.put(url, json={"rev": c["rev"], "guia": "GUIA-TARDE"}), 400))
 
     # ── el canal cancela ─────────────────────────────────────────────────────
     def test_el_canal_cancela_y_bodega_contesta_por_http(self):
@@ -3040,15 +4757,22 @@ class ApiDePuntaAPunta(VentasDelCanal):
         self.siembra(a, 6)
         o = self.confirmada_http(a, 2)
         url = f"{RAIZ}/{o['id']}"
-        self.assertIn("administrador", self.detalle(
-            self.c.post(f"{url}/cancelar", json={"rev": o["rev"], "motivo": "ya no"}), 403))
-        self.identidad = ID_ADMIN
-        self.detalle(self.c.post(f"{url}/cancelar", json={"rev": o["rev"]}), 400)   # falta el motivo
+        # Cancelar una CONFIRMADA ya no es de administrador: la cancela quien escribe
+        # (el piso del RBAC para ese POST es `operador`). Quien sólo lee, no.
+        self.assertTrue(o["permisos"]["cancelar"])
+        self.identidad = ID_LECT
+        self.assertIn("sólo lectura", self.detalle(
+            self.c.post(f"{url}/cancelar", json={"rev": o["rev"], "motivo": "ya no la quiso"}), 403))
+        self.identidad = ID_OPER
+        for corto in ({}, {"motivo": ""}, {"motivo": "no"}):                 # falta el motivo
+            self.assertIn("5 caracteres", self.detalle(
+                self.c.post(f"{url}/cancelar", json={"rev": o["rev"], **corto}), 400))
+        self.assertEqual(self.saldo(a), (6, 2, 4), "ningún rechazo soltó nada")
         c = self.ok(self.c.post(f"{url}/cancelar", json={
             "rev": o["rev"], "motivo": "El cliente ya no la quiso", "origen": "marketplace"}))["orden"]
         self.assertEqual((c["estado"], c["cancelada_origen"], c["cancelada_por"],
                           c["cancelada_nombre"], c["cancelada_motivo"]),
-                         ("cancelada", "manual", "admin@prueba.test", "Ada Admin",
+                         ("cancelada", "manual", "oper@prueba.test", "Olga Operadora",
                           "El cliente ya no la quiso"), "desde la API siempre es MANUAL")
         self.assertEqual(self.saldo(a), (6, 0, 6))
 

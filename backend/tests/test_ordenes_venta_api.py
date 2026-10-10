@@ -18,9 +18,11 @@ tests/test_ordenes_venta_bd.py.
      sin credencial es admin sólo con AUTH_ENFORCED apagado, y un 401 encendido.
   4. LAS RUTAS SON LAS DE frontend/components/ordenes/api.ts, ni una más: se
      fueron /reservar, /regresar, /devolucion y /auto; llegaron /salio y
-     /salio-tarde. El PUT es «guardar borrador» y le pasa al servicio SÓLO las
-     llaves que llegaron (la bodega va POR RENGLÓN; el «almacén» de encabezado
-     ya no existe). Entregar viaja con o sin `lineas`.
+     /salio-tarde. El PUT es «guardar borrador» Y «editar una confirmada» (la
+     misma ruta: cuál toca lo decide el servicio con el estado de la orden) y le
+     pasa al servicio SÓLO las llaves que llegaron (la bodega va POR RENGLÓN; el
+     «almacén» de encabezado ya no existe). Cuando la edición no alcanza es un
+     409 con su detalle que NO avisa al bus. Entregar viaja con o sin `lineas`.
   5. Las rutas fijas no se las come `/{ref}`, y un folio no entra donde va un id.
   6. El PDF: lleva su `tipo` (campo del formulario) tal cual al servicio; vacío
      o que no es PDF → 400, de más → 413 ANTES de leer el cuerpo, y ninguno
@@ -585,17 +587,64 @@ class Api(unittest.TestCase):
         self.c.post(RAIZ, json={"almacen": "TEX2", "cliente": "directa"})
         self.assertEqual(alta.call_args.args, ({"cliente": "directa"},))
 
-    def test_guardar_fuera_de_borrador_es_el_400_del_servicio(self):
-        """«PUT sólo en borrador»: la regla es del servicio (y de la base); el
-        router no la duplica, sólo entrega su 400 con sus palabras y no avisa."""
+    def test_guardar_una_entregada_o_cancelada_es_el_400_del_servicio(self):
+        """Qué estado deja editar es regla del servicio (y de la base): borrador y
+        confirmada sí; entregada y cancelada no. El router no la duplica —ni mira
+        el estado—: sólo entrega el 400 con sus palabras, y no avisa."""
         m = self.parchar(ov, "guardar", side_effect=ov.Invalido(
-            "La orden ya está confirmada: su contenido no cambia. Para corregirla hay que "
-            "cancelarla (o que un administrador la borre)."))
+            "La orden ya está entregada: su contenido no cambia. Si se capturó mal, un "
+            "administrador puede borrarla."))
         r = self.c.put(f"{RAIZ}/7", json={"rev": 3, "cliente": "x"})
         self.assertEqual(r.status_code, 400)
         self.assertIn("su contenido no cambia", r.json()["detail"])
         m.assert_called_once()
         self.assertEqual(ov_bus.version(7), 0)
+
+    def test_put_sobre_una_confirmada_es_la_misma_ruta_y_solo_avisa_si_entro(self):
+        """Editar una confirmada (0071) NO tiene ruta propia: es el PUT de siempre y
+        `ov.guardar` decide. Lo que el router tiene que cumplir del contrato con la
+        pantalla: el 409 de «no alcanzó» llega con su detalle y sin avisar al bus
+        (nada cambió: ni la rev ni el chat); cuando entra, avisa como toda escritura
+        para que el renglón `editada` se vea en vivo; y el 409 de la base sin la
+        0071 llega con sus palabras."""
+        cuerpo = {"rev": 4, "guia": "G-1", "lineas": [
+            {"sku": "ZZPRUEBA-A", "cantidad": 5, "precio_unitario": 10, "almacen": "ENSAYO"}]}
+        no_alcanzo = ("No alcanzó el stock para guardar el cambio: ZZPRUEBA-A necesita 3 más y hay "
+                      "1 libre en ENSAYO. No se guardó nada.")
+        sin_0071 = ("Editar una orden confirmada todavía no está habilitado en esta base: falta la "
+                    "migración 0071.")
+        m = self.parchar(ov, "guardar", side_effect=ov.Conflicto(no_alcanzo))
+        r = self.c.put(f"{RAIZ}/7", json=cuerpo)
+        self.assertEqual((r.status_code, r.json()["detail"]), (409, no_alcanzo))
+        self.assertEqual(ov_bus.version(7), 0, "no alcanzó: no hay nada nuevo que releer")
+        m.side_effect = ov.Conflicto(sin_0071)
+        r = self.c.put(f"{RAIZ}/7", json=cuerpo)
+        self.assertEqual((r.status_code, r.json()["detail"], ov_bus.version(7)), (409, sin_0071, 0))
+        m.side_effect = ov.Apagado()
+        self.assertEqual(self.c.put(f"{RAIZ}/7", json=cuerpo).status_code, 409)
+        m.side_effect = ov.SinPermiso("Tu rol es de sólo lectura.")
+        self.assertEqual(self.c.put(f"{RAIZ}/7", json=cuerpo).status_code, 403)
+        self.assertEqual(ov_bus.version(7), 0)
+        # Cuando SÍ entra: lo que viaja al servicio es lo que llegó (ni la rev, ni
+        # un «estado» que el cliente quisiera imponer), y el chat de los demás despierta.
+        m.side_effect = None
+        m.return_value = resp_orden(7, estado="confirmada")
+        r = self.c.put(f"{RAIZ}/7", json={**cuerpo, "estado": "borrador", "tipo": "full"})
+        self.assertEqual((r.status_code, r.json()["orden"]["estado"]), (200, "confirmada"))
+        self.assertEqual(m.call_args.args, (7, 4, {"guia": "G-1", "lineas": cuerpo["lineas"]}))
+        self.assertEqual((self.quien(m).actor, self.quien(m).rol, ov_bus.version(7)),
+                         ("ana@prueba.test", "operador", 1))
+
+    def test_cancelar_una_confirmada_ya_no_pide_administrador_en_el_router(self):
+        """El piso del RBAC para el POST es `operador`, y el router no le agrega
+        nada: quién puede cancelar una confirmada lo decide el servicio (desde el
+        9-oct-2026, cualquiera que escribe). Aquí viaja el operador tal cual."""
+        m = self.parchar(ov, "cancelar", return_value=resp_orden(7, estado="cancelada"))
+        r = self.c.post(f"{RAIZ}/7/cancelar", json={"rev": 5, "motivo": "El cliente ya no la quiso"})
+        self.assertEqual((r.status_code, r.json()["orden"]["estado"]), (200, "cancelada"))
+        self.assertEqual((m.call_args.args, m.call_args.kwargs["motivo"], self.quien(m).rol),
+                         ((7, 5), "El cliente ya no la quiso", "operador"))
+        self.assertEqual(ov_bus.version(7), 1)
 
     def test_el_alta_separa_la_clave_y_avisa(self):
         m = self.parchar(ov, "crear_borrador", return_value=resp_orden(12))
@@ -2033,7 +2082,8 @@ class BarridoSinBase(unittest.TestCase):
                       3: self.quedo("entregada_cancelada", 3, "entregada_cancelada")}
         with self.assertLogs("omnicanal.ov_auto", level="WARNING") as logs:
             r, cc, ca = self.pasada(
-                filas, canal_cancelo=lambda i, ref, motivo, en_camino, cur=None: resultados[i],
+                filas,
+                canal_cancelo=lambda i, ref, motivo, en_camino, cur=None, venta=None: resultados[i],
                 cancelar=lambda i, rev, quien, motivo="", origen="manual", cur=None: {
                     "ok": True, "orden": {"id": i, "folio": f"OV-{i:05d}", "estado": "cancelada"}})
         self.assertEqual(r, {
@@ -2046,6 +2096,11 @@ class BarridoSinBase(unittest.TestCase):
             (1, "CANCELLED", "Venta cancelada en TikTok (V-1)", False),
             (2, "IN_TRANSIT", "Venta cancelada en TikTok (V-2)", True),
             (3, "CANCELLED", "Venta cancelada en TikTok (V-3)", False)])
+        # …y CON LA LIGA QUE SE LEYÓ. El veredicto es de esa venta; desde la 0071
+        # la liga de una confirmada se puede corregir después de esta lectura, y
+        # sin decirle al servicio de qué venta se habla cancelaría la orden de otra.
+        self.assertEqual([c.kwargs for c in cc.call_args_list],
+                         [{"venta": ("tiktok", "CUENTAPRUEBA", f"V-{n}")} for n in (1, 2, 3)])
         # El borrador se cancela como cualquier borrador: con su rev, firmado
         # AUTOMATICO y con origen marketplace. La venta viva (5) no se toca.
         ca.assert_called_once_with(4, 2, ov.AUTOMATICO, motivo="Venta cancelada en TikTok (V-4)",
@@ -2067,7 +2122,7 @@ class BarridoSinBase(unittest.TestCase):
     def test_un_conflicto_se_salta_y_otro_error_no_detiene_a_las_demas(self):
         filas = [fila(n, estado_wc="cancelled") for n in (1, 2, 3, 4)]
 
-        def _canal(orden_id, ref, motivo, en_camino, cur=None):
+        def _canal(orden_id, ref, motivo, en_camino, cur=None, venta=None):
             if orden_id == 1:
                 raise ov.Conflicto()
             if orden_id == 2:
@@ -2090,7 +2145,7 @@ class BarridoSinBase(unittest.TestCase):
     def test_si_kubera_se_cae_a_media_pasada_lo_ya_hecho_no_se_pierde_del_informe(self):
         filas = [fila(n, estado_wc="cancelled") for n in (1, 2, 3)]
 
-        def _canal(orden_id, ref, motivo, en_camino, cur=None):
+        def _canal(orden_id, ref, motivo, en_camino, cur=None, venta=None):
             if orden_id == 2:
                 raise ov.SinBase()
             return self.quedo("cancelada", orden_id, "cancelada")

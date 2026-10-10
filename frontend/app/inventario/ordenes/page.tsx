@@ -753,8 +753,9 @@ export default function OrdenesVentaPage() {
               )}
               Se refresca sola cada 30 s con la pestaña a la vista. Estas órdenes viven
               en kubera: no escriben en Odoo, en WooCommerce ni en ningún marketplace.
-              Confirmar aparta el stock de cada renglón en su bodega, todo o nada; de
-              ahí en adelante la orden ya no se edita: se entrega, se cancela o se borra.
+              Confirmar aparta el stock de cada renglón en su bodega, todo o nada. Una
+              confirmada todavía se puede corregir —cada cambio vuelve a apartar y queda
+              en su bitácora con quién lo hizo—; lo que ya salió, no.
             </p>
           </>
         )}

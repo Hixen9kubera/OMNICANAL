@@ -8,17 +8,26 @@
  * pantalla se equivocaba CALLADA (guardaba de menos, borraba lo de otro, se
  * quedaba atrás) y nadie se enteraba hasta que almacén surtía mal.
  *
- * Dos generaciones de bloques:
+ * Tres generaciones de bloques:
  *   · FE-*, MOV-*, PED-*: los hallazgos de la revisión adversarial del
  *     2-oct-2026, adaptados al modelo nuevo (lo que cuidaban sigue en pie).
  *   · BOD-*, VAL-*, CONF-*, VENTA-*, ENT-*, ACC-*, MOT-*, LEC-*, PDF-*: lo que
  *     trajo el contrato de la 0064/0065 (6-oct-2026): la bodega va por
- *     renglón, se aparta todo o nada, sólo el borrador se edita, se entrega
- *     por renglón, y el canal puede cancelar con el paquete en camino.
+ *     renglón, se aparta todo o nada, se entrega por renglón, y el canal puede
+ *     cancelar con el paquete en camino.
+ *   · EDIT-* (y LEC-1, ACC-3 reescritas): la 0071 (9-oct-2026). Una CONFIRMADA
+ *     se edita si el permiso lo dice —ya no «sólo el borrador»—, guardar vuelve
+ *     a apartar, lo que ya salió no se toca, y cancelar una confirmada dejó de
+ *     ser sólo de admin.
+ *   · REV3 PANT-*: la revisión de esa edición (9-oct-2026). Con qué `rev` viaja
+ *     la acción de un diálogo, y a qué renglones hay que volver a preguntarles
+ *     el saldo cuando un guardado rebota.
  *
  * Lo que aquí NO se puede probar —el foco de los diálogos, «Atrás» del
- * navegador, el `datetime-local` a medias, el 409 de punta a punta— vive en el
- * navegador. El chat y la traza tienen su archivo: `chat_traza.prueba.cjs`.
+ * navegador, el `datetime-local` a medias— vive en el navegador. Lo que pasa
+ * al dar clic y al contestar el servidor (el 409 de punta a punta) se prueba
+ * con el documento MONTADO, en `documento_vivo.prueba.cjs`. El chat y la traza
+ * tienen su archivo: `chat_traza.prueba.cjs`.
  */
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -160,7 +169,8 @@ test("FE-2 · si yo no toqué renglones (o ya no puedo), mandan los del servidor
   assert.deepEqual(ver(f), ver(baseNueva));
   assert.equal(f.guia, "JT-1");
   assert.deepEqual(doc.cambiosDe(baseNueva, f), { guia: "JT-1" });
-  // Alguien la confirmó: lo mío se descarta entero (no habría cómo guardarlo).
+  // Ya no se puede editar (alguien la entregó o la canceló): lo mío se descarta
+  // entero, no habría cómo guardarlo. (Que la CONFIRMEN ya no lo descarta: EDIT-6.)
   assert.deepEqual(doc.fusionar(baseVieja, conCantidad(baseVieja, "AAA-1", 9), baseNueva, { editar: false }), baseNueva);
 });
 
@@ -182,7 +192,7 @@ test("FE-2 · el aviso del 409 dice que los renglones se fusionaron con los de l
   // Sin nada escrito, sólo se avisa que cambió.
   assert.equal(doc.avisoDeCambio(baseVieja, baseVieja, conOtro, PERMISOS, true),
                "La orden cambió mientras tanto; se recargó.");
-  // Ya no se puede editar (alguien la confirmó): se dice que lo escrito no se puede guardar.
+  // Ya no se puede editar (alguien la entregó o la canceló): se dice que lo escrito no se puede guardar.
   assert.match(doc.avisoDeCambio(baseVieja, ana, conOtro, { editar: false }, true), /ya no se puede guardar/);
 });
 
@@ -489,15 +499,23 @@ test("ACC-2 · con la marca «el canal canceló», DELIVERED va apagado y dice p
   assert.equal(libre.puede, true);
 });
 
-test("ACC-3 · cancelar una confirmada es de admin (si no, al menú y apagado); una entregada ya no se cancela a mano", () => {
+test("ACC-3 · cancelar una confirmada sigue EL PERMISO (ya no es sólo de admin); una entregada ya no se cancela a mano", () => {
   const confirmada = (p) => orden(3, [linea(1, "AAA-1", 1)], {
     estado: "confirmada", confirmada_at: "2026-10-06T15:00:00Z", permisos: permisos(p),
   });
-  assert.deepEqual(nombres(doc.accionesDe(confirmada({ cancelar: true })).barra), ["entregar", "cancelar"]);
-  const operador = doc.accionesDe(confirmada({ cancelar: false, porque: { cancelar: "Sólo un administrador." } }));
-  assert.deepEqual(nombres(operador.barra), ["entregar"]);
-  assert.deepEqual(nombres(operador.menu), ["cancelar", "borrar"]);
-  assert.equal(operador.menu[0].porque, "Sólo un administrador.");
+  // Un OPERADOR con el permiso encendido (es lo que ahora manda el backend para
+  // cualquiera que escribe; no puede borrar, que sigue siendo de admin): el
+  // botón va en la barra, encendido. La pantalla no pregunta por el rol.
+  const operador = doc.accionesDe(confirmada({ cancelar: true, borrar: false,
+                                               porque: { borrar: "Sólo un administrador puede borrar una orden" } }));
+  assert.deepEqual(nombres(operador.barra), ["entregar", "cancelar"]);
+  assert.deepEqual([operador.barra[1].rotulo, operador.barra[1].puede], ["Cancelar orden", true]);
+  // Quien no puede (un usuario de sólo lectura): al menú, apagado, y con el
+  // porqué QUE DIGA EL BACKEND. Aquí ya no hay ningún «sólo un administrador».
+  const lector = doc.accionesDe(confirmada({ cancelar: false, porque: { cancelar: "Tu rol es de sólo lectura" } }));
+  assert.deepEqual(nombres(lector.barra), ["entregar"]);
+  assert.deepEqual(nombres(lector.menu), ["cancelar", "borrar"]);
+  assert.deepEqual([lector.menu[0].puede, lector.menu[0].porque], [false, "Tu rol es de sólo lectura"]);
   const entregada = doc.accionesDe(orden(5, [linea(1, "AAA-1", 1)], {
     estado: "entregada", confirmada_at: "2026-10-06T15:00:00Z", permisos: permisos({ cancelar: true }),
   }));
@@ -537,22 +555,39 @@ test("MOT-1 · cancelar una confirmada pide 5 caracteres; borrar, 10; y no se ma
   assert.equal(ui.faltaDeMotivo("ya"), 1);
 });
 
-// ── LEC · sólo el borrador se edita ──────────────────────────────────────────
+// ── LEC · qué se edita: lo que dice el permiso ───────────────────────────────
 
-test("LEC-1 · fuera de borrador NADIE edita, ni con el permiso encendido", () => {
+test("LEC-1 · se edita lo que el PERMISO dice —el borrador y la confirmada—; lo entregado y lo cancelado, nunca", () => {
   const con = (mas2) => orden(1, [], { permisos: permisos({ editar: true }), ...mas2 });
+  const sinPermiso = (porque) => permisos({ editar: false, porque: porque ? { editar: porque } : {} });
   assert.equal(doc.seEdita(con({})), true);
-  assert.equal(doc.seEdita(con({ permisos: permisos({ editar: false }) })), false);
-  for (const estado of ["confirmada", "entregada", "cancelada", "entregada_cancelada"]) {
+  assert.equal(doc.seEdita(con({ permisos: sinPermiso() })), false);
+  // Una CONFIRMADA se edita si el backend lo permite (0071), y sólo entonces:
+  // la pantalla ya no lo deduce del estado.
+  assert.equal(doc.seEdita(con({ estado: "confirmada" })), true);
+  assert.equal(doc.seEdita(con({ estado: "confirmada", permisos: sinPermiso() })), false);
+  // Lo que la base no le acepta a NADIE: aunque el permiso llegara encendido, no se pintan campos.
+  for (const estado of ["entregada", "cancelada", "entregada_cancelada"]) {
     assert.equal(doc.seEdita(con({ estado })), false, estado);
   }
   assert.equal(doc.seEdita(con({ borrada_at: "2026-10-06T17:00:00Z" })), false);
-  // El envío a FULL se captura en Crear FULL: aquí es de sólo lectura aun en borrador.
+  assert.equal(doc.seEdita(con({ estado: "confirmada", borrada_at: "2026-10-06T17:00:00Z" })), false);
+  // El envío a FULL se captura en Crear FULL: aquí es de sólo lectura, en borrador y confirmado.
   assert.equal(doc.seEdita(con({ tipo: "full" })), false);
+  assert.equal(doc.seEdita(con({ tipo: "full", estado: "confirmada" })), false);
 
   assert.equal(doc.notaDeLectura(con({})), null);
-  assert.match(doc.notaDeLectura(con({ estado: "confirmada" })),
-               /Una orden confirmada ya no se modifica: si tiene un error, un administrador la borra y se captura de nuevo/);
+  // La confirmada que SÍ se edita no lleva nota de sólo lectura…
+  assert.equal(doc.notaDeLectura(con({ estado: "confirmada" })), null);
+  // …y la que no, lleva EL PORQUÉ DEL BACKEND, tal cual (el «¿salió?» pendiente, el modo prueba, el rol).
+  const ESPERA = "El canal canceló esta venta con el paquete en camino: primero hay que contestar si salió";
+  assert.equal(doc.notaDeLectura(con({ estado: "confirmada", permisos: sinPermiso(ESPERA) })), ESPERA);
+  assert.equal(doc.notaDeLectura(con({ estado: "confirmada", permisos: sinPermiso("Tu rol es de sólo lectura") })),
+               "Tu rol es de sólo lectura");
+  // Si llegara sin porqué, se dice que no se puede; no se resucita el «ya no se modifica: un administrador la borra».
+  const sinPorque = doc.notaDeLectura(con({ estado: "confirmada", permisos: sinPermiso() }));
+  assert.match(sinPorque, /no se puede editar/);
+  assert.doesNotMatch(sinPorque, /administrador|ya no se modifica/);
   // Lo que YA SALIÓ tiene su propia nota: borrar no regresa las piezas, y no se recaptura.
   for (const estado of ["entregada", "entregada_cancelada"]) {
     assert.match(doc.notaDeLectura(con({ estado })), /ya salió de la bodega: no se modifica\. Borrarla no regresa las piezas al saldo/, estado);
@@ -562,6 +597,235 @@ test("LEC-1 · fuera de borrador NADIE edita, ni con el permiso encendido", () =
   assert.match(doc.notaDeLectura(con({ tipo: "full" })), /envío a FULL/);
   assert.equal(doc.notaDeLectura(con({ estado: "confirmada", borrada_at: "2026-10-06T17:00:00Z" })), null,
                "de la borrada ya habla su propio aviso");
+});
+
+// ── EDIT · corregir una CONFIRMADA (0071, 9-oct-2026) ────────────────────────
+//
+// «Que cualquiera pueda editar una orden ya confirmada». Es el mismo formulario
+// del borrador; lo que estas pruebas cuidan es lo que cambia porque la
+// confirmada YA APARTA: qué se manda, qué se exige antes de mandar, cuánto
+// falta apartar, y que el renglón que ya salió no se toque por ningún lado.
+
+/** Un renglón de una confirmada: aparta su cantidad completa en su bodega (ENSAYO). */
+const apartada = (n, sku, cantidad, mas2 = {}) => linea(n, sku, cantidad, 10, { reservado: cantidad, ...mas2 });
+/** Un renglón que YA SALIÓ (con `salieron` piezas): su apartado se volvió salida. */
+const salio = (n, sku, cantidad, salieron = cantidad, mas2 = {}) => linea(n, sku, cantidad, 10, {
+  reservado: 0, entregado: salieron, entregado_at: "2026-10-08T16:00:00Z", entregado_por: "bodega@kubera.mx", ...mas2,
+});
+/** Una CONFIRMADA que quien mira puede corregir (es lo que manda el backend a quien escribe). */
+const ordenConfirmada = (lineas, mas2 = {}) => orden(7, lineas, {
+  estado: "confirmada", confirmada_at: "2026-10-08T15:00:00Z",
+  permisos: permisos({ editar: true, entregar: true }), ...mas2,
+});
+
+test("EDIT-1 · a quien SÍ puede corregir una confirmada se le avisa: guardar vuelve a apartar y deja rastro", () => {
+  const nota = doc.notaDeEdicion(ordenConfirmada([apartada(1, "AAA-1", 2)]));
+  assert.match(nota, /ya está confirmada y se puede corregir/);
+  assert.match(nota, /Al guardar se vuelve a apartar el stock, todo o nada/);
+  assert.match(nota, /Cada cambio queda en la bitácora con quién lo hizo/);
+  assert.doesNotMatch(nota, /ya salieron/);
+  // Con una entrega parcial se dice además que lo que ya salió no se toca.
+  assert.match(doc.notaDeEdicion(ordenConfirmada([salio(1, "AAA-1", 2), apartada(2, "BBB-2", 1)])),
+               /Los renglones que ya salieron no se tocan\.$/);
+  // Un borrador no lo necesita (guardarlo no mueve nada); y sin permiso no hay edición que avisar.
+  assert.equal(doc.notaDeEdicion(orden(1, [linea(1, "AAA-1", 2)])), null);
+  assert.equal(doc.notaDeEdicion(ordenConfirmada([apartada(1, "AAA-1", 2)], { permisos: permisos({ editar: false }) })), null);
+  // Y la ayuda del chip de estado dejó de decir lo contrario.
+  assert.match(ui.AYUDA_ESTADO.confirmada, /Todavía se puede corregir/);
+  assert.doesNotMatch(ui.AYUDA_ESTADO.confirmada, /ya no se modifica/i);
+});
+
+test("EDIT-2 · guardar una confirmada manda SÓLO lo que cambió; si cambian renglones, el documento ENTERO", () => {
+  const base = doc.formaDe(ordenConfirmada([salio(1, "AAA-1", 2), apartada(2, "BBB-2", 3)]));
+  assert.deepEqual(doc.cambiosDe(base, base), {});
+  // Corregir la guía no toca los renglones (ni, por tanto, el apartado).
+  assert.deepEqual(doc.cambiosDe(base, { ...base, guia: " JT-9 " }), { guia: "JT-9" });
+  // Subir una cantidad: viajan TODOS los renglones, el que ya salió TAL CUAL
+  // (el servidor lo reconoce por su eco y no lo toca).
+  const put = doc.cambiosDe(base, conCantidad(base, "BBB-2", 5));
+  assert.deepEqual(Object.keys(put).sort(), ["lineas", "total"]);
+  assert.deepEqual(put.lineas.map((l) => [l.sku, l.cantidad, l.almacen]),
+                   [["AAA-1", 2, "ENSAYO"], ["BBB-2", 5, "ENSAYO"]]);
+  // El total que sigue a la suma se pide: lo calcula el servidor con lo que ya salió más lo nuevo.
+  assert.equal(put.total, null);
+  // Lo informativo no viaja: ni lo apartado ni lo entregado se le dictan al servidor.
+  assert.deepEqual(Object.keys(put.lineas[0]).sort(),
+                   ["almacen", "cantidad", "imagen", "precio_unitario", "sku", "titulo"]);
+});
+
+test("EDIT-3 · una confirmada no se guarda sin renglones por entregar ni con uno sin bodega, y se dice ANTES de mandar", () => {
+  const elegibles = ui.bodegasDeOrdenes(CATALOGO);   // sólo ENSAYO
+  const base = doc.formaDe(ordenConfirmada([apartada(1, "AAA-1", 2), apartada(2, "BBB-2", 3)]));
+  const falta = (f, b = base, e = elegibles) => doc.faltaParaGuardarConfirmada(b, f, e);
+  assert.equal(falta(base), null);
+  // Que el stock ALCANCE no se decide aquí: eso sólo lo sabe la base al mover el apartado (y lo dice el 409).
+  assert.equal(falta(conCantidad(base, "AAA-1", 999)), null);
+  // Quitar todos los renglones ya no es corregirla. Con las palabras del servidor.
+  assert.equal(falta(sin(sin(base, "AAA-1"), "BBB-2")),
+               "Una orden confirmada necesita al menos un renglón por entregar. Si ya no va, cancélala.");
+  // Con una entrega parcial, quitar lo que faltaba tampoco: eso es marcarla DELIVERED.
+  const parcial = doc.formaDe(ordenConfirmada([salio(1, "AAA-1", 2), apartada(2, "BBB-2", 3)]));
+  assert.equal(falta(sin(parcial, "BBB-2"), parcial),
+               "Una orden confirmada necesita al menos un renglón por entregar. Si ya salió todo, márcala DELIVERED.");
+  // Un renglón nuevo SIN bodega: un borrador se guarda así; una confirmada no (ya aparta).
+  const sinElegir = mas(base, "CCC-3", 1, "10.00", "");
+  assert.equal(doc.validar(sinElegir), null, "la validación de todos no lo exige: es de la confirmada");
+  assert.match(falta(sinElegir),
+               /Falta elegir la bodega de un renglón \(CCC-3\)\. En una orden confirmada cada renglón por entregar aparta su stock en su bodega: elígela y vuelve a guardar/);
+  // Una bodega que no admite órdenes (TEX3 apagada) se rechaza cuando los renglones CAMBIAN…
+  assert.match(falta(mas(base, "CCC-3", 1, "10.00", "TEX3")),
+               /La bodega TEX3 del renglón CCC-3 no admite órdenes de venta: cámbiala por una que sí y vuelve a guardar/);
+  // …pero corregir sólo la guía de una orden cuya bodega se apagó DESPUÉS no rebota (el servidor no los vuelve a apartar).
+  const apagada = doc.formaDe(ordenConfirmada([apartada(1, "AAA-1", 2, { almacen: "TEX3" })]));
+  assert.equal(falta({ ...apagada, guia: "JT-1" }, apagada), null);
+  assert.match(falta(conCantidad(apagada, "AAA-1", 3), apagada), /TEX3 del renglón AAA-1 no admite/);
+  // El renglón que ya salió ni cuenta ni se revisa (está congelado), esté donde esté.
+  const salioDeOtra = doc.formaDe(ordenConfirmada([salio(1, "AAA-1", 2, 2, { almacen: "TEX3" }), apartada(2, "BBB-2", 3)]));
+  assert.equal(falta(conCantidad(salioDeOtra, "BBB-2", 4), salioDeOtra), null);
+  // Si el backend no mandó el catálogo de bodegas, no se inventa el rechazo: decide él.
+  assert.equal(falta(mas(base, "CCC-3", 1, "10.00", "TEX3"), base, []), null);
+});
+
+test("EDIT-4 · el SKU + bodega de un renglón que YA SALIÓ no se repite: se dice que ése no se cambia", () => {
+  const base = doc.formaDe(ordenConfirmada([salio(1, "AAA-1", 2), apartada(2, "BBB-2", 3)]));
+  assert.equal(doc.validar(base), null);
+  // Un AAA-1 más, también de ENSAYO: no hay cómo «juntarlo» con uno congelado.
+  assert.equal(doc.validar(mas(base, "AAA-1", 1)),
+               "El renglón de AAA-1 ya salió de ENSAYO: no se cambia. Si hace falta más, va en otra bodega o en otra orden.");
+  // En otra bodega sí vale (la llave es SKU + bodega).
+  assert.equal(doc.validar(mas(base, "AAA-1", 1, "10.00", "TEX3")), null);
+  // Dos renglones POR ENTREGAR iguales siguen diciendo lo de siempre: ésos sí se pueden juntar.
+  assert.match(doc.validar(mas(base, "BBB-2", 1)), /BBB-2 está dos veces en la bodega ENSAYO: junta los dos renglones/);
+});
+
+test("EDIT-5 · cuánto le falta apartar a un renglón: lo que pide menos lo que la orden YA aparta ahí", () => {
+  const base = doc.formaDe(ordenConfirmada([apartada(1, "AAA-1", 3), apartada(2, "BBB-2", 2), salio(3, "CCC-3", 4)])).lineas;
+  const [a, b, c] = base;
+  // Sin tocar nada, cada uno aparta lo suyo donde está: no le falta nada.
+  assert.deepEqual([doc.apartadoEn(a, base), doc.apartadoEn(b, base)], [3, 2]);
+  // Subir la cantidad no cambia lo que ya aparta: le faltan las de más (5 − 3 = 2), no las 5.
+  assert.equal(doc.apartadoEn({ ...a, cantidad: "5" }, base), 3);
+  // Moverlo de bodega: en la nueva no aparta nada (ahí le toca apartar TODO).
+  assert.equal(doc.apartadoEn({ ...a, almacen: "TEX3" }, base), 0);
+  // Un renglón nuevo, o uno todavía sin bodega, tampoco.
+  assert.equal(doc.apartadoEn(doc.renglonNuevo({ sku: "ZZZ-9", almacen: "ENSAYO" }), base), 0);
+  assert.equal(doc.apartadoEn({ ...a, almacen: "" }, base), 0);
+  // Es por SKU + bodega, como la cuenta del servidor: si AAA-1 se muda a TEX3 y se abre OTRO
+  // AAA-1 en ENSAYO, el nuevo ocupa el apartado que el primero deja ahí.
+  assert.equal(doc.apartadoEn(doc.renglonNuevo({ sku: "aaa-1", almacen: "ENSAYO" }), base), 3);
+  // Lo que ya salió no aparta: su apartado se volvió salida.
+  assert.equal(doc.apartadoEn(c, base), 0);
+  assert.deepEqual([doc.renglonSalio(a), doc.renglonSalio(c)], [false, true]);
+  // Salir con CERO piezas (el renglón se soltó) también es haber salido.
+  const [soltado] = doc.formaDe(ordenConfirmada([salio(1, "DDD-4", 2, 0), apartada(2, "BBB-2", 1)])).lineas;
+  assert.deepEqual([soltado.entregado, doc.renglonSalio(soltado)], [0, true]);
+  // En un borrador nadie aparta: lo que falta es todo lo que pide.
+  const borrador = doc.formaDe(orden(1, [linea(1, "AAA-1", 3)])).lineas;
+  assert.equal(doc.apartadoEn(borrador[0], borrador), 0);
+});
+
+test("EDIT-6 · mientras corrijo, Bodega entrega un renglón: ése queda como en el servidor y lo demás mío se conserva", () => {
+  // Ana corrige una confirmada (AAA-1 x2, BBB-2 x3): sube AAA-1 a 4 y BBB-2 a 5.
+  // Antes de que guarde, Bodega entrega AAA-1 (sus 2 piezas).
+  const baseVieja = doc.formaDe(ordenConfirmada([apartada(1, "AAA-1", 2), apartada(2, "BBB-2", 3)]));
+  const ana = conCantidad(conCantidad(baseVieja, "AAA-1", 4), "BBB-2", 5);
+  const baseNueva = doc.formaDe(ordenConfirmada([salio(1, "AAA-1", 2), apartada(2, "BBB-2", 3)], { rev: 8 }));
+  const fusion = doc.fusionar(baseVieja, ana, baseNueva, { editar: true });
+  assert.deepEqual(ver(fusion), ["AAA-1 x2 @10.00", "BBB-2 x5 @10.00"], "el que ya salió no se queda con mi 4");
+  assert.equal(doc.renglonSalio(fusion.lineas[0]), true);
+  // Y lo que se manda ya no intenta cambiar el renglón congelado (el servidor lo rechazaría).
+  assert.deepEqual(doc.cambiosDe(baseNueva, fusion).lineas.map((l) => [l.sku, l.cantidad]),
+                   [["AAA-1", 2], ["BBB-2", 5]]);
+  // Aunque yo lo hubiera QUITADO, sigue ahí: un renglón que ya salió no se borra.
+  assert.deepEqual(ver(doc.fusionar(baseVieja, sin(baseVieja, "AAA-1"), baseNueva, { editar: true })),
+                   ["AAA-1 x2 @10.00", "BBB-2 x3 @10.00"]);
+  // O le hubiera cambiado la bodega.
+  assert.deepEqual(verBodega(doc.fusionar(baseVieja, conBodega(baseVieja, "AAA-1", "TEX3"), baseNueva, { editar: true })),
+                   ["AAA-1 x2 ENSAYO", "BBB-2 x3 ENSAYO"]);
+  // Lo que agregué yo sigue entrando.
+  assert.deepEqual(ver(doc.fusionar(baseVieja, mas(baseVieja, "CCC-3", 1), baseNueva, { editar: true })),
+                   ["AAA-1 x2 @10.00", "BBB-2 x3 @10.00", "CCC-3 x1 @10.00"]);
+  // Y el aviso NO promete que «se conservó» lo escrito: dice que parte ya salió y que ésa no se toca.
+  const aviso = doc.avisoDeCambio(baseVieja, ana, baseNueva, { editar: true }, false);
+  assert.match(aviso, /se recargó\. Ya salió parte de la orden: los renglones que salieron no se tocan y quedaron como están\. Revisa los demás antes de guardar\./);
+  assert.doesNotMatch(aviso, /se conservó/);
+  assert.match(doc.avisoDeCambio(baseVieja, ana, baseNueva, { editar: true }, true), /Revisa los demás y vuelve a guardar\./);
+  // Si yo sólo corregía la guía, la entrega no me quitó nada: lo mío se conservó.
+  assert.match(doc.avisoDeCambio(baseVieja, { ...baseVieja, guia: "JT-1" }, baseNueva, { editar: true }, false), /se conservó/);
+});
+
+test("EDIT-6 · que otra persona CONFIRME el borrador ya no descarta lo que yo escribía (una confirmada se edita)", () => {
+  const baseVieja = doc.formaDe(orden(3, [linea(1, "AAA-1", 2)]));
+  const ana = { ...conCantidad(baseVieja, "AAA-1", 4), guia: "JT-1" };
+  const confirmadaPorLuis = ordenConfirmada([apartada(1, "AAA-1", 2)], { rev: 4 });
+  const baseNueva = doc.formaDe(confirmadaPorLuis);
+  const p = { editar: doc.seEdita(confirmadaPorLuis) };
+  const fusion = doc.fusionar(baseVieja, ana, baseNueva, p);
+  assert.deepEqual([ver(fusion), fusion.guia], [["AAA-1 x4 @10.00"], "JT-1"]);
+  assert.match(doc.avisoDeCambio(baseVieja, ana, baseNueva, p, false), /se conservó/);
+  // Si el backend dice que ESA confirmada no se edita (modo prueba, sin la 0071…), sí se descarta, y se dice.
+  const cerrada = { editar: doc.seEdita({ ...confirmadaPorLuis, permisos: permisos({ editar: false }) }) };
+  assert.deepEqual(doc.fusionar(baseVieja, ana, baseNueva, cerrada), baseNueva);
+  assert.match(doc.avisoDeCambio(baseVieja, ana, baseNueva, cerrada, false), /ya no se puede guardar/);
+});
+
+test("EDIT-7 · el buscador no le suma piezas a un renglón que ya salió: abre otro en otra bodega, o no hay dónde", () => {
+  const una = ui.bodegasDeOrdenes(CATALOGO);       // sólo ENSAYO
+  const dos = ui.bodegasDeOrdenes(CATALOGO_B);     // TEX3 y ENSAYO
+  const lineas = doc.formaDe(ordenConfirmada([salio(1, "AAA-1", 2), apartada(2, "BBB-2", 3)])).lineas;
+  // Un SKU que sigue por entregar: se le suma una pieza, como siempre.
+  const suma = doc.dondeAgregar(lineas, "bbb-2", "ENSAYO", una);
+  assert.deepEqual([suma.tipo, suma.renglon.sku], ["sumar", "BBB-2"]);
+  // Un SKU nuevo: renglón nuevo en la bodega sugerida (o sin bodega, si no hubo cuál sugerir).
+  assert.deepEqual(doc.dondeAgregar(lineas, "CCC-3", "ENSAYO", una), { tipo: "nuevo", almacen: "ENSAYO" });
+  assert.deepEqual(doc.dondeAgregar(lineas, "CCC-3", "", dos), { tipo: "nuevo", almacen: "" });
+  // El SKU que YA SALIÓ de ENSAYO, con ENSAYO como única bodega: no hay dónde ponerlo
+  // (SKU + bodega no se repite) y NO se le suma al congelado.
+  assert.deepEqual(doc.dondeAgregar(lineas, "AAA-1", "ENSAYO", una), { tipo: "ya_salio", bodegas: ["ENSAYO"] });
+  // Con otra bodega donde ponerlo: renglón NUEVO ahí.
+  assert.deepEqual(doc.dondeAgregar(lineas, "AAA-1", "ENSAYO", dos), { tipo: "nuevo", almacen: "TEX3" });
+  assert.deepEqual(doc.dondeAgregar(lineas, "AAA-1", "TEX3", dos), { tipo: "nuevo", almacen: "TEX3" });
+  // Si además hay un renglón VIVO de ese SKU (en la otra bodega), la pieza es para ése.
+  const conVivo = [...lineas, doc.renglonNuevo({ sku: "AAA-1", almacen: "TEX3" })];
+  const alVivo = doc.dondeAgregar(conVivo, "AAA-1", "ENSAYO", dos);
+  assert.deepEqual([alVivo.tipo, alVivo.renglon.almacen], ["sumar", "TEX3"]);
+  // En un borrador nada cambió: el de la bodega sugerida, o el primero que haya.
+  const borrador = doc.formaDe(orden(1, [linea(1, "AAA-1", 1), linea(2, "AAA-1", 1, 10, { almacen: "TEX3" })])).lineas;
+  assert.equal(doc.dondeAgregar(borrador, "AAA-1", "TEX3", dos).renglon.almacen, "TEX3");
+  assert.equal(doc.dondeAgregar(borrador, "AAA-1", "", dos).renglon.almacen, "ENSAYO");
+});
+
+test("EDIT-8 · «Traer venta» en una orden de la que ya salió algo NO cambia los renglones (sí lo demás)", () => {
+  const parcial = doc.formaDe(ordenConfirmada([salio(1, "AAA-1", 2), apartada(2, "BBB-2", 3)]));
+  const v = venta({ guia: "JT-77", lineas: [{ sku: "AAA-1", cantidad: 5, precio_unitario: 100 }] });
+  const f = doc.aplicarVenta(parcial, v, [ENSAYO]);
+  // Cambiarlos por los de la venta borraría del formulario lo que ya salió, que está congelado.
+  assert.deepEqual(f.lineas, parcial.lineas);
+  assert.deepEqual([f.guia, f.total, f.precio_origen, f.mp_orden], ["JT-77", "300.00", "marketplace", "PO-1"]);
+  // Sin entregas, la venta sí manda en los renglones, igual que en un borrador.
+  const entera = doc.formaDe(ordenConfirmada([apartada(1, "AAA-1", 2), apartada(2, "BBB-2", 3)]));
+  assert.deepEqual(ver(doc.aplicarVenta(entera, v, [ENSAYO])), ["AAA-1 x5 @100.00"]);
+});
+
+test("EDIT-9 · guardar es el MISMO `PUT` para un borrador y para una confirmada: lo que cambió, más la `rev`", async () => {
+  const lib = require(require("path").join(__dirname, "..", "..", "..", "lib", "api"));
+  const real = lib.fetchSesion;
+  const vistas = [];
+  lib.fetchSesion = async (...args) => { vistas.push(args); return { ok: true, json: async () => ({ ok: true }) }; };
+  try {
+    const base = doc.formaDe(ordenConfirmada([apartada(1, "AAA-1", 2)]));
+    await cargar("api").guardarOrden(7, 12, doc.cambiosDe(base, { ...base, guia: "JT-9" }));
+  } finally {
+    lib.fetchSesion = real;
+  }
+  assert.equal(vistas.length, 1);
+  const [url, init, cabeceras] = vistas[0];
+  assert.match(url, /\/api\/ordenes-venta\/7$/);
+  assert.equal(init.method, "PUT");
+  // La `rev` viaja SIEMPRE: es el candado, y lo que deja distinguir «la orden cambió»
+  // (el servidor la movió) de «no alcanzó el stock» (no la movió: se enseña su texto).
+  assert.deepEqual(JSON.parse(init.body), { guia: "JT-9", rev: 12 });
+  assert.deepEqual(cabeceras, { "Content-Type": "application/json" });
 });
 
 // ── PDF · adjuntar ───────────────────────────────────────────────────────────
@@ -931,4 +1195,53 @@ test("REV2 FE-07 · borrar manda `rev` y `motivo` en el CUERPO (JSON), no en la 
   assert.deepEqual(JSON.parse(init.body), { rev: 4, motivo: "la pidió duplicada el cliente, tel. 55…" });
   // El Content-Type va en el TERCER argumento: `fetchSesion` pisa `init.headers`.
   assert.deepEqual(cabeceras, { "Content-Type": "application/json" });
+});
+
+// ── Tercera revisión (9-oct-2026): al poder editar una confirmada ─────────────
+
+test("REV3 PANT-1 · la acción de un diálogo viaja con la `rev` con la que se ABRIÓ, no con la de ahora", () => {
+  // Bodega abre «Marcar DELIVERED» con la orden en la rev 2 (X × 2). Con el diálogo abierto otra
+  // persona corrige la confirmada (rev 3: X × 5 y Z × 3), el chat avisa y el documento relee: el
+  // diálogo se repinta solo. Con la rev de AHORA el candado dejaba pasar las 8 piezas que nadie vio.
+  const abierto = { tipo: "entregar", rev: 2 };
+  assert.equal(doc.revDeDialogo(abierto, "entregar", 3), 2, "viaja la 2: el servidor contesta 409 y no sale nada");
+  // Si nadie movió la orden, es la misma de siempre.
+  assert.equal(doc.revDeDialogo(abierto, "entregar", 2), 2);
+  // Vale para TODAS las acciones con diálogo: quien da clic confirma lo que vio.
+  for (const accion of ["confirmar", "entregar", "cancelar", "borrar", "salio_si", "salio_no", "salio_tarde"]) {
+    assert.equal(doc.revDeDialogo({ tipo: accion, rev: 7 }, accion, 9), 7, accion);
+  }
+  // La rev es la del diálogo de ESA acción: la de otro —o el de «hay cambios sin guardar»— no se presta.
+  assert.equal(doc.revDeDialogo({ tipo: "cancelar", rev: 2 }, "entregar", 3), 3);
+  assert.equal(doc.revDeDialogo({ tipo: "sucio", destino: { tipo: "accion", accion: "entregar" } }, "entregar", 3), 3);
+  assert.equal(doc.revDeDialogo(null, "entregar", 3), 3);
+  // Y un diálogo sin rev (no debería existir) no manda basura: queda la de ahora, que el servidor revisa igual.
+  assert.equal(doc.revDeDialogo({ tipo: "entregar" }, "entregar", 3), 3);
+  assert.equal(doc.revDeDialogo({ tipo: "entregar", rev: "2" }, "entregar", 3), 3);
+});
+
+test("REV3 PANT-3 · tras un guardado que rebota se vuelve a preguntar el saldo de lo que NO está guardado donde está", () => {
+  const guardado = doc.formaDe(ordenConfirmada([apartada(1, "AAA-1", 2), salio(2, "BBB-2", 1)]));
+  const sinGuardar = (f) => doc.skusSinGuardar(guardado.lineas, f.lineas);
+  // Sin cambios, o cambiando sólo cantidad y precio: ese renglón SÍ está guardado ahí, y la relectura
+  // de la orden ya trae su saldo fresco. No hay nada más que preguntar.
+  assert.deepEqual(sinGuardar(guardado), []);
+  assert.deepEqual(sinGuardar(conCantidad(guardado, "AAA-1", 9)), []);
+  // El renglón NUEVO (se agregó con el buscador cuando había 10 libres): de ése el servidor no dice nada.
+  assert.deepEqual(sinGuardar(mas(guardado, "DDD-4", 3)), ["ddd-4"]);
+  // El que CAMBIÓ DE BODEGA: está guardado en ENSAYO, y el saldo que importa ahora es el de TEX3.
+  assert.deepEqual(sinGuardar(conBodega(guardado, "AAA-1", "TEX3")), ["aaa-1"]);
+  // Una pregunta por SKU, aunque vaya en dos renglones nuevos (es como se le pregunta al catálogo).
+  assert.deepEqual(sinGuardar(mas(mas(guardado, "DDD-4", 1), "ddd-4", 1, "10.00", "TEX3")), ["ddd-4"]);
+  // Abrir OTRO renglón de un SKU que ya está guardado en otra bodega también es un renglón nuevo.
+  assert.deepEqual(sinGuardar(mas(guardado, "AAA-1", 1, "10.00", "TEX3")), ["aaa-1"]);
+  // Lo que ya salió está congelado y ya no aparta: no se pregunta, aunque «no esté» en lo guardado.
+  const soloSalio = doc.formaDe(ordenConfirmada([salio(2, "BBB-2", 1)]));
+  assert.deepEqual(doc.skusSinGuardar([], soloSalio.lineas), []);
+  // Y del que el catálogo ya dijo que NO conoce no hay saldo que pedir.
+  const fuera = { lineas: [...guardado.lineas, doc.renglonNuevo({ sku: "NUEVO-1", almacen: "ENSAYO", conocido: false })] };
+  assert.deepEqual(sinGuardar(fuera), []);
+  // En un borrador vale igual (ahí guardar no aparta, pero la regla es la misma).
+  const borrador = doc.formaDe(orden(1, [linea(1, "AAA-1", 1)]));
+  assert.deepEqual(doc.skusSinGuardar(borrador.lineas, mas(borrador, "CCC-3", 1).lineas), ["ccc-3"]);
 });

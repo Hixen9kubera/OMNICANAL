@@ -6,7 +6,7 @@
 -- contra el sandbox: tira y recrea esquemas.
 --
 -- Uso (lo hace solo tests/test_ordenes_venta_bd.py en su setUpModule; a mano):
---   psql -h 127.0.0.1 -p 54329 -U postgres -d ov_b1 -f backend/tests/ov_fixture.sql
+--   psql -h 127.0.0.1 -p 54341 -U postgres -d ov_b1 -f backend/tests/ov_fixture.sql
 --   psql … -f supabase/migrations/0064_ops_ordenes_venta.sql
 --   psql … -f supabase/migrations/0065_ops_inventario_kubera.sql
 --
