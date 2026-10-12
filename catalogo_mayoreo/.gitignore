@@ -1,0 +1,4 @@
+# El catálogo y los pedidos son datos: nunca van al repositorio (es público).
+datos/
+.env
+__pycache__/

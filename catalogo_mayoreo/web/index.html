@@ -1,0 +1,916 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow">
+<title>Kubera Mayoreo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..100,400..800&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+/* Catálogo de mayoreo. Escritorio: tres columnas (categorías · productos · tu pedido). Teléfono: una columna,
+   categorías en fichas y el pedido en una barra fija abajo. Un solo aspecto, claro, a propósito: es el diseño
+   que entregó Claude Design para las tiendas.
+   La página no lleva llaves ni se conecta a ninguna base: lee catalogo.json, guarda el pedido en este
+   navegador y lo manda a /api/mayoreo/pedidos, que es quien valida todo otra vez. */
+:root{
+  --tinta:#15171A; --fondo:#EEEFEA; --papel:#FFFFFF; --suave:#F7F7F4; --claro:#F3F4F1;
+  --acento:#C2410C; --acento-2:#7F2906; --enlace:#B23A0B;
+  --linea:#D9DBD5; --linea-2:#C9CCC4; --linea-3:#B9BDB4; --gris:#5B6068; --gris-2:#3D4147; --hundido:#DCDED7;
+  --ok:#1F6F43; --ok-f:#E3F1E8; --parcial:#8A5A00; --parcial-f:#FCF1D6; --nada:#9F1F1F; --nada-f:#F8E1E1;
+  --espera:#1F4E79; --espera-f:#E2ECF5; --vivo:#6FCF97; --foco:#1D4ED8; --velo:rgba(21,23,26,.74);
+  --sans:'Archivo',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+  --mono:'IBM Plex Mono',ui-monospace,'Cascadia Mono',Consolas,monospace;
+  color-scheme:light;
+}
+:root{padding:env(safe-area-inset-top,0px) 0 env(safe-area-inset-bottom,0px)}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+img{max-width:100%}
+body{margin:0;background:var(--fondo);color:var(--tinta);font-family:var(--sans);font-size:15px;line-height:1.4}
+a{color:var(--enlace)}a:hover{color:var(--acento-2)}
+button,input,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+button:focus-visible,input:focus-visible,textarea:focus-visible,a:focus-visible{outline:3px solid var(--foco);outline-offset:2px}
+h1,h2,h3{text-wrap:balance}
+p{margin:0}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.rotulo{margin:0;font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--gris)}
+
+/* cabecera */
+.cab{background:var(--tinta);color:var(--claro)}
+.cab-in{max-width:1440px;margin:0 auto;padding-block:14px;padding-inline:32px;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px 32px}
+.marca{display:flex;align-items:center;gap:14px;color:inherit;text-decoration:none}
+.marca:hover{color:inherit}
+.marca-k{width:36px;height:36px;border-radius:6px;background:var(--acento);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:18px;color:var(--papel);flex:0 0 auto}
+.marca-n{display:flex;flex-direction:column}
+.marca-n b{font-weight:800;font-size:18px;letter-spacing:.01em;font-stretch:85%}
+.marca-n span{font-size:13px;color:var(--linea-3)}
+.cab-d{display:flex;flex-wrap:wrap;align-items:center;gap:8px 24px;font-size:14px;color:var(--linea-3)}
+.cab-d strong{color:var(--claro);font-weight:600}
+.pasos{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:6px 20px}
+.pasos [aria-current]{color:var(--papel);font-weight:700}
+
+.marco{max-width:1440px;margin:0 auto;padding-block:28px 64px;padding-inline:32px;display:flex;flex-wrap:wrap;align-items:flex-start;gap:28px}
+.aviso-demo{flex:1 1 100%;padding:12px 16px;border-radius:10px;background:var(--espera-f);color:var(--espera);font-size:14px;border:1px solid var(--espera)}
+
+/* categorías */
+.nav{flex:1 1 232px;max-width:280px;min-width:0;display:flex;flex-direction:column;gap:2px}
+.nav .rotulo{margin-bottom:8px}
+.nb{display:flex;justify-content:space-between;align-items:center;gap:8px;min-height:40px;padding:8px 12px;border:0;border-radius:6px;text-align:left;font-size:15px;background:transparent;color:var(--tinta)}
+.nb:hover{background:var(--hundido)}
+.nb .mono{font-size:12px;opacity:.8}
+.nb.abierta{background:var(--hundido);font-weight:700}
+.nb.sel,.nb.sel:hover{background:var(--tinta);color:var(--papel);font-weight:700}
+.nsubs{display:flex;flex-direction:column;gap:2px;margin:2px 0 8px 12px;padding-left:10px;border-left:2px solid var(--linea-2)}
+.nsubs .nb{min-height:36px;padding:6px 10px;font-size:14px}
+.nsubs .nb span:first-child{display:inline-flex;align-items:center;gap:6px}
+.nmas{margin-top:6px;min-height:40px;padding:8px 12px;border:1px dashed var(--linea-3);border-radius:6px;background:transparent;font-size:14px;color:var(--gris-2);text-align:left}
+.fichas{display:none;flex-direction:column;gap:8px;flex:1 1 100%;min-width:0}
+.fichas-f{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;scrollbar-width:none}
+.fichas-f::-webkit-scrollbar{display:none}
+.ficha{flex:0 0 auto;min-height:36px;padding:0 14px;border-radius:999px;border:1px solid var(--linea-2);background:var(--papel);font-size:14px;white-space:nowrap}
+.ficha.sel{border-color:var(--tinta);background:var(--tinta);color:var(--papel);font-weight:600}
+
+/* productos */
+.lista{flex:999 1 560px;min-width:0;display:flex;flex-direction:column;gap:20px}
+.vista-cab{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:16px}
+.vista-cab h1{margin:0;font-size:clamp(28px,4.2vw,40px);line-height:1.05;font-weight:800;font-stretch:80%;letter-spacing:-.01em}
+.migas{margin-bottom:4px;font-size:14px;color:var(--gris)}
+.conteo{margin-top:6px;font-size:15px;color:var(--gris-2)}
+.busca{display:flex;flex-direction:column;gap:6px;flex:0 1 340px;min-width:220px}
+.busca label{font-size:13px;font-weight:600;color:var(--gris-2)}
+.busca input{height:44px;padding:0 14px;border:1px solid var(--linea-3);border-radius:8px;background:var(--papel);font-size:15px;width:100%}
+.nota{display:flex;gap:10px 16px;align-items:flex-start;padding:14px 16px;background:var(--papel);border:1px solid var(--linea);border-radius:10px;font-size:14px;line-height:1.45;color:var(--gris-2)}
+.nota svg{flex:0 0 auto;margin-top:1px}
+.nota strong{color:var(--tinta)}
+.sub-todo{background:var(--tinta);color:var(--claro);border-radius:12px;padding:22px 24px;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px 32px}
+.sub-todo div{display:flex;flex-direction:column;gap:4px;min-width:0}
+.sub-todo .rotulo{color:var(--linea-3);font-size:12px}
+.sub-todo b{font-size:26px;font-weight:800;font-stretch:85%;line-height:1.1}
+.sub-todo span{font-size:14px;color:var(--linea)}
+.b-fuerte{min-height:52px;padding:0 24px;border-radius:8px;border:2px solid var(--acento);background:var(--acento);color:var(--papel);font-size:16px;font-weight:700}
+.b-fuerte.on{background:transparent;border-color:var(--claro)}
+.mosaico{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px}
+.mos{background:var(--papel);border:1px solid var(--linea);border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:10px;justify-content:space-between}
+.mos.on{border-color:var(--tinta)}
+.mos-n{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
+.mos-n b{font-size:15px;line-height:1.25}
+.mos-n span,.mos-d{font-size:12px;color:var(--gris)}
+.mos-n span{white-space:nowrap}
+.mos-b{display:flex;gap:8px}
+.b-linea{flex:1 1 auto;min-height:44px;padding:0 14px;border-radius:8px;border:2px solid var(--acento);background:var(--papel);color:var(--acento);font-size:14px;font-weight:700}
+.b-linea.on{background:var(--acento);color:var(--papel)}
+.mos.on .b-linea{background:var(--tinta);border-color:var(--tinta);color:var(--papel)}
+.b-ver{flex:0 0 auto;width:44px;min-height:44px;border-radius:8px;border:1px solid var(--linea-2);background:var(--papel);display:flex;align-items:center;justify-content:center}
+.vacio{padding:48px 24px;text-align:center;background:var(--papel);border:1px solid var(--linea);border-radius:12px}
+.vacio b{font-size:18px}
+.vacio p{margin-top:8px;color:var(--gris)}
+
+.foto{display:block;background-color:var(--fondo);background-repeat:no-repeat}
+.sinfoto{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:var(--gris);font-size:14px}
+.ver{display:block;padding:0;border:0;background:transparent;cursor:zoom-in;border-radius:8px}
+
+.familia{background:var(--papel);border:1px solid var(--linea);border-radius:12px;padding:20px;display:flex;flex-wrap:wrap;gap:20px}
+.fam-foto{flex:0 0 auto}
+.fam-foto .foto{width:168px;height:168px;border-radius:8px}
+.fam-c{flex:999 1 420px;min-width:0;display:flex;flex-direction:column;gap:14px}
+.fam-cab{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px 24px}
+.fam-cab h3{margin:4px 0 0;font-size:22px;font-weight:700;line-height:1.2}
+.sku{font-family:var(--mono);font-size:12px;color:var(--gris);overflow-wrap:anywhere}
+.fam-precio{text-align:right}
+.fam-precio b{display:block;font-family:var(--mono);font-size:24px;font-weight:800}
+.fam-precio span{font-size:13px;color:var(--gris)}
+.ayuda{font-size:14px;color:var(--gris-2)}
+.mz-caja{overflow-x:auto}
+.mz{display:grid;grid-template-columns:76px repeat(var(--cols),minmax(0,1fr));gap:6px;min-width:calc(76px + var(--cols) * 84px);align-items:stretch}
+.mz-fila{display:contents}
+.mz-esq{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--gris);align-self:end;padding-bottom:4px}
+.mz-col{text-align:center;font-weight:700;font-size:15px;padding-bottom:4px}
+.mz-color{display:flex;align-items:center;gap:8px;font-weight:600;font-size:15px;min-width:0;overflow-wrap:anywhere}
+.celda,.vari{border-radius:8px;border:2px solid var(--linea-2);background:var(--papel);color:var(--tinta)}
+.celda{min-height:64px;padding:8px 6px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px}
+.celda .talla{display:none;font-weight:700}
+.celda .pz{font-family:var(--mono);font-size:15px;font-weight:700}
+.celda .est,.vari .est{font-size:12px}
+.celda .otro{font-family:var(--mono);font-size:11px;font-weight:600}
+.celda.hueco{border-style:dashed;color:var(--linea-3);font-size:13px}
+.celda.on,.vari.on{border-color:var(--acento);background:var(--acento);color:var(--papel)}
+.celda.incl,.vari.incl{border-color:var(--tinta);background:var(--tinta);color:var(--papel);cursor:default}
+.celda.nop,.vari.nop{background:var(--suave);color:var(--gris);cursor:default}
+.vars{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:8px}
+.vari{min-height:56px;padding:8px 12px;display:flex;align-items:center;justify-content:space-between;gap:8px;text-align:left}
+.vari .et{font-family:var(--mono);font-size:14px;font-weight:600;overflow-wrap:anywhere;min-width:0}
+.vari .dr{display:flex;flex-direction:column;align-items:flex-end;flex:0 0 auto}
+.vari .pz{font-family:var(--mono);font-size:14px;font-weight:700}
+.fam-pie{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px}
+.fam-pie p{font-size:13px;color:var(--gris)}
+.incluido{display:inline-flex;align-items:center;min-height:44px;padding:8px 12px;border-radius:8px;background:var(--tinta);color:var(--papel);font-size:14px;font-weight:600}
+
+.rejilla{display:grid;grid-template-columns:repeat(auto-fill,minmax(232px,1fr));gap:16px}
+.tj{background:var(--papel);border:2px solid var(--linea);border-radius:12px;overflow:hidden;display:flex;flex-direction:column}
+.tj.on{border-color:var(--acento)}
+.tj.incl{border-color:var(--tinta)}
+.tj-f{position:relative;background:var(--fondo)}
+.tj-f .ver{width:100%;border-radius:0}
+.tj-f .foto{width:100%;aspect-ratio:1/1;max-width:100%}
+.lote{position:absolute;top:10px;left:10px;padding:4px 10px;border-radius:999px;background:var(--tinta);color:var(--papel);font-family:var(--mono);font-size:12px;font-weight:600;pointer-events:none}
+.pc{display:inline-flex;align-items:center;padding:3px 9px;border-radius:999px;background:var(--espera-f);color:var(--espera);font-size:12px;font-weight:600}
+.tj-f .pc{position:absolute;left:10px;bottom:10px;pointer-events:none}
+.tj-c{padding:14px;display:flex;flex-direction:column;gap:10px;flex:1 1 auto}
+.tj-c h3{margin:4px 0 0;font-size:16px;line-height:1.3;font-weight:600;overflow-wrap:anywhere}
+.tj-p{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-top:auto}
+.tj-p span{font-size:13px;color:var(--gris)}
+.tj-p b{font-family:var(--mono);font-size:17px;font-weight:700}
+.tj .b-linea{font-size:15px}
+.nop-t{padding:10px 12px;border-radius:8px;background:var(--claro);font-size:13px;color:var(--gris-2)}
+.pie-lista{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;padding-top:8px}
+.pie-lista span{font-size:14px;color:var(--gris)}
+.b-hueco{min-height:44px;padding:0 22px;border:1px solid var(--tinta);border-radius:8px;background:transparent;font-size:15px;font-weight:600;color:var(--tinta);text-decoration:none;display:inline-flex;align-items:center;justify-content:center}
+.b-hueco:hover{color:var(--tinta);background:var(--papel)}
+
+/* tu pedido */
+.pedido{flex:1 1 320px;max-width:380px;min-width:0;background:var(--papel);border:1px solid var(--linea);border-radius:12px;display:flex;flex-direction:column;overflow:hidden;position:sticky;top:16px;max-height:calc(100vh - 32px)}
+.pd-cab{padding:18px 20px;border-bottom:1px solid var(--linea);display:flex;justify-content:space-between;align-items:baseline;gap:12px}
+.pd-cab h2{margin:0;font-size:20px;font-weight:800;font-stretch:85%}
+.pd-cab span{font-family:var(--mono);font-size:13px;color:var(--gris)}
+.pd-scroll{overflow-y:auto;min-height:0}
+.pd-vacio{padding:32px 20px;color:var(--gris)}
+.pd-t{margin:0;padding:14px 20px 4px;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--gris)}
+.pd-l{list-style:none;margin:0;padding:0}
+.pd-l li{padding:10px 20px 14px;border-bottom:1px solid var(--fondo);display:flex;flex-direction:column;gap:6px}
+.pd-r{display:flex;justify-content:space-between;gap:12px}
+.pd-r b{font-size:14px;font-weight:600;line-height:1.3;overflow-wrap:anywhere;min-width:0}
+.pd-m{display:flex;justify-content:space-between;gap:12px;font-family:var(--mono);font-size:13px;color:var(--gris-2);flex-wrap:wrap}
+.pd-s{align-self:flex-end;font-family:var(--mono);font-size:14px;font-weight:600}
+.x{flex:0 0 auto;width:32px;height:32px;border:0;border-radius:6px;background:transparent;display:flex;align-items:center;justify-content:center}
+.x:hover{background:var(--fondo)}
+.pd-mas{padding:10px 20px;font-size:13px;color:var(--gris)}
+.pd-pie{padding:18px 20px;display:flex;flex-direction:column;gap:10px;background:var(--suave);border-top:1px solid var(--linea)}
+.pd-pie div{display:flex;justify-content:space-between;align-items:baseline;gap:12px}
+.pd-pie .gr{font-family:var(--mono);font-weight:800;font-size:22px}
+.pd-pie small{font-size:12px;color:var(--gris);line-height:1.4}
+.b-ir{display:flex;align-items:center;justify-content:center;min-height:48px;padding:0 20px;border:0;border-radius:8px;background:var(--acento);color:var(--papel);font-weight:700;font-size:16px;text-decoration:none}
+.b-ir:hover{background:var(--acento-2);color:var(--papel)}
+.b-ir[disabled]{background:var(--linea-3);cursor:default}
+.barra{display:none;position:fixed;left:0;right:0;bottom:0;z-index:30;background:var(--tinta);color:var(--papel);padding:12px 16px calc(14px + env(safe-area-inset-bottom,0px));align-items:center;justify-content:space-between;gap:12px}
+.barra div{display:flex;flex-direction:column;min-width:0}
+.barra span{font-size:13px;color:var(--linea-3)}
+.barra b{font-family:var(--mono);font-size:18px}
+
+/* revisar y enviar */
+.col{flex:1 1 100%;min-width:0;display:flex;flex-direction:column;gap:24px}
+.col h1{margin:10px 0 0;font-size:clamp(28px,4.2vw,40px);line-height:1.05;font-weight:800;font-stretch:80%}
+.dos{display:flex;flex-wrap:wrap;align-items:flex-start;gap:24px}
+.tabla-caja{flex:999 1 640px;min-width:0;background:var(--papel);border:1px solid var(--linea);border-radius:12px;overflow:hidden}
+.tabla-caja>div{overflow-x:auto}
+table{width:100%;border-collapse:collapse}
+.tp{min-width:560px;font-size:15px}
+.tp th,.tp td{padding:14px 12px;vertical-align:top}
+.tp th:first-child,.tp td:first-child{padding-left:20px}
+.tp th:last-child,.tp td:last-child{padding-right:20px}
+.tp thead th,.tp .grupo th{padding-block:10px;background:var(--suave);text-align:left;font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--gris)}
+.tp .d{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums}
+.tp thead .d{font-family:var(--sans)}
+.tp tbody tr{border-top:1px solid var(--fondo)}
+.tp .prod{display:flex;gap:12px;align-items:flex-start;min-width:0}
+.tp .prod .foto,.tp .ico{width:48px;height:48px;border-radius:6px;flex:0 0 auto}
+.tp .ico{background:var(--tinta);color:var(--papel);display:flex;align-items:center;justify-content:center}
+.tp .prod div{display:flex;flex-direction:column;gap:4px;min-width:0}
+.tp .prod b{font-weight:600}
+.tp tfoot tr:first-child{border-top:2px solid var(--tinta)}
+.tp tfoot th{text-align:left;font-size:15px}
+.tp tfoot .gr{font-weight:800;font-size:20px}
+.envio{flex:1 1 340px;max-width:420px;min-width:0;background:var(--papel);border:1px solid var(--linea);border-radius:12px;padding:20px;display:flex;flex-direction:column;gap:16px}
+.campo{display:flex;flex-direction:column;gap:6px}
+.campo label{font-weight:700;font-size:15px}
+.campo p{font-size:13px;color:var(--gris);line-height:1.4}
+.campo .fila{display:flex;gap:8px}
+.campo input{flex:1 1 auto;min-width:0;height:48px;padding:0 14px;border:1px solid var(--linea-3);border-radius:8px;background:var(--papel);font-family:var(--mono);font-size:17px;letter-spacing:.08em}
+.campo textarea{min-height:72px;padding:10px 14px;border:1px solid var(--linea-3);border-radius:8px;background:var(--papel);resize:vertical}
+.campo .fila button{flex:0 0 auto;min-width:84px;height:48px;border:1px solid var(--linea-3);border-radius:8px;background:var(--suave);font-size:14px}
+.flujo{display:flex;flex-direction:column;gap:8px;padding:14px;border-radius:8px;background:var(--suave);font-size:14px;line-height:1.45;color:var(--gris-2)}
+.flujo strong{font-size:15px;color:var(--tinta)}
+.flujo .tenue{color:var(--gris)}
+.envio .b-ir{min-height:52px;font-size:17px}
+.fino{font-size:12px;color:var(--gris);text-align:center}
+.alerta{display:flex;gap:12px;align-items:flex-start;padding:14px;border:1px solid var(--linea);border-left:4px solid var(--nada);border-radius:10px;background:var(--papel)}
+.alerta svg{flex:0 0 auto;margin-top:2px}
+.alerta div{display:flex;flex-direction:column;gap:4px;min-width:0}
+.alerta span{font-size:14px;line-height:1.4;color:var(--gris-2)}
+.alerta code{font-family:var(--mono);font-size:11px;color:var(--gris)}
+
+/* resultado */
+.res{max-width:640px;background:var(--papel);border:1px solid var(--linea);border-top:6px solid var(--tono);border-radius:12px;padding:22px;display:flex;flex-direction:column;gap:16px}
+.res.ok{--tono:var(--ok);--tono-f:var(--ok-f)}
+.res.parcial{--tono:var(--parcial);--tono-f:var(--parcial-f)}
+.res.nada{--tono:var(--nada);--tono-f:var(--nada-f)}
+.res.espera{--tono:var(--espera);--tono-f:var(--espera-f)}
+.pastilla{align-self:flex-start;display:inline-flex;align-items:center;gap:8px;padding:5px 12px 5px 8px;border-radius:999px;background:var(--tono-f);color:var(--tono);font-size:13px;font-weight:700}
+.res h2{margin:0;font-size:26px;line-height:1.15;font-weight:800;font-stretch:85%}
+.res h2+p{margin-top:8px;line-height:1.45;color:var(--gris-2)}
+.folio{margin:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding:14px;background:var(--suave);border-radius:8px}
+.folio dt{font-size:12px;color:var(--gris)}
+.folio dd{margin:2px 0 0;font-family:var(--mono);font-weight:600;font-size:17px;overflow-wrap:anywhere}
+.res-t{max-height:420px;overflow:auto}
+.tr{font-size:14px}
+.tr th{padding:0 0 8px;font-size:12px;font-weight:600;color:var(--gris);text-align:left;position:sticky;top:0;background:var(--papel)}
+.tr td{padding:8px 0;border-top:1px solid var(--fondo);font-family:var(--mono);font-variant-numeric:tabular-nums}
+.tr td:first-child{font-size:13px;overflow-wrap:anywhere}
+.tr .d{text-align:right;padding-left:12px;white-space:nowrap}
+.tr .c-gris{color:var(--gris)}.tr .c-ok{font-weight:700}.tr .c-parcial{font-weight:700;color:var(--parcial)}.tr .c-nada{font-weight:700;color:var(--nada)}.tr .c-espera{font-family:var(--sans);font-size:13px;font-weight:600;color:var(--espera)}
+.res-tot{display:flex;justify-content:space-between;align-items:baseline;gap:12px;padding-top:12px;border-top:2px solid var(--tinta)}
+.res-tot b{font-family:var(--mono);font-weight:800;font-size:20px}
+.res .sig{font-size:14px;color:var(--gris-2);line-height:1.45}
+
+/* foto en grande */
+dialog.lupa{border:0;border-radius:14px;padding:0;width:min(400px,calc(100vw - 32px));max-height:calc(100vh - 32px);background:var(--papel);color:var(--tinta);overflow:auto}
+dialog.lupa::backdrop{background:var(--velo)}
+.lp-f{position:relative}
+.lp-f .foto{width:100%;aspect-ratio:1/1;max-width:100%}
+.lp-x{position:absolute;top:10px;right:10px;width:40px;height:40px;border:0;border-radius:999px;background:var(--tinta);color:var(--papel);display:flex;align-items:center;justify-content:center}
+.lp-m{display:flex;gap:6px;overflow-x:auto;padding:10px 16px 0}
+.lp-m button{flex:0 0 auto;padding:0;border:2px solid var(--linea-2);border-radius:8px;background:transparent;overflow:hidden}
+.lp-m button.sel{border-color:var(--acento)}
+.lp-m .foto{width:56px;height:56px}
+.lp-c{padding:16px;display:flex;flex-direction:column;gap:10px}
+.lp-c h3{margin:2px 0 0;font-size:18px;line-height:1.25;font-weight:700;overflow-wrap:anywhere}
+.lp-d{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
+.lp-d b{font-family:var(--mono);font-size:22px;font-weight:800}
+.lp-d span{font-size:13px;color:var(--gris)}
+.lp-c small{font-size:12px;color:var(--gris);line-height:1.4}
+
+@media (max-width:1180px){
+  .pedido{display:none}
+  .barra{display:flex}
+  .marco.cat{padding-bottom:calc(120px + env(safe-area-inset-bottom,0px))}
+}
+@media (max-width:860px){
+  .nav{display:none}
+  .fichas{display:flex}
+  .marco,.cab-in{padding-inline:16px}
+  .marco{gap:16px;padding-top:16px}
+  .lista{gap:14px}
+  .cab-in{padding-block:12px}
+  .marca-k{width:30px;height:30px;font-size:15px}
+  .marca-n b{font-size:16px}.marca-n span{display:none}
+  .cab-d{font-size:12px}
+  .busca{flex:1 1 100%}
+  .sub-todo{padding:14px}.sub-todo b{font-size:22px}.sub-todo .b-fuerte{flex:1 1 100%;min-height:46px;font-size:15px}
+  .familia{padding:14px;gap:12px}
+  .fam-foto .foto{width:72px;height:72px}
+  .fam-c{flex-basis:200px}
+  .fam-cab h3{font-size:16px}
+  .fam-precio{text-align:left}.fam-precio b{font-size:15px;display:inline}
+  .mz{display:block;min-width:0}
+  .mz-esq,.mz-col,.celda.hueco{display:none}
+  .mz-fila{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-top:10px}
+  .mz-color{grid-column:1/-1}
+  .celda{min-height:58px}.celda .talla{display:block}.celda .pz{font-size:12px;font-weight:500}.celda .est{display:none}
+  .vars{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .fam-pie .b-linea{flex:1 1 100%}
+  .rejilla{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+  .tj-c{padding:10px}.tj-c h3{font-size:14px}.tj-p{flex-direction:column;gap:2px}.tj-p b{font-size:15px}
+  .tj .b-linea{font-size:13px;padding:0 6px}
+  .lote{font-size:11px;top:6px;left:6px;padding:3px 8px}
+  .tj-f .pc{left:6px;bottom:6px;font-size:11px}
+  .envio{max-width:none}
+}
+@media (prefers-reduced-motion:no-preference){.b-linea,.celda,.vari,.nb,.ficha{transition:background-color .12s,border-color .12s,color .12s}}
+</style>
+</head>
+<body>
+<header class="cab">
+  <div class="cab-in">
+    <a class="marca" href="#catalogo" data-a="ir" data-v="catalogo">
+      <span class="marca-k" aria-hidden="true">K</span>
+      <span class="marca-n"><b>KUBERA MAYOREO</b><span>Catálogo para tiendas autorizadas</span></span>
+    </a>
+    <div class="cab-d">
+      <span id="corte"></span>
+      <ol class="pasos" id="pasos" aria-label="Pasos"></ol>
+    </div>
+  </div>
+</header>
+
+<div class="marco cat" id="v-catalogo">
+  <nav class="nav" id="nav" aria-label="Categorías"></nav>
+  <div class="fichas" id="fichas"></div>
+  <main class="lista" id="lista"><div class="vacio"><b>Cargando el catálogo…</b></div></main>
+  <aside class="pedido" id="pedido" aria-label="Tu pedido"></aside>
+</div>
+<div class="marco" id="v-pedido" hidden></div>
+<div class="marco" id="v-resultado" hidden></div>
+<div class="barra" id="barra" hidden></div>
+<dialog class="lupa" id="lupa" aria-label="Foto del producto"></dialog>
+
+<script>
+(() => {
+'use strict';
+const CFG = {modo: 'demo', flujo: 'revision', vigencia: '', max: 2000};   // lo real llega de /api/mayoreo/estado
+const LS = 'kubera-mayoreo-pedido';
+const POR_PAGINA = 48;
+const $ = (s, r = document) => r.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+const num = n => Number(n).toLocaleString('es-MX');
+const money = n => '$' + Number(n).toLocaleString('es-MX', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+const norm = s => String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+const pzs = n => num(n) + (n === 1 ? ' pieza' : ' pzs');
+const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+const fecha = iso => { const m = /^(\d{4})-(\d\d)-(\d\d)/.exec(iso || ''); return m ? `${+m[3]} ${MESES[+m[2] - 1]} ${m[1]}` : ''; };
+const COLORES = {NEG: 'Negro', BLN: 'Blanco', AZL: 'Azul', ROJ: 'Rojo', VER: 'Verde', ROS: 'Rosa', CAF: 'Café', GRI: 'Gris', AMA: 'Amarillo',
+  MOR: 'Morado', NAR: 'Naranja', BEI: 'Beige', DOR: 'Dorado', PLA: 'Plata', MUL: 'Multicolor', TRA: 'Transparente', MET: 'Metálico',
+  VIN: 'Vino', LIL: 'Lila', TUR: 'Turquesa', CRE: 'Crema', AZLCLA: 'Azul claro', AZLMAR: 'Azul marino', VERCLA: 'Verde claro'};
+const TALLAS = ['XXS', 'XS', 'S', 'M', 'L', 'XL', 'XXL', '2XL', 'XXXL', '3XL', '4XL', '5XL', '6XL'];
+const ICO = {
+  info: '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>',
+  ok: '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
+  parcial: '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor"/></svg>',
+  nada: '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/></svg>',
+  reloj: '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+  x: '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>',
+  ir: '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>',
+  sinfoto: '<svg aria-hidden="true" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/></svg>',
+  cuadros: '<svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>',
+  alerta: '<svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#9A3412" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>'
+};
+
+const D = {version: '', corte: '', fotos: null, K: [], P: [], porSku: new Map(), cats: [], items: []};
+const E = {vista: 'catalogo', cat: null, sub: null, q: '', limite: POR_PAGINA, verTodas: false,
+  sel: new Set(), subs: new Set(), llave: null, codigo: '', verCodigo: false, notas: '', enviando: false, espera: 0, error: null, res: null, lupa: null};
+const hojas = new Set();
+
+/* ── datos ─────────────────────────────────────────────────────────────── */
+function ordenTalla(a, b) {
+  const ia = TALLAS.indexOf(a), ib = TALLAS.indexOf(b);
+  if (ia >= 0 && ib >= 0) return ia - ib;
+  return a.localeCompare(b, 'es', {numeric: true});
+}
+function tituloFamilia(vars) {
+  const a = vars[0].t.split(' ');
+  let n = a.length;
+  for (const v of vars) {
+    const b = v.t.split(' ');
+    let i = 0;
+    while (i < n && i < b.length && norm(a[i]) === norm(b[i])) i++;
+    n = i;
+    if (!n) break;
+  }
+  const pal = a.slice(0, n);
+  while (pal.length && /^(de|del|para|con|sin|y|en|la|el|los|las|a|color|talla|·|-|,)$/i.test(pal[pal.length - 1])) pal.pop();
+  const t = pal.join(' ');
+  return pal.length >= 2 && t.length >= 12 ? t : vars[0].t;
+}
+function matrizDe(vars) {
+  const partes = vars.map(v => v.vari.split('-'));
+  if (!partes.every(x => x.length === 2 && x[0] && x[1])) return null;
+  const filas = [...new Set(partes.map(x => x[0]))], cols = [...new Set(partes.map(x => x[1]))].sort(ordenTalla);
+  if (cols.length < 2 || cols.length > 8 || filas.length > 12 || filas.length * cols.length > vars.length * 2) return null;
+  const mapa = new Map();
+  for (let i = 0; i < vars.length; i++) {
+    const llave = partes[i].join('|');
+    if (mapa.has(llave)) return null;
+    mapa.set(llave, vars[i]);
+  }
+  return {cols, filas: filas.map(f => ({nombre: COLORES[f] || f, celdas: cols.map(c => mapa.get(f + '|' + c) || null)}))};
+}
+function preparar(c) {
+  D.version = c.version || '';
+  D.corte = c.corte;
+  D.fotos = c.fotos;
+  D.K = c.K.map(([cat, sub], k) => ({k, cat, sub, n: 0, np: 0, pz: 0, monto: 0}));
+  D.P = c.P.map(([sku, t, k, precio, tipo, pz, foto, odoo]) => {
+    const partes = sku.split('-'), modelo = partes.slice(0, 2).join('-'), K = D.K[k];
+    K.n++;
+    if (precio != null) { K.np++; K.pz += pz; K.monto += pz * precio; }
+    return {sku, t, k, cat: K.cat, sub: K.sub, precio, tipo, pz, foto, odoo: !!odoo, modelo, vari: partes.slice(2).join('-'), q: norm(sku + ' ' + t)};
+  });
+  D.porSku = new Map(D.P.map(p => [p.sku, p]));
+  const cats = new Map();
+  for (const K of D.K) {
+    let cat = cats.get(K.cat);
+    if (!cat) cats.set(K.cat, cat = {nombre: K.cat, n: 0, subs: []});
+    cat.n += K.n;
+    cat.subs.push(K);
+  }
+  D.cats = [...cats.values()].sort((a, b) => b.n - a.n);
+  D.cats.forEach(cat => cat.subs.sort((a, b) => b.n - a.n));
+  const fam = new Map();
+  for (const p of D.P) {
+    const llave = p.modelo + '|' + p.k;
+    let it = fam.get(llave);
+    if (!it) { fam.set(llave, it = {orden: D.items.length, modelo: p.modelo, k: p.k, cat: p.cat, sub: p.sub, vars: []}); D.items.push(it); }
+    it.vars.push(p);
+  }
+  // Dentro de cada subcategoría, primero los modelos con variantes y después los productos sueltos:
+  // así las tarjetas quedan juntas en una rejilla y no una sola entre dos bloques.
+  D.items.sort((a, b) => a.k - b.k || (a.vars.length === 1) - (b.vars.length === 1) || a.orden - b.orden);
+  D.items.forEach((it, i) => { it.id = i; });
+  for (const it of D.items) {
+    if (it.vars.length === 1) { it.simple = it.vars[0]; continue; }
+    it.titulo = tituloFamilia(it.vars);
+    it.matriz = matrizDe(it.vars);
+    it.foto = (it.vars.find(v => v.foto >= 0) || {foto: -1}).foto;
+    it.q = norm(it.modelo + ' ' + it.titulo);
+    const cuenta = new Map();
+    for (const v of it.vars) if (v.precio != null) cuenta.set(v.precio, (cuenta.get(v.precio) || 0) + 1);
+    it.precio = [...cuenta.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+  }
+}
+const pedible = p => p.precio != null;
+const incluido = p => E.subs.has(p.k);
+const unidad = it => it.sub === 'Calzado' ? ['par', 'pares'] : ['pieza', 'piezas'];
+
+/* ── el pedido ─────────────────────────────────────────────────────────── */
+function resumen() {
+  const subs = [...E.subs].map(k => D.K[k]);
+  const prods = [...E.sel].map(s => D.porSku.get(s)).filter(p => p && pedible(p) && !incluido(p));
+  let pz = 0, monto = 0, spz = 0, smonto = 0, sn = 0;
+  for (const p of prods) { pz += p.pz; monto += p.pz * p.precio; }
+  for (const K of subs) { spz += K.pz; smonto += K.monto; sn += K.np; }
+  return {subs, prods, pz, monto, spz, smonto, sn, piezas: pz + spz, total: monto + smonto, productos: prods.length + sn};
+}
+function lineas() {
+  const r = resumen();
+  return D.P.filter(p => pedible(p) && incluido(p)).concat(r.prods);
+}
+function guardar() {
+  try {
+    localStorage.setItem(LS, JSON.stringify({corte: D.corte, llave: E.llave, sel: [...E.sel], subs: [...E.subs].map(k => [D.K[k].cat, D.K[k].sub])}));
+  } catch (e) { /* sin almacenamiento: el pedido vive mientras la página esté abierta */ }
+}
+function recuperar() {
+  try {
+    const g = JSON.parse(localStorage.getItem(LS) || 'null');
+    if (!g) return;
+    for (const [cat, sub] of g.subs || []) { const K = D.K.find(x => x.cat === cat && x.sub === sub); if (K) E.subs.add(K.k); }
+    for (const s of g.sel || []) { const p = D.porSku.get(s); if (p && pedible(p)) E.sel.add(s); }
+    if (g.corte === D.corte) E.llave = g.llave || null;
+  } catch (e) { /* nada que recuperar */ }
+}
+function cambio() { E.llave = null; E.error = null; guardar(); }
+function alternarSku(skus, on) {
+  for (const s of skus) {
+    const p = D.porSku.get(s);
+    if (!p || !pedible(p) || incluido(p)) continue;
+    if (on) E.sel.add(s); else E.sel.delete(s);
+  }
+  cambio();
+}
+function alternarSub(k) {
+  if (E.subs.has(k)) E.subs.delete(k);
+  else { E.subs.add(k); for (const s of [...E.sel]) if (D.porSku.get(s)?.k === k) E.sel.delete(s); }
+  cambio();
+}
+
+/* ── fotos ─────────────────────────────────────────────────────────────── */
+const urlHoja = h => `fotos/m${String(h).padStart(3, '0')}.jpg?v=${encodeURIComponent(D.version)}`;
+function foto(idx, alt) {
+  if (idx == null || idx < 0) return `<span class="foto sinfoto" role="img" aria-label="Sin foto">${ICO.sinfoto}<span>Sin foto</span></span>`;
+  const f = D.fotos, h = Math.floor(idx / f.por_hoja), n = idx % f.por_hoja, filas = f.por_hoja / f.cols;
+  const x = (n % f.cols) / (f.cols - 1) * 100, y = filas > 1 ? Math.floor(n / f.cols) / (filas - 1) * 100 : 0;
+  const lista = hojas.has(h);
+  return `<span class="foto" role="img" aria-label="${esc(alt)}" style="background-size:${f.cols * 100}% ${filas * 100}%;background-position:${x}% ${y}%;${lista ? `background-image:url(${urlHoja(h)})` : ''}"${lista ? '' : ` data-h="${h}"`}></span>`;
+}
+function poner(el) {
+  const h = +el.dataset.h;
+  hojas.add(h);
+  el.style.backgroundImage = `url(${urlHoja(h)})`;
+  el.removeAttribute('data-h');
+}
+const vigia = 'IntersectionObserver' in window
+  ? new IntersectionObserver(es => { for (const e of es) if (e.isIntersecting) { vigia.unobserve(e.target); if (e.target.dataset.h != null) poner(e.target); } }, {rootMargin: '500px'})
+  : null;
+function fotosPendientes(raiz) {
+  raiz.querySelectorAll('.foto[data-h]').forEach(el => {
+    if (hojas.has(+el.dataset.h) || !vigia) poner(el); else vigia.observe(el);
+  });
+}
+
+/* ── catálogo ──────────────────────────────────────────────────────────── */
+function visibles() {
+  const terminos = norm(E.q).split(/\s+/).filter(Boolean);
+  const pasa = q => terminos.every(t => q.includes(t));
+  return D.items.filter(it => (E.cat == null || it.cat === E.cat) && (E.sub == null || it.k === E.sub)
+    && (!terminos.length || (it.simple ? pasa(it.simple.q) : pasa(it.q) || it.vars.some(v => pasa(v.q)))));
+}
+function pintarNav() {
+  const cats = D.cats.filter((c, i) => E.verTodas || i < 12 || c.nombre === E.cat);
+  let h = `<h2 class="rotulo">Categorías</h2><button type="button" class="nb${E.cat == null ? ' sel' : ''}" data-a="cat" data-c=""><span>Todo el catálogo</span><span class="mono">${num(D.P.length)}</span></button>`;
+  for (const c of cats) {
+    const abierta = E.cat === c.nombre;
+    h += `<button type="button" class="nb${abierta ? (E.sub == null ? ' sel' : ' abierta') : ''}" aria-expanded="${abierta}" data-a="cat" data-c="${esc(c.nombre)}"><span>${esc(c.nombre)}</span><span class="mono">${num(c.n)}</span></button>`;
+    if (abierta) {
+      h += '<div class="nsubs">' + c.subs.map(K => `<button type="button" class="nb${E.sub === K.k ? ' sel' : ''}" data-a="sub" data-k="${K.k}"><span>${E.subs.has(K.k) ? ICO.ok : ''}${esc(K.sub)}</span><span class="mono">${num(K.n)}</span></button>`).join('') + '</div>';
+    }
+  }
+  if (D.cats.length > 12) h += `<button type="button" class="nmas" data-a="vercats">${E.verTodas ? 'Ver menos categorías' : `Ver las ${D.cats.length} categorías`}</button>`;
+  $('#nav').innerHTML = h;
+  let f = `<div class="fichas-f" role="group" aria-label="Categorías"><button type="button" class="ficha${E.cat == null ? ' sel' : ''}" data-a="cat" data-c="">Todo</button>`
+    + D.cats.map(c => `<button type="button" class="ficha${E.cat === c.nombre ? ' sel' : ''}" data-a="cat" data-c="${esc(c.nombre)}">${esc(c.nombre)}</button>`).join('') + '</div>';
+  const cat = D.cats.find(c => c.nombre === E.cat);
+  if (cat && cat.subs.length > 1) {
+    f += `<div class="fichas-f" role="group" aria-label="Subcategorías"><button type="button" class="ficha${E.sub == null ? ' sel' : ''}" data-a="cat" data-c="${esc(cat.nombre)}">Toda la categoría</button>`
+      + cat.subs.map(K => `<button type="button" class="ficha${E.sub === K.k ? ' sel' : ''}" data-a="sub" data-k="${K.k}">${esc(K.sub)}</button>`).join('') + '</div>';
+  }
+  $('#fichas').innerHTML = f;
+}
+function botonVariante(p, clase, dentro) {
+  const on = E.sel.has(p.sku), incl = incluido(p), nop = !pedible(p);
+  const est = nop ? 'sin precio' : incl ? 'incluida' : on ? 'en pedido' : 'llevar todas';
+  return `<button type="button" class="${clase}${nop ? ' nop' : incl ? ' incl' : on ? ' on' : ''}" aria-pressed="${on || incl}" ${nop || incl ? 'disabled' : ''} data-a="sku" data-s="${esc(p.sku)}" aria-label="${on ? 'Quitar' : 'Llevar'} ${esc(pzs(p.pz))} de ${esc(p.sku)}">${dentro(p, est)}</button>`;
+}
+function pintarFamilia(it) {
+  const pedibles = it.vars.filter(pedible), incl = E.subs.has(it.k), [u, us] = unidad(it);
+  const pz = pedibles.reduce((a, v) => a + v.pz, 0), tot = pedibles.reduce((a, v) => a + v.pz * v.precio, 0);
+  const todoOn = pedibles.length > 0 && pedibles.every(v => E.sel.has(v.sku));
+  let cuerpo;
+  if (it.matriz) {
+    const m = it.matriz;
+    cuerpo = `<p class="ayuda">Cada talla y color es un producto. Tócalo para llevar todas sus piezas.</p><div class="mz-caja"><div class="mz" style="--cols:${m.cols.length}"><span class="mz-esq">Talla</span>${m.cols.map(c => `<span class="mz-col">${esc(c)}</span>`).join('')}`
+      + m.filas.map(f => `<div class="mz-fila"><span class="mz-color">${esc(f.nombre)}</span>${f.celdas.map((p, i) => p
+        ? botonVariante(p, 'celda', (v, est) => `<span class="talla">${esc(m.cols[i])}</span><span class="pz">${pzs(v.pz)}</span><span class="est">${est}</span>${v.precio != null && v.precio !== it.precio ? `<span class="otro">${money(v.precio)} c/u</span>` : ''}`)
+        : '<span class="celda hueco" aria-hidden="true">no hay</span>').join('')}</div>`).join('') + '</div></div>';
+  } else {
+    cuerpo = `<p class="ayuda">Cada variante es un producto. Tócala para llevar todas sus piezas.</p><div class="vars">`
+      + it.vars.map(p => botonVariante(p, 'vari', (v, est) => `<span class="et">${esc(v.vari || v.sku)}</span><span class="dr"><span class="pz">${pzs(v.pz)}</span><span class="est">${v.precio != null && v.precio !== it.precio ? money(v.precio) + ' c/u' : est}</span></span>`)).join('') + '</div>';
+  }
+  const porConfirmar = it.vars.some(v => !v.odoo);
+  return `<section class="familia" aria-label="${esc(it.titulo)}">
+    <button type="button" class="ver fam-foto" data-a="lupa" data-m="${it.id}" aria-label="Ver las fotos en grande">${foto(it.foto, it.titulo)}</button>
+    <div class="fam-c">
+      <div class="fam-cab"><div><p class="sku">${esc(it.modelo)} · ${esc(it.sub)} · ${it.vars.length} productos</p><h3>${esc(it.titulo)}</h3></div>
+        <div class="fam-precio"><b>${it.precio != null ? money(it.precio) : 'Sin precio'}</b> <span>por ${u} · IVA incluido</span></div></div>
+      ${cuerpo}
+      <div class="fam-pie"><p>${pedibles.length} productos · ${num(pz)} ${us} · lote completo ${money(tot)}${porConfirmar ? ' · <span class="pc">Existencia por confirmar</span>' : ''}</p>
+        ${incl ? `<span class="incluido">Incluido en «${esc(it.sub)}» completo</span>`
+          : pedibles.length ? `<button type="button" class="b-linea${todoOn ? ' on' : ''}" aria-pressed="${todoOn}" data-a="fam" data-m="${it.id}">${todoOn ? 'Quitar' : 'Llevar'} las ${pedibles.length} variantes</button>` : ''}</div>
+    </div></section>`;
+}
+function pintarTarjeta(p) {
+  const on = E.sel.has(p.sku), incl = incluido(p) && pedible(p);
+  return `<article class="tj${incl ? ' incl' : on ? ' on' : ''}" aria-label="${esc(p.t)}">
+    <div class="tj-f"><button type="button" class="ver" data-a="lupa" data-s="${esc(p.sku)}" aria-label="Ver la foto en grande">${foto(p.foto, p.t)}</button>
+      <span class="lote">Lote de ${pzs(p.pz)}</span>${p.odoo ? '' : '<span class="pc">Existencia por confirmar</span>'}</div>
+    <div class="tj-c"><div><p class="sku">${esc(p.sku)}</p><h3>${esc(p.t)}</h3></div>
+      <div class="tj-p"><span>${pedible(p) ? money(p.precio) + ' c/u' : 'Sin precio'}</span><b>${pedible(p) ? money(p.precio * p.pz) : ''}</b></div>
+      ${!pedible(p) ? '<p class="nop-t">Precio por confirmar. Aún no se puede pedir.</p>'
+        : incl ? `<span class="incluido">Incluido en «${esc(p.sub)}» completo</span>`
+        : `<button type="button" class="b-linea${on ? ' on' : ''}" aria-pressed="${on}" data-a="sku" data-s="${esc(p.sku)}">${on ? 'En tu pedido · Quitar' : p.pz === 1 ? 'Llevar la pieza' : `Llevar las ${num(p.pz)} piezas`}</button>`}
+    </div></article>`;
+}
+function pintarLista(conservarFoco) {
+  const items = visibles(), n = items.reduce((a, it) => a + it.vars.length, 0);
+  const K = E.sub != null ? D.K[E.sub] : null, cat = D.cats.find(c => c.nombre === E.cat);
+  let h = `<div class="vista-cab"><div><p class="migas">Catálogo${E.cat ? ' / ' + esc(E.cat) : ''}${K ? ' / ' + esc(K.sub) : ''}</p>
+      <h1>${esc(K ? K.sub : E.cat || 'Todo el catálogo')}</h1><p class="conteo">${num(n)} productos · precios por pieza con IVA</p></div>
+    <div class="busca"><label for="buscar">Buscar por nombre o SKU</label><input id="buscar" type="search" value="${esc(E.q)}" placeholder="p. ej. tenis, CALZ-0172" autocomplete="off"></div></div>
+    <div class="nota">${ICO.info}<span><strong>Aquí no se venden piezas sueltas.</strong> Puedes llevarte un producto con <strong>todas sus piezas</strong> o una <strong>subcategoría completa</strong>. Si alguna pieza se vendió desde el corte, apartamos las que queden y te lo indicamos.</span></div>`;
+  if (K && !E.q) {
+    const on = E.subs.has(K.k);
+    h += `<section class="sub-todo" aria-label="Subcategoría completa"><div><span class="rotulo">Subcategoría completa</span><b>${esc(K.sub)}</b>
+      <span>${num(K.np)} productos con todas sus piezas · ${num(K.pz)} pzs · ${money(K.monto)}</span></div>
+      <button type="button" class="b-fuerte${on ? ' on' : ''}" aria-pressed="${on}" data-a="subt" data-k="${K.k}">${on ? 'En tu pedido · Quitar' : 'Llevar toda la subcategoría'}</button></section>`;
+  } else if (cat && !E.q && cat.subs.length > 1) {
+    h += `<section aria-label="Subcategorías" style="display:flex;flex-direction:column;gap:10px"><h2 class="rotulo">Llevar una subcategoría completa</h2><div class="mosaico">`
+      + cat.subs.map(S => { const on = E.subs.has(S.k); return `<div class="mos${on ? ' on' : ''}"><div class="mos-n"><b>${esc(S.sub)}</b><span class="mono">${num(S.n)} prod.</span></div>
+        <p class="mos-d mono">${num(S.pz)} pzs · ${money(S.monto)}</p>
+        <div class="mos-b"><button type="button" class="b-linea" aria-pressed="${on}" data-a="subt" data-k="${S.k}">${on ? 'En pedido · Quitar' : 'Llevar toda'}</button>
+        <button type="button" class="b-ver" data-a="sub" data-k="${S.k}" aria-label="Ver productos de ${esc(S.sub)}">${ICO.ir}</button></div></div>`; }).join('') + '</div></section>';
+  }
+  if (!items.length) {
+    h += '<div class="vacio"><b>No hay productos con ese filtro</b><p>Prueba con otra categoría o borra la búsqueda.</p></div>';
+  } else {
+    const tramo = items.slice(0, E.limite);
+    let rejilla = [];
+    const cerrar = () => { if (rejilla.length) { h += `<div class="rejilla">${rejilla.join('')}</div>`; rejilla = []; } };
+    for (const it of tramo) {
+      if (it.simple) rejilla.push(pintarTarjeta(it.simple));
+      else { cerrar(); h += pintarFamilia(it); }
+    }
+    cerrar();
+    const vistos = tramo.reduce((a, it) => a + it.vars.length, 0);
+    h += `<div class="pie-lista"><span>Mostrando ${num(vistos)} de ${num(n)} productos</span>${items.length > E.limite ? `<button type="button" class="b-hueco" data-a="mas">Cargar ${Math.min(POR_PAGINA, items.length - E.limite)} más</button>` : ''}</div>`;
+  }
+  const caja = $('#lista'), campo = $('#buscar'), enFoco = conservarFoco && document.activeElement === campo, pos = enFoco ? campo.selectionStart : 0;
+  caja.innerHTML = h;
+  fotosPendientes(caja);
+  if (enFoco) { const c = $('#buscar'); c.focus(); try { c.setSelectionRange(pos, pos); } catch (e) { /* búsqueda sin cursor */ } }
+}
+function pintarCarrito() {
+  const r = resumen(), vacio = !r.productos;
+  let h = `<div class="pd-cab"><h2>Tu pedido</h2><span>${r.subs.length ? r.subs.length + ' subcat. · ' : ''}${num(r.prods.length)} prod.</span></div><div class="pd-scroll">`;
+  if (vacio) h += '<p class="pd-vacio">Aún no agregas nada. Elige un producto completo o una subcategoría entera.</p>';
+  if (r.subs.length) {
+    h += '<h3 class="pd-t">Subcategorías completas</h3><ul class="pd-l">' + r.subs.map(K => `<li><div class="pd-r"><b>${esc(K.sub)}</b><button type="button" class="x" data-a="subt" data-k="${K.k}" aria-label="Quitar ${esc(K.sub)} del pedido">${ICO.x}</button></div>
+      <div class="pd-m"><span>${esc(K.cat)}</span></div><div class="pd-m"><span>${num(K.np)} productos · ${num(K.pz)} pzs</span></div><span class="pd-s">${money(K.monto)}</span></li>`).join('') + '</ul>';
+  }
+  if (r.prods.length) {
+    h += '<h3 class="pd-t">Productos completos</h3><ul class="pd-l">' + r.prods.slice(0, 40).map(p => `<li><div class="pd-r"><b>${esc(p.t)}</b><button type="button" class="x" data-a="sku" data-s="${esc(p.sku)}" aria-label="Quitar ${esc(p.sku)} del pedido">${ICO.x}</button></div>
+      <div class="pd-m"><span>${esc(p.sku)}</span><span>${num(p.pz)} pzs × ${money(p.precio)}</span></div><span class="pd-s">${money(p.pz * p.precio)}</span></li>`).join('') + '</ul>';
+    if (r.prods.length > 40) h += `<p class="pd-mas">y ${num(r.prods.length - 40)} productos más: los ves todos al revisar el pedido.</p>`;
+  }
+  h += `</div><div class="pd-pie"><div><span>Piezas</span><span class="mono" style="font-weight:600">${num(r.piezas)}</span></div><div><span>Total</span><span class="gr">${money(r.total)}</span></div>
+    <small>Precios con IVA. El precio y la existencia se confirman al apartar.</small>
+    <button type="button" class="b-ir" data-a="ir" data-v="pedido" ${vacio ? 'disabled' : ''}>Revisar pedido</button></div>`;
+  $('#pedido').innerHTML = h;
+  $('#barra').innerHTML = `<div><span>${vacio ? 'Tu pedido está vacío' : `${num(r.productos)} productos · ${num(r.piezas)} pzs`}</span><b>${money(r.total)}</b></div>
+    <button type="button" class="b-ir" data-a="ir" data-v="pedido" ${vacio ? 'disabled' : ''}>Revisar pedido</button>`;
+}
+
+/* ── foto en grande ────────────────────────────────────────────────────── */
+function abrirLupa(dato) {
+  E.lupa = dato;
+  pintarLupa();
+  const d = $('#lupa');
+  if (!d.open) { if (d.showModal) d.showModal(); else d.setAttribute('open', ''); }
+}
+function cerrarLupa() { E.lupa = null; const d = $('#lupa'); if (d.open) d.close(); }
+function pintarLupa() {
+  const L = E.lupa;
+  if (!L) return;
+  let h;
+  if (L.sku) {
+    const p = D.porSku.get(L.sku), on = E.sel.has(p.sku), incl = incluido(p) && pedible(p);
+    const ref = {p: 'promedio de Mercado Libre de este producto', c: 'promedio de Mercado Libre de su categoría', e: 'estimado con el mercado de su categoría'}[p.tipo];
+    h = `<div class="lp-f">${foto(p.foto, p.t)}<button type="button" class="lp-x" data-a="cerrar" aria-label="Cerrar">${ICO.x}</button></div>
+      <div class="lp-c"><div><p class="sku">${esc(p.sku)} · ${esc(p.sub)}</p><h3>${esc(p.t)}</h3></div>
+      <div class="lp-d"><b>${pedible(p) ? money(p.precio) : 'Sin precio'}</b><span>Lote de ${pzs(p.pz)}${pedible(p) ? ' · ' + money(p.precio * p.pz) : ''}</span></div>
+      ${p.odoo ? '' : '<span class="pc" style="align-self:flex-start">Existencia por confirmar</span>'}
+      ${!pedible(p) ? '<p class="nop-t">Precio por confirmar. Aún no se puede pedir.</p>' : incl ? `<span class="incluido">Incluido en «${esc(p.sub)}» completo</span>`
+        : `<button type="button" class="b-linea${on ? ' on' : ''}" aria-pressed="${on}" data-a="sku" data-s="${esc(p.sku)}">${on ? 'En tu pedido · Quitar' : p.pz === 1 ? 'Llevar la pieza' : `Llevar las ${num(p.pz)} piezas`}</button>`}
+      ${ref ? `<small>Precio de referencia con IVA: ${ref}.</small>` : ''}</div>`;
+  } else {
+    const it = D.items[L.familia], vistas = new Map();
+    for (const v of it.vars) if (v.foto >= 0) { if (!vistas.has(v.foto)) vistas.set(v.foto, []); vistas.get(v.foto).push(v.vari || v.sku); }
+    const lista = [...vistas.entries()], n = Math.min(L.n || 0, Math.max(lista.length - 1, 0)), actual = lista[n];
+    const de = actual ? (actual[1].length > 4 ? actual[1].slice(0, 4).join(', ') + ` y ${actual[1].length - 4} más` : actual[1].join(', ')) : '';
+    h = `<div class="lp-f">${foto(actual ? actual[0] : -1, it.titulo)}<button type="button" class="lp-x" data-a="cerrar" aria-label="Cerrar">${ICO.x}</button></div>
+      ${lista.length > 1 ? `<div class="lp-m" role="group" aria-label="Fotos de las variantes">${lista.slice(0, 24).map(([f], i) => `<button type="button" class="${i === n ? 'sel' : ''}" data-a="lupa-n" data-n="${i}" aria-label="Foto ${i + 1}">${foto(f, 'Foto ' + (i + 1))}</button>`).join('')}</div>` : ''}
+      <div class="lp-c"><div><p class="sku">${esc(it.modelo)} · ${esc(it.sub)} · ${it.vars.length} productos</p><h3>${esc(it.titulo)}</h3></div>
+      ${de ? `<small>Esta foto es de: ${esc(de)}.</small>` : ''}
+      <div class="lp-d"><b>${it.precio != null ? money(it.precio) : 'Sin precio'}</b><span>por pieza · IVA incluido</span></div></div>`;
+  }
+  const d = $('#lupa');
+  d.innerHTML = h;
+  fotosPendientes(d);
+}
+
+/* ── revisar y enviar ──────────────────────────────────────────────────── */
+function pintarRevisar() {
+  const r = resumen(), revision = CFG.flujo !== 'instante', ls = lineas(), demasiado = ls.length > CFG.max, pausa = CFG.modo === 'pausa';
+  let filas = '';
+  if (r.subs.length) {
+    filas += '<tr class="grupo"><th scope="colgroup" colspan="4">Subcategorías completas</th></tr>' + r.subs.map(K => `<tr><td><div class="prod"><span class="ico">${ICO.cuadros}</span><div><b>${esc(K.sub)} · subcategoría completa</b><span class="sku" style="font-family:var(--sans);font-size:13px">${esc(K.cat)} · ${num(K.np)} productos</span></div></div></td>
+      <td class="d" style="font-weight:600">${num(K.pz)}</td><td class="d" style="font-family:var(--sans);font-size:13px;color:var(--gris)">varios</td><td class="d" style="font-weight:600">${money(K.monto)}</td></tr>`).join('');
+  }
+  if (r.prods.length) {
+    filas += '<tr class="grupo"><th scope="colgroup" colspan="4">Productos completos</th></tr>' + r.prods.slice(0, 150).map(p => `<tr><td><div class="prod">${foto(p.foto, '')}<div><b>${esc(p.t)}</b><span class="sku">${esc(p.sku)}${p.odoo ? '' : ' · <span class="pc">Existencia por confirmar</span>'}</span></div></div></td>
+      <td class="d" style="font-weight:600">${num(p.pz)}</td><td class="d">${money(p.precio)}</td><td class="d" style="font-weight:600">${money(p.pz * p.precio)}</td></tr>`).join('');
+    if (r.prods.length > 150) filas += `<tr><td colspan="4" style="color:var(--gris);font-size:14px">y ${num(r.prods.length - 150)} productos más, todos con sus piezas completas.</td></tr>`;
+  }
+  const err = E.error || (demasiado ? {t: 'Pedido demasiado grande', x: `El máximo es ${num(CFG.max)} productos por pedido y este lleva ${num(ls.length)}. Divídelo en dos.`, codigo: 'limite_pedido'} : null);
+  const boton = E.enviando ? (E.espera ? 'Apartando tu pedido…' : 'Enviando…') : revision ? 'Enviar a revisión' : 'Enviar y apartar';
+  $('#v-pedido').innerHTML = `${CFG.modo === 'demo' ? '<p class="aviso-demo"><strong>Demostración.</strong> Esta página todavía no está conectada al sistema de pedidos: puedes armar el pedido y ver la respuesta, pero no se envía ni se aparta nada.</p>'
+      : pausa ? '<p class="aviso-demo"><strong>Pedidos en pausa.</strong> Por ahora los pedidos se levantan con tu ejecutivo de ventas. Puedes armar tu lista aquí y compartírsela.</p>' : ''}
+    <div class="col"><div><a href="#catalogo" data-a="ir" data-v="catalogo" style="font-size:14px">← Seguir agregando productos</a><h1>Revisa tu pedido</h1></div>
+    ${!r.productos ? '<div class="vacio"><b>Tu pedido está vacío</b><p>Vuelve al catálogo y elige un producto completo o una subcategoría entera.</p></div>' : `<div class="dos">
+      <section class="tabla-caja" aria-label="Renglones del pedido"><div><table class="tp">
+        <thead><tr><th scope="col">Producto</th><th scope="col" class="d">Piezas (todas)</th><th scope="col" class="d">Precio</th><th scope="col" class="d">Subtotal</th></tr></thead>
+        <tbody>${filas}</tbody>
+        <tfoot><tr><th scope="row">${num(r.productos)} productos</th><td class="d" style="font-weight:700">${num(r.piezas)} pzs</td><td></td><td class="d gr">${money(r.total)}</td></tr>
+        <tr><td colspan="4" style="padding-top:0;font-size:13px;color:var(--gris)">Precios con IVA. El precio y la existencia se confirman al apartar.</td></tr></tfoot>
+      </table></div></section>
+      <form class="envio" id="f-envio" aria-label="Enviar pedido" novalidate>
+        <div class="campo"><label for="codigo">Código de tienda</label>
+          <div class="fila"><input id="codigo" type="${E.verCodigo ? 'text' : 'password'}" value="${esc(E.codigo)}" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-describedby="codigo-ayuda">
+          <button type="button" data-a="vercodigo">${E.verCodigo ? 'Ocultar' : 'Mostrar'}</button></div>
+          <p id="codigo-ayuda">El que te dio tu ejecutivo de ventas. Sin un código válido no se crea el pedido.</p></div>
+        <div class="campo"><label for="notas">Notas para tu ejecutivo <span style="font-weight:400;color:var(--gris)">(opcional)</span></label>
+          <textarea id="notas" maxlength="500">${esc(E.notas)}</textarea></div>
+        <div class="flujo"><strong>${revision ? 'Tu pedido pasa a revisión' : 'Al enviar, apartamos de inmediato'}</strong>
+          <span>${revision ? 'Un ejecutivo lo revisa y lo confirma. La mercancía se aparta cuando se confirma; mientras tanto, la existencia puede cambiar.'
+            : 'Apartamos todas las piezas de cada producto y de cada subcategoría. Si alguna se vendió desde el corte, te apartamos las que queden y te lo indicamos por renglón.'}</span>
+          ${CFG.vigencia ? `<span>Tu apartado se mantiene <strong>${esc(CFG.vigencia)}</strong>. Si no se paga en ese plazo, se libera.</span>` : ''}
+          <span class="tenue">No se venden piezas sueltas: solo productos completos o subcategorías completas.</span></div>
+        ${err ? `<div class="alerta" role="alert">${ICO.alerta}<div><strong>${esc(err.t)}</strong><span>${esc(err.x)}</span>${err.codigo ? `<code>${esc(err.codigo)}</code>` : ''}</div></div>` : ''}
+        <button type="submit" class="b-ir" ${E.enviando || demasiado || pausa ? 'disabled' : ''}>${boton}</button>
+        <p class="fino">Si lo envías dos veces, no se duplica: recibes el mismo folio.</p>
+      </form></div>`}</div>`;
+  fotosPendientes($('#v-pedido'));
+}
+const ERRORES = {
+  codigo_invalido: ['Código no válido', 'Revisa que esté bien escrito. Si lo copiaste, quita espacios al inicio o al final.'],
+  codigo_revocado: ['Código desactivado', 'Este código ya no está activo. Pide uno nuevo a tu ejecutivo de ventas.'],
+  limite_peticiones: ['Demasiados intentos', 'Espera un minuto y vuelve a enviar. Tu pedido no se duplica.'],
+  limite_pedido: ['Pedido demasiado grande', 'Este pedido pasa del máximo de productos. Divídelo en dos.'],
+  catalogo_viejo: ['El catálogo cambió', 'Hay un corte de existencias más reciente. Recarga la página y revisa tu pedido antes de enviarlo.'],
+  pedido_invalido: ['No pudimos leer el pedido', 'Recarga la página y vuelve a armarlo. Si sigue pasando, avísale a tu ejecutivo de ventas.'],
+  no_disponible: ['Pedidos en pausa', 'Por ahora no estamos recibiendo pedidos por aquí. Escríbele a tu ejecutivo de ventas.'],
+  intenta_de_nuevo: ['No pudimos apartar en este momento', 'Vuelve a enviar en un minuto: tu pedido no se duplica.'],
+  red: ['No pudimos conectar', 'Revisa tu conexión y vuelve a enviar. Si tu pedido ya había llegado, recibes el mismo folio: no se duplica.']
+};
+const POR_HTTP = {401: 'codigo_invalido', 403: 'codigo_revocado', 409: 'catalogo_viejo', 413: 'limite_pedido', 429: 'limite_peticiones', 502: 'intenta_de_nuevo', 503: 'no_disponible'};
+function uuid() {
+  try { if (crypto.randomUUID) return crypto.randomUUID(); } catch (e) { /* sin crypto */ }
+  return 'k-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 12) + Math.random().toString(36).slice(2, 12);
+}
+function simular(cuerpo) {
+  const revision = CFG.flujo !== 'instante';
+  let piezas = 0, total = 0, pp = 0, pt = 0;
+  const ls = cuerpo.lineas.map(l => {
+    const p = D.porSku.get(l.sku), estado = !p.odoo ? 'por_confirmar' : revision ? 'en_revision' : 'apartado';
+    pp += l.cantidad; pt += l.cantidad * p.precio;
+    if (estado === 'apartado') { piezas += l.cantidad; total += l.cantidad * p.precio; }
+    return {sku: l.sku, pedido: l.cantidad, apartado: estado === 'apartado' ? l.cantidad : null, precio: p.precio, estado};
+  });
+  const enOdoo = ls.some(l => l.estado !== 'por_confirmar');
+  return {folio: 'DEMO-000000', demo: true, estado: !enOdoo ? 'por_confirmar' : revision ? 'en_revision' : 'apartado', ordenes: [], lineas: ls,
+    piezas, total, pedido_piezas: pp, pedido_total: pt, vence: null};
+}
+async function enviar() {
+  const ls = lineas();
+  if (!ls.length || ls.length > CFG.max || CFG.modo === 'pausa' || (E.enviando && !E.espera)) return;
+  const codigo = E.codigo.trim();
+  if (!codigo) { E.error = {t: 'Falta tu código de tienda', x: 'Escríbelo tal como te lo dio tu ejecutivo de ventas.'}; pintarRevisar(); $('#codigo')?.focus(); return; }
+  if (!E.llave) { E.llave = uuid(); guardar(); }
+  E.enviando = true; E.error = null;
+  pintarRevisar();
+  const cuerpo = {codigo_tienda: codigo, llave: E.llave, version: D.version, notas: E.notas.trim(), lineas: ls.map(p => ({sku: p.sku, cantidad: p.pz})),
+    subcategorias: [...E.subs].map(k => ({categoria: D.K[k].cat, subcategoria: D.K[k].sub}))};
+  let res;
+  try {
+    if (CFG.modo === 'demo') { await new Promise(ok => setTimeout(ok, 500)); res = simular(cuerpo); }
+    else {
+      const r = await fetch('api/mayoreo/pedidos', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(cuerpo)});
+      const j = await r.json().catch(() => null);
+      if (!r.ok) { const d = j && j.detail && typeof j.detail === 'object' ? j.detail : {}; throw {codigo: d.codigo || POR_HTTP[r.status] || 'pedido_invalido', mensaje: d.mensaje}; }
+      res = j;
+    }
+  } catch (e) {
+    const codigoErr = (e && e.codigo) || 'red', [t, x] = ERRORES[codigoErr] || ERRORES.red;
+    E.enviando = false; E.espera = 0; E.error = {t, x: (e && e.mensaje) || x, codigo: codigoErr === 'red' ? '' : codigoErr};
+    pintarRevisar();
+    return;
+  }
+  if (res.estado === 'en_proceso' && E.espera < 60) {            // pedido grande: el servidor sigue apartando; se pregunta con la misma llave
+    E.espera++;
+    setTimeout(enviar, 5000);
+    pintarRevisar();
+    return;
+  }
+  E.enviando = false; E.espera = 0; E.res = res; E.llave = null;
+  if (res.estado !== 'sin_existencia' && res.estado !== 'en_proceso') { E.sel.clear(); E.subs.clear(); }
+  guardar();
+  ir('resultado');
+}
+
+/* ── resultado ─────────────────────────────────────────────────────────── */
+const ESTADOS = {
+  apartado: ['ok', 'ok', 'Apartado', 'Tu pedido quedó apartado', 'Apartamos todas las piezas de cada producto, igual que al corte. Guarda tu folio para el pago y la entrega.'],
+  parcial: ['parcial', 'parcial', 'Apartado parcial', 'Apartamos una parte de tu pedido', 'Algunas piezas se vendieron desde el corte. Te apartamos todas las que quedaban; lo marcado en ámbar llegó incompleto y lo rojo ya no tenía piezas.'],
+  sin_existencia: ['nada', 'nada', 'Sin existencia', 'No pudimos apartar nada', 'Ninguno de los productos tenía existencia al enviar. No se creó ningún pedido ni se te cobra nada.'],
+  en_revision: ['espera', 'reloj', 'En revisión', 'Recibimos tu pedido', 'Un ejecutivo lo revisa y lo confirma. La mercancía se aparta cuando se confirma; mientras tanto, la existencia puede cambiar.'],
+  por_confirmar: ['espera', 'reloj', 'Por confirmar', 'Recibimos tu pedido', 'Estos productos se apartan a mano en bodega. Ya avisamos al equipo y tu ejecutivo te confirma las piezas.'],
+  en_proceso: ['espera', 'reloj', 'En proceso', 'Seguimos apartando tu pedido', 'Es un pedido grande y todavía no terminamos. No lo vuelvas a armar: tu ejecutivo te confirma el resultado con tu folio.']
+};
+function pintarResultado() {
+  const R = E.res;
+  if (!R) { ir('catalogo'); return; }
+  const [tono, ico, etiqueta, titulo, texto] = ESTADOS[R.estado] || ESTADOS.en_revision;
+  const manual = R.lineas.filter(l => l.estado === 'por_confirmar').length, aMano = manual && R.estado !== 'por_confirmar';
+  const celda = l => l.estado === 'en_revision' ? '<td class="d c-espera">en revisión</td>' : l.estado === 'por_confirmar' ? '<td class="d c-espera">por confirmar</td>'
+    : `<td class="d ${l.apartado === l.pedido ? 'c-ok' : l.apartado ? 'c-parcial' : 'c-nada'}">${num(l.apartado || 0)}</td>`;
+  const enEspera = R.estado === 'en_revision' || R.estado === 'por_confirmar';
+  const piezas = enEspera ? R.pedido_piezas : R.piezas, total = enEspera ? R.pedido_total : R.total;
+  const vence = R.vence ? `El apartado vence el ${esc(fecha(R.vence) || R.vence)}. ` : CFG.vigencia && !enEspera ? `Tu apartado se mantiene ${esc(CFG.vigencia)}. ` : '';
+  const sig = R.estado === 'sin_existencia' ? 'Revisa el catálogo: las existencias se actualizan con cada corte.'
+    : R.estado === 'parcial' ? vence + 'El total ya refleja solo lo apartado. Las piezas que faltaron no quedan pendientes.'
+    : enEspera ? 'Guarda tu folio. Tu ejecutivo te contacta para confirmar el apartado y el pago.' : vence + 'Tu ejecutivo te contactará para el pago.';
+  $('#v-resultado').innerHTML = `${R.demo ? '<p class="aviso-demo"><strong>Demostración.</strong> Este pedido no se envió: así se verá la respuesta cuando la página esté conectada al sistema de pedidos.</p>' : ''}
+    <div class="col"><div><p class="rotulo">Paso 3 · Resultado</p><h1>${R.estado === 'sin_existencia' ? 'Sin existencia' : enEspera ? 'Pedido recibido' : 'Resultado del apartado'}</h1></div>
+    <section class="res ${tono}" aria-label="${etiqueta}"><span class="pastilla">${ICO[ico]}${etiqueta}</span>
+      <div><h2>${titulo}</h2><p>${texto}</p></div>
+      ${R.estado === 'sin_existencia' ? '' : `<dl class="folio"><div><dt>Folio</dt><dd>${esc(R.folio)}</dd></div><div><dt>Orden</dt><dd>${R.ordenes && R.ordenes.length ? esc(R.ordenes.join(' + ')) : 'por asignar'}</dd></div></dl>`}
+      <div class="res-t"><table class="tr"><thead><tr><th scope="col">SKU</th><th scope="col" class="d">Al corte</th><th scope="col" class="d">Apartado</th></tr></thead>
+        <tbody>${R.lineas.slice(0, 400).map(l => `<tr><td>${esc(l.sku)}</td><td class="d c-gris">${num(l.pedido)}</td>${celda(l)}</tr>`).join('')}
+        ${R.lineas.length > 400 ? `<tr><td colspan="3" class="c-gris">y ${num(R.lineas.length - 400)} renglones más</td></tr>` : ''}</tbody></table></div>
+      <div class="res-tot"><span>${num(piezas || 0)} piezas ${enEspera ? 'pedidas' : 'apartadas'}</span><b>${money(total || 0)}</b></div>
+      ${aMano ? `<p class="sig"><span class="pc">Por confirmar</span> ${num(manual)} ${manual === 1 ? 'producto se aparta' : 'productos se apartan'} a mano en bodega: tu ejecutivo te confirma esas piezas.</p>` : ''}
+      <p class="sig">${sig}</p>
+      <a class="b-hueco" href="#catalogo" data-a="ir" data-v="catalogo">Volver al catálogo</a></section></div>`;
+}
+
+/* ── navegación y eventos ──────────────────────────────────────────────── */
+function pintarPasos() {
+  const tres = CFG.flujo !== 'instante' ? 'En revisión' : 'Apartado', n = {catalogo: 0, pedido: 1, resultado: 2}[E.vista];
+  $('#pasos').innerHTML = ['1 · Catálogo', '2 · Revisar y enviar', '3 · ' + tres].map((t, i) => `<li${i === n ? ' aria-current="step"' : ''}>${t}</li>`).join('');
+}
+function pintar() {
+  $('#v-catalogo').hidden = E.vista !== 'catalogo';
+  $('#v-pedido').hidden = E.vista !== 'pedido';
+  $('#v-resultado').hidden = E.vista !== 'resultado';
+  $('#barra').hidden = E.vista !== 'catalogo';
+  pintarPasos();
+  if (E.vista === 'catalogo') { pintarNav(); pintarLista(); pintarCarrito(); }
+  else if (E.vista === 'pedido') pintarRevisar();
+  else pintarResultado();
+}
+function ir(vista) {
+  E.vista = vista;
+  if (vista !== 'pedido') E.error = null;
+  try { if (location.hash.slice(1) !== vista) history.pushState(null, '', '#' + vista); } catch (e) { /* sin historial */ }
+  pintar();
+  window.scrollTo(0, 0);
+}
+function refrescar() {
+  if (E.vista === 'catalogo') { pintarNav(); pintarLista(); pintarCarrito(); } else pintar();
+  if (E.lupa) pintarLupa();
+}
+document.addEventListener('click', ev => {
+  if (ev.target.id === 'lupa') { cerrarLupa(); return; }                      // clic fuera de la foto
+  const b = ev.target.closest('[data-a]');
+  if (!b) return;
+  const a = b.dataset.a;
+  if (b.tagName === 'A') ev.preventDefault();
+  if (a === 'cat') { E.cat = b.dataset.c || null; E.sub = null; E.limite = POR_PAGINA; refrescar(); if (!b.closest('.fichas')) window.scrollTo(0, 0); }
+  else if (a === 'sub') { const K = D.K[+b.dataset.k]; E.cat = K.cat; E.sub = K.k; E.limite = POR_PAGINA; refrescar(); if (!b.closest('.fichas')) window.scrollTo(0, 0); }
+  else if (a === 'vercats') { E.verTodas = !E.verTodas; pintarNav(); }
+  else if (a === 'mas') { E.limite += POR_PAGINA; pintarLista(); }
+  else if (a === 'sku') { alternarSku([b.dataset.s], !E.sel.has(b.dataset.s)); refrescar(); }
+  else if (a === 'fam') { const v = D.items[+b.dataset.m].vars.filter(pedible).map(p => p.sku); alternarSku(v, !v.every(s => E.sel.has(s))); refrescar(); }
+  else if (a === 'subt') { alternarSub(+b.dataset.k); refrescar(); }
+  else if (a === 'lupa') abrirLupa(b.dataset.s ? {sku: b.dataset.s} : {familia: +b.dataset.m, n: 0});
+  else if (a === 'lupa-n') { E.lupa.n = +b.dataset.n; pintarLupa(); }
+  else if (a === 'cerrar') cerrarLupa();
+  else if (a === 'ir') { if (!b.disabled) ir(b.dataset.v); }
+  else if (a === 'vercodigo') { E.verCodigo = !E.verCodigo; pintarRevisar(); $('#codigo')?.focus(); }
+});
+let espera = 0;
+document.addEventListener('input', ev => {
+  if (ev.target.id === 'buscar') { E.q = ev.target.value; E.limite = POR_PAGINA; clearTimeout(espera); espera = setTimeout(() => pintarLista(true), 180); }
+  else if (ev.target.id === 'codigo') E.codigo = ev.target.value;
+  else if (ev.target.id === 'notas') E.notas = ev.target.value;
+});
+document.addEventListener('submit', ev => { if (ev.target.id === 'f-envio') { ev.preventDefault(); enviar(); } });
+$('#lupa').addEventListener('close', () => { E.lupa = null; });
+window.addEventListener('hashchange', () => {
+  const v = location.hash.slice(1);
+  if (['catalogo', 'pedido', 'resultado'].includes(v) && v !== E.vista) { E.vista = v === 'resultado' && !E.res ? 'catalogo' : v; pintar(); }
+});
+
+const leer = (url, defecto) => fetch(url, {cache: 'no-cache'}).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }).catch(e => { if (defecto === undefined) throw e; return defecto; });
+Promise.all([leer('catalogo.json'), leer('api/mayoreo/estado', null)]).then(([c, est]) => {
+  if (est) { CFG.modo = est.pedidos || 'pausa'; CFG.flujo = est.flujo || 'revision'; CFG.vigencia = est.vigencia || ''; CFG.max = est.max_lineas || 2000; }
+  preparar(c);
+  recuperar();
+  $('#corte').innerHTML = `Existencias al <strong>${fecha(D.corte)}</strong>`;
+  if (location.hash === '#pedido') E.vista = 'pedido';
+  pintar();
+}).catch(() => {
+  $('#lista').innerHTML = '<div class="vacio"><b>No pudimos cargar el catálogo</b><p>Revisa tu conexión y recarga la página.</p></div>';
+});
+})();
+</script>
+</body>
+</html>
