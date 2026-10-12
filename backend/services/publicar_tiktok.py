@@ -323,11 +323,15 @@ async def confirmar(req: dict[str, Any]) -> dict[str, Any]:
     item_id = str(req.get("item_id") or "").strip() or _listing_id(sku)
     # Crear y actualizar son endpoints distintos: crear con un producto que ya
     # existe genera un DUPLICADO, que en TikTok hay que borrar a mano.
+    # Y el VERBO tambien cambia: crear es POST, editar es PUT. Con POST sobre
+    # la ruta con `{id}`, TikTok responde `36009010 Invalid method` y la edicion
+    # se pierde entera: el producto se queda con los datos del dia que nacio.
     ruta = (f"/product/202309/products/{item_id}" if item_id
             else "/product/202309/products")
+    metodo = "PUT" if item_id else "POST"
     operacion = "update_product" if item_id else "create_product"
     try:
-        data = await tk.llamar(ruta, token, {"shop_cipher": cipher}, payload, "POST")
+        data = await tk.llamar(ruta, token, {"shop_cipher": cipher}, payload, metodo)
     except Exception as exc:  # noqa: BLE001
         _registrar(sku, False, error=str(exc), status="api_failed", operacion=operacion)
         return {"ok": False, "canal": CANAL, "sku": sku, "motivo": str(exc)[:400],

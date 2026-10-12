@@ -403,9 +403,22 @@ async def llamar(ruta: str, token: str, params: dict[str, Any] | None = None,
     body = json.dumps(cuerpo, separators=(",", ":")) if cuerpo else ""
     p["sign"] = _firmar(ruta, p, body)
     cab = {"x-tts-access-token": token, "Content-Type": "application/json"}
+    # ⚠️ EL VERBO CAMBIA POR ENDPOINT Y NO SE PUEDE LEER DE LA DOC: los volcados
+    # dicen `METHOD: 1` en todos. Medido contra la API:
+    #     POST  crear producto · inventory/update · prices/update · search
+    #     PUT   EDITAR producto (/products/{id}) · /event/202309/webhooks
+    # Mandar POST donde va PUT responde `36009010 Invalid method`. Hasta
+    # v0.638.0 este cliente mandaba POST para todo lo que no fuera GET, así que
+    # NINGUNA actualización de producto funcionó jamás: 40 intentos, 14 SKUs,
+    # 100% fallidos entre el 5-sep y el 11-oct.
+    metodo = (metodo or "GET").upper()
     async with httpx.AsyncClient(base_url=API_BASE, timeout=60) as cli:
-        r = (await cli.get(ruta, params=p, headers=cab) if metodo == "GET"
-             else await cli.post(ruta, params=p, headers=cab, content=body))
+        if metodo == "GET":
+            r = await cli.get(ruta, params=p, headers=cab)
+        elif metodo == "PUT":
+            r = await cli.put(ruta, params=p, headers=cab, content=body)
+        else:
+            r = await cli.post(ruta, params=p, headers=cab, content=body)
     try:
         j = r.json()
     except Exception:  # noqa: BLE001

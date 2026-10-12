@@ -1001,6 +1001,42 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.638.0 — TikTok: editar un producto va con PUT, y por eso NINGUNA actualización había funcionado
+
+**El síntoma.** Cada «Actualizar en TikTok Shop» del panel moría con
+`36009010 Invalid method`. Medido en `ops.channel_submissions`: **40 intentos,
+14 SKUs, 100 % fallidos**, del 5-sep al 11-oct. Las creaciones en cambio iban
+bien (1,302 publicadas), así que el canal parecía sano.
+
+**La causa, en dos capas.**
+
+1. `publicar_tiktok.confirmar` ya elegía bien la RUTA (`/products/{id}` para
+   editar, `/products` para crear) pero mandaba **`POST` en los dos casos**.
+2. Debajo, `tiktok.llamar` sólo sabía dos verbos: `GET` si se lo pedían y
+   `POST` para todo lo demás. Aunque el publicador hubiera dicho `"PUT"`,
+   habría salido POST igual. **Las dos capas había que arreglarlas.**
+
+⚠️ **El verbo cambia por endpoint y NO se puede leer de la documentación**: los
+volcados de la API dicen `METHOD: 1` en todos. Hay que medirlo contra TikTok:
+
+| endpoint | verbo |
+|---|---|
+| crear producto · `inventory/update` · `prices/update` · `search` | POST |
+| **editar producto** (`/products/{id}`) | **PUT** |
+| `/event/202309/webhooks` | PUT |
+
+**Qué cambia para quien usa el panel.** Editar título, imágenes, atributos,
+categoría o **precio** de un producto ya publicado por fin llega a TikTok. Hasta
+hoy esos 14 SKUs conservaban los datos del día que nacieron. El **stock no se
+vio afectado**: el fan-out lo sincroniza por `inventory/update`, que sí usaba
+POST y es el verbo correcto.
+
+**Los 14 SKUs que conviene reeditar** para que sus cambios suban: `ORG-0244-BLN`,
+`MUN-0023-MUL`, `VAR-0436-NEG-6C`, `MUE-0374-ROS`, `JUGU-0093-MUL`,
+`ACC-0161-NEG`, `JUGU-0243-VAQUERO`, `ACC-0566-NEG-CUA`, `ROP-0215-NEG-140CM`,
+`ROP-0215-NEG-80CM`, `MUE-0128-PLA`, `ROP-0215`, `ACC-0696-ROJ-NEG-140CM`,
+`ILUM-0010-PLA`.
+
 ### v0.637.0 — Órdenes de venta: una orden CONFIRMADA ya se puede editar, y la cancela cualquiera que escribe (migración 0071)
 
 Brandon, 9-oct: *"puedes agregar el que cualquiera puede editar una orden ya confirmada, en caso de que se requiera
