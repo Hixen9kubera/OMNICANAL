@@ -31,7 +31,7 @@ ETAPAS = ("odoo", "costos", "woo", "amazon", "walmart", "ml", "tiktok", "temu", 
 # que el sistema dice que queda). Son etapas largas: se piden por nombre, no entran
 # en `todo`, y cada una guarda su avance para poder reanudarse.
 ETAPAS_PL = ("pl_bajar", "pl_leer", "movimientos", "inventario", "empate_ia", "titulos", "categorias_ml",
-             "mercado_ml", "mercado_amazon", "fotos_grandes", "pagina_pl", "excel_pl")
+             "mercado_ml", "mercado_amazon", "fotos_grandes", "pagina_pl", "excel_pl", "mayoreo")
 
 
 def _correr_pl(nombre: str, cfg: Cfg, salida: Path, args: argparse.Namespace) -> dict:
@@ -63,6 +63,9 @@ def _correr_pl(nombre: str, cfg: Cfg, salida: Path, args: argparse.Namespace) ->
     if nombre == "excel_pl":
         import excel_pl
         return excel_pl.construir(salida)
+    if nombre == "mayoreo":
+        import catalogo_mayoreo
+        return catalogo_mayoreo.construir(cfg, salida, releer_odoo=not args.mayoreo_sin_odoo)
     if nombre == "fotos_grandes":
         import fotos_grandes
         return fotos_grandes.construir(cfg, salida)
@@ -123,6 +126,8 @@ def main() -> int:
     ap.add_argument("--limite", type=int, default=0,
                     help="títulos / precios de mercado: cuántos hacer en esta corrida (0 = todos)")
     ap.add_argument("--sin-fotos", action="store_true", help="Odoo sin image_128")
+    ap.add_argument("--mayoreo-sin-odoo", action="store_true",
+                    help="catálogo de mayoreo: no volver a leer Odoo, usar datos/odoo_mayoreo.json")
     ap.add_argument("--sin-economia", action="store_true",
                     help="ML sin precio cobrado / comisión / envío (3 GET por publicación activa)")
     args = ap.parse_args()

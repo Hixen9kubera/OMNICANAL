@@ -158,6 +158,16 @@ los datos (cada fila en su categoría, y los totales de cada grupo): si no cuadr
 en Odoo usa la de su renglón del packing list (en la página y en el Excel). Si el archivo está abierto en Excel, no se
 puede sobrescribir: hay que cerrarlo antes.
 
+`mayoreo` arma los DATOS del catálogo para tiendas de mayoreo en `<salida>/mayoreo/`: `catalogo.json` (SKU, título,
+categoría, precio, piezas y foto; nada de costos, proveedor ni contenedor) y `fotos/mNNN.jpg` (hojas de 32, sin fotos
+repetidas y en el orden del catálogo). Título, categoría, precio (la media de Mercado Libre) y foto salen de
+`datos_pl.json`; las piezas, de una lectura NUEVA de Odoo que se guarda aparte (`datos/odoo_mayoreo.json`, no toca la
+del inventario; `--mayoreo-sin-odoo` reusa la última). Entra lo que Odoo tiene libre en TEXCO y TEXCO II (DROP OFF no
+surte órdenes) y lo que NO existe en Odoo pero según los packing lists todavía queda, marcado para apartarse a mano;
+lo que existe en Odoo con cero libre queda fuera. Esta etapa solo deja archivos: quien los sirve es el módulo
+`catalogo_mayoreo/` de la rama `catalogo-mayoreo` (servicio propio en Railway), y subirlos es un paso aparte de ese
+módulo (`publicar.py`), no de aquí.
+
 Hay también una etapa que no estaba en la tabla: `empate_ia` (DeepSeek empareja, dentro de
 un contenedor sin validar, los renglones sueltos con los SKUs sueltos; solo cuenta lo que
 marca con confianza alta).
