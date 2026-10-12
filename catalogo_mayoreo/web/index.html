@@ -112,7 +112,7 @@ p{margin:0}
 .ver{display:block;padding:0;border:0;background:transparent;cursor:zoom-in;border-radius:8px}
 
 .familia{background:var(--papel);border:1px solid var(--linea);border-radius:12px;padding:20px;display:flex;flex-wrap:wrap;gap:20px}
-.fam-foto{flex:0 0 auto}
+.fam-foto{flex:0 0 auto;align-self:flex-start}
 .fam-foto .foto{width:168px;height:168px;border-radius:8px}
 .fam-c{flex:999 1 420px;min-width:0;display:flex;flex-direction:column;gap:14px}
 .fam-cab{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px 24px}
@@ -401,18 +401,20 @@ function tituloFamilia(vars) {
   const t = pal.join(' ');
   return pal.length >= 2 && t.length >= 12 ? t : vars[0].t;
 }
+const esTalla = c => /^\d/.test(c) || TALLAS.includes(c) || /^(CH|MD|GD|XG|UNI|UT)$/.test(c);
 function matrizDe(vars) {
-  const partes = vars.map(v => v.vari.split('-'));
-  if (!partes.every(x => x.length === 2 && x[0] && x[1])) return null;
+  // Una variante «COLOR-…-TALLA» se acomoda en rejilla: el último tramo es la talla y lo demás, el color.
+  const partes = vars.map(v => { const a = v.vari.split('-'); return [a.slice(0, -1).join('-'), a[a.length - 1]]; });
+  if (!partes.every(x => x[0] && x[1])) return null;
   const filas = [...new Set(partes.map(x => x[0]))], cols = [...new Set(partes.map(x => x[1]))].sort(ordenTalla);
-  if (cols.length < 2 || cols.length > 8 || filas.length > 12 || filas.length * cols.length > vars.length * 2) return null;
+  if (cols.length < 2 || cols.length > 8 || filas.length > 12 || !cols.every(esTalla) || filas.length * cols.length > vars.length * 2) return null;
   const mapa = new Map();
   for (let i = 0; i < vars.length; i++) {
     const llave = partes[i].join('|');
     if (mapa.has(llave)) return null;
     mapa.set(llave, vars[i]);
   }
-  return {cols, filas: filas.map(f => ({nombre: COLORES[f] || f, celdas: cols.map(c => mapa.get(f + '|' + c) || null)}))};
+  return {cols, filas: filas.map(f => ({nombre: f.split('-').map(x => COLORES[x] || x).join(' / '), celdas: cols.map(c => mapa.get(f + '|' + c) || null)}))};
 }
 function preparar(c) {
   D.version = c.version || '';
