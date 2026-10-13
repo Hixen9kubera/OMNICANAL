@@ -173,6 +173,9 @@ REGLAS: tuple[tuple[str, str, str], ...] = (
     # criterio que /api/fulfillment. Es la pestaña entera y el cajón de detalle
     # del producto; caía a admin por omisión, o sea rota para los nueve KAM.
     ("GET", "/api/publicaciones", "operador"),
+    # Publicador · sacar publicaciones de la venta en lote (Temu/TikTok). La ruta
+    # trae además su propio candado (`solo_admin`); aquí queda dicho.
+    ("POST", "/api/publicaciones/lote", "admin"),
     # El detalle de las alertas de costo. `operador` y no `lectura` por el mismo
     # criterio de arriba: devuelven precio, costo y margen. Y `operador` y no
     # `admin` porque **el KAM es quien las atiende** — un margen negativo que

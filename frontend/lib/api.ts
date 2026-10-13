@@ -2478,3 +2478,74 @@ export function devolucionesSku(sku: string, dias: number, signal?: AbortSignal)
     signal,
   );
 }
+
+// ── Publicador · desactivar publicaciones en lote (13-oct-2026) ──────────────
+// `services/publicaciones_lote.py`. Sólo Temu y TikTok; el POST es sólo para admin.
+
+export interface PublicacionLote {
+  sku: string;
+  listing_id: string;
+  titulo: string | null;
+  cuenta: string | null;
+  url: string | null;
+  /** El estado CRUDO del canal (2/8, ACTIVATE…). */
+  estado: string;
+  grupo: "a_la_venta" | "publicada" | "en_revision" | "apagada" | "apagada_canal"
+    | "sin_publicar" | "borrada" | "desconocido";
+  /** El estado en palabras. */
+  etiqueta: string;
+  /** ¿Se le puede pedir al canal que la saque de la venta? */
+  desactivable: boolean;
+  stock_canal: number | null;
+  stock_woo: number | null;
+  precio: number | null;
+  visto: string | null;
+  /** Quién la tiene apagada, si se sabe: el seguro de stock 0 o esta pantalla. */
+  apagada_por: { quien: "panel" | "seguro"; cuando: string | null; actor: string | null; antes: string | null } | null;
+}
+
+export interface ListaLote {
+  canal: string;
+  nombre: string;
+  total: number;
+  desactivables: number;
+  /** Cuándo vio el censo estas publicaciones (hora de México). */
+  censo: string | null;
+  resumen: Record<string, number>;
+  tope_por_llamada: number;
+  items: PublicacionLote[];
+  canales: { id: string; nombre: string }[];
+}
+
+export type ResultadoLote = "apagada" | "ya_apagada" | "no_aplica" | "sin_publicacion" | "sin_confirmar" | "error";
+
+export interface FilaResultadoLote {
+  sku: string;
+  listing_id: string | null;
+  antes: string | null;
+  despues: string | null;
+  resultado: ResultadoLote;
+  detalle: string | null;
+  seguro_soltado?: boolean;
+}
+
+export interface RespuestaLote {
+  canal: string;
+  nombre: string;
+  lote: string;
+  pedidos: number;
+  resumen: Partial<Record<ResultadoLote, number>>;
+  resultados: FilaResultadoLote[];
+  segundos: number;
+}
+
+/** Las publicaciones de un canal como las vio el último censo. Sólo lee. */
+export function listarPublicacionesLote(canal: string, signal?: AbortSignal): Promise<ListaLote> {
+  return getJSON<ListaLote>(`/api/publicaciones/lote?canal=${encodeURIComponent(canal)}`, signal);
+}
+
+/** Saca de la venta las publicaciones de esos SKUs (a lo mucho 10 por llamada).
+ *  INACTIVA, no borra. Sólo admin: sin permiso el backend contesta 403. */
+export function desactivarPublicacionesLote(canal: string, skus: string[]): Promise<RespuestaLote> {
+  return postJSON<RespuestaLote>("/api/publicaciones/lote/desactivar", { canal, skus });
+}

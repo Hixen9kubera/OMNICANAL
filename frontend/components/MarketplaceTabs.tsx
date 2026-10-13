@@ -7,6 +7,10 @@ interface Props {
   canales: CanalInfo[];
   activo: string;
   onSelect: (canal: string) => void;
+  /** Qué decir en una pestaña deshabilitada. En Omnicanal es un canal al que le
+   *  faltan credenciales (el texto por omisión); el Publicador las reusa para
+   *  «desactivar por lote», donde el porqué es otro. */
+  motivoDeshabilitado?: string;
 }
 
 function formatoTotal(n: number | null): string {
@@ -23,7 +27,7 @@ const GENERAL = "general";
 const AYUDA_GENERAL =
   "Publicados, pendientes y listos. Los borradores de Crear Productos no cuentan aquí.";
 
-export default function MarketplaceTabs({ canales, activo, onSelect }: Props) {
+export default function MarketplaceTabs({ canales, activo, onSelect, motivoDeshabilitado }: Props) {
   return (
     <div className="flex flex-wrap items-center gap-2">
       {canales.map((c) => {
@@ -50,7 +54,7 @@ export default function MarketplaceTabs({ canales, activo, onSelect }: Props) {
             type="button"
             disabled={deshabilitado}
             onClick={() => !deshabilitado && onSelect(c.id)}
-            title={deshabilitado ? "Próximamente — pendiente de credenciales" : c.descripcion}
+            title={deshabilitado ? (motivoDeshabilitado ?? "Próximamente — pendiente de credenciales") : c.descripcion}
             style={style}
             className={[
               "relative flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-semibold transition-all",

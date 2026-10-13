@@ -1001,6 +1001,76 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.640.0 — Publicador · «Desactivar por canal»: escoger un canal, seleccionar un lote o TODAS sus publicaciones y sacarlas de la venta (Temu y TikTok)
+
+**Qué pidió Brandon (13-oct-2026).** «Tenemos problemas de stock directamente con almacén, por lo
+que el stock actual puede que no sea el correcto … necesito por el momento apagar todo Temu», y que
+el Publicador tenga una función para ver los SKUs publicados de un canal, seleccionar un lote o
+TODOS y desactivarlos. Hasta hoy eso se hacía publicación por publicación en el Seller Center.
+
+**Qué hay ahora.** En el Publicador, el botón **Desactivar por canal** abre un panel con las mismas
+pestañas de canal de Omnicanal (`MarketplaceTabs`). Al escoger Temu o TikTok aparecen sus
+publicaciones con su estado en palabras, lo que ofrece el canal y el stock de Woo; se filtran
+(Publicadas · A la venta · Apagadas · Sin publicar · Todas), se buscan, y se marcan una por una o
+con **Seleccionar las N de esta lista** (todas las del filtro, no sólo la página que se ve).
+**Desactivar N** pide confirmación, avanza por tandas de 5 con su barra y deja el resultado de cada
+publicación en su renglón.
+
+**Inactiva, no borra.** Usa las dos llamadas que el seguro de stock 0 probó en vivo el 9-oct
+(`fanout_seguro._apagar`): `bg.local.goods.sale.status.set {goodsId, onsale: 0}` en Temu y
+`/product/202309/products/deactivate` en TikTok. La publicación queda en el canal, apagada (`3/2`,
+`SELLER_DEACTIVATED`), igual que si se apagara a mano.
+
+**Cómo decide, publicación por publicación** (`services/publicaciones_lote.py`):
+
+1. La lee **en vivo**. La lista del panel es la del último censo (pasa cada hora y lo dice); la que
+   en vivo ya está apagada no se llama, y la que no se puede leer, tampoco.
+2. Le pide al canal que la apague. Un rechazo se anota y no detiene a las demás.
+3. Espera **una vez por tanda** y la relee. «Apagada» sólo si el canal ya la enseña fuera de la
+   venta; si todavía no, «sin confirmar», y no se da por hecho.
+4. Deja el estado nuevo en `channel.listings` firmado `panel_lote` y lo anota en `ops.process_log`
+   (proceso `publicaciones_lote`) con quién lo pidió y en qué estado estaba.
+
+| Resultado | Qué significa |
+|---|---|
+| Apagada | se le pidió, se releyó y quedó fuera de la venta |
+| Ya estaba apagada | en vivo ya lo estaba: no se llamó al canal |
+| No aplica | borrador, incompleta, en revisión o borrada: no hay nada que apagar |
+| Sin confirmar | el canal aceptó y todavía no enseña el cambio: volver a consultar |
+| Error | no se pudo leer, o el canal rechazó la llamada (dice cuál) |
+
+**Qué se puede desactivar.** En Temu: a la venta (`2/8`) y los tres estados desde los que la
+publicación vuelve SOLA a la venta — agotada (`3/1`), `3/3` y `2/4`. Dejarlos fuera de un «apagar
+todo» sería dejar la puerta abierta. En TikTok: `ACTIVATE` (`deactivate` no aplica a las demás).
+
+**Lo que se apaga aquí se queda apagado.** Es la decisión de una persona:
+
+- no lleva la marca del seguro de stock 0, así que el seguro no la regresa sola;
+- si el seguro YA la tenía apagada, se le **suelta la marca**: si no, al volver el stock —el mismo
+  del que hoy se desconfía— la regresaría a la venta;
+- la firma `panel_lote` en `channel.listing_history` es además lo que el seguro mira para saber
+  que alguien pausó el canal en bloque (`apagado_en_bloque`).
+
+**Lo que NO hace, a propósito.**
+
+- **No reactiva.** Volver a prender es otra decisión. Lo que se apagó desde aquí queda en
+  `ops.process_log` con el estado que tenía antes, que es lo que hará falta para regresarlo, y la
+  lista lo marca «apagada desde el panel».
+- **No es una «pausa del canal»**: no impide que alguien publique o prenda algo después.
+- **Sólo Temu y TikTok.** Mercado Libre ya está pausado entero y su PUT está bloqueado; Amazon y
+  Walmart no tienen un «apagar» equivalente. Sus pestañas salen deshabilitadas y lo dicen.
+
+**Quién puede.** Ver la lista, cualquiera con acceso a Omnicanal (`GET /api/publicaciones/lote`).
+Desactivar, **sólo administradores con sesión** (`POST /api/publicaciones/lote/desactivar`, el
+mismo candado de las investigaciones), a lo mucho 10 SKUs por llamada.
+
+**Pruebas.** `tests/test_publicaciones_lote.py`: 48, con el canal, la base y el reloj suplantados —
+qué se llama y en qué orden, que nunca prende ni borra, que se decide con el estado vivo, la espera
+única por tanda, la marca del seguro, los límites y el candado de administrador. Además se corrió la
+pantalla completa en local contra un canal de mentira (rutas reales, 32 publicaciones: 29 apagadas,
+1 ya apagada, 1 sin confirmar, 1 rechazo). `tsc` y `next build` limpios; los 66 módulos del backend
+en verde (`test_regla_11_productos` falla desde antes y por otra cosa).
+
 ### v0.639.0 — Fan-out · cola rápida: la espera de Temu ya no detiene el reparto, primero las bajadas a la venta y la matriz distingue «en cola» de «cambio perdido» (`FANOUT_PRIORIDAD`, `FANOUT_TEMU_VERIFICAR_DIFERIDO` y `FANOUT_WORKERS` nacen APAGADAS)
 
 **El síntoma (12-oct-2026, medido en producción en solo lectura).** A las 13:10 se creó en Odoo la venta S41906

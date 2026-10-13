@@ -1,13 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Search, RotateCw, ImageIcon, Wand2, ChevronRight, Pencil, Layers, Loader2, Warehouse, Split } from "lucide-react";
+import { Search, RotateCw, ImageIcon, Wand2, ChevronRight, Pencil, Layers, Loader2, Warehouse, Split, PowerOff } from "lucide-react";
 
 import AppNavbar from "@/components/AppNavbar";
 import Pagination from "@/components/Pagination";
 import ChannelDots from "@/components/ChannelDots";
 import ProductStudio from "@/components/ProductStudio";
 import CostoEditor from "@/components/CostoEditor";
+import DesactivarPorCanal from "@/components/DesactivarPorCanal";
 import FiltroCategoria from "@/components/FiltroCategoria";
 import { ChipModo, esPadre, TipoBadge, VariantesBoton, VariantesTabla } from "@/components/Variantes";
 import { TituloMoneda } from "@/components/Moneda";
@@ -95,6 +96,9 @@ export default function ProductosPage() {
   // { sku_padre: {canal: modo} } — sólo las familias con modo GUARDADO.
   const [modos, setModos] = useState<Record<string, Record<string, ModoPublicacion>>>({});
   const [editCosto, setEditCosto] = useState<string | null>(null);
+  // «Publicaciones por canal»: escoger un canal, seleccionar un lote o todas y
+  // sacarlas de la venta (13-oct-2026). Vive encima de la página, como el Estudio.
+  const [lotePorCanal, setLotePorCanal] = useState(false);
   // Padres con su lista de variantes desplegada (misma mecánica que Crear Productos)
   const [expandidos, setExpandidos] = useState<Set<string>>(new Set());
 
@@ -254,6 +258,19 @@ export default function ProductosPage() {
 
         {/* Buscador */}
         <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
+          {/* PUBLICACIONES POR CANAL — escoger un canal (las pestañas de
+              Omnicanal), seleccionar un lote o todas y sacarlas de la venta. Va a
+              la izquierda y en rojo: no es un filtro de esta lista, es una acción
+              sobre lo que ya está publicado. */}
+          <button
+            type="button"
+            onClick={() => setLotePorCanal(true)}
+            title="Ver los SKUs publicados de un canal, seleccionar un lote o todos y desactivarlos (se inactivan, no se borran)"
+            className="mr-auto inline-flex items-center gap-1.5 rounded-lg border border-rose-200 bg-white px-3 py-2 text-sm font-semibold text-rose-700 transition-colors hover:bg-rose-50"
+          >
+            <PowerOff size={15} className="shrink-0" />
+            Desactivar por canal
+          </button>
           {/* Mismo control que Crear Productos. */}
           <div
             role="group"
@@ -555,6 +572,10 @@ export default function ProductosPage() {
         onClose={() => { setSel(null); setVarianteSel(null); }}
         onGuardado={cargar}
       />
+
+      {lotePorCanal && (
+        <DesactivarPorCanal canales={canales} onCerrar={() => setLotePorCanal(false)} />
+      )}
     </div>
   );
 }

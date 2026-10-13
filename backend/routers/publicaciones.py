@@ -4,12 +4,24 @@ publicaciones.py — Las publicaciones del catálogo para la pestaña Omnicanal.
   GET /api/publicaciones            → página filtrable + censo de cobertura
   GET /api/publicaciones/estados    → qué estados existen en cada canal
   GET /api/publicaciones/cobertura  → solo el censo, sin traer las filas
+  GET  /api/publicaciones/lote?canal=      → las publicaciones de UN canal, para
+                                             escogerlas en el Publicador (solo lee)
+  POST /api/publicaciones/lote/desactivar  → {canal, skus}: las SACA DE LA VENTA en
+                                             Temu o TikTok. Sólo admin. Inactiva, no borra.
 
-LECTURA PURA, con UNA excepción declarada: `GET /api/publicaciones?refrescar=true`
-—y sólo con ese parámetro, que por default viene apagado— le pregunta a Mercado
-Libre el precio de las publicaciones del SKU exacto de `q` y lo guarda antes de
-leer (`services/precio_al_abrir.py`). Todo lo demás de este router no escribe en
-kubera, no habla con ningún marketplace y no toca ningún flujo vivo.
+LECTURA PURA, con DOS excepciones declaradas:
+
+  1. `GET /api/publicaciones?refrescar=true` —y sólo con ese parámetro, que por
+     default viene apagado— le pregunta a Mercado Libre el precio de las
+     publicaciones del SKU exacto de `q` y lo guarda antes de leer
+     (`services/precio_al_abrir.py`).
+  2. `POST /api/publicaciones/lote/desactivar` (13-oct-2026) SÍ habla con el canal:
+     saca de la venta las publicaciones que una persona escogió en el Publicador
+     (`services/publicaciones_lote.py`). Sólo administradores con sesión, a lo mucho
+     10 SKUs por llamada, y deja en `ops.process_log` quién apagó qué.
+
+Todo lo demás de este router no escribe en kubera, no habla con ningún marketplace
+y no toca ningún flujo vivo.
 
 Toda la interpretación (qué es "activa" en cada canal, cuándo hay oferta, cuándo
 se puede calcular el margen) vive en `services/publicaciones_panel.py`, con el
@@ -67,9 +79,12 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel
 
+from routers.investigacion import solo_admin
 from services import precio_al_abrir
+from services import publicaciones_lote as lote
 from services import publicaciones_panel as pp
 
 log = logging.getLogger("omnicanal.routers.publicaciones")
@@ -170,6 +185,68 @@ async def cobertura(canal: str | None = Query(None),
     except Exception as exc:  # noqa: BLE001
         log.exception("publicaciones.cobertura falló")
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+# ── Desactivar en lote (Publicador) ──────────────────────────────────────────
+
+class LoteDesactivar(BaseModel):
+    canal: str
+    skus: list[str]
+
+
+async def _admin_del_lote(request: Request):
+    """El mismo candado de las investigaciones (persona con sesión y rol admin),
+    con un mensaje que dice de qué se trata."""
+    try:
+        return await solo_admin(request)
+    except HTTPException as exc:
+        if exc.status_code == 403:
+            raise HTTPException(
+                status_code=403,
+                detail="Desactivar publicaciones en lote es sólo para administradores del panel.") from exc
+        raise HTTPException(status_code=exc.status_code,
+                            detail="Inicia sesión en el panel para desactivar publicaciones.") from exc
+
+
+@router.get("/lote")
+def lote_listar(canal: str = Query(..., description="temu | tiktok")):
+    """
+    Las publicaciones de UN canal como las vio el último censo, para escogerlas en
+    el Publicador: SKU, título, estado en palabras, lo que ofrece el canal, el stock
+    de Woo y quién la tiene apagada (el seguro de stock 0 o esta misma pantalla).
+    Sólo lee kubera: no le pregunta nada al canal. `def` y no `async def`: psycopg2
+    es bloqueante (regla 11) y así corre en el threadpool.
+    """
+    try:
+        return {**lote.listar(canal), "canales": lote.canales()}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        log.exception("publicaciones.lote_listar falló")
+        raise HTTPException(status_code=502,
+                            detail=f"No se pudieron leer las publicaciones: {exc}") from exc
+
+
+@router.post("/lote/desactivar")
+def lote_desactivar(datos: LoteDesactivar, quien=Depends(_admin_del_lote)):
+    """
+    SACA DE LA VENTA las publicaciones de esos SKUs en Temu o TikTok. INACTIVA, NO
+    BORRA: son las mismas llamadas del seguro de stock 0 (`sale.status.set onsale:0`
+    y `products/deactivate`). Por publicación lee en vivo, llama, relee para
+    confirmar y lo anota con quién lo pidió. A lo mucho 10 SKUs por llamada: la
+    pantalla manda las tandas y enseña el avance.
+
+    Lo que se apaga desde aquí se queda apagado: no lo regresa el seguro (si era
+    suya, suelta su marca). Volver a prender es otra decisión.
+    """
+    try:
+        return lote.desactivar(datos.canal, datos.skus, actor=str(getattr(quien, "actor", "") or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        log.exception("publicaciones.lote_desactivar falló")
+        raise HTTPException(status_code=502,
+                            detail=f"No se pudo desactivar: {exc}") from exc
 
 
 async def _a_hilo(fn, **kw):
