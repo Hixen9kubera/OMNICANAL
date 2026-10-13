@@ -102,7 +102,24 @@ def precio_v3(actual: tuple[float | None, str | None], fila: dict[str, Any] | No
     return None, None
 
 
-def elegir(doc: dict[str, Any], libre: dict[str, int], v3: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+def leer_ajuste(salida: Path) -> float:
+    """
+    El factor por el que se multiplica el precio antes de publicarlo (1.0 = sin ajuste).
+
+    Es un dato interno: vive en `datos/mayoreo_ajuste.json` (`{"factor": 0.xx}`), fuera de git, y NO
+    viaja al catálogo: la tienda solo ve el precio ya ajustado. Sin archivo no hay ajuste; un factor
+    fuera de (0, 1] detiene la etapa, porque un archivo mal escrito no debe cambiar precios públicos.
+    """
+    dato = leer_json(salida / "datos" / "mayoreo_ajuste.json")
+    if not dato:
+        return 1.0
+    factor = float(dato.get("factor", 0))
+    if not 0 < factor <= 1:
+        raise RuntimeError("catálogo de mayoreo: datos/mayoreo_ajuste.json trae un factor fuera de (0, 1]")
+    return factor
+
+
+def elegir(doc: dict[str, Any], libre: dict[str, int], v3: dict[str, Any] | None = None, factor: float = 1.0) -> list[dict[str, Any]]:
     """Los productos del catálogo: lo libre en Odoo y lo que no existe en Odoo pero queda en packing lists."""
     rutas = doc["K"]
     v3 = v3 or {}
@@ -121,7 +138,7 @@ def elegir(doc: dict[str, Any], libre: dict[str, int], v3: dict[str, Any] | None
         precio, tipo = precio_v3(media_ml(r), v3.get(sku))
         salida.append({"sku": sku, "titulo": re.sub(r"\s+", " ", r.get("t") or sku).strip(),
                        "cat": ruta[0], "sub": ruta[1] or "(sin subcategoría)", "modelo": "-".join(sku.split("-")[:2]),
-                       "precio": round(float(precio), 2) if precio else None, "tipo": tipo,
+                       "precio": round(float(precio) * factor, 2) if precio else None, "tipo": tipo,
                        "piezas": piezas, "odoo": odoo,
                        "origen": ("g", r["i"]) if r.get("i") is not None else (("q", r["j"]) if r.get("j") is not None else None)})
     return salida
@@ -230,7 +247,8 @@ def construir(cfg: Cfg, salida: Path, releer_odoo: bool = True) -> dict[str, Any
     if not odoo:
         raise RuntimeError("no hay lectura de Odoo para el catálogo de mayoreo (datos/odoo_mayoreo.json)")
     v3 = (leer_json(salida / "datos" / "precios_v3" / "precios_catalogo_v3.json") or {}).get("filas") or {}
-    productos = ordenar(elegir(doc, libre_surtible(odoo), v3))
+    factor = leer_ajuste(salida)
+    productos = ordenar(elegir(doc, libre_surtible(odoo), v3, factor))
     destino = salida / "mayoreo"
     destino.mkdir(parents=True, exist_ok=True)
     fotos = armar_fotos(salida, destino, productos, doc)
