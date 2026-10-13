@@ -53,7 +53,8 @@ def _firme(p: dict[str, Any] | None, canal: str) -> bool:
     return bool(p) and p["n"] >= 2 and not p.get("x") and not (canal == "ml" and p.get("o") == "c")
 
 
-def estimar(filas: list[dict[str, Any]], rutas: list[list[str]]) -> dict[str, Any]:
+def estimar(filas: list[dict[str, Any]], rutas: list[list[str]],
+            canales: tuple[tuple[str, str], ...] = (("ml", "em"), ("az", "ea"))) -> dict[str, Any]:
     """Le pone un precio ESTIMADO a lo que no tiene precio medido, para que el valor cubra todas las piezas.
 
     En orden, y cada fila dice cuál le tocó (`[precio, nivel, múltiplo, de dónde, topado]`):
@@ -74,7 +75,10 @@ def estimar(filas: list[dict[str, Any]], rutas: list[list[str]]) -> dict[str, An
       · el múltiplo de una subcategoría no se aleja más de la mitad del múltiplo general;
       · ningún precio estimado pasa del 90% más caro de los precios MEDIDOS de su subcategoría
         (un costo mal capturado —el del cartón en vez de la pieza— ya no vale millones);
-      · lo que se sabe que no es mercancía (`nv`) no se valúa."""
+      · lo que se sabe que no es mercancía (`nv`) no se valúa.
+
+    `canales` deja volver a estimar SOLO Amazon cuando el precio de Mercado Libre cambió después (los
+    precios v3): su estimado es el precio de ML × una razón, y tiene que salir del precio que quedó."""
     import statistics
 
     def sub(f: dict[str, Any]) -> tuple[str, str, str]:
@@ -94,7 +98,7 @@ def estimar(filas: list[dict[str, Any]], rutas: list[list[str]]) -> dict[str, An
         return None, None
 
     resumen: dict[str, Any] = {"tc": TC}
-    for canal, campo in (("ml", "em"), ("az", "ea")):
+    for canal, campo in canales:
         veces: dict[Any, list[float]] = defaultdict(list)
         precios: dict[Any, list[float]] = defaultdict(list)
         prom: dict[Any, list[float]] = defaultdict(lambda: [0.0, 0.0])
@@ -146,6 +150,7 @@ def estimar(filas: list[dict[str, Any]], rutas: list[list[str]]) -> dict[str, An
                 continue
             if p and p.get("o") == "e":          # ya trae precio de Eduardo (aunque sea banda): no se estima
                 continue
+            f.pop(campo, None)                   # al volver a estimar, el estimado anterior no se queda
             s = sub(f)
             est: list[Any] | None = None
             m = f.get("ml")
@@ -184,6 +189,97 @@ def estimar(filas: list[dict[str, Any]], rutas: list[list[str]]) -> dict[str, An
 
 
 LADO, COLS, POR_HOJA = 72, 20, 400
+
+
+# ── Precios de Mercado Libre v3 (paquete de Competencia) ─────────────────────────────────────
+#
+# La sesión de Competencia rehízo el precio de mercado de lo que aquí salía de la BANDA de categoría:
+# sin marcas de renombre (unos tenis genéricos no valen lo que unos New Balance), con el ranking real de
+# más vendidos cuando existe, con la categoría corregida y con los términos de búsqueda revisados. Después
+# revisó a mano las 596 filas de más valor. El paquete vive en `datos/precios_v3/` (trae costos: fuera de
+# git) y su LEEME dice cómo se aplica; esto es eso mismo, hecho al final para que regenerar no lo pierda.
+#
+# Va DESPUÉS de los agregados y REEMPLAZA `ml` (los agregados solo llenan lo que falta): el paquete se
+# calculó sobre los datos ya publicados, con todo y agregados.
+FUENTE_V3 = {"banda_ml_ranking": "bm", "banda_v3": "bv", "keyword_amazon": "ka", "keyword_ml": "km"}
+MULTIPLO_V3 = 3.59               # el `estimado_costo` del paquete es costo × este múltiplo (el general de la página)
+
+
+def aplicar_v3(filas: list[dict[str, Any]], paquete: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Pone el precio v3 en cada fila que el paquete trae. Devuelve el resumen que la página enseña."""
+    por_fila = (paquete or {}).get("filas") or {}
+    if not por_fila:
+        return None
+
+    def corta(texto: str) -> str:
+        for largo, clave in FUENTE_V3.items():
+            texto = texto.replace(largo, clave)
+        return texto
+
+    n = {"con_precio": 0, "exacto": 0, "revisar": 0, "a_mano": 0, "estimado_costo": 0, "sin_precio": 0, "topado": 0,
+         "categoria_corregida": 0}
+    for f in filas:
+        x = por_fila.get(f["s"])
+        if x is None:
+            continue
+        if x.get("fuente") == "exacto":          # exacto, nuestro precio publicado o revisado a mano: no se toca
+            n["exacto"] += 1
+            continue
+        viejo = f.get("ml") or {}
+        precio = x.get("precio_ml_final", x.get("precio_ml_v3"))
+        a_mano = x.get("precio_ml_revisado") is not None
+        info: dict[str, Any] = {"fu": corta(x.get("fuente") or "")}
+        fuentes = {FUENTE_V3.get(k, k): round(v, 2) for k, v in (x.get("fuentes") or {}).items() if v is not None}
+        if fuentes:
+            info["fs"] = fuentes
+        antes = viejo.get("me", viejo.get("m")) if viejo.get("o") == "e" else None
+        if antes is not None:
+            info["an"] = antes
+        if x.get("notas"):
+            info["nt"] = x["notas"]
+        if x.get("marcas_quitadas_de_la_banda"):
+            info["mq"] = x["marcas_quitadas_de_la_banda"][:6]
+        if x.get("revisar"):
+            info["rv"] = 1
+            n["revisar"] += 1
+        if a_mano:
+            # [precio, de dónde, confianza, motivo, verificado, era paquete contra pieza]
+            info["m"] = [x["precio_ml_revisado"], x.get("fuente_revision"), x.get("confianza_revision"),
+                         (x.get("motivo_revision") or "")[:300], x.get("verificado"), 1 if x.get("paquete_vs_pieza") else 0]
+            n["a_mano"] += 1
+        if precio:
+            precio = round(float(precio), 2)
+            lo, hi = x.get("min"), x.get("max")
+            nuevo: dict[str, Any] = {"o": "e", "f": "k", "cl": "k", "m": precio, "me": precio,
+                                     "lo": round(min(lo, precio) if lo is not None else precio, 2),
+                                     "hi": round(max(hi, precio) if hi is not None else precio, 2), "v3": info}
+            for campo in ("dp", "pn", "ue"):     # lo que sigue siendo cierto de la fila: depurado de Eduardo, nuestro precio, conteos
+                if campo in viejo:
+                    nuevo[campo] = viejo[campo]
+            categoria = x.get("categoria_banda_v3") or viejo.get("cg")
+            if categoria:
+                nuevo["cg"] = categoria
+            if x.get("categoria_corregida"):
+                info["cc"] = 1
+                n["categoria_corregida"] += 1
+            if x.get("topado_10x_costo") and not a_mano:
+                nuevo["tp"] = 1
+                n["topado"] += 1
+            f["ml"] = nuevo
+            f.pop("em", None)
+            n["con_precio"] += 1
+        else:
+            # Sin ninguna fuente: su estimado por costo si lo trae; si no, la fila queda sin precio de ML.
+            f.pop("ml", None)
+            f.pop("em", None)
+            if x.get("estimado_costo"):
+                f["em"] = [round(float(x["estimado_costo"]), 2), "c", MULTIPLO_V3, "g", 0]
+                n["estimado_costo"] += 1
+            else:
+                n["sin_precio"] += 1
+            f["v3"] = info
+    meta = (paquete or {}).get("meta") or {}
+    return {"version": meta.get("version"), "fecha": meta.get("fecha"), "razon_amazon_ml": meta.get("razon_amazon_ml"), **n}
 
 
 def _ruta(camino: list[str]) -> tuple[str, str, str]:
@@ -643,6 +739,12 @@ def construir(salida: Path) -> dict[str, Any]:
                     agregados += 1
         for campo, valor in (extra.get("arriba") or {}).items():
             doc.setdefault(campo, valor)
+    v3 = aplicar_v3(filas, leer_json(d / "precios_v3" / "precios_catalogo_v3.json"))
+    if v3:
+        doc["v3"] = v3
+        # El estimado de Amazon de cada fila salió de su precio de ML de ANTES: se vuelve a calcular con el
+        # que quedó, y la razón Amazon ÷ ML se vuelve a medir con esos mismos precios.
+        estimacion["az"] = estimar(filas, lista_rutas, canales=(("az", "ea"),))["az"]
     escribir_json(salida / "datos_pl.json", _limpio(doc))
     (salida / "datos_pl.js").write_text(
         "window.INVENTARIO=" + (salida / "datos_pl.json").read_text(encoding="utf-8") + ";", encoding="utf-8")
@@ -661,6 +763,7 @@ def construir(salida: Path) -> dict[str, Any]:
           f"con precio ML {con('ml')} · con precio Amazon {con('az')} · {len(lista_rutas)} categorías · "
           f"{hojas_pl} hojas de fotos de packing list"
           + (f" · precio de ML de Eduardo: {cuenta_edu}" if edu else " · SIN el paquete de Eduardo")
-          + (f" · {agregados} campos agregados por otras sesiones" if agregados else ""))
+          + (f" · {agregados} campos agregados por otras sesiones" if agregados else "")
+          + (f" · precios v3: {v3}" if v3 else ""))
     return {"filas": len(filas), "sin_sku": sum(1 for f in filas if f.get("sin")), "con_precio_ml": con("ml"),
             "con_precio_amazon": con("az"), "categorias": len(lista_rutas), "hojas_pl": hojas_pl}

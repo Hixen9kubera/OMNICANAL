@@ -63,7 +63,12 @@ def media_de_la_pagina(r: dict[str, Any]) -> tuple[float | None, str]:
         de = ("revisado a mano" if cl == "r" else
               "mismo producto" + (" (del modelo)" if p.get("nv") == "x" else "") if cl == "f" else
               "banda de su categoría" + (f" «{p['cg']}»" if p.get("cg") else "") if cl == "b" else
+              "mercado sin marcas (v3)" + (f" «{p['cg']}»" if p.get("cg") else "") if cl == "k" else
               "sin publicaciones: nuestro precio")
+        if cl == "k":
+            v3 = p.get("v3") or {}
+            return valor, de + (" · topado a 10× costo" if p.get("tp") else "") + (
+                " · revisado a mano" if v3.get("m") else "") + (" · para revisar" if v3.get("rv") else "")
         # Cuando bodega contó distinto que el proveedor, la página topa el precio que multiplica: se dice cuál.
         return valor, de + (" · sin revisar" if p.get("sr") else "") + (
             f" · topado a 10× FOB: se multiplica por ${p['m']:,.2f}" if p.get("tp") else "")

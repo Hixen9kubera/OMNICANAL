@@ -150,6 +150,16 @@ datos ya publicados (precios para lo que no tenía, títulos propuestos viendo l
 `{"filas": {SKU: {campo: valor}}, "arriba": {...}}` y cada campo se pone SOLO si la fila no lo tiene: lo que el
 generador ya sabe manda. Así nadie pierde el trabajo de otro al regenerar. Esos archivos traen precios: no se suben aquí.
 
+Después de los agregados, `pagina_pl` aplica los **precios de Mercado Libre v3** si existe
+`<salida>/datos/precios_v3/precios_catalogo_v3.json` (el paquete de la sesión de Competencia: precio de mercado sin
+marcas de renombre, con la categoría corregida, y las filas de más valor revisadas a mano). A diferencia de los
+agregados, este REEMPLAZA `ml`: toda fila que el paquete trae y que no es `exacto` queda con la clase `k` («mercado sin
+marcas»), su precio (`precio_ml_final`), el mínimo y el máximo de sus fuentes y, en `ml.v3`, de dónde salió, el precio
+anterior, si sigue para revisar y cómo se revisó a mano. Una fila sin ninguna fuente pierde su `ml` y queda con el
+estimado por costo del paquete, o sin precio. Como el estimado de Amazon de una fila es su precio de ML × una razón,
+al final se vuelve a estimar SOLO Amazon con los precios que quedaron (`estimar(..., canales=(("az", "ea"),))`). El
+paquete trae costos: vive fuera de git. Si llega una versión nueva, se reemplaza esa carpeta y se corre `pagina_pl`.
+
 `excel_pl` arma `inventario_kubera_skus.xlsx`: el inventario como catálogo, en UNA hoja. Cada categoría se abre en sus
 subcategorías y cada subcategoría en sus productos (esquema de Excel, botones + y −), con la FOTO anclada a su celda,
 SKU, título, piezas, la media de Mercado Libre tal como la pinta la página, el valor y el estado; arriba y al final,

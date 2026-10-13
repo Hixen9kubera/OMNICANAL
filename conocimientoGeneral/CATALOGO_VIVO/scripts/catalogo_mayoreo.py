@@ -73,7 +73,7 @@ def media_ml(r: dict[str, Any]) -> tuple[float | None, str | None]:
     p = r.get("ml")
     if p and p.get("o") == "e":
         valor = p["me"] if p.get("lo") is not None else p["m"]
-        return valor, ("p" if p.get("cl") in ("f", "r", "n") else "c")
+        return valor, ("p" if p.get("cl") in ("f", "r", "n") else "k" if p.get("cl") == "k" else "c")
     if p and not r.get("sin") and p.get("n", 0) >= 2 and not p.get("x") and p.get("o") != "c":
         return p["m"], "p"
     if r.get("em"):
@@ -88,14 +88,15 @@ def precio_v3(actual: tuple[float | None, str | None], fila: dict[str, Any] | No
     Ese paquete rehace el precio de mercado sin marcas de renombre y con la categoría corregida (unos
     tenis genéricos bajan de $720.97 a $249.50). Sus reglas, tal como las pide su LEEME:
       · `exacto` (precio exacto, el nuestro publicado o revisado a mano): no se toca;
-      · con `precio_ml_v3`: ese es el precio (tipo `k`);
+      · con `precio_ml_final` (el revisado a mano cuando lo hay; si no, el v3): ese es el precio (tipo `k`);
       · sin fuentes: su `estimado_costo` si lo trae (tipo `e`); si no, la fila queda SIN precio y el
         catálogo no la deja pedir.
     """
     if fila is None or fila.get("fuente") == "exacto":
         return actual
-    if fila.get("precio_ml_v3"):
-        return fila["precio_ml_v3"], "k"
+    precio = fila.get("precio_ml_final", fila.get("precio_ml_v3"))      # el revisado a mano cuando lo hay
+    if precio:
+        return precio, "k"
     if fila.get("estimado_costo"):
         return fila["estimado_costo"], "e"
     return None, None
