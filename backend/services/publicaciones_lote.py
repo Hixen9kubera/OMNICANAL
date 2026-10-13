@@ -80,7 +80,10 @@ TOPE_POR_LLAMADA = 10
 PROCESO = "publicaciones_lote"
 VIA = "panel_lote"                 # la firma en `channel.listing_history.detectado_via`
 # La pausa del canal (ver la cabecera).
-_FLAG_PAUSA = "canal_en_pausa:{canal}"     # la fila de `ops.automatizacion_flags`
+# La fila de `ops.automatizacion_flags`. ⚠️ Esa tabla sólo admite `^[a-z0-9_]+$` en `flag`
+# (migración 0035): la primera versión se llamaba `canal_en_pausa:temu` y producción la
+# rechazó con `automatizacion_flags_flag_check`. Lo fija `Pausa.test_el_nombre_…`.
+_FLAG_PAUSA = "canal_en_pausa_{canal}"
 _PAUSA_TTL_S = 30.0                # cuánto vale la lectura de la pausa (la pregunta el seguro en cada evento)
 _VIGILAR_MAX = 60                  # SKUs por censo; lo que no quepa lo toma el siguiente
 ACTOR_PAUSA = "pausa del canal"    # quién firma lo que apaga el vigilante

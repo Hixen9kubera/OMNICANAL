@@ -1001,6 +1001,37 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.643.0 — Pausa del canal: no se podía guardar — el nombre del interruptor llevaba «:» y la tabla sólo admite letras, números y guion bajo
+
+**Qué pasó (13-oct-2026).** Con v0.642.0 ya desplegada, al dar «Poner en pausa» a Temu en el panel
+de producción el backend contestó:
+
+```
+No se pudo cambiar la pausa: new row for relation "automatizacion_flags" violates check
+constraint "automatizacion_flags_flag_check"
+```
+
+`ops.automatizacion_flags.flag` lleva `check (flag ~ '^[a-z0-9_]+$')` (migración 0035, a propósito:
+es un KV abierto y sin la regla acumula llaves tecleadas a mano). El interruptor de la pausa se
+llamaba `canal_en_pausa:temu`, con dos puntos. **La pausa nunca quedó puesta**; en Temu no cambió
+nada (seguía con 0 a la venta por el apagado en lote de v0.640–641).
+
+**Por qué no lo atraparon las 303 pruebas.** Todas montan la base de mentira: el doble de
+`sdb.execute` aceptaba cualquier llave. La regla vive en la base, no en el código, y nada la leía.
+
+**El arreglo.**
+
+- `publicaciones_lote._FLAG_PAUSA` pasa a `canal_en_pausa_{canal}` (`canal_en_pausa_temu`,
+  `canal_en_pausa_tiktok`), el mismo estilo que `odoo_ventas_enabled_canal_temu`.
+- Prueba nueva `Pausa.test_el_nombre_del_interruptor_cabe_en_la_tabla`: **lee la regla de la
+  migración 0035** y exige que el nombre de cada canal la cumpla (y que sean distintos entre sí).
+  Si alguien cambia el nombre o la regla, truena aquí y no en producción.
+- No hay nada que migrar: la fila vieja nunca existió.
+
+**Pruebas.** `tests/test_publicaciones_lote.py`: 78. `tests/test_fanout_seguro.py`: 226. Y lo que
+de verdad faltaba: la pausa puesta en producción desde el panel y leída de vuelta en
+`ops.automatizacion_flags`.
+
 ### v0.642.0 — Pausa del canal: un canal apagado se queda apagado — lo que reaparezca a la venta se apaga tras cada censo y el seguro de stock 0 no regresa nada
 
 **Qué pidió Brandon (13-oct-2026).** Después de apagar todo Temu con «Desactivar por canal»: «sí
@@ -1020,7 +1051,7 @@ se desconfía.
 
 **Qué es la pausa.** Un ESTADO del canal que pone y quita una persona desde Publicador ›
 Desactivar por canal (**Poner en pausa** / **Quitar la pausa**). Se guarda en
-`ops.automatizacion_flags` (fila `canal_en_pausa:<canal>`, con quién y cuándo) y la historia en
+`ops.automatizacion_flags` (fila `canal_en_pausa_<canal>`, con quién y cuándo) y la historia en
 `ops.process_log`. No tiene variable de entorno. Mientras dura:
 
 1. **Al terminar cada censo** (cada hora) `publicaciones_lote.vigilar` saca de la venta lo que esté

@@ -581,15 +581,26 @@ class Pausa(unittest.TestCase):
         L._pausa_cache.clear()
         self.addCleanup(L._pausa_cache.clear)
 
+    def test_el_nombre_del_interruptor_cabe_en_la_tabla(self):
+        # `ops.automatizacion_flags.flag` lleva `check (flag ~ '^[a-z0-9_]+$')`. Con `:` en
+        # el nombre, producción contestó `automatizacion_flags_flag_check` y la pausa no se
+        # guardó (13-oct-2026). La regla se lee de la migración, no se copia aquí.
+        migracion = (BACKEND.parent / "supabase" / "migrations" / "0035_ops_automatizacion_flags.sql").read_text(encoding="utf-8")
+        regla = re.search(r"check \(flag ~ '([^']+)'\)", migracion).group(1)
+        self.assertEqual(regla, "^[a-z0-9_]+$")
+        for canal in L.CANALES:
+            self.assertRegex(L._FLAG_PAUSA.format(canal=canal), regla)
+        self.assertEqual(len({L._FLAG_PAUSA.format(canal=c) for c in L.CANALES}), len(L.CANALES))
+
     def test_sin_fila_no_hay_pausa(self):
         with mock.patch.object(self.sdb, "fetch_one", return_value=None) as fo:
             p = L.pausa("temu")
         self.assertEqual(p, {"en_pausa": False, "por": None, "desde": None, "motivo": None, "legible": True})
-        self.assertEqual(fo.call_args[0][1], {"f": "canal_en_pausa:temu"})
+        self.assertEqual(fo.call_args[0][1], {"f": "canal_en_pausa_temu"})
         self.assertIn("from ops.automatizacion_flags where flag = %(f)s", fo.call_args[0][0])
         with mock.patch.object(self.sdb, "fetch_one", return_value=None) as fo:
             L.pausa("tiktok")
-        self.assertEqual(fo.call_args[0][1], {"f": "canal_en_pausa:tiktok"}, "cada canal tiene SU interruptor")
+        self.assertEqual(fo.call_args[0][1], {"f": "canal_en_pausa_tiktok"}, "cada canal tiene SU interruptor")
 
     def test_con_la_fila_encendida_dice_quien_y_desde_cuando(self):
         fila = {"valor": True, "motivo": "stock de almacén dudoso", "actualizado_por": "jefe@kubera.mx",
@@ -656,7 +667,7 @@ class Pausa(unittest.TestCase):
         plano = " ".join(flag[0][0].split())
         self.assertIn("insert into ops.automatizacion_flags (flag, valor, motivo, actualizado_at, actualizado_por)", plano)
         self.assertIn("on conflict (flag) do update set", plano)
-        self.assertEqual(flag[0][1], {"f": "canal_en_pausa:temu", "v": True, "m": "stock dudoso", "q": "jefe@kubera.mx"})
+        self.assertEqual(flag[0][1], {"f": "canal_en_pausa_temu", "v": True, "m": "stock dudoso", "q": "jefe@kubera.mx"})
         self.assertIn("insert into ops.process_log", historia[0][0])
         self.assertEqual((historia[0][1][0], historia[0][1][1]), (L.PROCESO, "puesta"))
         self.assertIn('"canal": "temu"', historia[0][1][2])
@@ -666,7 +677,7 @@ class Pausa(unittest.TestCase):
                 mock.patch.object(self.sdb, "fetch_one", return_value={"valor": False}):
             p = L.fijar_pausa("tiktok", False, quien="jefe@kubera.mx")
         self.assertFalse(p["en_pausa"])
-        self.assertEqual(ex.call_args_list[0][0][1]["f"], "canal_en_pausa:tiktok")
+        self.assertEqual(ex.call_args_list[0][0][1]["f"], "canal_en_pausa_tiktok")
         self.assertEqual(ex.call_args_list[0][0][1]["v"], False)
         self.assertEqual(ex.call_args_list[1][0][1][1], "quitada")
 
