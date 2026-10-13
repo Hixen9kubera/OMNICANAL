@@ -22,6 +22,14 @@ vivo el 9-oct-2026 (`fanout_seguro._apagar`): `bg.local.goods.sale.status.set
 La publicación sigue en el canal, apagada, igual que si se apagara a mano en el
 Seller Center. Aquí no hay ninguna llamada de borrado.
 
+LO QUE EL CANAL TIENE RETENIDO NO CAMBIA DE ESTADO (medido el 13-oct-2026 con las 67
+publicaciones de Temu en `3/3`). `3/3` es «el vendedor la quiere a la venta y Temu la
+tiene fuera»: se entra desde `2/8` (46 veces en 60 días) o al prenderla (`3/2→3/3`, 18)
+y se sale sola a `2/8` (35). Temu ACEPTA `onsale: 0` y la sigue enseñando en `3/3`; no
+hay forma de leer si le hizo caso. Por eso su resultado es «orden enviada» y no
+«apagada», la lista la sigue contando como retenida, y lo único que prueba que no
+volvió es que no aparezca a la venta en los censos siguientes.
+
 LO QUE SE APAGA DESDE AQUÍ SE QUEDA APAGADO. Es una decisión de una persona:
   · no lleva la marca del seguro, así que el seguro no la regresa sola;
   · si el seguro YA la tenía apagada (su marca), se le SUELTA la marca: si no, al
@@ -64,6 +72,7 @@ VIA = "panel_lote"                 # la firma en `channel.listing_history.detect
 # y no se toca: un estado que nadie conoce no se adivina.
 #   a_la_venta    se puede comprar ahora
 #   publicada     no vende en este momento, pero el canal la regresa SOLA a la venta
+#                 (agotada, o retenida por el canal)
 #   apagada       fuera de la venta por decisión del vendedor (lo que deja esta pantalla)
 #   apagada_canal fuera de la venta por decisión del canal
 #   en_revision   el canal la está revisando; no deja apagarla hasta que termine
@@ -73,7 +82,7 @@ _ESTADOS: dict[str, dict[str, tuple[str, str]]] = {
     "temu": {
         "2/8": ("a_la_venta", "A la venta"),
         "3/1": ("publicada", "Agotada · Temu la regresa sola a la venta"),
-        "3/3": ("publicada", "Fuera de la venta por Temu · va y viene sola"),
+        "3/3": ("publicada", "Retenida por Temu · fuera de la venta, puede volver sola"),
         "2/4": ("publicada", "Activa sin vender (2/4)"),
         "3/2": ("apagada", "Apagada"),
         "4/7": ("sin_publicar", "Incompleta"),
@@ -96,6 +105,9 @@ _ESTADOS: dict[str, dict[str, tuple[str, str]]] = {
 # `2/4`. Dejarlas fuera de «apagar todo» sería dejar la puerta abierta. En TikTok
 # `deactivate` sólo aplica a `ACTIVATE`.
 _DESACTIVABLES = {"temu": {"2/8", "3/1", "3/3", "2/4"}, "tiktok": {"ACTIVATE"}}
+# Estados que el canal NO mueve aunque acepte la orden (ver la cabecera). Con ellos
+# basta UNA relectura: seguir esperando no enseña nada.
+_NO_CAMBIAN = {"temu": {"3/3"}}
 _GRUPOS = ("a_la_venta", "publicada", "en_revision", "apagada", "apagada_canal",
            "sin_publicar", "borrada", "desconocido")
 
@@ -105,6 +117,7 @@ YA_APAGADA = "ya_apagada"           # en vivo ya estaba apagada: no se llamó
 NO_APLICA = "no_aplica"             # borrador, en revisión, borrada…: no hay nada que apagar
 SIN_PUBLICACION = "sin_publicacion"  # ese SKU no tiene publicación en el canal
 SIN_CONFIRMAR = "sin_confirmar"     # el canal aceptó y todavía no enseña el cambio
+ORDEN_ENVIADA = "orden_enviada"     # el canal aceptó; ya la tenía fuera de la venta y no cambia de estado
 ERROR = "error"                     # no se pudo leer, o el canal rechazó la llamada
 
 
@@ -147,7 +160,8 @@ _SQL_PANEL = """
            coalesce(detalle->>'actor', actor) as actor,
            to_char(created_at at time zone 'America/Mexico_City', 'YYYY-MM-DD HH24:MI') as cuando
       from ops.process_log
-     where proceso = %(p)s and detalle->>'canal' = %(c)s and estado = 'ok'
+     where proceso = %(p)s and detalle->>'canal' = %(c)s
+       and estado in ('ok', 'orden_enviada', 'sin_confirmar')
      order by detalle->>'listing_id', created_at desc, id desc"""
 
 
@@ -193,17 +207,25 @@ def listar(canal: str) -> dict[str, Any]:
     for f in filas:
         c = clasificar(canal, f.get("status"))
         item = str(f["listing_id"])
-        apagada_por = None
-        if c["grupo"] in ("apagada", "apagada_canal") or not c["desactivable"]:
+        apagada_por = orden = None
+        ult = panel.get(item)
+        if c["grupo"] == "apagada":
             # Sólo se atribuye si SIGUE apagada: una que alguien volvió a prender no
             # es «apagada desde el panel» por más que la bitácora lo recuerde.
-            ult = panel.get(item)
-            if c["grupo"] == "apagada" and ult and ult.get("accion") == "desactivar":
+            if ult and ult.get("accion") == "desactivar" and ult.get("estado") == "ok":
                 apagada_por = {"quien": "panel", "cuando": ult.get("cuando"),
                                "actor": ult.get("actor"), "antes": ult.get("antes")}
-            elif c["grupo"] == "apagada" and item in seguro:
+            elif item in seguro:
                 apagada_por = {"quien": "seguro", "cuando": None, "actor": None,
                                "antes": None}
+        elif (c["grupo"] == "publicada" and ult and ult.get("accion") == "desactivar"
+              and ult.get("estado") in (ORDEN_ENVIADA, SIN_CONFIRMAR)
+              and ult.get("despues") == c["estado"]):
+            # El canal la tiene retenida, ya se le mandó la orden y SIGUE en el mismo
+            # estado: no hay nada más que pedirle. (Si entre tanto volvió a la venta
+            # y la retuvo otra vez, el estado sería el mismo: por eso además cuenta
+            # que no haya salido a la venta, que se ve en «a la venta».)
+            orden = {"cuando": ult.get("cuando"), "actor": ult.get("actor")}
         resumen[c["grupo"]] += 1
         items.append({
             "sku": f["sku"], "listing_id": item, "titulo": f.get("titulo"),
@@ -213,10 +235,14 @@ def listar(canal: str) -> dict[str, Any]:
             "stock_canal": f.get("stock_own"), "stock_woo": f.get("stock_woo"),
             "precio": float(f["price"]) if f.get("price") is not None else None,
             "visto": f.get("visto"), "apagada_por": apagada_por,
+            # Retenida por el canal a la que YA se le mandó la orden de apagado.
+            "orden": orden,
         })
     return {
         "canal": canal, "nombre": NOMBRE[canal], "total": len(items),
         "desactivables": sum(1 for i in items if i["desactivable"]),
+        # Lo que todavía falta: se puede desactivar y no se le ha mandado la orden.
+        "por_apagar": sum(1 for i in items if i["desactivable"] and not i["orden"]),
         "censo": max((i["visto"] for i in items if i["visto"]), default=None),
         "resumen": resumen, "tope_por_llamada": TOPE_POR_LLAMADA, "items": items,
     }
@@ -363,6 +389,12 @@ def desactivar(canal: str, skus: list[str], actor: str = "") -> dict[str, Any]:
                 r["resultado"] = APAGADA
                 r["detalle"] = (None if nuevo["grupo"] == "apagada"
                                 else f"quedó fuera de la venta como «{nuevo['etiqueta']}»")
+            elif nuevo["estado"] == r["antes"] and r["antes"] in _NO_CAMBIAN.get(canal, set()):
+                # Retenida por el canal: aceptó la orden y no cambia de estado. No se
+                # sigue esperando; tampoco se dice «apagada», porque no se vio.
+                r["resultado"] = ORDEN_ENVIADA
+                r["detalle"] = (f"{NOMBRE[canal]} aceptó la orden. Ya la tenía fuera de la venta "
+                                f"({r['antes']}) y no cambia de estado mientras la retenga")
 
     resumen: dict[str, int] = {}
     for r in resultados:
@@ -374,14 +406,14 @@ def desactivar(canal: str, skus: list[str], actor: str = "") -> dict[str, Any]:
             # la lista la seguiría enseñando «a la venta» hasta el siguiente censo.
             # `_reflejar` sólo escribe si el estado cambió.
             _reflejar(canal, r["sku"], r["listing_id"], r["despues"])
-        if r["resultado"] in (APAGADA, YA_APAGADA) and r.get("listing_id"):
+        if r["resultado"] in (APAGADA, YA_APAGADA, ORDEN_ENVIADA) and r.get("listing_id"):
             # Lo que una persona manda apagar se queda apagado: el seguro la suelta.
             r["seguro_soltado"] = _soltar_marca(canal, r["sku"], r["listing_id"])
         if r["resultado"] != SIN_PUBLICACION:
             _anotar(canal, r, lote, actor, time.time() - t0)
         resumen[r["resultado"]] = resumen.get(r["resultado"], 0) + 1
     apagadas = resumen.get(APAGADA, 0)
-    if apagadas or resumen.get(ERROR) or resumen.get(SIN_CONFIRMAR):
+    if apagadas or resumen.get(ERROR) or resumen.get(SIN_CONFIRMAR) or resumen.get(ORDEN_ENVIADA):
         log.warning("LOTE %s · %s · %s pidió desactivar %d SKU(s): %s", lote, canal,
                     actor or "?", len(skus), resumen)
     return {"canal": canal, "nombre": NOMBRE[canal], "lote": lote, "pedidos": len(skus),

@@ -1001,6 +1001,47 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.641.0 — Desactivar por canal: lo que Temu tiene RETENIDO acepta la orden y no cambia de estado — «orden enviada», y la vista «Por apagar»
+
+**Qué pasó al usarlo de verdad (13-oct-2026, 12:47–13:04 hora de México).** Brandon pidió apagar
+todo Temu porque el stock de almacén no es de fiar. Con el panel de la v0.640.0:
+
+| Lo que había en Temu | Qué se hizo | Resultado |
+|---|---|---|
+| 42 a la venta (`2/8`), 18,020 piezas ofrecidas | desactivar | **42 de 42 apagadas** (`2/8 → 3/2`), releídas en vivo una por una; después, leídas de nuevo por `/investigacion`: existen, `3/2`, con su stock intacto |
+| 66 retenidas por Temu (`3/3`) | desactivar | Temu **aceptó las 66** y las sigue enseñando en `3/3` |
+| 307 ya apagadas · 102 sin publicar | nada | — |
+
+Temu quedó con **0 publicaciones a la venta**.
+
+**Lo que se aprendió de `3/3`.** No es «apagada»: es «el vendedor la quiere a la venta y Temu la
+tiene fuera». En 60 días de historial del censo se entra desde `2/8` (46 veces), al prender una
+apagada (`3/2 → 3/3`, 18) o al terminar la revisión de un alta (15), y se sale SOLA a `2/8` (35).
+Temu acepta `onsale: 0` y no cambia el estado, y no hay forma de leer si le hizo caso: lo único que
+lo prueba es que no vuelva a aparecer a la venta en los censos siguientes.
+
+**Qué cambia en el panel.**
+
+- El resultado de esas publicaciones ya no es «Sin confirmar» (que invitaba a reintentar): es
+  **«Orden enviada»** —el canal aceptó; ya la tenía fuera de la venta y no cambia de estado—, con
+  una sola relectura en vez de tres (la tanda baja de ~30 s a ~14 s).
+- La vista por omisión es **«Por apagar»**: lo que se puede desactivar y a lo que todavía no se le
+  ha mandado la orden. Con el canal apagado dice «No queda nada por apagar: Temu no tiene nada a la
+  venta», en vez de enseñar 66 renglones que parecen pendientes.
+- Filtro nuevo **«Retenidas por el canal»**, y cada una dice «orden de apagado enviada · fecha».
+  La lista lo recuerda leyendo `ops.process_log` (también las 67 que quedaron anotadas como
+  `sin_confirmar` antes de esta versión).
+- El seguro de stock 0 también suelta su marca en las «orden enviada».
+
+**Lo que queda abierto, y se dice.** Si Temu libera una de esas 66 y no le hizo caso a la orden,
+vuelve a `2/8` y se vende hasta que alguien la apague: el panel no vigila. El seguro de stock 0
+sólo la apagaría si Woo está en 0. Mantener un canal apagado de verdad pide un vigilante que apague
+lo que reaparezca tras cada censo; es un flujo automático nuevo y espera el dale de Brandon.
+
+**Pruebas.** `tests/test_publicaciones_lote.py`: 52 (4 nuevas: la retenida que no cambia, la que sí
+cambia, la agotada que no cambia sigue siendo «sin confirmar», y la lista que recuerda la orden).
+`tsc` y `next build` limpios.
+
 ### v0.640.0 — Publicador · «Desactivar por canal»: escoger un canal, seleccionar un lote o TODAS sus publicaciones y sacarlas de la venta (Temu y TikTok)
 
 **Qué pidió Brandon (13-oct-2026).** «Tenemos problemas de stock directamente con almacén, por lo

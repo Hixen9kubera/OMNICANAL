@@ -10,7 +10,8 @@ publicados, seleccionar un lote o TODOS y desactivarlos.
   2. SE DECIDE CON EL ESTADO VIVO: la que en vivo ya está apagada, o no está
      publicada, no se llama; la que no se puede leer, tampoco.
   3. SE CONFIRMA RELEYENDO: «apagada» sólo si el canal la enseña fuera de la venta.
-     Si no, «sin confirmar», y no se da por hecho.
+     Si no, «sin confirmar», y no se da por hecho. Lo que el canal tiene RETENIDO
+     (Temu `3/3`) acepta la orden y no cambia de estado: es «orden enviada».
   4. UNA ESPERA POR TANDA, no una por publicación.
   5. LO QUE UNA PERSONA APAGA SE QUEDA APAGADO: se suelta la marca del seguro y el
      cambio queda firmado `panel_lote`.
@@ -212,7 +213,8 @@ class Listar(Arnes):
         self.poner("ZZZ-0003-AZL", "9003", "3/2")      # a mano en el Seller Center
         self.poner("ZZZ-0004-AZL", "9004", "2/8")      # el panel la apagó y alguien la volvió a prender
         self.marcas = {"9001"}
-        ult = {"accion": "desactivar", "cuando": "2026-10-13 12:30", "actor": "alguien@kubera.mx", "antes": "2/8"}
+        ult = {"accion": "desactivar", "estado": "ok", "cuando": "2026-10-13 12:30",
+               "actor": "alguien@kubera.mx", "antes": "2/8", "despues": "3/2"}
         self.panel = {"9002": ult, "9004": ult}
         por = {i["sku"]: i["apagada_por"] for i in L.listar("temu")["items"]}
         self.assertEqual(por["ZZZ-0001-AZL"]["quien"], "seguro")
@@ -220,6 +222,28 @@ class Listar(Arnes):
                           por["ZZZ-0002-AZL"]["actor"]), ("panel", "2/8", "alguien@kubera.mx"))
         self.assertIsNone(por["ZZZ-0003-AZL"])
         self.assertIsNone(por["ZZZ-0004-AZL"], "ya no está apagada: no se le atribuye a nadie")
+
+    def test_recuerda_a_cual_retenida_ya_se_le_mando_la_orden(self):
+        # Medido el 13-oct-2026: Temu acepta `onsale: 0` en `3/3` y la sigue enseñando
+        # en `3/3`. La lista no la puede dar por apagada, pero sí decir que ya se pidió.
+        for i in range(4):
+            self.poner(f"ZZZ-040{i}-AZL", f"940{i}", "3/3")
+        self.poner("ZZZ-0404-AZL", "9404", "2/8")
+        enviada = {"accion": "desactivar", "estado": "orden_enviada", "cuando": "2026-10-13 12:55",
+                   "actor": "alguien@kubera.mx", "antes": "3/3", "despues": "3/3"}
+        self.panel = {"9400": enviada,
+                      "9401": dict(enviada, estado="sin_confirmar"),      # las de antes de esta versión
+                      "9402": dict(enviada, despues="2/8"),               # se le pidió estando en otro estado
+                      "9404": dict(enviada, estado="ok", despues="3/2")}  # apagada… y alguien la prendió
+        r = L.listar("temu")
+        orden = {i["sku"]: i["orden"] for i in r["items"]}
+        self.assertEqual(orden["ZZZ-0400-AZL"], {"cuando": "2026-10-13 12:55", "actor": "alguien@kubera.mx"})
+        self.assertIsNotNone(orden["ZZZ-0401-AZL"])
+        self.assertIsNone(orden["ZZZ-0402-AZL"])
+        self.assertIsNone(orden["ZZZ-0403-AZL"], "a ésta nadie le ha pedido nada")
+        self.assertIsNone(orden["ZZZ-0404-AZL"], "está A LA VENTA: no hay orden que valga")
+        self.assertEqual((r["desactivables"], r["por_apagar"]), (5, 3))
+        self.assertTrue(all(i["desactivable"] for i in r["items"]), "se le puede volver a pedir")
 
     def test_si_la_bitacora_no_contesta_la_lista_sale_igual(self):
         self.poner("ZZZ-0001-AZL", "9001", "3/2")
@@ -333,6 +357,36 @@ class Desactivar(Arnes):
         self.assertEqual(self.dormidas, [8.0, 8.0, 8.0], "insiste las relecturas configuradas y ya")
         self.assertEqual(self.reflejos, [], "sin confirmar no se toca channel.listings")
         self.assertEqual(self.sueltas, [])
+
+    def test_lo_que_temu_tiene_retenido_acepta_la_orden_y_no_cambia(self):
+        # Las 67 de Temu en `3/3` del 13-oct-2026: «ok» a la llamada y el estado igual.
+        self.poner("ZZZ-0001-AZL", "9001", "3/3")
+        self.poner("ZZZ-0002-AZL", "9002", "3/3")
+        self.no_obedece |= {"9001", "9002"}
+        self.marcas = {"9002"}
+        r = L.desactivar("temu", ["ZZZ-0001-AZL", "ZZZ-0002-AZL"], actor="alguien@kubera.mx")
+        self.assertEqual([x["resultado"] for x in r["resultados"]], [L.ORDEN_ENVIADA] * 2)
+        self.assertEqual(r["resumen"], {L.ORDEN_ENVIADA: 2})
+        self.assertIn("aceptó la orden", r["resultados"][0]["detalle"])
+        self.assertEqual(len(self.llamadas()), 2, "la orden SÍ se manda")
+        self.assertEqual(self.dormidas, [8.0], "y no se sigue esperando un cambio que no llega")
+        self.assertEqual(self.reflejos, [], "no se vio apagada: channel.listings no se toca")
+        self.assertEqual([(a["resultado"], a["antes"], a["despues"]) for a in self.anotadas],
+                         [(L.ORDEN_ENVIADA, "3/3", "3/3")] * 2)
+        self.assertEqual(self.sueltas, [("ZZZ-0002-AZL", "temu")], "y el seguro la suelta igual")
+
+    def test_una_retenida_que_si_cambia_es_apagada(self):
+        self.poner("ZZZ-0001-AZL", "9001", "3/3")
+        r = L.desactivar("temu", ["ZZZ-0001-AZL"])
+        self.assertEqual((r["resultados"][0]["resultado"], r["resultados"][0]["despues"]), (L.APAGADA, "3/2"))
+
+    def test_la_agotada_que_no_cambia_sigue_siendo_sin_confirmar(self):
+        # `3/1` sí cambia (medido el 9-oct: `3/1→3/2` en ~9 s): si no lo hace, es raro y se dice.
+        self.poner("ZZZ-0001-AZL", "9001", "3/1")
+        self.no_obedece.add("9001")
+        r = L.desactivar("temu", ["ZZZ-0001-AZL"])
+        self.assertEqual(r["resultados"][0]["resultado"], L.SIN_CONFIRMAR)
+        self.assertEqual(self.dormidas, [8.0, 8.0, 8.0])
 
     def test_una_espera_por_tanda_no_una_por_publicacion(self):
         for i in range(5):
@@ -501,7 +555,8 @@ class Consultas(unittest.TestCase):
     def test_la_bitacora_del_panel_es_la_ultima_de_cada_publicacion(self):
         plano = " ".join(L._SQL_PANEL.split())
         self.assertIn("distinct on (detalle->>'listing_id')", plano)
-        self.assertIn("where proceso = %(p)s and detalle->>'canal' = %(c)s and estado = 'ok'", plano)
+        self.assertIn("where proceso = %(p)s and detalle->>'canal' = %(c)s "
+                      "and estado in ('ok', 'orden_enviada', 'sin_confirmar')", plano)
         self.assertIn("order by detalle->>'listing_id', created_at desc, id desc", plano)
 
     def test_anota_en_process_log_y_ok_solo_si_quedo_apagada(self):
@@ -511,7 +566,10 @@ class Consultas(unittest.TestCase):
                                "resultado": L.APAGADA, "detalle": None}, "abc", "alguien@kubera.mx", 3.21)
             L._anotar("temu", {"sku": "ZZZ-0002-AZL", "listing_id": "9002", "antes": "2/8", "despues": "2/8",
                                "resultado": L.ERROR, "detalle": "x"}, "abc", "", 1.0)
-        ok, mal = ex.call_args_list
+            L._anotar("temu", {"sku": "ZZZ-0003-AZL", "listing_id": "9003", "antes": "3/3", "despues": "3/3",
+                               "resultado": L.ORDEN_ENVIADA, "detalle": "x"}, "abc", "", 1.0)
+        ok, mal, enviada = ex.call_args_list
+        self.assertEqual(enviada[0][1][2], "orden_enviada")
         self.assertIn("insert into ops.process_log", ok[0][0])
         self.assertEqual((ok[0][1][0], ok[0][1][1], ok[0][1][2]), (L.PROCESO, "ZZZ-0001-AZL", "ok"))
         self.assertIn('"antes": "2/8"', ok[0][1][3])

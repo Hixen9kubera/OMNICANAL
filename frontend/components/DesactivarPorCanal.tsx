@@ -11,6 +11,11 @@
  * sólo Temu y TikTok tienen una llamada de «sacar de la venta» probada en vivo; los
  * demás canales salen deshabilitados y lo dicen.
  *
+ * Lo que el canal tiene RETENIDO (Temu `3/3`: el vendedor la quiere a la venta y Temu
+ * la tiene fuera) acepta la orden y NO cambia de estado: no se puede decir «apagada».
+ * Por eso la vista por omisión es «Por apagar» —lo que falta de verdad— y las retenidas
+ * a las que ya se les mandó la orden viven en su propio filtro, con su fecha.
+ *
  * Cuatro cosas que esta pantalla no puede dejar a la imaginación:
  *   1. INACTIVA, NO BORRA. La publicación sigue en el canal, apagada, igual que si
  *      se apagara a mano en el Seller Center.
@@ -38,20 +43,22 @@ const TANDA = 5;
 const POR_PAGINA = 100;
 const ROJO = "#E11D48";
 
-type Filtro = "publicadas" | "a_la_venta" | "apagadas" | "sin_publicar" | "todas";
+type Filtro = "por_apagar" | "a_la_venta" | "retenidas" | "apagadas" | "sin_publicar" | "todas";
 
 const FILTROS: { id: Filtro; texto: string; ayuda: string }[] = [
-  { id: "publicadas", texto: "Publicadas", ayuda: "Las que se pueden desactivar: a la venta y las que el canal regresa solo a la venta" },
+  { id: "por_apagar", texto: "Por apagar", ayuda: "Lo que falta: se puede desactivar y todavía no se le ha mandado la orden" },
   { id: "a_la_venta", texto: "A la venta", ayuda: "Las que se pueden comprar en este momento" },
-  { id: "apagadas", texto: "Apagadas", ayuda: "Ya fuera de la venta" },
+  { id: "retenidas", texto: "Retenidas por el canal", ayuda: "No venden ahora, pero el canal las puede regresar solo a la venta (agotadas, o retenidas por el canal). Aceptan la orden de apagado sin cambiar de estado" },
+  { id: "apagadas", texto: "Apagadas", ayuda: "Ya fuera de la venta por decisión nuestra" },
   { id: "sin_publicar", texto: "Sin publicar", ayuda: "Borradores, incompletas, en revisión o borradas" },
   { id: "todas", texto: "Todas", ayuda: "Todo lo que el canal tiene de nosotros" },
 ];
 
 function entra(p: PublicacionLote, f: Filtro): boolean {
   if (f === "todas") return true;
-  if (f === "publicadas") return p.desactivable;
+  if (f === "por_apagar") return p.desactivable && !p.orden;
   if (f === "a_la_venta") return p.grupo === "a_la_venta";
+  if (f === "retenidas") return p.grupo === "publicada";
   if (f === "apagadas") return p.grupo === "apagada" || p.grupo === "apagada_canal";
   return !p.desactivable && p.grupo !== "apagada" && p.grupo !== "apagada_canal";
 }
@@ -70,6 +77,7 @@ const CHIP_GRUPO: Record<string, string> = {
 const RESULTADO: Record<ResultadoLote, { texto: string; clase: string }> = {
   apagada: { texto: "Apagada", clase: "bg-emerald-50 text-emerald-700 ring-emerald-200" },
   ya_apagada: { texto: "Ya estaba apagada", clase: "bg-slate-100 text-slate-600 ring-slate-200" },
+  orden_enviada: { texto: "Orden enviada", clase: "bg-sky-50 text-sky-700 ring-sky-200" },
   no_aplica: { texto: "No aplica", clase: "bg-slate-50 text-slate-500 ring-slate-200" },
   sin_publicacion: { texto: "Sin publicación", clase: "bg-slate-50 text-slate-500 ring-slate-200" },
   sin_confirmar: { texto: "Sin confirmar", clase: "bg-amber-50 text-amber-800 ring-amber-200" },
@@ -99,7 +107,7 @@ export default function DesactivarPorCanal({ canales, onCerrar }: Props) {
   const [lista, setLista] = useState<ListaLote | null>(null);
   const [cargando, setCargando] = useState(false);
   const [falla, setFalla] = useState<string | null>(null);
-  const [filtro, setFiltro] = useState<Filtro>("publicadas");
+  const [filtro, setFiltro] = useState<Filtro>("por_apagar");
   const [buscar, setBuscar] = useState("");
   const [pagina, setPagina] = useState(1);
   const [seleccion, setSeleccion] = useState<Set<string>>(new Set());
@@ -139,7 +147,7 @@ export default function DesactivarPorCanal({ canales, onCerrar }: Props) {
     setSeleccion(new Set());
     setResultados({});
     setCorrida(null);
-    setFiltro("publicadas");
+    setFiltro("por_apagar");
     setBuscar("");
     setPagina(1);
     void cargar(c);
@@ -447,8 +455,12 @@ export default function DesactivarPorCanal({ canales, onCerrar }: Props) {
                     </thead>
                     <tbody>
                       {enPagina.length === 0 && (
-                        <tr><td colSpan={7} className="px-3 py-8 text-center text-sm text-slate-400">
-                          Nada en este filtro.
+                        <tr><td colSpan={7} className="px-3 py-8 text-center text-sm text-slate-500">
+                          {filtro === "por_apagar" && !buscar.trim()
+                            ? (cuentas.a_la_venta === 0
+                              ? `No queda nada por apagar: ${lista.nombre} no tiene nada a la venta.`
+                              : "No queda nada por apagar en este canal.")
+                            : "Nada en este filtro."}
                         </td></tr>
                       )}
                       {enPagina.map((p) => {
@@ -482,6 +494,13 @@ export default function DesactivarPorCanal({ canales, onCerrar }: Props) {
                                     title={`Estado del canal: ${p.estado}`}>
                                 {p.etiqueta}
                               </span>
+                              {p.orden && (
+                                <div className="mt-0.5 flex items-center gap-1 text-[11px] text-sky-700"
+                                     title="El canal aceptó la orden de apagado. Mientras la tenga retenida no cambia de estado.">
+                                  <Check size={11} />
+                                  orden de apagado enviada{p.orden.cuando ? ` · ${p.orden.cuando}` : ""}
+                                </div>
+                              )}
                               {p.apagada_por && (
                                 <div className="mt-0.5 flex items-center gap-1 text-[11px] text-slate-500">
                                   <ShieldAlert size={11} />

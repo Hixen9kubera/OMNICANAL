@@ -2502,6 +2502,8 @@ export interface PublicacionLote {
   visto: string | null;
   /** Quién la tiene apagada, si se sabe: el seguro de stock 0 o esta pantalla. */
   apagada_por: { quien: "panel" | "seguro"; cuando: string | null; actor: string | null; antes: string | null } | null;
+  /** Retenida por el canal a la que YA se le mandó la orden de apagado (y sigue igual). */
+  orden: { cuando: string | null; actor: string | null } | null;
 }
 
 export interface ListaLote {
@@ -2509,6 +2511,8 @@ export interface ListaLote {
   nombre: string;
   total: number;
   desactivables: number;
+  /** Lo que todavía falta: se puede desactivar y no se le ha mandado la orden. */
+  por_apagar: number;
   /** Cuándo vio el censo estas publicaciones (hora de México). */
   censo: string | null;
   resumen: Record<string, number>;
@@ -2517,7 +2521,8 @@ export interface ListaLote {
   canales: { id: string; nombre: string }[];
 }
 
-export type ResultadoLote = "apagada" | "ya_apagada" | "no_aplica" | "sin_publicacion" | "sin_confirmar" | "error";
+export type ResultadoLote = "apagada" | "ya_apagada" | "orden_enviada" | "no_aplica" | "sin_publicacion"
+  | "sin_confirmar" | "error";
 
 export interface FilaResultadoLote {
   sku: string;
