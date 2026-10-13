@@ -26,7 +26,6 @@ from typing import Any
 MAX_LINEAS = 2000                # renglones por pedido (la subcategoría más grande ronda los 1,300)
 MAX_NOTAS = 500
 _LLAVE = re.compile(r"^[A-Za-z0-9-]{8,80}$")
-_SKU = re.compile(r"^[A-Za-z0-9._/+ -]{1,80}$")
 CONFIRMADA = ("sale", "done")
 
 
@@ -45,6 +44,8 @@ class Producto:
     precio: float | None
     piezas: int
     en_odoo: bool
+    categoria: str = ""
+    subcategoria: str = ""
 
 
 @dataclass
@@ -55,8 +56,12 @@ class Catalogo:
 
     @classmethod
     def de_json(cls, doc: dict[str, Any]) -> "Catalogo":
-        prods = {f[0]: Producto(sku=f[0], titulo=f[1], precio=f[3], piezas=int(f[5]), en_odoo=bool(f[7]))
-                 for f in doc["P"]}
+        rutas = doc.get("K") or []
+        prods = {}
+        for f in doc["P"]:
+            cat, sub = rutas[f[2]] if isinstance(f[2], int) and 0 <= f[2] < len(rutas) else ("", "")
+            prods[f[0]] = Producto(sku=f[0], titulo=f[1], precio=f[3], piezas=int(f[5]), en_odoo=bool(f[7]),
+                                   categoria=cat, subcategoria=sub)
         return cls(version=str(doc.get("version") or ""), corte=str(doc.get("corte") or ""), productos=prods)
 
 
@@ -87,13 +92,27 @@ def folio_de(huella_tienda: str, llave: str) -> str:
     return "MAY-" + base64.b32encode(crudo)[:8].decode("ascii")
 
 
-def validar(cuerpo: Any, catalogo: Catalogo) -> tuple[str, str, list[Linea], list[str]]:
-    """Del cuerpo del navegador a renglones confiables. Devuelve (llave, notas, renglones, subcategorías)."""
+def texto(valor: Any, tope: int) -> str:
+    """Un texto libre del navegador: una sola línea, sin caracteres de control y con tope."""
+    if valor is None:
+        return ""
+    if not isinstance(valor, str):
+        raise Rechazo(422, "pedido_invalido", "Uno de los datos no se pudo leer.")
+    return re.sub(r"\s+", " ", re.sub(r"[\x00-\x1f\x7f]", " ", valor)).strip()[:tope]
+
+
+def leer_llave(cuerpo: Any) -> str:
+    """La llave que hace que reenviar lo mismo no lo duplique."""
     if not isinstance(cuerpo, dict):
         raise Rechazo(422, "pedido_invalido", "El pedido no se pudo leer.")
     llave = cuerpo.get("llave")
     if not isinstance(llave, str) or not _LLAVE.match(llave):
         raise Rechazo(422, "pedido_invalido", "El pedido llegó sin su llave. Recarga la página y vuelve a armarlo.")
+    return llave
+
+
+def leer_lineas(cuerpo: dict[str, Any], catalogo: Catalogo) -> list[Linea]:
+    """Los renglones, contra el catálogo publicado: SKU que existe, con precio y por su lote completo."""
     crudas = cuerpo.get("lineas")
     if not isinstance(crudas, list) or not crudas:
         raise Rechazo(422, "pedido_invalido", "El pedido llegó vacío.")
@@ -104,7 +123,8 @@ def validar(cuerpo: Any, catalogo: Catalogo) -> tuple[str, str, list[Linea], lis
     for c in crudas:
         sku = c.get("sku") if isinstance(c, dict) else None
         cantidad = c.get("cantidad") if isinstance(c, dict) else None
-        if not isinstance(sku, str) or not _SKU.match(sku) or isinstance(cantidad, bool) or not isinstance(cantidad, int):
+        # El SKU no se valida por su forma (los hay con «*», comillas o «Ñ»): se valida porque está en el catálogo.
+        if not isinstance(sku, str) or not 0 < len(sku) <= 80 or isinstance(cantidad, bool) or not isinstance(cantidad, int):
             raise Rechazo(422, "pedido_invalido", "El pedido trae un renglón que no se pudo leer.")
         p = catalogo.productos.get(sku)
         if sku in vistos or p is None or p.precio is None or cantidad != p.piezas:
@@ -114,10 +134,14 @@ def validar(cuerpo: Any, catalogo: Catalogo) -> tuple[str, str, list[Linea], lis
             raise Rechazo(422, "pedido_invalido", f"El renglón {sku} no coincide con el catálogo: aquí solo se llevan lotes completos.")
         vistos.add(sku)
         lineas.append(Linea(sku=sku, pedido=p.piezas, precio=float(p.precio), titulo=p.titulo))
-    notas = cuerpo.get("notas") or ""
-    if not isinstance(notas, str):
-        raise Rechazo(422, "pedido_invalido", "Las notas no se pudieron leer.")
-    notas = re.sub(r"\s+", " ", notas).strip()[:MAX_NOTAS]
+    return lineas
+
+
+def validar(cuerpo: Any, catalogo: Catalogo) -> tuple[str, str, list[Linea], list[str]]:
+    """Del cuerpo del navegador a renglones confiables. Devuelve (llave, notas, renglones, subcategorías)."""
+    llave = leer_llave(cuerpo)
+    lineas = leer_lineas(cuerpo, catalogo)
+    notas = texto(cuerpo.get("notas"), MAX_NOTAS)
     subs = []
     for s in (cuerpo.get("subcategorias") or [])[:60] if isinstance(cuerpo.get("subcategorias"), list) else []:
         if isinstance(s, dict) and isinstance(s.get("subcategoria"), str):

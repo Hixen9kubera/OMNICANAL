@@ -296,8 +296,8 @@ class Rutas(unittest.TestCase):
         cls.tmp.cleanup()
 
     def setUp(self):
-        self.A._envios._cubos.clear()
-        self.A._fallos._cubos.clear()
+        for cubos in (self.A._envios, self.A._fallos, self.A._ofertas_ip, self.A._ofertas_todas):
+            cubos._cubos.clear()
 
     def _subir(self):
         adm = {"X-Admin-Key": "llave-de-administracion-de-prueba"}
@@ -324,7 +324,8 @@ class Rutas(unittest.TestCase):
         self.assertEqual(self.c.get("/fotos/m000.jpg?v=1").status_code, 200)
         self.assertEqual(self.c.get("/fotos/m999.jpg").status_code, 404)
         self.assertEqual(self.c.get("/api/mayoreo/estado").json(),
-                         {"pedidos": "activo", "flujo": "instante", "vigencia": "", "max_lineas": 2000, "catalogo": "20261012-120000"})
+                         {"ofertas": "activo", "pedidos": "activo", "flujo": "instante", "vigencia": "", "max_lineas": 2000,
+                          "catalogo": "20261012-120000"})
         pagina = self.c.get("/")
         self.assertIn("KUBERA MAYOREO", pagina.text)
         self.assertIn("noindex", pagina.headers["x-robots-tag"])
@@ -355,8 +356,141 @@ class Rutas(unittest.TestCase):
     def test_6_cuerpo_demasiado_grande(self):
         self.assertEqual(self.c.post("/api/mayoreo/pedidos", content=b"x" * 500_000, headers={"Content-Type": "application/json"}).status_code, 413)
 
+    def _oferta(self, llave: str, *skus: str, **extra) -> dict:
+        c = cuerpo(*skus, oferta=5000, nombre="Tienda Dos", **extra)
+        del c["codigo_tienda"]                              # las ofertas no piden código
+        return {**c, "llave": llave}
+
+    def test_7_una_oferta_avisa_una_vez_y_reenviarla_no_duplica(self):
+        antes, ordenes = len(self.avisos), len(self.odoo.ordenes)
+        c = self._oferta("oferta-de-prueba-0001", "CALZ-1-NEG-41", "OFI-9-NEG", contacto="55 0000 0000", notas="paso el lunes")
+        r = self.c.post("/api/mayoreo/ofertas", json=c)
+        self.assertEqual(r.status_code, 200, r.text)
+        d = r.json()
+        self.assertRegex(d["folio"], r"^OFE-[A-Z2-7]{8}$")
+        self.assertEqual((d["estado"], d["oferta"], d["productos"], d["piezas"], d["catalogo_total"], d["porcentaje"]),
+                         ("en_revision", 5000.0, 2, 70, 28440.0, 17.6))
+        self.assertEqual(self.c.post("/api/mayoreo/ofertas", json=c).json(), d)
+        self.assertEqual(len(self.avisos), antes + 1)
+        self.assertEqual(len(self.odoo.ordenes), ordenes)                       # una oferta no toca Odoo
+        aviso = "\n".join(self.avisos[-1])
+        for trozo in ("Tienda Dos", "$5,000.00", "2 productos · 70 piezas", "17.6 %", "55 0000 0000", "paso el lunes",
+                      "`OFI-9-NEG` × 40", "1 de estos productos no existen en Odoo"):
+            self.assertIn(trozo, aviso)
+        adm = {"X-Admin-Key": "llave-de-administracion-de-prueba"}
+        lista = self.c.get("/api/mayoreo/admin/ofertas", headers=adm).json()
+        self.assertEqual([(o["folio"], o["nombre"], o["oferta"]) for o in lista], [(d["folio"], "Tienda Dos", 5000.0)])
+        self.assertEqual(self.c.get(f"/api/mayoreo/admin/ofertas?folio={d['folio']}", headers=adm).json()["contacto"], "55 0000 0000")
+
+    def test_8_si_slack_no_recibe_la_oferta_no_se_da_por_recibida(self):
+        c = self._oferta("oferta-de-prueba-0002", "MUE-1-MUL")
+        bueno, self.S.avisar = self.S.avisar, lambda cfg, mensajes: False
+        try:
+            r = self.c.post("/api/mayoreo/ofertas", json=c)
+        finally:
+            self.S.avisar = bueno
+        self.assertEqual((r.status_code, r.json()["detail"]["codigo"]), (502, "intenta_de_nuevo"))
+        antes = len(self.avisos)
+        self.assertEqual(self.c.post("/api/mayoreo/ofertas", json=c).status_code, 200)      # el reintento sí avisa
+        self.assertEqual(len(self.avisos), antes + 1)
+
+    def test_9_ofertas_que_no_pasan(self):
+        base = self._oferta("oferta-de-prueba-0003", "MUE-1-MUL")
+        for nombre, c, codigo in (("sin monto", {**base, "oferta": None}, "oferta_invalida"),
+                                  ("monto en cero", {**base, "oferta": 0}, "oferta_invalida"),
+                                  ("monto de texto", {**base, "oferta": "5000"}, "oferta_invalida"),
+                                  ("monto booleano", {**base, "oferta": True}, "oferta_invalida"),
+                                  ("sin nombre", {**base, "nombre": " "}, "falta_nombre"),
+                                  ("piezas sueltas", {**base, "lineas": [{"sku": "MUE-1-MUL", "cantidad": 10}]}, "pedido_invalido")):
+            with self.subTest(nombre):
+                r = self.c.post("/api/mayoreo/ofertas", json=c)
+                self.assertEqual((r.status_code, r.json()["detail"]["codigo"]), (422, codigo))
+
+    def test_91_freno_de_ofertas_por_ip(self):
+        antes = len(self.avisos)
+        codigos = [self.c.post("/api/mayoreo/ofertas", json=self._oferta(f"oferta-en-rafaga-{i:04d}", "MUE-1-MUL")).status_code
+                   for i in range(8)]
+        self.assertEqual(codigos, [200] * 6 + [429] * 2)
+        self.assertEqual(len(self.avisos), antes + 6)
+
+
+class Ofertas(unittest.TestCase):
+    """Las reglas de una oferta, sin red."""
+
+    def setUp(self):
+        import ofertas as O
+        self.O = O
+        self.cat = P.Catalogo.de_json(catalogo_json())
+
+    def _cuerpo(self, *skus: str, **extra) -> dict:
+        return {**cuerpo(*skus), "oferta": 100000, "nombre": "Tienda Uno", **extra}
+
+    def test_separa_subcategorias_completas_de_productos_sueltos(self):
+        of = self.O.validar(self._cuerpo("CALZ-1-NEG-41", "CALZ-1-NEG-42", "MUE-1-MUL"), self.cat)
+        self.assertEqual(of.completas, [{"categoria": "Ropa", "subcategoria": "Calzado", "productos": 2, "piezas": 80, "total": 56000.0}])
+        self.assertEqual([ln.sku for ln in of.sueltas], ["MUE-1-MUL"])        # Cocina no va entera: falta OFI-9-NEG
+        self.assertEqual((of.piezas, of.total_catalogo, of.porcentaje, of.fuera_de_odoo), (7280, 2026064.0, 4.9, 0))
+
+    def test_no_le_cree_al_navegador_que_una_subcategoria_va_completa(self):
+        of = self.O.validar(self._cuerpo("CALZ-1-NEG-41", subcategorias=[{"categoria": "Ropa", "subcategoria": "Calzado"}]), self.cat)
+        self.assertEqual((of.completas, [ln.sku for ln in of.sueltas]), ([], ["CALZ-1-NEG-41"]))
+
+    def test_skus_con_caracteres_raros_pasan_y_no_rompen_el_aviso(self):
+        doc = catalogo_json()
+        raros = ['TEC-2329-PLA-38*25*71CM', 'ROP-0306-NEG-2XL>', 'MUE-0359-MUÑ-ROJ-BLN', 'ORG-1-NEG-12"']
+        doc["P"] = [[s, "Producto raro", 1, 10.0, "c", 5, -1, 1] for s in raros]
+        c = {"llave": "llave-de-prueba-0010", "version": doc["version"], "oferta": 100, "nombre": "Tienda Uno",
+             "lineas": [{"sku": s, "cantidad": 5} for s in raros[:3]]}
+        of = self.O.validar(c, P.Catalogo.de_json(doc))
+        aviso = "\n".join(self.O.mensajes("OFE-AAAAAAAA", of))
+        self.assertIn("`TEC-2329-PLA-38*25*71CM` × 5", aviso)
+        self.assertIn("`ROP-0306-NEG-2XL&gt;` × 5", aviso)
+
+    def test_folio_estable(self):
+        self.assertEqual(self.O.folio_de("a" * 12), self.O.folio_de("a" * 12))
+        self.assertNotEqual(self.O.folio_de("a" * 12), self.O.folio_de("b" * 12))
+        self.assertRegex(self.O.folio_de("a" * 12), r"^OFE-[A-Z2-7]{8}$")
+
+    def test_montos_que_no_pasan(self):
+        for monto in (None, 0, -5, 0.5, "100", True, float("nan"), float("inf"), 10 ** 11):
+            with self.subTest(monto=monto), self.assertRaises(P.Rechazo) as r:
+                self.O.validar(self._cuerpo("MUE-1-MUL", oferta=monto), self.cat)
+            self.assertEqual(r.exception.codigo, "oferta_invalida")
+
+    def test_lo_que_escribe_la_tienda_no_puede_llamar_al_canal_ni_poner_ligas(self):
+        of = self.O.validar(self._cuerpo("MUE-1-MUL", nombre="<!channel> *Tienda*", contacto="<https://malo.example|clic>",
+                                         notas="línea uno\nlínea dos\x07 `código` & más"), self.cat)
+        aviso = "\n".join(self.O.mensajes("OFE-AAAAAAAA", of))
+        self.assertNotIn("<!channel>", aviso)
+        self.assertNotIn("<https://", aviso)
+        self.assertIn("&lt;!channel&gt;", aviso)
+        self.assertIn("Notas: línea uno línea dos 'código' &amp; más", aviso)
+
+    def test_una_oferta_grande_resume_los_productos_y_cabe_en_slack(self):
+        doc = catalogo_json()
+        doc["P"] = [[f"SKU-{i:04d}", "Producto de prueba " + "x" * 50, i % 2, 10.0, "c", 5, -1, 1] for i in range(400)]
+        cat = P.Catalogo.de_json(doc)
+        skus = [f"SKU-{i:04d}" for i in range(400) if i % 2 == 0] + [f"SKU-{i:04d}" for i in range(1, 300, 2)]
+        c = {"llave": "llave-de-prueba-0009", "version": doc["version"], "oferta": 9000, "nombre": "Tienda Grande",
+             "lineas": [{"sku": s, "cantidad": 5} for s in skus]}
+        of = self.O.validar(c, cat)
+        self.assertEqual(([x["productos"] for x in of.completas], len(of.sueltas)), ([200], 150))
+        mensajes = self.O.mensajes("OFE-AAAAAAAA", of)
+        self.assertTrue(all(len(m) <= 3600 for m in mensajes))
+        junto = "\n".join(mensajes)
+        self.assertIn("350 productos · 1,750 piezas", junto)
+        self.assertIn("y 90 productos más", junto)
+
 
 class Pausa(unittest.TestCase):
+    def test_las_ofertas_se_reciben_en_cuanto_hay_a_quien_avisar(self):
+        import servicio as S
+        self.assertEqual(S.Config.del_entorno({}).modo_ofertas(), "demo")
+        self.assertEqual(S.Config.del_entorno({"SLACK_WEBHOOK_CATALOGO": "https://hooks.invalid/x"}).modo_ofertas(), "activo")
+        self.assertEqual(S.Config.del_entorno({"SLACK_WEBHOOK_CATALOGO": "https://hooks.invalid/x", "MAYOREO_OFERTAS": "pausa"}).modo_ofertas(), "pausa")
+        self.assertEqual(S.Config.del_entorno({"SLACK_WEBHOOK_CATALOGO": "https://hooks.invalid/x", "MAYOREO_OFERTAS": "demo"}).modo_ofertas(), "demo")
+        self.assertEqual(S.Config.del_entorno({"MAYOREO_OFERTAS": "cualquier cosa"}).modo_ofertas(), "pausa")
+
     def test_pedir_activo_a_medio_configurar_deja_en_pausa(self):
         import servicio as S
         cfg = S.Config.del_entorno({"MAYOREO_PEDIDOS": "activo", "ODOO_URL": "https://o"})

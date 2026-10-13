@@ -4,20 +4,27 @@ app.py — El módulo del catálogo de mayoreo: la página, sus archivos y UN en
     GET  /                               la página
     GET  /catalogo.json · /fotos/mNNN.jpg  el catálogo (archivos que sube `publicar.py`)
     GET  /api/mayoreo/estado             cómo está el módulo: demo, activo o en pausa
-    POST /api/mayoreo/pedidos            el pedido de una tienda → orden de venta en Odoo + aviso en Slack
+    POST /api/mayoreo/ofertas            la oferta de una tienda por los lotes que eligió → aviso en Slack
+    POST /api/mayoreo/pedidos            (apagado) pedido con código de tienda → orden de venta en Odoo
     PUT  /api/mayoreo/admin/archivo/…    subir un catálogo nuevo (con la llave de administración)
     POST /api/mayoreo/admin/publicar     ponerlo a la vista, todo junto o nada
-    GET  /api/mayoreo/admin/pedidos      los pedidos recibidos
+    GET  /api/mayoreo/admin/ofertas      las ofertas recibidas (y /admin/pedidos, los pedidos)
 
 POR QUÉ VIVE APARTE
   Es lo único de Kubera pensado para que lo abra gente de fuera. No tiene base de datos ni llaves
   del panel: si alguien lo revienta, no hay por dónde seguir. Lo que sabe del inventario es el
-  archivo que se le sube; lo que puede hacer en Odoo es crear una orden de venta.
+  archivo que se le sube.
 
-NACE SIN ENCENDER NADA
-  `MAYOREO_PEDIDOS` vale `demo` por omisión: la página arma el pedido y enseña la respuesta sin
-  mandarla. Con `activo` y TODO configurado (Odoo, Slack, tiendas) recibe pedidos; si falta algo se
-  queda en pausa por su cuenta. Encenderlo es un flujo de negocio vivo: lo decide Brandon.
+LO QUE HACE HOY (13-oct-2026): OFERTAS
+  La página ya no pide código de tienda. Quien entra elige lotes completos, dice cuánto ofrece por
+  todo y lo manda: se avisa en Slack y se guarda. No se aparta nada ni se toca Odoo. Las ofertas se
+  reciben en cuanto existe el webhook de Slack (`SLACK_WEBHOOK_CATALOGO`); sin él, la página queda en
+  demostración.
+
+LO QUE QUEDÓ APAGADO: PEDIDOS QUE APARTAN EN ODOO
+  `POST /api/mayoreo/pedidos` sigue aquí, con sus pruebas, para cuando vuelvan los códigos de tienda:
+  solo responde con `MAYOREO_PEDIDOS=activo` y TODO configurado (Odoo, Slack, tiendas). La página no
+  lo llama. Encenderlo es un flujo de negocio vivo: lo decide Brandon.
 """
 from __future__ import annotations
 
@@ -36,6 +43,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 
+import ofertas as O
 import pedidos as P
 import servicio as S
 
@@ -109,6 +117,9 @@ class Cubos:
 
 _envios = Cubos(tope=8, por_minuto=8)          # pedidos (y sus reintentos) por IP
 _fallos = Cubos(tope=5, por_minuto=0.5)        # códigos equivocados por IP: 5 seguidos y luego 1 cada 2 min
+# Las ofertas no piden código: cualquiera puede mandar una, y cada una es un mensaje en Slack.
+_ofertas_ip = Cubos(tope=6, por_minuto=0.5)    # por IP: 6 seguidas y luego una cada 2 min
+_ofertas_todas = Cubos(tope=40, por_minuto=1)  # entre todos: 40 seguidas y luego 60 por hora
 
 
 def ip_de(request: Request) -> str:
@@ -192,18 +203,59 @@ def foto(nombre: str) -> FileResponse:
 @app.get("/api/mayoreo/estado")
 def estado() -> dict[str, Any]:
     cat = catalogo()
-    return {"pedidos": cfg.modo(), "flujo": "instante" if cfg.confirmar else "revision", "vigencia": cfg.vigencia,
-            "max_lineas": P.MAX_LINEAS, "catalogo": cat.version if cat else None}
+    return {"ofertas": cfg.modo_ofertas(), "pedidos": cfg.modo(), "flujo": "instante" if cfg.confirmar else "revision",
+            "vigencia": cfg.vigencia, "max_lineas": P.MAX_LINEAS, "catalogo": cat.version if cat else None}
 
 
-# ── El pedido ─────────────────────────────────────────────────────────────────
 _en_curso: dict[str, asyncio.Task] = {}
 
 
 def _al_terminar(folio: str, tarea: asyncio.Task) -> None:
     _en_curso.pop(folio, None)
     if not tarea.cancelled() and tarea.exception() is not None:
-        log.error("%s: el pedido falló a medio camino: %r", folio, tarea.exception())
+        log.error("%s: falló a medio camino: %r", folio, tarea.exception())
+
+
+# ── La oferta ─────────────────────────────────────────────────────────────────
+@app.post("/api/mayoreo/ofertas")
+async def crear_oferta(request: Request):
+    if cfg.modo_ofertas() != "activo":
+        raise _error(503, "no_disponible", "Por ahora no estamos recibiendo ofertas por aquí. Escríbele a tu ejecutivo de ventas.")
+    if not _envios.gastar(ip_de(request)):
+        raise _error(429, "limite_peticiones", "Espera un minuto y vuelve a enviar. Tu oferta no se duplica.")
+    try:
+        cuerpo = json.loads(await _cuerpo(request, MAX_CUERPO))
+    except ValueError:
+        raise _error(422, "pedido_invalido", "La oferta no se pudo leer.") from None
+    cat = await asyncio.to_thread(catalogo)
+    if cat is None:
+        raise _error(503, "no_disponible", "El catálogo todavía no está cargado.")
+    try:
+        oferta = O.validar(cuerpo, cat)
+    except P.Rechazo as r:
+        raise _error(r.status, r.codigo, r.mensaje) from None
+
+    # La misma oferta reenviada recibe lo mismo y no vuelve a sonar en Slack.
+    folio = O.folio_de(oferta.llave)
+    previa = await asyncio.to_thread(S.oferta_guardada, cfg, folio)
+    if previa is not None:
+        return previa
+    tarea = _en_curso.get(folio)
+    if tarea is None:
+        # El freno va aquí y no antes: lo gasta lo que de verdad va a sonar en Slack, no un reenvío.
+        if not _ofertas_ip.gastar(ip_de(request)) or not _ofertas_todas.gastar("todas"):
+            raise _error(429, "limite_peticiones", "Espera unos minutos y vuelve a enviar. Tu oferta no se duplica.")
+        tarea = asyncio.create_task(asyncio.to_thread(S.procesar_oferta, cfg, folio, oferta))
+        _en_curso[folio] = tarea
+        tarea.add_done_callback(lambda t, f=folio: _al_terminar(f, t))
+    try:
+        return await asyncio.shield(tarea)
+    except Exception:  # noqa: BLE001 — Slack no contestó: no se da por recibida
+        log.exception("%s: no se pudo avisar la oferta", folio)
+        raise _error(502, "intenta_de_nuevo", "No pudimos registrar tu oferta en este momento. Vuelve a enviarla en un minuto: no se duplica.") from None
+
+
+# ── El pedido (apagado: pide código de tienda y aparta en Odoo) ───────────────
 
 
 @app.post("/api/mayoreo/pedidos")
@@ -342,8 +394,34 @@ async def pedidos_recibidos(request: Request, folio: str | None = None) -> Any:
     return await asyncio.to_thread(_pedidos, folio)
 
 
-log.info("catálogo de mayoreo · pedidos: %s (pedido: %s) · flujo: %s · tiendas activas: %s · datos: %s",
-         cfg.modo(), cfg.pedidos, "aparta al instante" if cfg.confirmar else "pasa a revisión",
-         sum(1 for t in cfg.tiendas if t.activa), cfg.datos)
+def _ofertas(folio: str | None) -> Any:
+    carpeta = cfg.datos / "ofertas"
+    if folio:
+        if not re.fullmatch(r"OFE-[A-Z2-7]{8}", folio):
+            raise HTTPException(404)
+        try:
+            return json.loads((carpeta / f"{folio}.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            raise HTTPException(404) from None
+    salida = []
+    for ruta in sorted(carpeta.glob("OFE-*.json"), key=lambda r: r.stat().st_mtime, reverse=True)[:500]:
+        try:
+            d = json.loads(ruta.read_text(encoding="utf-8"))
+            r = d["respuesta"]
+            salida.append({"folio": d["folio"], "recibido": d["recibido"], "nombre": d["nombre"], "contacto": d["contacto"],
+                           "oferta": r["oferta"], "catalogo_total": r["catalogo_total"], "porcentaje": r["porcentaje"],
+                           "productos": r["productos"], "piezas": r["piezas"]})
+        except (OSError, ValueError, KeyError):
+            continue
+    return salida
+
+
+@app.get("/api/mayoreo/admin/ofertas", include_in_schema=False)
+async def ofertas_recibidas(request: Request, folio: str | None = None) -> Any:
+    _admin(request)
+    return await asyncio.to_thread(_ofertas, folio)
+
+
+log.info("catálogo de mayoreo · ofertas: %s · pedidos con código: %s · datos: %s", cfg.modo_ofertas(), cfg.modo(), cfg.datos)
 if cfg.pedidos == "activo" and cfg.faltantes():
     log.warning("PEDIDOS EN PAUSA aunque se pidió `activo`. Falta: %s", "; ".join(cfg.faltantes()))

@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
+import ofertas as O
 import pedidos as P
 from odoo import Odoo
 
@@ -39,7 +40,8 @@ class Tienda:
 @dataclass
 class Config:
     datos: Path
-    pedidos: str = "demo"                 # demo | activo | pausa
+    ofertas: str = ""                     # "" = solas (activas si hay webhook de Slack) | demo | pausa
+    pedidos: str = "demo"                 # demo | activo | pausa   (el camino con código de tienda y Odoo)
     confirmar: bool = False               # True = la orden se confirma sola y Odoo aparta al instante
     vigencia: str = ""
     tiendas: list[Tienda] = field(default_factory=list)
@@ -72,7 +74,9 @@ class Config:
             if ident.strip().isdigit():
                 almacenes.append((int(ident), nombre.strip() or ident.strip()))
         modo = v("MAYOREO_PEDIDOS", "demo").lower()
+        ofertas = v("MAYOREO_OFERTAS").lower()
         return cls(datos=Path(v("MAYOREO_DATOS", "datos")).resolve(),
+                   ofertas=ofertas if ofertas in ("", "demo", "pausa") else "pausa",
                    pedidos=modo if modo in ("demo", "activo", "pausa") else "pausa",
                    confirmar=v("MAYOREO_CONFIRMAR").lower() in ("1", "true", "si", "sí"),
                    vigencia=v("MAYOREO_VIGENCIA")[:60], tiendas=tiendas,
@@ -101,6 +105,15 @@ class Config:
         if self.pedidos == "activo" and self.faltantes():
             return "pausa"
         return self.pedidos
+
+    def modo_ofertas(self) -> str:
+        """
+        `activo` en cuanto hay a quién avisar: una oferta solo sirve si alguien la ve, así que sin el
+        webhook de Slack la página se queda en demostración. `MAYOREO_OFERTAS=pausa` las detiene.
+        """
+        if self.ofertas in ("demo", "pausa"):
+            return self.ofertas
+        return "activo" if self.slack else "demo"
 
     def tienda_de(self, codigo: str) -> Tienda | None:
         """La tienda de ese código, esté activa o no. Compara todas las huellas, sin atajos de tiempo."""
@@ -148,6 +161,36 @@ def avisar(cfg: Config, mensajes: list[str]) -> bool:
             bien = False
             log.warning("no se pudo avisar a Slack: %s", exc)
     return bien
+
+
+def oferta_guardada(cfg: Config, folio: str) -> dict[str, Any] | None:
+    """Lo que ya se le contestó a esta oferta, si ya se avisó y se guardó."""
+    try:
+        return json.loads((cfg.datos / "ofertas" / f"{folio}.json").read_text(encoding="utf-8"))["respuesta"]
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def procesar_oferta(cfg: Config, folio: str, of: "O.Oferta") -> dict[str, Any]:
+    """
+    Una oferta ya validada: se avisa en Slack y se guarda. No toca Odoo ni aparta nada.
+
+    Primero el aviso y después el archivo: si Slack no la recibió, la oferta NO se da por recibida
+    (truena, la página pide reintentar y el reintento vuelve a avisar). Decirle «recibida» a una tienda
+    cuya oferta nadie vio es peor que pedirle que la mande otra vez.
+    """
+    resp = O.respuesta(folio, of)
+    if not avisar(cfg, O.mensajes(folio, of)):
+        raise RuntimeError("Slack no recibió el aviso de la oferta")
+    ruta = cfg.datos / "ofertas" / f"{folio}.json"
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    doc = {"folio": folio, "recibido": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "nombre": of.nombre, "contacto": of.contacto,
+           "notas": of.notas, "subcategorias_completas": of.completas, "fuera_de_odoo": of.fuera_de_odoo, "respuesta": resp}
+    tmp = ruta.with_suffix(".tmp")
+    tmp.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(ruta)
+    log.info("%s · oferta de %s por %s renglones (%.1f %% del catálogo)", folio, of.nombre, len(of.lineas), of.porcentaje)
+    return resp
 
 
 def procesar(cfg: Config, tienda: Tienda, folio: str, notas: str, lineas: list[P.Linea], subs: list[str],

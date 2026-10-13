@@ -1,9 +1,9 @@
 # Catálogo de mayoreo
 
 El catálogo que ven las tiendas de mayoreo: qué hay, cuántas piezas y a qué precio, con un carrito
-para pedir **lotes completos** (un producto con todas sus piezas, o una subcategoría entera). El
-pedido se vuelve una orden de venta en Odoo, que es lo que aparta la mercancía, y se avisa en el
-canal `#catalogo-mayoreo` de Slack.
+de **lotes completos** (un producto con todas sus piezas, o una subcategoría entera). Quien lo usa
+dice **cuánto ofrece por todo** y lo manda: la oferta se avisa en el canal `#catalogo-mayoreo` de
+Slack y alguien la revisa y le responde.
 
 Es un módulo **aparte** del panel, en su propio servicio de Railway (`catalogo-mayoreo`), y vive en
 la rama `catalogo-mayoreo`: nunca se mezcla a `main`.
@@ -15,68 +15,55 @@ Es lo único de Kubera pensado para que lo abra gente de fuera, así que no comp
 - **No tiene base de datos.** Ni cadena de conexión, ni llaves de Supabase, ni sesión del panel.
 - **Lo que sabe del inventario es un archivo** (`catalogo.json` + fotos) que se le sube ya armado.
   No trae costos, proveedor ni contenedor.
-- **Lo único que puede escribir** es una orden de venta en Odoo, y solo con el código de una tienda
-  autorizada.
-- La página no lleva llaves: lee el catálogo, guarda el pedido en el navegador y lo manda a un endpoint
-  que **vuelve a validar todo**. Del navegador solo se cree el SKU; precio y tamaño del lote salen
-  del catálogo publicado.
+- La página no lleva llaves: lee el catálogo, guarda lo elegido en el navegador y lo manda a un
+  endpoint que **vuelve a validar todo**. Del navegador solo se cree qué SKUs eligió y cuánto ofrece;
+  precio y tamaño del lote salen del catálogo publicado.
 
 ## Qué hay
 
 | Archivo | Qué hace |
 |---|---|
 | `web/index.html` | La página (diseño de Claude Design, 12-oct-2026). Un solo archivo, sin dependencias. |
-| `app.py` | El servidor: página, catálogo, `POST /api/mayoreo/pedidos`, frenos y subida del catálogo. |
-| `pedidos.py` | Las reglas de un pedido, sin red (se prueban solas). |
-| `servicio.py` | Configuración y el camino de un pedido: Odoo → Slack → su archivo. |
-| `odoo.py` | Lo único que habla con Odoo (XML-RPC). |
+| `app.py` | El servidor: página, catálogo, `POST /api/mayoreo/ofertas`, frenos y subida del catálogo. |
+| `ofertas.py` | Las reglas de una oferta, sin red: validarla, medir qué subcategorías van enteras, el aviso. |
+| `pedidos.py` | Lo común (catálogo, renglones, lotes completos) y las reglas del pedido que aparta en Odoo. |
+| `servicio.py` | Configuración, el camino de una oferta (Slack → su archivo) y el del pedido (Odoo). |
+| `odoo.py` | Lo único que habla con Odoo (XML-RPC). Hoy no se usa: ver «Pedidos que apartan». |
 | `publicar.py` | Sube un catálogo nuevo al módulo, desde la máquina que lo generó. |
-| `tiendas.py` | Da de alta una tienda: inventa su código y arma su renglón. |
+| `tiendas.py` | Da de alta una tienda con su código (para cuando vuelvan los códigos). |
 | `tests/` | `python -m unittest discover -s tests` (Odoo es un doble en memoria; no usa red). |
 
-## Las reglas del pedido
+## Cómo funciona una oferta
 
-1. **No se venden piezas sueltas.** Cada renglón es el lote completo del catálogo.
-2. **Se aparta lo que haya**: `min(lote del catálogo, libre en Odoo en ese momento)`, de TEXCO y
-   TEXCO II (los mismos almacenes y el mismo orden que `odoo_ventas`; DROP OFF no surte órdenes).
-   Una orden por almacén con piezas.
-3. **Un SKU que no existe en Odoo no se rechaza** (Brandon, 12-oct-2026): queda «por confirmar» y
-   en Slack sale la lista completa para apartarlo a mano.
-4. **A Odoo se le relee.** Un renglón se reporta «apartado» solo si Odoo dejó la orden en `sale`.
-   En borrador no aparta, y se dice «en revisión».
-5. **Reenviar no duplica.** El folio sale de la tienda y de la llave del pedido; las órdenes llevan
-   `client_order_ref = FOLIO#n`. Un reintento tras una caída crea solo lo que faltó.
-6. Un pedido grande tarda minutos en Odoo: a los 25 s el servidor contesta «en proceso» y la página
-   vuelve a preguntar con la misma llave.
+1. La tienda elige en el catálogo. **No se venden piezas sueltas:** cada renglón es el lote completo.
+2. En «Tu pedido» (y otra vez al revisar) escribe **cuánto ofrece por todo**, su nombre y, si quiere,
+   un teléfono y notas. **No se pide código de tienda** (Brandon, 13-oct-2026).
+3. Todo lo que eligió y escribió se guarda en su navegador: recargar la página no lo borra. Se
+   limpia cuando la oferta se envía (el nombre y el teléfono se quedan para la siguiente).
+4. Al enviar, el servidor valida contra el catálogo publicado, **avisa en Slack** y guarda la oferta
+   en su volumen (`/data/ofertas/OFE-….json`). **No toca Odoo ni aparta nada.**
+5. Si Slack no recibe el aviso, la oferta **no** se da por recibida: la página pide reintentar.
+6. Reenviar la misma oferta no la duplica (el folio sale de su llave) ni vuelve a sonar en Slack.
+
+El aviso dice quién, cuánto ofrece, por cuántos productos y piezas, el precio de catálogo y qué
+porcentaje es la oferta; las subcategorías que van enteras (medido contra el catálogo, no se le cree
+al navegador) y, uno por uno, los productos sueltos (hasta 60). Los textos que escribe la tienda van
+escapados: un `<!channel>` en el nombre no llama a nadie.
+
+Como no hay código, cualquiera con la liga puede mandar una oferta. Los frenos: 6 seguidas por IP y
+luego una cada 2 minutos; entre todos, 40 seguidas y luego 60 por hora.
 
 ## Variables (Railway › catalogo-mayoreo)
 
 | Variable | Para qué |
 |---|---|
-| `MAYOREO_PEDIDOS` | `demo` (por omisión: la página simula la respuesta y no manda nada), `activo` o `pausa`. |
-| `MAYOREO_CONFIRMAR` | `true` = la orden se confirma sola y aparta al instante. Sin ella queda en borrador (pasa a revisión). |
-| `MAYOREO_VIGENCIA` | Texto de cuánto dura el apartado («48 horas»). Vacío = no se menciona. |
-| `MAYOREO_TIENDAS` | Lista JSON de tiendas: `[{"nombre","hash","partner_id","activa"}]`. La arma `tiendas.py`. |
-| `MAYOREO_PARTNER_ID` | Cliente de Odoo para las tiendas sin `partner_id` propio. |
-| `ODOO_URL` `ODOO_DB` `ODOO_USER` `ODOO_PASSWORD` | Por referencia: `${{BackendOmnicanal.ODOO_URL}}`, etc. |
-| `SLACK_WEBHOOK_CATALOGO` | Webhook entrante del canal `#catalogo-mayoreo`. |
-| `MAYOREO_ADMIN_KEY` | Llave para subir el catálogo y ver los pedidos recibidos. |
-| `MAYOREO_ALMACENES` | Por omisión `135:TEXCO,150:TEXCO II`. |
+| `SLACK_WEBHOOK_CATALOGO` | Webhook entrante del canal `#catalogo-mayoreo`. **Con ella las ofertas quedan activas**; sin ella la página está en demostración (arma la oferta y enseña la respuesta, sin mandar nada). |
+| `MAYOREO_OFERTAS` | Opcional: `pausa` deja de recibir ofertas; `demo` fuerza la demostración. Vacía = lo normal. |
+| `MAYOREO_ADMIN_KEY` | Llave para subir el catálogo y ver las ofertas recibidas. |
+| `MAYOREO_DATOS` | Dónde vive el volumen (`/data`). |
 
-Pedir `activo` con algo de esto sin poner **deja el módulo en pausa** y lo dice en el log de arranque.
-
-## Encender los pedidos
-
-Es un flujo de negocio vivo (regla 3 del `CLAUDE.md`): lo decide Brandon. Al encenderlo:
-
-- Cada pedido crea órdenes de venta en Odoo. Con `MAYOREO_CONFIRMAR=true` además **aparta**: el libre
-  baja, `stock_watch` lo copia a WooCommerce y el fan-out lo lleva a Temu y TikTok. Una subcategoría
-  completa puede dejar cientos de publicaciones en cero.
-- El almacén recibe una entrega (picking) por cada orden confirmada.
-- Nadie libera un apartado que no se paga: hoy eso es cancelar la orden a mano en Odoo.
-
-Pasos: crear el webhook de Slack del canal, dar de alta las tiendas (`tiendas.py`), poner las
-variables de Odoo por referencia y `MAYOREO_PEDIDOS=activo`.
+Ver las ofertas recibidas: `GET /api/mayoreo/admin/ofertas` con la cabecera `X-Admin-Key`
+(`?folio=OFE-…` trae una completa).
 
 ## Actualizar el catálogo
 
@@ -90,13 +77,28 @@ python catalogo_mayoreo/publicar.py --carpeta <…/reportes/catalogo_vivo/mayore
 
 El catálogo nuevo llega a una antesala y solo se publica si está completo; el anterior se conserva
 una vez (`/data/anterior`). Las existencias son las de Odoo al momento de generar: hay que correrlo
-cada vez que se quiera un corte nuevo.
+cada vez que se quiera un corte nuevo. Los precios salen de la página del inventario y, donde lo
+haya, del paquete «precios de Mercado Libre v3» de Competencia (sin marcas de renombre).
+
+## Pedidos que apartan en Odoo (apagado)
+
+La primera versión pedía un **código de tienda** y convertía el pedido en órdenes de venta de Odoo
+(una por almacén, TEXCO y TEXCO II), que es lo que aparta la mercancía. Ese camino sigue en el código
+con sus pruebas —`POST /api/mayoreo/pedidos`, `servicio.procesar`, `odoo.py`, `tiendas.py`— para cuando
+se quiera de vuelta, pero **la página no lo llama** y solo responde con `MAYOREO_PEDIDOS=activo` y todo
+configurado (`ODOO_*`, `MAYOREO_TIENDAS`, cliente de Odoo, Slack). Sus reglas:
+
+- Se aparta `min(lote del catálogo, libre en Odoo en ese momento)`; un SKU que no existe en Odoo no
+  se rechaza: queda «por confirmar» y Slack lleva la lista para apartarlo a mano.
+- A Odoo se le relee: «apartado» solo si la orden quedó en `sale`; en borrador no aparta.
+- Reenviar no duplica (`client_order_ref = FOLIO#n`) y un reintento crea solo lo que faltó.
+
+Encenderlo es un flujo de negocio vivo (regla 3 del `CLAUDE.md`): lo decide Brandon. Confirmar una
+orden baja el libre en Odoo, y eso llega a WooCommerce, Temu y TikTok.
 
 ## Lo que falta decidir
 
-- ¿La orden se confirma sola o la aprueba una persona? (hoy: pasa a revisión)
-- ¿Cuánto dura un apartado y quién lo libera?
-- El precio: hoy es la media de Mercado Libre (con IVA), que en la mayoría es la de la categoría.
-- ¿A qué cliente de Odoo va cada tienda?
-- ¿El catálogo se ve sin código, como ahora, o se pide el código para entrar?
+- Qué pasa cuando se **acepta** una oferta: hoy es a mano (alguien crea la orden en Odoo).
+- El precio de catálogo: es el de mercado en Mercado Libre, con IVA; no es un precio de mayoreo.
+- ¿El catálogo se ve sin código, como ahora, o se pide algo para entrar?
 - Fotos más grandes para la ventana de la foto (hoy 256 px).

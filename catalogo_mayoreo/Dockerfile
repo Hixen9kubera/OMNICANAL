@@ -3,7 +3,7 @@ FROM python:3.12-slim
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY app.py pedidos.py servicio.py odoo.py ./
+COPY app.py pedidos.py ofertas.py servicio.py odoo.py ./
 COPY web ./web
 # El catálogo (catalogo.json + fotos) y los pedidos recibidos viven en el volumen, no en la imagen.
 ENV MAYOREO_DATOS=/data PYTHONUNBUFFERED=1

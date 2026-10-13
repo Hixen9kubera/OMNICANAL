@@ -170,7 +170,7 @@ p{margin:0}
 .b-hueco:hover{color:var(--tinta);background:var(--papel)}
 
 /* tu pedido */
-.pedido{flex:1 1 320px;max-width:380px;min-width:0;background:var(--papel);border:1px solid var(--linea);border-radius:12px;display:flex;flex-direction:column;overflow:hidden;position:sticky;top:16px;max-height:calc(100vh - 32px)}
+.pedido{flex:1 1 320px;max-width:380px;min-width:0;background:var(--papel);border:1px solid var(--linea);border-radius:12px;display:flex;flex-direction:column;overflow:hidden;position:sticky;top:16px;max-height:calc(100vh - 116px)}
 .pd-cab{padding:18px 20px;border-bottom:1px solid var(--linea);display:flex;justify-content:space-between;align-items:baseline;gap:12px}
 .pd-cab h2{margin:0;font-size:20px;font-weight:800;font-stretch:85%}
 .pd-cab span{font-family:var(--mono);font-size:13px;color:var(--gris)}
@@ -187,7 +187,9 @@ p{margin:0}
 .x:hover{background:var(--fondo)}
 .pd-mas{padding:10px 20px;font-size:13px;color:var(--gris)}
 .pd-pie{padding:18px 20px;display:flex;flex-direction:column;gap:10px;background:var(--suave);border-top:1px solid var(--linea)}
-.pd-pie div{display:flex;justify-content:space-between;align-items:baseline;gap:12px}
+.pd-pie .fila-t{display:flex;justify-content:space-between;align-items:baseline;gap:12px}
+.pd-of{display:flex;flex-direction:column;gap:6px;padding-top:12px;border-top:1px solid var(--linea)}
+.pd-of label{font-weight:700;font-size:15px}
 .pd-pie .gr{font-family:var(--mono);font-weight:800;font-size:22px}
 .pd-pie small{font-size:12px;color:var(--gris);line-height:1.4}
 .b-ir{display:flex;align-items:center;justify-content:center;min-height:48px;padding:0 20px;border:0;border-radius:8px;background:var(--acento);color:var(--papel);font-weight:700;font-size:16px;text-decoration:none}
@@ -225,10 +227,15 @@ table{width:100%;border-collapse:collapse}
 .campo{display:flex;flex-direction:column;gap:6px}
 .campo label{font-weight:700;font-size:15px}
 .campo p{font-size:13px;color:var(--gris);line-height:1.4}
-.campo .fila{display:flex;gap:8px}
-.campo input{flex:1 1 auto;min-width:0;height:48px;padding:0 14px;border:1px solid var(--linea-3);border-radius:8px;background:var(--papel);font-family:var(--mono);font-size:17px;letter-spacing:.08em}
+.campo input{min-width:0;height:48px;padding:0 14px;border:1px solid var(--linea-3);border-radius:8px;background:var(--papel);font-size:16px}
 .campo textarea{min-height:72px;padding:10px 14px;border:1px solid var(--linea-3);border-radius:8px;background:var(--papel);resize:vertical}
-.campo .fila button{flex:0 0 auto;min-width:84px;height:48px;border:1px solid var(--linea-3);border-radius:8px;background:var(--suave);font-size:14px}
+.campo label span{font-weight:400;color:var(--gris)}
+.dinero{display:flex;align-items:center;border:1px solid var(--linea-3);border-radius:8px;background:var(--papel)}
+.dinero:focus-within{outline:3px solid var(--foco);outline-offset:2px}
+.dinero span{padding:0 2px 0 14px;font-family:var(--mono);font-size:18px;font-weight:600;color:var(--gris)}
+.dinero input{flex:1 1 auto;width:100%;min-width:0;height:48px;padding:0 14px 0 4px;border:0;border-radius:8px;background:transparent;font-family:var(--mono);font-size:18px;font-weight:600;outline:none}
+.of-ayuda{font-size:13px;color:var(--gris);line-height:1.4}
+.of-ayuda b{color:var(--tinta)}
 .flujo{display:flex;flex-direction:column;gap:8px;padding:14px;border-radius:8px;background:var(--suave);font-size:14px;line-height:1.45;color:var(--gris-2)}
 .flujo strong{font-size:15px;color:var(--tinta)}
 .flujo .tenue{color:var(--gris)}
@@ -347,9 +354,9 @@ dialog.lupa::backdrop{background:var(--velo)}
 <script>
 (() => {
 'use strict';
-const CFG = {modo: 'demo', flujo: 'revision', vigencia: '', max: 2000};   // lo real llega de /api/mayoreo/estado
+const CFG = {modo: 'demo', max: 2000};   // lo real llega de /api/mayoreo/estado
 const LS = 'kubera-mayoreo-pedido';
-const POR_PAGINA = 48;
+const POR_PAGINA = 48, CAMPOS = ['oferta', 'nombre', 'contacto', 'notas'];
 const $ = (s, r = document) => r.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
 const num = n => Number(n).toLocaleString('es-MX');
@@ -377,7 +384,7 @@ const ICO = {
 
 const D = {version: '', corte: '', fotos: null, K: [], P: [], porSku: new Map(), cats: [], items: []};
 const E = {vista: 'catalogo', cat: null, sub: null, q: '', limite: POR_PAGINA, verTodas: false,
-  sel: new Set(), subs: new Set(), llave: null, codigo: '', verCodigo: false, notas: '', enviando: false, espera: 0, error: null, res: null, lupa: null};
+  sel: new Set(), subs: new Set(), llave: null, oferta: '', nombre: '', contacto: '', notas: '', enviando: false, error: null, res: null, lupa: null};
 const hojas = new Set();
 
 /* ── datos ─────────────────────────────────────────────────────────────── */
@@ -478,7 +485,8 @@ function lineas() {
 }
 function guardar() {
   try {
-    localStorage.setItem(LS, JSON.stringify({corte: D.corte, llave: E.llave, sel: [...E.sel], subs: [...E.subs].map(k => [D.K[k].cat, D.K[k].sub])}));
+    localStorage.setItem(LS, JSON.stringify({corte: D.corte, llave: E.llave, sel: [...E.sel], subs: [...E.subs].map(k => [D.K[k].cat, D.K[k].sub]),
+      oferta: E.oferta, nombre: E.nombre, contacto: E.contacto, notas: E.notas}));
   } catch (e) { /* sin almacenamiento: el pedido vive mientras la página esté abierta */ }
 }
 function recuperar() {
@@ -487,10 +495,22 @@ function recuperar() {
     if (!g) return;
     for (const [cat, sub] of g.subs || []) { const K = D.K.find(x => x.cat === cat && x.sub === sub); if (K) E.subs.add(K.k); }
     for (const s of g.sel || []) { const p = D.porSku.get(s); if (p && pedible(p)) E.sel.add(s); }
+    for (const campo of CAMPOS) if (typeof g[campo] === 'string') E[campo] = g[campo].slice(0, 500);
     if (g.corte === D.corte) E.llave = g.llave || null;
   } catch (e) { /* nada que recuperar */ }
 }
 function cambio() { E.llave = null; E.error = null; guardar(); }
+/* La oferta: lo que escribió como cantidad (null si todavía no es una) y la frase que la acompaña. */
+function montoOferta() {
+  const n = parseFloat(String(E.oferta).replace(/[^0-9.]/g, ''));
+  return Number.isFinite(n) && n >= 1 ? Math.round(n * 100) / 100 : null;
+}
+function ayudaOferta(r) {
+  const m = montoOferta();
+  if (!r.productos) return 'Primero elige los productos que te interesan.';
+  if (m == null) return 'Dinos cuánto ofreces por todo. La revisamos y te respondemos.';
+  return `Ofreces <b>${money(m)}</b>: el <b>${(m / r.total * 100).toFixed(1)} %</b> del precio de catálogo.`;
+}
 function alternarSku(skus, on) {
   for (const s of skus) {
     const p = D.porSku.get(s);
@@ -607,7 +627,7 @@ function pintarLista(conservarFoco) {
   let h = `<div class="vista-cab"><div><p class="migas">Catálogo${E.cat ? ' / ' + esc(E.cat) : ''}${K ? ' / ' + esc(K.sub) : ''}</p>
       <h1>${esc(K ? K.sub : E.cat || 'Todo el catálogo')}</h1><p class="conteo">${num(n)} productos · precios por pieza con IVA</p></div>
     <div class="busca"><label for="buscar">Buscar por nombre o SKU</label><input id="buscar" type="search" value="${esc(E.q)}" placeholder="p. ej. tenis, CALZ-0172" autocomplete="off"></div></div>
-    <div class="nota">${ICO.info}<span><strong>Aquí no se venden piezas sueltas.</strong> Puedes llevarte un producto con <strong>todas sus piezas</strong> o una <strong>subcategoría completa</strong>. Si alguna pieza se vendió desde el corte, apartamos las que queden y te lo indicamos.</span></div>`;
+    <div class="nota">${ICO.info}<span><strong>Aquí no se venden piezas sueltas.</strong> Elige productos con <strong>todas sus piezas</strong> o <strong>subcategorías completas</strong> y dinos <strong>cuánto ofreces por todo</strong>. Revisamos tu oferta y te respondemos.</span></div>`;
   if (K && !E.q) {
     const on = E.subs.has(K.k);
     h += `<section class="sub-todo" aria-label="Subcategoría completa"><div><span class="rotulo">Subcategoría completa</span><b>${esc(K.sub)}</b>
@@ -652,12 +672,16 @@ function pintarCarrito() {
       <div class="pd-m"><span>${esc(p.sku)}</span><span>${num(p.pz)} pzs × ${money(p.precio)}</span></div><span class="pd-s">${money(p.pz * p.precio)}</span></li>`).join('') + '</ul>';
     if (r.prods.length > 40) h += `<p class="pd-mas">y ${num(r.prods.length - 40)} productos más: los ves todos al revisar el pedido.</p>`;
   }
-  h += `</div><div class="pd-pie"><div><span>Piezas</span><span class="mono" style="font-weight:600">${num(r.piezas)}</span></div><div><span>Total</span><span class="gr">${money(r.total)}</span></div>
-    <small>Precios con IVA. El precio y la existencia se confirman al apartar.</small>
-    <button type="button" class="b-ir" data-a="ir" data-v="pedido" ${vacio ? 'disabled' : ''}>Revisar pedido</button></div>`;
+  h += `</div><div class="pd-pie"><div class="fila-t"><span>Piezas</span><span class="mono" style="font-weight:600">${num(r.piezas)}</span></div>
+    <div class="fila-t"><span>Precio de catálogo</span><span class="gr">${money(r.total)}</span></div>
+    <div class="pd-of"><label for="oferta">Tu oferta por todo el pedido</label>
+      <div class="dinero"><span aria-hidden="true">$</span><input id="oferta" data-campo="oferta" type="text" inputmode="decimal" autocomplete="off" placeholder="¿Cuánto ofreces?" value="${esc(E.oferta)}" aria-describedby="oferta-ayuda"></div>
+      <p class="of-ayuda" id="oferta-ayuda" data-ayuda>${ayudaOferta(r)}</p></div>
+    <small>Precios de catálogo con IVA. Nada se aparta hasta que aceptemos tu oferta.</small>
+    <button type="button" class="b-ir" data-a="ir" data-v="pedido" ${vacio ? 'disabled' : ''}>Revisar y enviar oferta</button></div>`;
   $('#pedido').innerHTML = h;
   $('#barra').innerHTML = `<div><span>${vacio ? 'Tu pedido está vacío' : `${num(r.productos)} productos · ${num(r.piezas)} pzs`}</span><b>${money(r.total)}</b></div>
-    <button type="button" class="b-ir" data-a="ir" data-v="pedido" ${vacio ? 'disabled' : ''}>Revisar pedido</button>`;
+    <button type="button" class="b-ir" data-a="ir" data-v="pedido" ${vacio ? 'disabled' : ''}>Hacer oferta</button>`;
 }
 
 /* ── foto en grande ────────────────────────────────────────────────────── */
@@ -674,7 +698,7 @@ function pintarLupa() {
   let h;
   if (L.sku) {
     const p = D.porSku.get(L.sku), on = E.sel.has(p.sku), incl = incluido(p) && pedible(p);
-    const ref = {p: 'promedio de Mercado Libre de este producto', c: 'promedio de Mercado Libre de su categoría', e: 'estimado con el mercado de su categoría'}[p.tipo];
+    const ref = {p: 'promedio de Mercado Libre de este producto', c: 'promedio de Mercado Libre de su categoría', k: 'precio de mercado en Mercado Libre de productos como este', e: 'estimado'}[p.tipo];
     h = `<div class="lp-f">${foto(p.foto, p.t)}<button type="button" class="lp-x" data-a="cerrar" aria-label="Cerrar">${ICO.x}</button></div>
       <div class="lp-c"><div><p class="sku">${esc(p.sku)} · ${esc(p.sub)}</p><h3>${esc(p.t)}</h3></div>
       <div class="lp-d"><b>${pedible(p) ? money(p.precio) : 'Sin precio'}</b><span>Lote de ${pzs(p.pz)}${pedible(p) ? ' · ' + money(p.precio * p.pz) : ''}</span></div>
@@ -698,9 +722,9 @@ function pintarLupa() {
   fotosPendientes(d);
 }
 
-/* ── revisar y enviar ──────────────────────────────────────────────────── */
+/* ── revisar y enviar la oferta ────────────────────────────────────────── */
 function pintarRevisar() {
-  const r = resumen(), revision = CFG.flujo !== 'instante', ls = lineas(), demasiado = ls.length > CFG.max, pausa = CFG.modo === 'pausa';
+  const r = resumen(), ls = lineas(), demasiado = ls.length > CFG.max, pausa = CFG.modo === 'pausa';
   let filas = '';
   if (r.subs.length) {
     filas += '<tr class="grupo"><th scope="colgroup" colspan="4">Subcategorías completas</th></tr>' + r.subs.map(K => `<tr><td><div class="prod"><span class="ico">${ICO.cuadros}</span><div><b>${esc(K.sub)} · subcategoría completa</b><span class="sku" style="font-family:var(--sans);font-size:13px">${esc(K.cat)} · ${num(K.np)} productos</span></div></div></td>
@@ -711,142 +735,119 @@ function pintarRevisar() {
       <td class="d" style="font-weight:600">${num(p.pz)}</td><td class="d">${money(p.precio)}</td><td class="d" style="font-weight:600">${money(p.pz * p.precio)}</td></tr>`).join('');
     if (r.prods.length > 150) filas += `<tr><td colspan="4" style="color:var(--gris);font-size:14px">y ${num(r.prods.length - 150)} productos más, todos con sus piezas completas.</td></tr>`;
   }
-  const err = E.error || (demasiado ? {t: 'Pedido demasiado grande', x: `El máximo es ${num(CFG.max)} productos por pedido y este lleva ${num(ls.length)}. Divídelo en dos.`, codigo: 'limite_pedido'} : null);
-  const boton = E.enviando ? (E.espera ? 'Apartando tu pedido…' : 'Enviando…') : revision ? 'Enviar a revisión' : 'Enviar y apartar';
-  $('#v-pedido').innerHTML = `${CFG.modo === 'demo' ? '<p class="aviso-demo"><strong>Demostración.</strong> Esta página todavía no está conectada al sistema de pedidos: puedes armar el pedido y ver la respuesta, pero no se envía ni se aparta nada.</p>'
-      : pausa ? '<p class="aviso-demo"><strong>Pedidos en pausa.</strong> Por ahora los pedidos se levantan con tu ejecutivo de ventas. Puedes armar tu lista aquí y compartírsela.</p>' : ''}
-    <div class="col"><div><a href="#catalogo" data-a="ir" data-v="catalogo" style="font-size:14px">← Seguir agregando productos</a><h1>Revisa tu pedido</h1></div>
+  const err = E.error || (demasiado ? {t: 'Pedido demasiado grande', x: `El máximo es ${num(CFG.max)} productos por oferta y esta lleva ${num(ls.length)}. Divídela en dos.`, codigo: 'limite_pedido'} : null);
+  $('#v-pedido').innerHTML = `${CFG.modo === 'demo' ? '<p class="aviso-demo"><strong>Demostración.</strong> Esta página todavía no está conectada: puedes armar tu oferta y ver la respuesta, pero no se envía.</p>'
+      : pausa ? '<p class="aviso-demo"><strong>Ofertas en pausa.</strong> Por ahora las ofertas se hacen con tu ejecutivo de ventas. Puedes armar tu lista aquí y compartírsela.</p>' : ''}
+    <div class="col"><div><a href="#catalogo" data-a="ir" data-v="catalogo" style="font-size:14px">← Seguir agregando productos</a><h1>Revisa y envía tu oferta</h1></div>
     ${!r.productos ? '<div class="vacio"><b>Tu pedido está vacío</b><p>Vuelve al catálogo y elige un producto completo o una subcategoría entera.</p></div>' : `<div class="dos">
-      <section class="tabla-caja" aria-label="Renglones del pedido"><div><table class="tp">
+      <section class="tabla-caja" aria-label="Productos de la oferta"><div><table class="tp">
         <thead><tr><th scope="col">Producto</th><th scope="col" class="d">Piezas (todas)</th><th scope="col" class="d">Precio</th><th scope="col" class="d">Subtotal</th></tr></thead>
         <tbody>${filas}</tbody>
         <tfoot><tr><th scope="row">${num(r.productos)} productos</th><td class="d" style="font-weight:700">${num(r.piezas)} pzs</td><td></td><td class="d gr">${money(r.total)}</td></tr>
-        <tr><td colspan="4" style="padding-top:0;font-size:13px;color:var(--gris)">Precios con IVA. El precio y la existencia se confirman al apartar.</td></tr></tfoot>
+        <tr><td colspan="4" style="padding-top:0;font-size:13px;color:var(--gris)">Precio de catálogo, con IVA.</td></tr></tfoot>
       </table></div></section>
-      <form class="envio" id="f-envio" aria-label="Enviar pedido" novalidate>
-        <div class="campo"><label for="codigo">Código de tienda</label>
-          <div class="fila"><input id="codigo" type="${E.verCodigo ? 'text' : 'password'}" value="${esc(E.codigo)}" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-describedby="codigo-ayuda">
-          <button type="button" data-a="vercodigo">${E.verCodigo ? 'Ocultar' : 'Mostrar'}</button></div>
-          <p id="codigo-ayuda">El que te dio tu ejecutivo de ventas. Sin un código válido no se crea el pedido.</p></div>
-        <div class="campo"><label for="notas">Notas para tu ejecutivo <span style="font-weight:400;color:var(--gris)">(opcional)</span></label>
-          <textarea id="notas" maxlength="500">${esc(E.notas)}</textarea></div>
-        <div class="flujo"><strong>${revision ? 'Tu pedido pasa a revisión' : 'Al enviar, apartamos de inmediato'}</strong>
-          <span>${revision ? 'Un ejecutivo lo revisa y lo confirma. La mercancía se aparta cuando se confirma; mientras tanto, la existencia puede cambiar.'
-            : 'Apartamos todas las piezas de cada producto y de cada subcategoría. Si alguna se vendió desde el corte, te apartamos las que queden y te lo indicamos por renglón.'}</span>
-          ${CFG.vigencia ? `<span>Tu apartado se mantiene <strong>${esc(CFG.vigencia)}</strong>. Si no se paga en ese plazo, se libera.</span>` : ''}
+      <form class="envio" id="f-envio" aria-label="Enviar oferta" novalidate>
+        <div class="campo"><label for="oferta-r">Tu oferta por todo el pedido</label>
+          <div class="dinero"><span aria-hidden="true">$</span><input id="oferta-r" data-campo="oferta" type="text" inputmode="decimal" autocomplete="off" placeholder="¿Cuánto ofreces?" value="${esc(E.oferta)}" aria-describedby="oferta-r-ayuda"></div>
+          <p class="of-ayuda" id="oferta-r-ayuda" data-ayuda>${ayudaOferta(r)}</p></div>
+        <div class="campo"><label for="nombre">Tu nombre o el de tu tienda</label>
+          <input id="nombre" data-campo="nombre" type="text" maxlength="80" autocomplete="organization" value="${esc(E.nombre)}"></div>
+        <div class="campo"><label for="contacto">Teléfono o WhatsApp <span>(opcional)</span></label>
+          <input id="contacto" data-campo="contacto" type="tel" maxlength="80" autocomplete="tel" value="${esc(E.contacto)}" aria-describedby="contacto-ayuda">
+          <p id="contacto-ayuda">Para responderte.</p></div>
+        <div class="campo"><label for="notas">Notas <span>(opcional)</span></label>
+          <textarea id="notas" data-campo="notas" maxlength="500">${esc(E.notas)}</textarea></div>
+        <div class="flujo"><strong>Tu oferta pasa a revisión</strong>
+          <span>La revisamos y te respondemos. Nada se aparta hasta que la aceptemos; mientras tanto, la existencia puede cambiar.</span>
           <span class="tenue">No se venden piezas sueltas: solo productos completos o subcategorías completas.</span></div>
         ${err ? `<div class="alerta" role="alert">${ICO.alerta}<div><strong>${esc(err.t)}</strong><span>${esc(err.x)}</span>${err.codigo ? `<code>${esc(err.codigo)}</code>` : ''}</div></div>` : ''}
-        <button type="submit" class="b-ir" ${E.enviando || demasiado || pausa ? 'disabled' : ''}>${boton}</button>
-        <p class="fino">Si lo envías dos veces, no se duplica: recibes el mismo folio.</p>
+        <button type="submit" class="b-ir" ${E.enviando || demasiado || pausa ? 'disabled' : ''}>${E.enviando ? 'Enviando…' : 'Enviar oferta a revisión'}</button>
+        <p class="fino">Si la envías dos veces, no se duplica: recibes el mismo folio.</p>
       </form></div>`}</div>`;
   fotosPendientes($('#v-pedido'));
 }
 const ERRORES = {
-  codigo_invalido: ['Código no válido', 'Revisa que esté bien escrito. Si lo copiaste, quita espacios al inicio o al final.'],
-  codigo_revocado: ['Código desactivado', 'Este código ya no está activo. Pide uno nuevo a tu ejecutivo de ventas.'],
-  limite_peticiones: ['Demasiados intentos', 'Espera un minuto y vuelve a enviar. Tu pedido no se duplica.'],
-  limite_pedido: ['Pedido demasiado grande', 'Este pedido pasa del máximo de productos. Divídelo en dos.'],
-  catalogo_viejo: ['El catálogo cambió', 'Hay un corte de existencias más reciente. Recarga la página y revisa tu pedido antes de enviarlo.'],
-  pedido_invalido: ['No pudimos leer el pedido', 'Recarga la página y vuelve a armarlo. Si sigue pasando, avísale a tu ejecutivo de ventas.'],
-  no_disponible: ['Pedidos en pausa', 'Por ahora no estamos recibiendo pedidos por aquí. Escríbele a tu ejecutivo de ventas.'],
-  intenta_de_nuevo: ['No pudimos apartar en este momento', 'Vuelve a enviar en un minuto: tu pedido no se duplica.'],
-  red: ['No pudimos conectar', 'Revisa tu conexión y vuelve a enviar. Si tu pedido ya había llegado, recibes el mismo folio: no se duplica.']
+  oferta_invalida: ['Falta tu oferta', 'Escribe cuánto ofreces por todo el pedido, en pesos.'],
+  falta_nombre: ['Falta tu nombre', 'Dinos tu nombre o el de tu tienda para poder responderte.'],
+  limite_peticiones: ['Demasiados intentos', 'Espera unos minutos y vuelve a enviar. Tu oferta no se duplica.'],
+  limite_pedido: ['Pedido demasiado grande', 'Esta oferta pasa del máximo de productos. Divídela en dos.'],
+  catalogo_viejo: ['El catálogo cambió', 'Hay un corte de existencias más reciente. Recarga la página y revisa tu pedido antes de enviar la oferta.'],
+  pedido_invalido: ['No pudimos leer la oferta', 'Recarga la página y vuelve a armarla. Si sigue pasando, avísale a tu ejecutivo de ventas.'],
+  no_disponible: ['Ofertas en pausa', 'Por ahora no estamos recibiendo ofertas por aquí. Escríbele a tu ejecutivo de ventas.'],
+  intenta_de_nuevo: ['No pudimos registrar tu oferta', 'Vuelve a enviarla en un minuto: no se duplica.'],
+  red: ['No pudimos conectar', 'Revisa tu conexión y vuelve a enviar. Si tu oferta ya había llegado, recibes el mismo folio: no se duplica.']
 };
-const POR_HTTP = {401: 'codigo_invalido', 403: 'codigo_revocado', 409: 'catalogo_viejo', 413: 'limite_pedido', 429: 'limite_peticiones', 502: 'intenta_de_nuevo', 503: 'no_disponible'};
+const POR_HTTP = {409: 'catalogo_viejo', 413: 'limite_pedido', 429: 'limite_peticiones', 502: 'intenta_de_nuevo', 503: 'no_disponible'};
 function uuid() {
   try { if (crypto.randomUUID) return crypto.randomUUID(); } catch (e) { /* sin crypto */ }
   return 'k-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 12) + Math.random().toString(36).slice(2, 12);
 }
 function simular(cuerpo) {
-  const revision = CFG.flujo !== 'instante';
-  let piezas = 0, total = 0, pp = 0, pt = 0;
-  const ls = cuerpo.lineas.map(l => {
-    const p = D.porSku.get(l.sku), estado = !p.odoo ? 'por_confirmar' : revision ? 'en_revision' : 'apartado';
-    pp += l.cantidad; pt += l.cantidad * p.precio;
-    if (estado === 'apartado') { piezas += l.cantidad; total += l.cantidad * p.precio; }
-    return {sku: l.sku, pedido: l.cantidad, apartado: estado === 'apartado' ? l.cantidad : null, precio: p.precio, estado};
-  });
-  const enOdoo = ls.some(l => l.estado !== 'por_confirmar');
-  return {folio: 'DEMO-000000', demo: true, estado: !enOdoo ? 'por_confirmar' : revision ? 'en_revision' : 'apartado', ordenes: [], lineas: ls,
-    piezas, total, pedido_piezas: pp, pedido_total: pt, vence: null};
+  const ls = cuerpo.lineas.map(l => ({sku: l.sku, piezas: l.cantidad, precio: D.porSku.get(l.sku).precio}));
+  const total = ls.reduce((a, l) => a + l.piezas * l.precio, 0);
+  return {folio: 'DEMO-000000', demo: true, estado: 'en_revision', oferta: cuerpo.oferta, productos: ls.length, piezas: ls.reduce((a, l) => a + l.piezas, 0),
+    catalogo_total: Math.round(total * 100) / 100, porcentaje: Math.round(cuerpo.oferta / total * 1000) / 10, lineas: ls};
+}
+function falta(codigo, campo) {
+  const [t, x] = ERRORES[codigo];
+  E.error = {t, x};
+  pintarRevisar();
+  $(campo)?.focus();
 }
 async function enviar() {
   const ls = lineas();
-  if (!ls.length || ls.length > CFG.max || CFG.modo === 'pausa' || (E.enviando && !E.espera)) return;
-  const codigo = E.codigo.trim();
-  if (!codigo) { E.error = {t: 'Falta tu código de tienda', x: 'Escríbelo tal como te lo dio tu ejecutivo de ventas.'}; pintarRevisar(); $('#codigo')?.focus(); return; }
+  if (!ls.length || ls.length > CFG.max || CFG.modo === 'pausa' || E.enviando) return;
+  const monto = montoOferta(), nombre = E.nombre.trim();
+  if (monto == null) return falta('oferta_invalida', '#oferta-r');
+  if (nombre.length < 2) return falta('falta_nombre', '#nombre');
   if (!E.llave) { E.llave = uuid(); guardar(); }
   E.enviando = true; E.error = null;
   pintarRevisar();
-  const cuerpo = {codigo_tienda: codigo, llave: E.llave, version: D.version, notas: E.notas.trim(), lineas: ls.map(p => ({sku: p.sku, cantidad: p.pz})),
-    subcategorias: [...E.subs].map(k => ({categoria: D.K[k].cat, subcategoria: D.K[k].sub}))};
+  const cuerpo = {llave: E.llave, version: D.version, oferta: monto, nombre, contacto: E.contacto.trim(), notas: E.notas.trim(),
+    lineas: ls.map(p => ({sku: p.sku, cantidad: p.pz})), subcategorias: [...E.subs].map(k => ({categoria: D.K[k].cat, subcategoria: D.K[k].sub}))};
   let res;
   try {
     if (CFG.modo === 'demo') { await new Promise(ok => setTimeout(ok, 500)); res = simular(cuerpo); }
     else {
-      const r = await fetch('api/mayoreo/pedidos', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(cuerpo)});
+      const r = await fetch('api/mayoreo/ofertas', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(cuerpo)});
       const j = await r.json().catch(() => null);
       if (!r.ok) { const d = j && j.detail && typeof j.detail === 'object' ? j.detail : {}; throw {codigo: d.codigo || POR_HTTP[r.status] || 'pedido_invalido', mensaje: d.mensaje}; }
       res = j;
     }
   } catch (e) {
     const codigoErr = (e && e.codigo) || 'red', [t, x] = ERRORES[codigoErr] || ERRORES.red;
-    E.enviando = false; E.espera = 0; E.error = {t, x: (e && e.mensaje) || x, codigo: codigoErr === 'red' ? '' : codigoErr};
+    E.enviando = false; E.error = {t, x: (e && e.mensaje) || x, codigo: codigoErr === 'red' ? '' : codigoErr};
     pintarRevisar();
     return;
   }
-  if (res.estado === 'en_proceso' && E.espera < 60) {            // pedido grande: el servidor sigue apartando; se pregunta con la misma llave
-    E.espera++;
-    setTimeout(enviar, 5000);
-    pintarRevisar();
-    return;
-  }
-  E.enviando = false; E.espera = 0; E.res = res; E.llave = null;
-  if (res.estado !== 'sin_existencia' && res.estado !== 'en_proceso') { E.sel.clear(); E.subs.clear(); }
+  // Ya llegó: hasta aquí se conserva lo elegido. El nombre y el contacto se quedan para la siguiente oferta.
+  E.enviando = false; E.res = Object.assign({contacto: cuerpo.contacto}, res); E.llave = null;
+  E.sel.clear(); E.subs.clear(); E.oferta = ''; E.notas = '';
   guardar();
   ir('resultado');
 }
 
 /* ── resultado ─────────────────────────────────────────────────────────── */
-const ESTADOS = {
-  apartado: ['ok', 'ok', 'Apartado', 'Tu pedido quedó apartado', 'Apartamos todas las piezas de cada producto, igual que al corte. Guarda tu folio para el pago y la entrega.'],
-  parcial: ['parcial', 'parcial', 'Apartado parcial', 'Apartamos una parte de tu pedido', 'Algunas piezas se vendieron desde el corte. Te apartamos todas las que quedaban; lo marcado en ámbar llegó incompleto y lo rojo ya no tenía piezas.'],
-  sin_existencia: ['nada', 'nada', 'Sin existencia', 'No pudimos apartar nada', 'Ninguno de los productos tenía existencia al enviar. No se creó ningún pedido ni se te cobra nada.'],
-  en_revision: ['espera', 'reloj', 'En revisión', 'Recibimos tu pedido', 'Un ejecutivo lo revisa y lo confirma. La mercancía se aparta cuando se confirma; mientras tanto, la existencia puede cambiar.'],
-  por_confirmar: ['espera', 'reloj', 'Por confirmar', 'Recibimos tu pedido', 'Estos productos se apartan a mano en bodega. Ya avisamos al equipo y tu ejecutivo te confirma las piezas.'],
-  en_proceso: ['espera', 'reloj', 'En proceso', 'Seguimos apartando tu pedido', 'Es un pedido grande y todavía no terminamos. No lo vuelvas a armar: tu ejecutivo te confirma el resultado con tu folio.']
-};
 function pintarResultado() {
   const R = E.res;
   if (!R) { ir('catalogo'); return; }
-  const [tono, ico, etiqueta, titulo, texto] = ESTADOS[R.estado] || ESTADOS.en_revision;
-  const manual = R.lineas.filter(l => l.estado === 'por_confirmar').length, aMano = manual && R.estado !== 'por_confirmar';
-  const celda = l => l.estado === 'en_revision' ? '<td class="d c-espera">en revisión</td>' : l.estado === 'por_confirmar' ? '<td class="d c-espera">por confirmar</td>'
-    : `<td class="d ${l.apartado === l.pedido ? 'c-ok' : l.apartado ? 'c-parcial' : 'c-nada'}">${num(l.apartado || 0)}</td>`;
-  const enEspera = R.estado === 'en_revision' || R.estado === 'por_confirmar';
-  const piezas = enEspera ? R.pedido_piezas : R.piezas, total = enEspera ? R.pedido_total : R.total;
-  const vence = R.vence ? `El apartado vence el ${esc(fecha(R.vence) || R.vence)}. ` : CFG.vigencia && !enEspera ? `Tu apartado se mantiene ${esc(CFG.vigencia)}. ` : '';
-  const sig = R.estado === 'sin_existencia' ? 'Revisa el catálogo: las existencias se actualizan con cada corte.'
-    : R.estado === 'parcial' ? vence + 'El total ya refleja solo lo apartado. Las piezas que faltaron no quedan pendientes.'
-    : enEspera ? 'Guarda tu folio. Tu ejecutivo te contacta para confirmar el apartado y el pago.' : vence + 'Tu ejecutivo te contactará para el pago.';
-  $('#v-resultado').innerHTML = `${R.demo ? '<p class="aviso-demo"><strong>Demostración.</strong> Este pedido no se envió: así se verá la respuesta cuando la página esté conectada al sistema de pedidos.</p>' : ''}
-    <div class="col"><div><p class="rotulo">Paso 3 · Resultado</p><h1>${R.estado === 'sin_existencia' ? 'Sin existencia' : enEspera ? 'Pedido recibido' : 'Resultado del apartado'}</h1></div>
-    <section class="res ${tono}" aria-label="${etiqueta}"><span class="pastilla">${ICO[ico]}${etiqueta}</span>
-      <div><h2>${titulo}</h2><p>${texto}</p></div>
-      ${R.estado === 'sin_existencia' ? '' : `<dl class="folio"><div><dt>Folio</dt><dd>${esc(R.folio)}</dd></div><div><dt>Orden</dt><dd>${R.ordenes && R.ordenes.length ? esc(R.ordenes.join(' + ')) : 'por asignar'}</dd></div></dl>`}
-      <div class="res-t"><table class="tr"><thead><tr><th scope="col">SKU</th><th scope="col" class="d">Al corte</th><th scope="col" class="d">Apartado</th></tr></thead>
-        <tbody>${R.lineas.slice(0, 400).map(l => `<tr><td>${esc(l.sku)}</td><td class="d c-gris">${num(l.pedido)}</td>${celda(l)}</tr>`).join('')}
-        ${R.lineas.length > 400 ? `<tr><td colspan="3" class="c-gris">y ${num(R.lineas.length - 400)} renglones más</td></tr>` : ''}</tbody></table></div>
-      <div class="res-tot"><span>${num(piezas || 0)} piezas ${enEspera ? 'pedidas' : 'apartadas'}</span><b>${money(total || 0)}</b></div>
-      ${aMano ? `<p class="sig"><span class="pc">Por confirmar</span> ${num(manual)} ${manual === 1 ? 'producto se aparta' : 'productos se apartan'} a mano en bodega: tu ejecutivo te confirma esas piezas.</p>` : ''}
-      <p class="sig">${sig}</p>
+  $('#v-resultado').innerHTML = `${R.demo ? '<p class="aviso-demo"><strong>Demostración.</strong> Esta oferta no se envió: así se verá la respuesta cuando la página esté conectada.</p>' : ''}
+    <div class="col"><div><p class="rotulo">Paso 3 · En revisión</p><h1>Oferta recibida</h1></div>
+    <section class="res espera" aria-label="En revisión"><span class="pastilla">${ICO.reloj}En revisión</span>
+      <div><h2>Recibimos tu oferta</h2><p>La revisamos y te respondemos. Nada se aparta hasta que la aceptemos; mientras tanto, la existencia puede cambiar.</p></div>
+      <dl class="folio"><div><dt>Folio</dt><dd>${esc(R.folio)}</dd></div><div><dt>Tu oferta</dt><dd>${money(R.oferta)}</dd></div></dl>
+      <div class="res-t"><table class="tr"><thead><tr><th scope="col">SKU</th><th scope="col" class="d">Piezas</th><th scope="col" class="d">Precio de catálogo</th></tr></thead>
+        <tbody>${R.lineas.slice(0, 400).map(l => `<tr><td>${esc(l.sku)}</td><td class="d c-ok">${num(l.piezas)}</td><td class="d c-gris">${money(l.precio)}</td></tr>`).join('')}
+        ${R.lineas.length > 400 ? `<tr><td colspan="3" class="c-gris">y ${num(R.lineas.length - 400)} productos más</td></tr>` : ''}</tbody></table></div>
+      <div class="res-tot"><span>${num(R.productos)} productos · ${num(R.piezas)} piezas</span><b>${money(R.catalogo_total)}</b></div>
+      <p class="sig">Tu oferta es el ${Number(R.porcentaje).toFixed(1)} % del precio de catálogo. Guarda tu folio${R.contacto ? `: te respondemos al ${esc(R.contacto)}` : ''}.</p>
       <a class="b-hueco" href="#catalogo" data-a="ir" data-v="catalogo">Volver al catálogo</a></section></div>`;
 }
 
 /* ── navegación y eventos ──────────────────────────────────────────────── */
 function pintarPasos() {
-  const tres = CFG.flujo !== 'instante' ? 'En revisión' : 'Apartado', n = {catalogo: 0, pedido: 1, resultado: 2}[E.vista];
-  $('#pasos').innerHTML = ['1 · Catálogo', '2 · Revisar y enviar', '3 · ' + tres].map((t, i) => `<li${i === n ? ' aria-current="step"' : ''}>${t}</li>`).join('');
+  const n = {catalogo: 0, pedido: 1, resultado: 2}[E.vista];
+  $('#pasos').innerHTML = ['1 · Catálogo', '2 · Tu oferta', '3 · En revisión'].map((t, i) => `<li${i === n ? ' aria-current="step"' : ''}>${t}</li>`).join('');
 }
 function pintar() {
   $('#v-catalogo').hidden = E.vista !== 'catalogo';
@@ -886,13 +887,18 @@ document.addEventListener('click', ev => {
   else if (a === 'lupa-n') { E.lupa.n = +b.dataset.n; pintarLupa(); }
   else if (a === 'cerrar') cerrarLupa();
   else if (a === 'ir') { if (!b.disabled) ir(b.dataset.v); }
-  else if (a === 'vercodigo') { E.verCodigo = !E.verCodigo; pintarRevisar(); $('#codigo')?.focus(); }
 });
 let espera = 0;
 document.addEventListener('input', ev => {
   if (ev.target.id === 'buscar') { E.q = ev.target.value; E.limite = POR_PAGINA; clearTimeout(espera); espera = setTimeout(() => pintarLista(true), 180); }
-  else if (ev.target.id === 'codigo') E.codigo = ev.target.value;
-  else if (ev.target.id === 'notas') E.notas = ev.target.value;
+  else if (CAMPOS.includes(ev.target.dataset.campo)) {
+    // Lo escrito se guarda al momento: recargar la página no lo borra. Cambiarlo hace que sea otra oferta.
+    const campo = ev.target.dataset.campo;
+    E[campo] = ev.target.value;
+    E.llave = null;
+    guardar();
+    if (campo === 'oferta') { const r = resumen(); document.querySelectorAll('[data-ayuda]').forEach(p => { p.innerHTML = ayudaOferta(r); }); }
+  }
 });
 document.addEventListener('submit', ev => { if (ev.target.id === 'f-envio') { ev.preventDefault(); enviar(); } });
 $('#lupa').addEventListener('close', () => { E.lupa = null; });
@@ -903,7 +909,7 @@ window.addEventListener('hashchange', () => {
 
 const leer = (url, defecto) => fetch(url, {cache: 'no-cache'}).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }).catch(e => { if (defecto === undefined) throw e; return defecto; });
 Promise.all([leer('catalogo.json'), leer('api/mayoreo/estado', null)]).then(([c, est]) => {
-  if (est) { CFG.modo = est.pedidos || 'pausa'; CFG.flujo = est.flujo || 'revision'; CFG.vigencia = est.vigencia || ''; CFG.max = est.max_lineas || 2000; }
+  if (est) { CFG.modo = est.ofertas || 'pausa'; CFG.max = est.max_lineas || 2000; }
   preparar(c);
   recuperar();
   $('#corte').innerHTML = `Existencias al <strong>${fecha(D.corte)}</strong>`;
