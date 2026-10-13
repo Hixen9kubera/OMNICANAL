@@ -99,6 +99,7 @@ orden baja el libre en Odoo, y eso llega a WooCommerce, Temu y TikTok.
 ## Lo que falta decidir
 
 - Qué pasa cuando se **acepta** una oferta: hoy es a mano (alguien crea la orden en Odoo).
-- El precio de catálogo: es el de mercado en Mercado Libre, con IVA; no es un precio de mayoreo.
+- El precio de catálogo: parte del de mercado en Mercado Libre, con IVA, y la etapa `mayoreo` le aplica
+  un ajuste interno (un archivo fuera de git) antes de publicarlo. La página no dice de dónde sale.
 - ¿El catálogo se ve sin código, como ahora, o se pide algo para entrar?
 - Fotos más grandes para la ventana de la foto (hoy 256 px).

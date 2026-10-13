@@ -699,14 +699,13 @@ function pintarLupa() {
   let h;
   if (L.sku) {
     const p = D.porSku.get(L.sku), on = E.sel.has(p.sku), incl = incluido(p) && pedible(p);
-    const ref = {p: 'promedio de Mercado Libre de este producto', c: 'promedio de Mercado Libre de su categoría', k: 'precio de mercado en Mercado Libre de productos como este', e: 'estimado'}[p.tipo];
     h = `<div class="lp-f">${foto(p.foto, p.t)}<button type="button" class="lp-x" data-a="cerrar" aria-label="Cerrar">${ICO.x}</button></div>
       <div class="lp-c"><div><p class="sku">${esc(p.sku)} · ${esc(p.sub)}</p><h3>${esc(p.t)}</h3></div>
       <div class="lp-d"><b>${pedible(p) ? money(p.precio) : 'Sin precio'}</b><span>Lote de ${pzs(p.pz)}${pedible(p) ? ' · ' + money(p.precio * p.pz) : ''}</span></div>
       ${p.odoo ? '' : '<span class="pc" style="align-self:flex-start">Existencia por confirmar</span>'}
       ${!pedible(p) ? '<p class="nop-t">Precio por confirmar. Aún no se puede pedir.</p>' : incl ? `<span class="incluido">Incluido en «${esc(p.sub)}» completo</span>`
         : `<button type="button" class="b-linea${on ? ' on' : ''}" aria-pressed="${on}" data-a="sku" data-s="${esc(p.sku)}">${on ? 'En tu pedido · Quitar' : p.pz === 1 ? 'Llevar la pieza' : `Llevar las ${num(p.pz)} piezas`}</button>`}
-      ${ref ? `<small>Precio de referencia con IVA: ${ref}.</small>` : ''}</div>`;
+      ${pedible(p) ? '<small>Precio por pieza, con IVA.</small>' : ''}</div>`;
   } else {
     const it = D.items[L.familia], vistas = new Map();
     for (const v of it.vars) if (v.foto >= 0) { if (!vistas.has(v.foto)) vistas.set(v.foto, []); vistas.get(v.foto).push(v.vari || v.sku); }
