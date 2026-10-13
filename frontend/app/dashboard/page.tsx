@@ -116,7 +116,7 @@ function textoSeguro(s: SeguroCero): string {
   const activos = canales.filter((c) => c.encendido);
   const porque = (f: string[]) => (f.length ? ` (${f[0].split(" (")[0]}${f.length > 1 ? ` y ${f.length - 1} más` : ""})` : "");
   const modo = activos.length
-    ? activos.map((c) => `${c.nombre} ${c.ensayo ? `en ensayo${porque(c.forzado)}` : "encendido"}`).join(" · ")
+    ? activos.map((c) => `${c.nombre} ${c.ensayo ? `en ensayo${porque(c.forzado)}` : "encendido"}${c.pausa ? " (canal en pausa: no regresa nada)" : ""}`).join(" · ")
     : "apagado";
   const conStock = s.con_stock?.length ?? 0;
   const apagadas = `${s.apagadas} ${s.apagadas === 1 ? "apagada" : "apagadas"} (${canales.map((c) => `${c.nombre} ${c.apagadas}`).join(" · ")})`

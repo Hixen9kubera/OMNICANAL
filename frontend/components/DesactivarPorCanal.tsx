@@ -16,6 +16,12 @@
  * Por eso la vista por omisión es «Por apagar» —lo que falta de verdad— y las retenidas
  * a las que ya se les mandó la orden viven en su propio filtro, con su fecha.
  *
+ * LA PAUSA DEL CANAL («que no se reactiven solas», Brandon, 13-oct-2026). Apagar lo que
+ * hoy está a la venta no basta: el canal regresa solo lo que tiene retenido o agotado, y
+ * alguien puede publicar o prender algo. Con la pausa puesta, tras cada censo (cada hora)
+ * se apaga lo que haya reaparecido y el seguro de stock 0 no regresa nada. La pone y la
+ * quita una persona aquí mismo; no apaga nada en el momento y quitarla no prende nada.
+ *
  * Cuatro cosas que esta pantalla no puede dejar a la imaginación:
  *   1. INACTIVA, NO BORRA. La publicación sigue en el canal, apagada, igual que si
  *      se apagara a mano en el Seller Center.
@@ -28,11 +34,11 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Check, Loader2, PowerOff, RotateCw, Search, ShieldAlert, X } from "lucide-react";
+import { AlertTriangle, Check, Loader2, Pause, Play, PowerOff, RotateCw, Search, ShieldAlert, X } from "lucide-react";
 
 import MarketplaceTabs from "@/components/MarketplaceTabs";
 import {
-  ApiError, desactivarPublicacionesLote, listarPublicacionesLote, mensajeDeError,
+  ApiError, desactivarPublicacionesLote, listarPublicacionesLote, mensajeDeError, pausarCanalLote,
   type FilaResultadoLote, type ListaLote, type PublicacionLote, type ResultadoLote,
 } from "@/lib/api";
 import type { CanalInfo } from "@/lib/types";
@@ -114,6 +120,10 @@ export default function DesactivarPorCanal({ canales, onCerrar }: Props) {
   const [confirmando, setConfirmando] = useState(false);
   const [corrida, setCorrida] = useState<Corrida | null>(null);
   const [resultados, setResultados] = useState<Record<string, FilaResultadoLote>>({});
+  // La pausa del canal: qué se está por confirmar, si va en camino y si falló.
+  const [confirmaPausa, setConfirmaPausa] = useState<"poner" | "quitar" | null>(null);
+  const [moviendoPausa, setMoviendoPausa] = useState(false);
+  const [fallaPausa, setFallaPausa] = useState<string | null>(null);
   const detener = useRef(false);
   const corriendo = corrida?.corriendo ?? false;
 
@@ -147,6 +157,7 @@ export default function DesactivarPorCanal({ canales, onCerrar }: Props) {
     setSeleccion(new Set());
     setResultados({});
     setCorrida(null);
+    setFallaPausa(null);
     setFiltro("por_apagar");
     setBuscar("");
     setPagina(1);
@@ -158,11 +169,27 @@ export default function DesactivarPorCanal({ canales, onCerrar }: Props) {
     const tecla = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || corriendo) return;
       if (confirmando) setConfirmando(false);
+      else if (confirmaPausa) setConfirmaPausa(null);
       else onCerrar();
     };
     window.addEventListener("keydown", tecla);
     return () => window.removeEventListener("keydown", tecla);
-  }, [corriendo, confirmando, onCerrar]);
+  }, [corriendo, confirmando, confirmaPausa, onCerrar]);
+
+  async function moverPausa(poner: boolean) {
+    if (!canal) return;
+    setConfirmaPausa(null);
+    setMoviendoPausa(true);
+    setFallaPausa(null);
+    try {
+      await pausarCanalLote(canal, poner);
+      await cargar(canal);
+    } catch (e) {
+      setFallaPausa(mensajeDeError(e, "No se pudo cambiar la pausa del canal."));
+    } finally {
+      setMoviendoPausa(false);
+    }
+  }
 
   const visibles = useMemo(() => {
     const q = buscar.trim().toLowerCase();
@@ -309,6 +336,56 @@ export default function DesactivarPorCanal({ canales, onCerrar }: Props) {
 
           {canal && lista && (
             <>
+              {/* LA PAUSA DEL CANAL */}
+              <div className={[
+                "mt-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border px-4 py-3",
+                lista.pausa.en_pausa ? "border-rose-300 bg-rose-50" : "border-slate-200 bg-white",
+              ].join(" ")}>
+                <div className="flex min-w-0 flex-1 items-start gap-2.5 text-sm text-slate-700">
+                  {lista.pausa.en_pausa
+                    ? <Pause size={18} className="mt-0.5 shrink-0 text-rose-600" />
+                    : <Play size={18} className="mt-0.5 shrink-0 text-slate-400" />}
+                  <div>
+                    {lista.pausa.en_pausa ? (
+                      <>
+                        <strong className="text-rose-800">{lista.nombre} está EN PAUSA</strong>
+                        {lista.pausa.desde ? ` desde ${lista.pausa.desde}` : ""}
+                        {lista.pausa.por ? ` (${lista.pausa.por})` : ""}. Tras cada censo (cada hora) se apaga lo que
+                        haya vuelto a la venta —lo libere {lista.nombre}, lo publique o lo prenda alguien— y el seguro
+                        de stock 0 no regresa nada.
+                      </>
+                    ) : lista.pausa.en_pausa === null ? (
+                      <>No se pudo leer si {lista.nombre} está en pausa. Vuelve a cargar la lista.</>
+                    ) : (
+                      <>
+                        <strong>Mantener {lista.nombre} apagado.</strong> Con la pausa, tras cada censo (cada hora) se
+                        apaga lo que vuelva a la venta y el seguro de stock 0 no regresa nada. No apaga nada en este
+                        momento: para eso está «Desactivar».
+                      </>
+                    )}
+                    {fallaPausa && <div className="mt-1 text-xs text-rose-700">{fallaPausa}</div>}
+                  </div>
+                </div>
+                {lista.pausa.en_pausa !== null && (
+                  <button
+                    type="button"
+                    disabled={corriendo || moviendoPausa}
+                    onClick={() => setConfirmaPausa(lista.pausa.en_pausa ? "quitar" : "poner")}
+                    className={[
+                      "inline-flex shrink-0 items-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40",
+                      lista.pausa.en_pausa
+                        ? "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+                        : "border-rose-300 bg-white text-rose-700 hover:bg-rose-50",
+                    ].join(" ")}
+                  >
+                    {moviendoPausa
+                      ? <Loader2 size={15} className="animate-spin" />
+                      : lista.pausa.en_pausa ? <Play size={15} /> : <Pause size={15} />}
+                    {lista.pausa.en_pausa ? "Quitar la pausa" : "Poner en pausa"}
+                  </button>
+                )}
+              </div>
+
               {/* Filtros de estado + buscador */}
               <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
                 <div className="flex flex-wrap items-center gap-1.5">
@@ -552,6 +629,48 @@ export default function DesactivarPorCanal({ canales, onCerrar }: Props) {
           )}
         </div>
       </div>
+
+      {/* Confirmación de la pausa */}
+      {confirmaPausa && canal && lista && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/60 px-4">
+          <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="flex items-center gap-2 text-lg font-extrabold text-slate-900">
+              {confirmaPausa === "poner"
+                ? <Pause size={20} style={{ color: ROJO }} />
+                : <Play size={20} className="text-slate-600" />}
+              {confirmaPausa === "poner" ? `Poner ${lista.nombre} en pausa` : `Quitar la pausa de ${lista.nombre}`}
+            </div>
+            {confirmaPausa === "poner" ? (
+              <ul className="mt-3 list-disc space-y-1.5 pl-5 text-sm text-slate-600">
+                <li>Tras cada censo (cada hora) se apaga <strong>todo lo que esté o vuelva a estar a la venta</strong>,
+                  también lo que alguien publique o prenda.</li>
+                <li>El seguro de stock 0 <strong>no regresa nada</strong> en {lista.nombre} aunque vuelva el stock.</li>
+                <li>No apaga nada en este momento: lo que hoy esté a la venta se apaga en el siguiente censo, o ya
+                  mismo con «Desactivar».</li>
+                <li>Dura hasta que alguien la quite aquí.</li>
+              </ul>
+            ) : (
+              <ul className="mt-3 list-disc space-y-1.5 pl-5 text-sm text-slate-600">
+                <li><strong>No prende nada</strong>: las publicaciones se quedan como estén.</li>
+                <li>Deja de apagarse lo que vuelva a la venta.</li>
+                <li>El seguro de stock 0 vuelve a regresar, cuando haya stock, lo que él mismo apagó.</li>
+              </ul>
+            )}
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" onClick={() => setConfirmaPausa(null)}
+                      className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-50">
+                Cancelar
+              </button>
+              <button type="button" onClick={() => void moverPausa(confirmaPausa === "poner")}
+                      className="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-bold text-white"
+                      style={{ backgroundColor: confirmaPausa === "poner" ? ROJO : "#334155" }}>
+                {confirmaPausa === "poner" ? <Pause size={16} /> : <Play size={16} />}
+                {confirmaPausa === "poner" ? "Sí, poner en pausa" : "Sí, quitar la pausa"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Confirmación */}
       {confirmando && canal && (

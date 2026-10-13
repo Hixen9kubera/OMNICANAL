@@ -142,6 +142,8 @@ export interface SeguroCero {
     encendido: boolean;
     ensayo: boolean;
     forzado: string[]; // por qué corre en ensayo aunque no se haya pedido
+    /** Una persona puso el canal EN PAUSA desde el Publicador: el seguro no regresa nada ahí. */
+    pausa?: boolean;
     apagadas: number;
     con_stock?: number; // de las apagadas, las que ya tienen stock en Woo
     hoy: number; // intentos de apagar de hoy

@@ -158,6 +158,7 @@ ERR_SIN_CIERRE = "ERROR: intento sin cierre"
 ERR_AUDITORIA = "ERROR: auditoría"
 CON_STOCK = "con stock y apagada"
 MOVIDA = "movida por el canal"
+EN_PAUSA = "canal en pausa"
 
 # Temu, además de lo apagable: estados desde los que la publicación puede volver
 # SOLA a la venta (o que nadie ha sondeado). No se apagan, pero se anotan una vez
@@ -239,6 +240,19 @@ def _csv(nombre: str) -> set[str]:
 
 def _excluidos() -> set[str]:
     return _csv("fanout_cero_excluir")
+
+
+def _canal_en_pausa(canal: str) -> bool:
+    """¿Una persona puso este canal EN PAUSA desde el Publicador
+    (`publicaciones_lote.fijar_pausa`)? Con la pausa puesta el seguro no regresa nada
+    ahí, por más que vuelva el stock. Si no se puede saber, se contesta que sí: el
+    «no sé» cae del lado seguro, igual que con la marca."""
+    try:
+        from services import publicaciones_lote
+        return publicaciones_lote.en_pausa(canal) is not False
+    except Exception as exc:  # noqa: BLE001
+        log.warning("seguro: no pude saber si %s está en pausa (%s): no se reactiva", canal, exc)
+        return True
 
 
 def estados_temu() -> set[str]:
@@ -1578,6 +1592,14 @@ def _reactivar(ctx: Contexto, a: dict[str, Any], canal: str,
     if sku.upper() in _excluidos():
         _anotar(ctx, a, ACC_OMITIR, "excluido (FANOUT_CERO_EXCLUIR)")
         return
+    # EL CANAL ESTÁ EN PAUSA: una persona lo apagó entero desde el Publicador. Mientras
+    # dure no se regresa NADA, por más que vuelva el stock. La marca se conserva: al
+    # quitar la pausa sigue su curso. Una fila al día por publicación, para que se vea.
+    if _canal_en_pausa(canal):
+        _anotar(ctx, a, ACC_SIN_CAMBIO,
+                (f"{EN_PAUSA}: {NOMBRE.get(canal, canal)} está en pausa (Publicador › Desactivar "
+                 "por canal); no se reactiva"), una_al_dia=EN_PAUSA)
+        return
     if en_ensayo and _repetida(canal, item, ACC_REACTIVAR, True):
         return
     try:
@@ -1894,11 +1916,15 @@ def barrer(canal: str) -> dict[str, Any]:
             vuelta["avisos"]["huerfana"].append(
                 (canal, str(m["sku"]), str(m["item_id"]), m.get("listing_actual")))
     reencolados: list[str] = []
-    if not ensayo(canal)[0]:            # el ensayo sólo mira: no devuelve nada a la cola
+    pausado = bool(paso("pausa del canal", lambda: _canal_en_pausa(canal), True))
+    # El ensayo sólo mira, y con el canal en pausa no se regresa nada: en ninguno de
+    # los dos casos se devuelve algo a la cola.
+    if not ensayo(canal)[0] and not pausado:
         reencolados = paso("marcas con stock de vuelta",
                            lambda: _reencolar_marcas(canal, marcas), []) or []
-    nuevas_con_stock = paso("apagadas con stock",
-                            lambda: _aviso_con_stock(canal, vuelta, marcas), []) or []
+    # Con el canal en pausa, «apagada y con stock» no es un pendiente: es lo que se pidió.
+    nuevas_con_stock = [] if pausado else (
+        paso("apagadas con stock", lambda: _aviso_con_stock(canal, vuelta, marcas), []) or [])
     if canal == "tiktok":
         paso("auditoría", lambda: _revisar_auditoria(canal, vuelta))
 
@@ -2276,15 +2302,19 @@ def resumen_panel() -> dict[str, Any]:
     for c in CANALES:
         en_ensayo, forzado = ensayo(c)
         canales[c] = {"nombre": NOMBRE[c], "encendido": habilitado(),
-                      "ensayo": en_ensayo, "forzado": forzado}
+                      "ensayo": en_ensayo, "forzado": forzado,
+                      # Una persona lo apagó entero desde el Publicador: ahí no se regresa nada.
+                      "pausa": _canal_en_pausa(c)}
     activos = [c for c in CANALES if canales[c]["encendido"]]
     modo = ("apagado" if not activos
             else "ensayo" if all(canales[c]["ensayo"] for c in activos) else "encendido")
     ultimas = _ultimas()
     marcas = [m for m in apagadas(ultimas=ultimas) if m["fuera"]]
-    pendientes_ = con_stock(marcas)
+    # En un canal en pausa, lo apagado con stock no es tarea de nadie: es lo que se pidió.
+    pendientes_ = [m for m in con_stock(marcas) if not canales[m["canal"]]["pausa"]]
     sueltas = [s for s in soltadas(ultimas=ultimas)
-               if s.get("stock_woo") is not None and int(s["stock_woo"]) > 0]
+               if s.get("stock_woo") is not None and int(s["stock_woo"]) > 0
+               and not canales.get(s["canal"], {}).get("pausa")]
     tope = _entero("fanout_cero_tope_dia", 0)      # 0 = sin tope
     for c in CANALES:
         canales[c]["apagadas"] = sum(1 for m in marcas if m["canal"] == c)

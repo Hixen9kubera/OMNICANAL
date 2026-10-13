@@ -1001,6 +1001,60 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.642.0 — Pausa del canal: un canal apagado se queda apagado — lo que reaparezca a la venta se apaga tras cada censo y el seguro de stock 0 no regresa nada
+
+**Qué pidió Brandon (13-oct-2026).** Después de apagar todo Temu con «Desactivar por canal»: «sí
+necesito que se apague por completo Temu por el momento y que no se reactiven solas».
+
+**Por qué apagar no bastaba.** Hay tres caminos por los que una publicación vuelve a la venta sin
+que nadie lo decida, y los tres están medidos:
+
+| Camino | Medido |
+|---|---|
+| Temu libera lo que tiene retenido (`3/3 → 2/8`) | 35 veces en 60 días; hoy hay 66 retenidas, 50 con piezas |
+| Una agotada vuelve en cuanto el contador del canal sube (`3/1 → 2/8`) | 29 veces en 60 días |
+| El seguro de stock 0 regresa lo que él apagó cuando vuelve el stock | ya lo hizo en producción (1 en Temu, 1 en TikTok); Temu tiene 6 marcas suyas |
+
+Además, alguien puede publicar o prender algo. Y el stock «que vuelve» es justo el dato del que hoy
+se desconfía.
+
+**Qué es la pausa.** Un ESTADO del canal que pone y quita una persona desde Publicador ›
+Desactivar por canal (**Poner en pausa** / **Quitar la pausa**). Se guarda en
+`ops.automatizacion_flags` (fila `canal_en_pausa:<canal>`, con quién y cuándo) y la historia en
+`ops.process_log`. No tiene variable de entorno. Mientras dura:
+
+1. **Al terminar cada censo** (cada hora) `publicaciones_lote.vigilar` saca de la venta lo que esté
+   «por apagar»: lo que está a la venta, lo agotado, y lo retenido a lo que todavía no se le manda
+   la orden. Primero lo que sí vende. Usa el mismo `desactivar` de la pantalla —lee en vivo, relee,
+   refleja y anota—, firmado «pausa del canal». Hasta 60 SKUs por censo; lo que no quepa lo toma el
+   siguiente.
+2. **El seguro de stock 0 no regresa nada en ese canal** (`fanout_seguro._canal_en_pausa`): ni al
+   llegar el stock ni en su barrido. Su marca se conserva para cuando se quite la pausa, y deja una
+   fila al día («canal en pausa…») para que se vea por qué no la regresó. Apagar, sí apaga.
+3. **Avisa**: en amarillo, qué publicaciones habían vuelto a la venta y ya apagó; en rojo, las que
+   no pudo apagar, para hacerlo a mano.
+
+**Lo que hay que saber.**
+
+- **No es instantáneo.** Entre un censo y el siguiente (una hora) una publicación que el canal
+  libere está a la venta. Con lo medido —35 regresos en 60 días repartidos en 60+ publicaciones— el
+  hueco esperado es de minutos al día, no de horas.
+- **Ponerla no apaga nada en el momento** (para eso está «Desactivar») **y quitarla no prende
+  nada**: las publicaciones se quedan como estén.
+- **Con la pausa puesta también se apaga lo que alguien publique o prenda a propósito.** Para
+  vender algo en ese canal hay que quitar la pausa.
+- **El «no sé» cae del lado seguro en los dos sentidos**: si no se puede leer la pausa, el vigilante
+  no apaga nada (no se apaga un canal por una consulta caída) y el seguro no regresa nada.
+- El pie de Operaciones dice qué canal está en pausa, y deja de contar «apagada con stock» de ese
+  canal como pendiente: es lo que se pidió.
+
+**Pruebas.** `tests/test_publicaciones_lote.py`: 77 (25 nuevas: `Pausa` y `Vigilar`).
+`tests/test_fanout_seguro.py`: 226 (12 nuevas: `CanalEnPausa`, `LaPreguntaDeLaPausa`, y los censos
+con el vigilante antes del seguro). 20 mutaciones sobre la pausa, 20 atrapadas (dos destaparon huecos que
+se cubrieron: la llave del interruptor es por canal, y si la relectura falla no se sirve el estado
+viejo). Flujo completo en local contra un canal de mentira: sin pausa el vigilante no hace nada; con
+pausa apagó lo que «regresó» y avisó. `tsc` y `next build` limpios; 66 módulos del backend en verde.
+
 ### v0.641.0 — Desactivar por canal: lo que Temu tiene RETENIDO acepta la orden y no cambia de estado — «orden enviada», y la vista «Por apagar»
 
 **Qué pasó al usarlo de verdad (13-oct-2026, 12:47–13:04 hora de México).** Brandon pidió apagar

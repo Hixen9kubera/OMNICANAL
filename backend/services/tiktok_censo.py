@@ -190,6 +190,17 @@ async def censar() -> dict[str, Any]:
     salida = {"ok": True, "productos": len(productos), "escritas": escritas,
               "activate": activate, "ilegibles": ilegibles, "paginas": paginas,
               "huerfanos": len(huerfanos), "huerfanos_skus": huerfanos[:20]}
+    # PAUSA DEL CANAL (`publicaciones_lote.vigilar`): si una persona puso este canal en
+    # pausa desde el Publicador, lo que el censo acaba de ver a la venta se apaga. Va
+    # ANTES del seguro: con el canal en pausa no debe quedar nada a la venta para él.
+    # En un hilo (regla 11). Sin pausa no hace nada ni aparece en la salida.
+    try:
+        from services import publicaciones_lote
+        vigilado = await asyncio.to_thread(publicaciones_lote.vigilar, CANAL)
+        if vigilado.get("pausa") is not False:
+            salida["pausa"] = vigilado
+    except Exception as exc:  # noqa: BLE001 — el censo ya quedó escrito
+        log.warning("censo %s: pausa del canal: %s", CANAL, exc)
     # Seguro «stock 0 ⇒ fuera de la venta» (`fanout_seguro`): lo que está a la venta
     # con Woo en 0 se saca de la venta. No tiene interruptor propio: corre siempre
     # que el fan-out esté encendido. Va ANTES de los excedentes para que primero se

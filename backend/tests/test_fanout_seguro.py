@@ -65,6 +65,7 @@ from services import fanout_recuperar as R  # noqa: E402
 from services import fanout_seguro as S  # noqa: E402
 from services import fanout_stock as F  # noqa: E402
 from services import fanout_vivo as V  # noqa: E402
+from services import publicaciones_lote as LOTE  # noqa: E402
 from services import temu as TM  # noqa: E402
 from services import tiktok as TK  # noqa: E402
 
@@ -184,6 +185,7 @@ class Arnes(unittest.TestCase):
         self.listing: dict = {}          # (canal, SKU) → listing_id que hoy tiene el censo
         self.pend: list = []             # lo que quedó a medias (`pendientes`)
         self.auditoria: list = []        # reactivaciones de TikTok en auditoría
+        self.pausados: set = set()       # canales que una persona puso EN PAUSA desde el Publicador
 
         async def cambiar_venta(goods_id, en_venta, sku_ids=None):
             self.llamadas.append(("temu.venta", str(goods_id), en_venta, sku_ids))
@@ -268,6 +270,7 @@ class Arnes(unittest.TestCase):
             mock.patch.object(S, "_cortado", side_effect=self._cortado),
             mock.patch.object(S, "usadas_hoy", side_effect=self._usadas),
             mock.patch.object(S, "es_padre", side_effect=lambda sku: self.padres.get(sku, False)),
+            mock.patch.object(S, "_canal_en_pausa", side_effect=lambda c: c in self.pausados),
             mock.patch.object(S, "cambio_ajeno", side_effect=self._ajeno),
             mock.patch.object(S, "apagado_en_bloque", side_effect=lambda c, t: self.bloque),
             mock.patch.object(S, "pendientes",
@@ -1257,7 +1260,7 @@ class Censos(unittest.TestCase):
     """El gancho en los dos censos: se barre ANTES de los excedentes (primero se
     apaga, después se baja) y en un HILO, no en el event loop (regla 11)."""
 
-    def _censar(self, canal, encendido=True):
+    def _censar(self, canal, encendido=True, pausa=False):
         from services import fanout_excedentes as E
         from services import supabase_db as sdb
         from services import temu_censo, tiktok_censo
@@ -1279,8 +1282,13 @@ class Censos(unittest.TestCase):
         def anotar(quien):
             return lambda c: orden.append((quien, c, threading.get_ident())) or {"ok": True}
 
+        def vigilar(c):
+            orden.append(("pausa", c, threading.get_ident()))
+            return {"ok": True, "pausa": bool(pausa), **({"por_apagar": 0} if pausa else {})}
+
         parches = [
             mock.patch.object(F, "seguro_encendido", return_value=encendido),
+            mock.patch.object(LOTE, "vigilar", side_effect=vigilar),
             mock.patch.object(S, "barrer", side_effect=anotar("seguro")),
             mock.patch.object(E, "revisar", side_effect=anotar("excedentes")),
             mock.patch.object(sdb, "fetch_one", return_value={"id": "cuenta"}),
@@ -1302,17 +1310,38 @@ class Censos(unittest.TestCase):
         for canal in ("temu", "tiktok"):
             with self.subTest(canal=canal):
                 salida, orden = self._censar(canal)
-                self.assertEqual([(q, c) for q, c, _ in orden], [("seguro", canal), ("excedentes", canal)])
-                self.assertNotEqual(orden[0][2], threading.get_ident(),
-                                    "el barrido corrió en el hilo del event loop")
+                self.assertEqual([(q, c) for q, c, _ in orden],
+                                 [("pausa", canal), ("seguro", canal), ("excedentes", canal)])
+                self.assertTrue(all(o[2] != threading.get_ident() for o in orden),
+                                "algo corrió en el hilo del event loop")
                 self.assertEqual(salida["seguro"], {"ok": True})
+                self.assertNotIn("pausa", salida, "sin pausa, el censo ni la menciona")
 
     def test_con_el_fanout_apagado_el_censo_ni_menciona_al_seguro(self):
         for canal in ("temu", "tiktok"):
             with self.subTest(canal=canal):
                 salida, orden = self._censar(canal, encendido=False)
-                self.assertEqual([q for q, _, _ in orden], ["excedentes"])
+                self.assertEqual([q for q, _, _ in orden], ["pausa", "excedentes"])
                 self.assertNotIn("seguro", salida)
+
+    def test_con_el_canal_en_pausa_el_vigilante_va_antes_del_seguro(self):
+        # La pausa no depende del fan-out: se vigila con él encendido o apagado.
+        for canal in ("temu", "tiktok"):
+            for encendido in (True, False):
+                with self.subTest(canal=canal, encendido=encendido):
+                    salida, orden = self._censar(canal, encendido=encendido, pausa=True)
+                    self.assertEqual(orden[0][:2], ("pausa", canal))
+                    self.assertEqual(salida["pausa"], {"ok": True, "pausa": True, "por_apagar": 0})
+
+    def test_si_el_vigilante_revienta_el_censo_sigue(self):
+        from services import temu_censo
+        fuente = (BACKEND / "services" / "temu_censo.py").read_text(encoding="utf-8")
+        i, j = fuente.index("publicaciones_lote.vigilar"), fuente.index("fanout_seguro.barrer")
+        self.assertLess(i, j, "primero la pausa, después el seguro")
+        self.assertIn("except Exception as exc:  # noqa: BLE001 — el censo ya quedó escrito",
+                      fuente[i:j])
+        self.assertTrue(asyncio.iscoroutinefunction(temu_censo.censar))
+        self.assertIn("await asyncio.to_thread(publicaciones_lote.vigilar, CANAL)", fuente)
 
 
 class Excedentes(Arnes):
@@ -2486,6 +2515,97 @@ class MarcasHuerfanas(Arnes):
         self._apagada_en_tiktok()
         _barrer(canal="tiktok")
         self.assertEqual(self.encolados, [])
+
+
+class CanalEnPausa(Arnes):
+    """Brandon, 13-oct-2026: «sí necesito que se apague por completo Temu por el momento y
+    que no se reactiven solas». Con el canal EN PAUSA (la pone una persona desde el
+    Publicador) el seguro no regresa nada ahí, por más que vuelva el stock."""
+
+    def test_con_el_canal_en_pausa_no_se_reactiva_aunque_vuelva_el_stock(self):
+        self.pausados = {"temu"}
+        self.sembrar_marca()
+        self.aplicar(plan(accion("temu", 0, estado="3/2"), objetivo=50))
+        self.assertEqual(self.ventas(), [], "ni una llamada al canal")
+        self.assertEqual([l for l in self.llamadas if l[0] == "stock"], [("stock", "temu", G, 50)],
+                         "el stock sí se escribe: sólo no se prende")
+        (f,) = self.de(S.ACC_SIN_CAMBIO)
+        self.assertTrue(f["resultado"].startswith(S.EN_PAUSA + ": Temu está en pausa"))
+        self.assertFalse(f["dry_run"])
+        self.assertIsNotNone(self._marca("temu", G), "la marca se conserva para cuando se quite la pausa")
+        self.assertEqual(self.lecturas, [], "ni siquiera se lee el canal")
+
+    def test_lo_dice_una_vez_al_dia_por_publicacion(self):
+        self.pausados = {"temu"}
+        self.sembrar_marca()
+        for _ in range(4):
+            self.aplicar(plan(accion("temu", 0, estado="3/2"), objetivo=50))
+        self.assertEqual(len(self.de(S.ACC_SIN_CAMBIO)), 1)
+        self.t[0] += 86400 + 60
+        self.aplicar(plan(accion("temu", 0, estado="3/2"), objetivo=50))
+        self.assertEqual(len(self.de(S.ACC_SIN_CAMBIO)), 2)
+
+    def test_la_pausa_es_del_canal_no_de_todos(self):
+        self.pausados = {"temu"}
+        self.sembrar_marca("tiktok", resultado="ok (ACTIVATE→SELLER_DEACTIVATED)",
+                           estado_vivo="SELLER_DEACTIVATED")
+        self.aplicar(plan(accion("tiktok", 0, estado="SELLER_DEACTIVATED"), objetivo=5))
+        self.assertEqual(self.ventas(), [("tiktok.activar", P)])
+
+    def test_al_quitar_la_pausa_el_seguro_sigue_su_curso(self):
+        self.pausados = {"temu"}
+        self.sembrar_marca()
+        self.aplicar(plan(accion("temu", 0, estado="3/2"), objetivo=50))
+        self.assertEqual(self.ventas(), [])
+        self.pausados = set()
+        self.aplicar(plan(accion("temu", 50, accion="sin_cambio", estado="3/2"), objetivo=50))
+        self.assertEqual(self.ventas(), [("temu.venta", G, True, None)])
+
+    def test_en_pausa_el_seguro_si_apaga(self):
+        # Apagar va en el mismo sentido que la pausa: no se frena.
+        self.pausados = {"temu"}
+        self.aplicar(plan(accion("temu", 4)))
+        self.assertEqual(self.ventas(), [("temu.venta", G, False, None)])
+
+    def test_el_barrido_no_devuelve_nada_a_la_cola_ni_lo_cuenta_como_pendiente(self):
+        self.pausados = {"temu"}
+        self.sembrar_marca()
+        self.foto[SKU] = 60
+        self.edad = 9 * 3600.0                     # sin pausa, esto sería «lleva 9 h con stock»
+        r = _barrer()
+        self.assertEqual((self.encolados, r["reencolados"], r["con_stock"]), ([], [], []))
+        self.assertEqual((self.de(S.ACC_SIN_CAMBIO), self.avisos), ([], []))
+        self.pausados = set()
+        r = _barrer()
+        self.assertEqual(self.encolados, [(SKU, S.MOTIVO_MARCA)], "sin pausa sí la devuelve a la cola")
+
+    def test_el_pie_dice_que_canal_esta_en_pausa_y_no_lo_da_por_pendiente(self):
+        self.pausados = {"temu"}
+        self.sembrar_marca()
+        self.foto[SKU] = 15
+        r = S.resumen_panel()
+        self.assertEqual((r["canales"]["temu"]["pausa"], r["canales"]["tiktok"]["pausa"]), (True, False))
+        self.assertEqual(r["con_stock"], [], "apagada con stock en un canal en pausa no es tarea de nadie")
+        self.assertEqual(r["canales"]["temu"]["con_stock"], 0)
+        self.assertEqual(r["canales"]["temu"]["apagadas"], 1, "pero sigue contando como apagada")
+
+
+class LaPreguntaDeLaPausa(unittest.TestCase):
+    """`_canal_en_pausa` de verdad (en las demás va suplantada): el «no sé» es pausa."""
+
+    def test_si_no_y_no_se(self):
+        for contesta, esperado in ((True, True), (False, False), (None, True)):
+            with mock.patch.object(LOTE, "en_pausa", return_value=contesta):
+                self.assertIs(S._canal_en_pausa("temu"), esperado, contesta)
+
+    def test_si_preguntar_revienta_tambien_es_pausa(self):
+        with mock.patch.object(LOTE, "en_pausa", side_effect=RuntimeError("kubera caída")):
+            self.assertTrue(S._canal_en_pausa("temu"))
+
+    def test_la_respuesta_es_la_de_publicaciones_lote(self):
+        with mock.patch.object(LOTE, "en_pausa", return_value=False) as p:
+            S._canal_en_pausa("tiktok")
+        p.assert_called_once_with("tiktok")
 
 
 class SoltarConElFanoutApagado(Arnes):

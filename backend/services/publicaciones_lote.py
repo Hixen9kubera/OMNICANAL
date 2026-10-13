@@ -37,11 +37,23 @@ LO QUE SE APAGA DESDE AQUÍ SE QUEDA APAGADO. Es una decisión de una persona:
   · cada cambio queda firmado `panel_lote` en `channel.listing_history`, que es donde
     el seguro mira si alguien pausó el canal en bloque (`apagado_en_bloque`).
 
+LA PAUSA DEL CANAL (Brandon, 13-oct-2026: «sí necesito que se apague por completo Temu
+por el momento y que no se reactiven solas»). Apagar lo que hoy está a la venta no
+basta: Temu regresa SOLA a la venta lo que tiene retenido (`3/3 → 2/8`, 35 veces en 60
+días), una agotada vuelve en cuanto su contador sube, y alguien puede publicar o
+prender algo. La pausa es un ESTADO del canal, guardado en `ops.automatizacion_flags`
+con quién y cuándo, y mientras dura:
+  · al terminar cada censo, `vigilar` saca de la venta lo que haya reaparecido (lo que
+    esté «por apagar») y avisa cuáles fueron;
+  · el seguro de stock 0 no regresa nada en ese canal (`fanout_seguro._canal_en_pausa`).
+No tiene variable de entorno: la pone y la quita una persona desde el Publicador
+(`fijar_pausa`). Sin pausa, `vigilar` no hace nada. Entre un censo y el siguiente (una
+hora) una publicación que Temu libere puede estar a la venta: no es instantáneo.
+
 LO QUE NO HACE
   · No reactiva. Volver a prender es otra decisión; lo que se apagó desde aquí queda
     en `ops.process_log` (proceso `publicaciones_lote`) con el estado que tenía antes,
-    que es lo que hará falta para regresarlo.
-  · No impide que alguien publique o prenda algo después: no es una «pausa del canal».
+    que es lo que hará falta para regresarlo. Quitar la pausa tampoco prende nada.
   · Sólo Temu y TikTok, que es donde hay una llamada de «sacar de la venta» probada.
     Mercado Libre ya está pausado entero y su PUT está bloqueado; Amazon y Walmart no
     tienen un «apagar» equivalente.
@@ -67,6 +79,12 @@ NOMBRE = {"temu": "Temu", "tiktok": "TikTok"}
 TOPE_POR_LLAMADA = 10
 PROCESO = "publicaciones_lote"
 VIA = "panel_lote"                 # la firma en `channel.listing_history.detectado_via`
+# La pausa del canal (ver la cabecera).
+_FLAG_PAUSA = "canal_en_pausa:{canal}"     # la fila de `ops.automatizacion_flags`
+_PAUSA_TTL_S = 30.0                # cuánto vale la lectura de la pausa (la pregunta el seguro en cada evento)
+_VIGILAR_MAX = 60                  # SKUs por censo; lo que no quepa lo toma el siguiente
+ACTOR_PAUSA = "pausa del canal"    # quién firma lo que apaga el vigilante
+_pausa_cache: dict[str, dict[str, Any]] = {}
 
 # En qué GRUPO cae cada estado y cómo se le dice. Lo que no esté aquí se enseña crudo
 # y no se toca: un estado que nadie conoce no se adivina.
@@ -245,11 +263,157 @@ def listar(canal: str) -> dict[str, Any]:
         "por_apagar": sum(1 for i in items if i["desactivable"] and not i["orden"]),
         "censo": max((i["visto"] for i in items if i["visto"]), default=None),
         "resumen": resumen, "tope_por_llamada": TOPE_POR_LLAMADA, "items": items,
+        "pausa": pausa(canal, refrescar=True),
     }
 
 
 def canales() -> list[dict[str, Any]]:
     return [{"id": c, "nombre": NOMBRE[c]} for c in CANALES]
+
+
+# ── La pausa del canal ───────────────────────────────────────────────────────
+
+def pausa(canal: str, refrescar: bool = False) -> dict[str, Any]:
+    """
+    El estado de la pausa de `canal`: `{en_pausa, por, desde, motivo, legible}`.
+    Si kubera no contesta, `en_pausa` va en None («no sé») y `legible` en False; esa
+    respuesta no se guarda. La lectura buena vale _PAUSA_TTL_S segundos.
+    """
+    canal = _canal(canal)
+    ahora = time.time()
+    guardada = _pausa_cache.get(canal)
+    if not refrescar and guardada and 0 <= ahora - guardada["_t"] < _PAUSA_TTL_S:
+        return {k: v for k, v in guardada.items() if k != "_t"}
+    try:
+        from services import supabase_db as sdb
+        fila = sdb.fetch_one(
+            "select valor, motivo, actualizado_por, "
+            "to_char(actualizado_at at time zone 'America/Mexico_City', 'YYYY-MM-DD HH24:MI') as desde "
+            "from ops.automatizacion_flags where flag = %(f)s",
+            {"f": _FLAG_PAUSA.format(canal=canal)}) or {}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("lote: no pude leer la pausa de %s: %s", canal, exc)
+        return {"en_pausa": None, "por": None, "desde": None, "motivo": None, "legible": False}
+    encendida = fila.get("valor") is True
+    estado = {"en_pausa": encendida, "por": fila.get("actualizado_por") if encendida else None,
+              "desde": fila.get("desde") if encendida else None,
+              "motivo": fila.get("motivo") if encendida else None, "legible": True}
+    _pausa_cache[canal] = {**estado, "_t": ahora}
+    return estado
+
+
+def en_pausa(canal: str) -> bool | None:
+    """True / False, o None si no se pudo leer («no sé»). Un canal que no es de los
+    de esta pantalla nunca está en pausa."""
+    try:
+        return pausa(canal).get("en_pausa")
+    except ValueError:
+        return False
+
+
+def fijar_pausa(canal: str, encendida: bool, quien: str = "", motivo: str = "") -> dict[str, Any]:
+    """
+    Pone o quita la pausa de `canal`. Queda QUIÉN y CUÁNDO en la fila del interruptor
+    (que sólo recuerda el último estado) y en `ops.process_log` (que guarda la historia).
+    Poner la pausa no apaga nada en el momento: lo hace `vigilar` tras el siguiente
+    censo, o la persona con «Desactivar». Quitarla no prende nada.
+    """
+    canal = _canal(canal)
+    encendida = bool(encendida)
+    from services import supabase_db as sdb
+    sdb.execute(
+        """insert into ops.automatizacion_flags (flag, valor, motivo, actualizado_at, actualizado_por)
+           values (%(f)s, %(v)s, %(m)s, now(), %(q)s)
+           on conflict (flag) do update set
+               valor = excluded.valor, motivo = excluded.motivo,
+               actualizado_at = now(), actualizado_por = excluded.actualizado_por""",
+        {"f": _FLAG_PAUSA.format(canal=canal), "v": encendida,
+         "m": (motivo or "").strip()[:300] or None, "q": (quien or "").strip()[:120] or None})
+    _pausa_cache.pop(canal, None)
+    log.warning("PAUSA DEL CANAL %s: %s por %s%s", canal, "PUESTA" if encendida else "QUITADA",
+                quien or "?", f" — {motivo}" if motivo else "")
+    try:
+        sdb.execute(
+            "insert into ops.process_log (proceso, origen, accion, estado, detalle) "
+            "values (%s, 'panel', 'pausa', %s, %s::jsonb)",
+            (PROCESO, "puesta" if encendida else "quitada",
+             json.dumps({"canal": canal, "actor": quien or None, "motivo": motivo or None},
+                        ensure_ascii=False)))
+    except Exception as exc:  # noqa: BLE001 — la pausa ya quedó; esto es sólo la historia
+        log.warning("lote: no pude anotar la pausa de %s en ops.process_log: %s", canal, exc)
+    return pausa(canal, refrescar=True)
+
+
+def _avisar_pausa(canal: str, reaparecidas: list[str], sin_apagar: list[str]) -> None:
+    """Que nadie tenga que ir a buscarlo: qué había vuelto a la venta con el canal en
+    pausa, y —en rojo— lo que no se pudo apagar. Mejor esfuerzo."""
+    try:
+        from services import alertas
+        nombre = NOMBRE[canal]
+        if reaparecidas:
+            n = len(reaparecidas)
+            alertas.avisar(
+                f"canal_pausa_reaparecio:{canal}",
+                (f"*{nombre} está en pausa* y {n} "
+                 f"{'publicación había vuelto' if n == 1 else 'publicaciones habían vuelto'} a la venta; "
+                 f"ya {'se apagó' if n == 1 else 'se apagaron'}: {', '.join(reaparecidas[:15])}"
+                 + (f" y {n - 15} más" if n > 15 else "") + "."), nivel="🟡")
+        if sin_apagar:
+            n = len(sin_apagar)
+            alertas.avisar(
+                f"canal_pausa_falla:{canal}",
+                (f"*{nombre} está en pausa* y {n} "
+                 f"{'publicación NO se pudo apagar' if n == 1 else 'publicaciones NO se pudieron apagar'}: "
+                 f"{', '.join(sin_apagar[:15])}" + (f" y {n - 15} más" if n > 15 else "")
+                 + ". Apagarlas a mano en el Seller Center o desde Publicador › Desactivar por canal."),
+                nivel="🔴")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("lote: avisos de la pausa de %s: %s", canal, exc)
+
+
+def vigilar(canal: str) -> dict[str, Any]:
+    """
+    Lo llama el censo de `canal` al terminar, EN UN HILO (regla 11). Si el canal está
+    en pausa, saca de la venta lo que el censo acaba de ver «por apagar»: lo que está a
+    la venta, lo agotado y lo retenido a lo que todavía no se le manda la orden. Primero
+    lo que SÍ vende. Usa `desactivar`, así que lee en vivo, relee y deja todo anotado
+    igual que si lo hubiera hecho una persona (firmado «pausa del canal»).
+
+    Sin pausa no hace nada. Si no se puede leer la pausa, tampoco: apagar un canal por
+    un «no sé» sería peor que esperar al siguiente censo.
+    """
+    from services import fanout_seguro as S
+    canal = _canal(canal)
+    p = pausa(canal, refrescar=True)
+    if p.get("en_pausa") is not True:
+        return ({"ok": True, "pausa": False} if p.get("legible")
+                else {"ok": False, "pausa": None, "motivo": "no pude leer la pausa del canal"})
+    t0 = time.time()
+    por_sku: dict[str, dict[str, Any]] = {}
+    for i in sorted(listar(canal)["items"], key=lambda x: x["grupo"] != "a_la_venta"):
+        if i["desactivable"] and not i["orden"]:
+            por_sku.setdefault(i["sku"].upper(), i)
+    pendientes = [i["sku"] for i in por_sku.values()]
+    resumen: dict[str, int] = {}
+    reaparecidas: list[str] = []
+    sin_apagar: list[str] = []
+    for k in range(0, min(len(pendientes), _VIGILAR_MAX), TOPE_POR_LLAMADA):
+        r = desactivar(canal, pendientes[k:k + TOPE_POR_LLAMADA], actor=ACTOR_PAUSA)
+        for x in r["resultados"]:
+            resumen[x["resultado"]] = resumen.get(x["resultado"], 0) + 1
+            vendia = S.a_la_venta(canal, x.get("antes"))
+            if x["resultado"] == APAGADA and vendia:
+                reaparecidas.append(x["sku"])
+            elif x["resultado"] in (ERROR, SIN_CONFIRMAR) and (vendia or x.get("antes") is None):
+                sin_apagar.append(x["sku"])
+    _avisar_pausa(canal, reaparecidas, sin_apagar)
+    salida = {"ok": True, "pausa": True, "por_apagar": len(pendientes),
+              "atendidas": min(len(pendientes), _VIGILAR_MAX), "resumen": resumen,
+              "reaparecidas": reaparecidas[:20], "sin_apagar": sin_apagar[:20],
+              "segundos": round(time.time() - t0, 1)}
+    if pendientes:
+        log.warning("PAUSA DEL CANAL %s: %s", canal, salida)
+    return salida
 
 
 # ── Desactivar ───────────────────────────────────────────────────────────────

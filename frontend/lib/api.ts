@@ -2506,6 +2506,16 @@ export interface PublicacionLote {
   orden: { cuando: string | null; actor: string | null } | null;
 }
 
+/** La pausa de un canal: mientras dura, lo que reaparezca a la venta se apaga tras
+ *  cada censo y el seguro de stock 0 no regresa nada. `en_pausa: null` = no se pudo leer. */
+export interface PausaCanal {
+  en_pausa: boolean | null;
+  por: string | null;
+  desde: string | null;
+  motivo: string | null;
+  legible: boolean;
+}
+
 export interface ListaLote {
   canal: string;
   nombre: string;
@@ -2519,6 +2529,7 @@ export interface ListaLote {
   tope_por_llamada: number;
   items: PublicacionLote[];
   canales: { id: string; nombre: string }[];
+  pausa: PausaCanal;
 }
 
 export type ResultadoLote = "apagada" | "ya_apagada" | "orden_enviada" | "no_aplica" | "sin_publicacion"
@@ -2553,4 +2564,10 @@ export function listarPublicacionesLote(canal: string, signal?: AbortSignal): Pr
  *  INACTIVA, no borra. Sólo admin: sin permiso el backend contesta 403. */
 export function desactivarPublicacionesLote(canal: string, skus: string[]): Promise<RespuestaLote> {
   return postJSON<RespuestaLote>("/api/publicaciones/lote/desactivar", { canal, skus });
+}
+
+/** Pone o quita la PAUSA de un canal. Sólo admin. Ponerla no apaga nada en el momento
+ *  y quitarla no prende nada. */
+export function pausarCanalLote(canal: string, enPausa: boolean, motivo?: string): Promise<PausaCanal> {
+  return postJSON<PausaCanal>("/api/publicaciones/lote/pausa", { canal, en_pausa: enPausa, motivo: motivo ?? null });
 }

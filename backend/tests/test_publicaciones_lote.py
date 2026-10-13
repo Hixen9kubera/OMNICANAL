@@ -17,6 +17,9 @@ publicados, seleccionar un lote o TODOS y desactivarlos.
      cambio queda firmado `panel_lote`.
   6. QUEDA ANOTADO quién apagó qué y en qué estado estaba (para poder regresarlo).
   7. SÓLO ADMIN, a lo mucho 10 SKUs por llamada, y sólo Temu y TikTok.
+  8. LA PAUSA DEL CANAL: la pone y la quita una persona; mientras dura, el vigilante
+     apaga tras cada censo lo que haya reaparecido, y sin pausa no hace nada. Un
+     «no sé» no apaga nada. (`Pausa`, `Vigilar`)
 
 ── NO SE TOCA NADA REAL ─────────────────────────────────
 El canal, la base, la bitácora y el reloj van suplantados. SKUs INVENTADOS.
@@ -138,8 +141,10 @@ class Arnes(unittest.TestCase):
                               side_effect=lambda canal, r, lote, actor, seg: self.anotadas.append(
                                   dict(r, canal=canal, lote=lote, actor=actor))),
             mock.patch.object(L, "_del_panel", side_effect=lambda c: dict(self.panel)),
+            mock.patch.object(L, "pausa", side_effect=lambda c, refrescar=False: dict(self.estado_pausa)),
         ]
         self.panel: dict[str, dict] = {}
+        self.estado_pausa = {"en_pausa": False, "por": None, "desde": None, "motivo": None, "legible": True}
         for p in parches:
             p.start()
             self.addCleanup(p.stop)
@@ -205,6 +210,7 @@ class Listar(Arnes):
                           primero["stock_canal"], primero["stock_woo"], primero["precio"]),
                          ("ZZZ-0001-AZL", "9001", "A la venta", True, 5, 5, 199.0))
         self.assertEqual((r["censo"], r["tope_por_llamada"]), ("2026-10-13 11:44", L.TOPE_POR_LLAMADA))
+        self.assertEqual(r["pausa"], self.estado_pausa, "la lista trae el estado de la pausa")
         self.assertEqual(self.orden, [], "listar no le pregunta nada al canal")
 
     def test_dice_quien_la_tiene_apagada(self):
@@ -455,6 +461,252 @@ class Desactivar(Arnes):
         self.assertEqual(tomados, [("temu", "9001")], "el mismo candado del seguro: no se pisan")
 
 
+class Vigilar(Arnes):
+    """El vigilante de la pausa: lo llama el censo al terminar."""
+
+    def setUp(self):
+        super().setUp()
+        self.avisos: list[tuple] = []
+        from services import alertas
+        p = mock.patch.object(alertas, "avisar",
+                              side_effect=lambda tipo, texto, nivel="🔴": self.avisos.append((tipo, texto, nivel)) or True)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _pausar(self):
+        self.estado_pausa = {"en_pausa": True, "por": "jefe@kubera.mx", "desde": "2026-10-13 13:30",
+                             "motivo": None, "legible": True}
+
+    def test_sin_pausa_no_hace_nada(self):
+        self.poner("ZZZ-0001-AZL", "9001", "2/8")
+        r = L.vigilar("temu")
+        self.assertEqual(r, {"ok": True, "pausa": False})
+        self.assertEqual((self.orden, self.anotadas, self.avisos), ([], [], []))
+
+    def test_si_no_puede_leer_la_pausa_no_apaga_nada(self):
+        self.poner("ZZZ-0001-AZL", "9001", "2/8")
+        self.estado_pausa = {"en_pausa": None, "por": None, "desde": None, "motivo": None, "legible": False}
+        r = L.vigilar("temu")
+        self.assertEqual((r["ok"], r["pausa"]), (False, None))
+        self.assertEqual(self.orden, [], "un «no sé» no apaga un canal")
+
+    def test_en_pausa_apaga_lo_que_reaparecio_y_avisa(self):
+        self._pausar()
+        self.poner("ZZZ-0001-AZL", "9001", "2/8")          # Temu la regresó a la venta
+        self.poner("ZZZ-0002-AZL", "9002", "3/2")          # sigue apagada
+        self.poner("ZZZ-0003-AZL", "9003", "5/None")       # borrador
+        r = L.vigilar("temu")
+        self.assertEqual(self.llamadas(), [("apagar", "9001")])
+        self.assertEqual((r["pausa"], r["por_apagar"], r["resumen"], r["reaparecidas"], r["sin_apagar"]),
+                         (True, 1, {L.APAGADA: 1}, ["ZZZ-0001-AZL"], []))
+        self.assertEqual(self.anotadas[0]["actor"], L.ACTOR_PAUSA, "firma el vigilante, no una persona")
+        ((tipo, texto, nivel),) = self.avisos
+        self.assertEqual((tipo, nivel), ("canal_pausa_reaparecio:temu", "🟡"))
+        self.assertIn("ZZZ-0001-AZL", texto)
+        self.assertIn("había vuelto a la venta", texto)
+
+    def test_primero_lo_que_si_vende(self):
+        self._pausar()
+        self.poner("AAA-0001-AZL", "9001", "3/1")          # agotada: va después aunque su SKU vaya antes
+        self.poner("ZZZ-0002-AZL", "9002", "2/8")
+        L.vigilar("temu")
+        self.assertEqual(self.llamadas(), [("apagar", "9002"), ("apagar", "9001")])
+
+    def test_a_la_retenida_que_ya_tiene_su_orden_no_se_le_repite(self):
+        self._pausar()
+        self.poner("ZZZ-0001-AZL", "9001", "3/3")
+        self.poner("ZZZ-0002-AZL", "9002", "3/3")
+        self.no_obedece |= {"9001", "9002"}
+        self.panel = {"9001": {"accion": "desactivar", "estado": "orden_enviada", "cuando": "x",
+                               "actor": "y", "antes": "3/3", "despues": "3/3"}}
+        r = L.vigilar("temu")
+        self.assertEqual(self.llamadas(), [("apagar", "9002")], "sólo la que nunca recibió la orden")
+        self.assertEqual((r["resumen"], r["reaparecidas"], r["sin_apagar"]), ({L.ORDEN_ENVIADA: 1}, [], []))
+        self.assertEqual(self.avisos, [], "una retenida no «reapareció»: no vendía")
+
+    def test_la_que_no_se_pudo_apagar_avisa_en_rojo(self):
+        self._pausar()
+        self.poner("ZZZ-0001-AZL", "9001", "2/8")
+        self.poner("ZZZ-0002-AZL", "9002", "2/8")
+        self.rechaza.add("9001")
+        self.no_obedece.add("9002")
+        r = L.vigilar("temu")
+        self.assertEqual(sorted(r["sin_apagar"]), ["ZZZ-0001-AZL", "ZZZ-0002-AZL"])
+        ((tipo, texto, nivel),) = self.avisos
+        self.assertEqual((tipo, nivel), ("canal_pausa_falla:temu", "🔴"))
+        self.assertIn("NO se pudieron apagar", texto)
+
+    def test_va_por_tandas_y_con_tope_por_censo(self):
+        self._pausar()
+        for i in range(73):
+            self.poner(f"ZZZ-1{i:03d}-AZL", f"95{i:03d}", "2/8")
+        tandas = []
+        real = L.desactivar
+
+        def desactivar(canal, skus, actor=""):
+            tandas.append(len(skus))
+            return real(canal, skus, actor=actor)
+
+        with mock.patch.object(L, "desactivar", side_effect=desactivar):
+            r = L.vigilar("temu")
+        self.assertEqual(tandas, [10] * 6, "de 10 en 10 y a lo mucho 60 por censo")
+        self.assertEqual((r["por_apagar"], r["atendidas"], len(self.llamadas())), (73, 60, 60))
+        self.assertEqual(len(r["reaparecidas"]), 20, "la respuesta trae una muestra, no las 60")
+
+    def test_en_pausa_y_sin_nada_que_apagar_no_avisa(self):
+        self._pausar()
+        self.poner("ZZZ-0001-AZL", "9001", "3/2")
+        r = L.vigilar("temu")
+        self.assertEqual((r["por_apagar"], r["resumen"], self.orden, self.avisos), (0, {}, [], []))
+
+    def test_un_aviso_que_revienta_no_tumba_al_vigilante(self):
+        self._pausar()
+        self.poner("ZZZ-0001-AZL", "9001", "2/8")
+        from services import alertas
+        with mock.patch.object(alertas, "avisar", side_effect=RuntimeError("Slack caído")):
+            r = L.vigilar("temu")
+        self.assertEqual(r["resumen"], {L.APAGADA: 1})
+
+    def test_canal_desconocido(self):
+        with self.assertRaises(ValueError):
+            L.vigilar("amazon")
+
+
+class Pausa(unittest.TestCase):
+    """El interruptor de la pausa, contra un `sdb` falso."""
+
+    def setUp(self):
+        from services import supabase_db as sdb
+        self.sdb = sdb
+        L._pausa_cache.clear()
+        self.addCleanup(L._pausa_cache.clear)
+
+    def test_sin_fila_no_hay_pausa(self):
+        with mock.patch.object(self.sdb, "fetch_one", return_value=None) as fo:
+            p = L.pausa("temu")
+        self.assertEqual(p, {"en_pausa": False, "por": None, "desde": None, "motivo": None, "legible": True})
+        self.assertEqual(fo.call_args[0][1], {"f": "canal_en_pausa:temu"})
+        self.assertIn("from ops.automatizacion_flags where flag = %(f)s", fo.call_args[0][0])
+        with mock.patch.object(self.sdb, "fetch_one", return_value=None) as fo:
+            L.pausa("tiktok")
+        self.assertEqual(fo.call_args[0][1], {"f": "canal_en_pausa:tiktok"}, "cada canal tiene SU interruptor")
+
+    def test_con_la_fila_encendida_dice_quien_y_desde_cuando(self):
+        fila = {"valor": True, "motivo": "stock de almacén dudoso", "actualizado_por": "jefe@kubera.mx",
+                "desde": "2026-10-13 13:30"}
+        with mock.patch.object(self.sdb, "fetch_one", return_value=fila):
+            p = L.pausa("TEMU")
+        self.assertEqual(p, {"en_pausa": True, "por": "jefe@kubera.mx", "desde": "2026-10-13 13:30",
+                             "motivo": "stock de almacén dudoso", "legible": True})
+        self.assertIs(L.en_pausa("temu"), True)
+
+    def test_la_fila_apagada_no_arrastra_quien_la_puso(self):
+        fila = {"valor": False, "motivo": "x", "actualizado_por": "jefe@kubera.mx", "desde": "2026-10-13 13:30"}
+        with mock.patch.object(self.sdb, "fetch_one", return_value=fila):
+            self.assertEqual(L.pausa("temu"),
+                             {"en_pausa": False, "por": None, "desde": None, "motivo": None, "legible": True})
+
+    def test_una_fila_rara_no_es_pausa(self):
+        # Sólo `valor is True`: una fila de otra cosa (o un texto) no apaga un canal.
+        for fila in ({"id": "cuenta"}, {"valor": "true"}, {"valor": 1}, {}):
+            L._pausa_cache.clear()
+            with mock.patch.object(self.sdb, "fetch_one", return_value=fila):
+                self.assertIs(L.en_pausa("temu"), False, fila)
+
+    def test_la_lectura_se_guarda_un_rato_y_refrescar_la_salta(self):
+        with mock.patch.object(self.sdb, "fetch_one", return_value={"valor": True}) as fo:
+            L.pausa("temu")
+            L.pausa("temu")
+            L.en_pausa("temu")
+            self.assertEqual(fo.call_count, 1)
+            L.pausa("temu", refrescar=True)
+            self.assertEqual(fo.call_count, 2)
+            L.pausa("tiktok")
+            self.assertEqual(fo.call_count, 3, "cada canal lleva la suya")
+        with mock.patch.object(L.time, "time", return_value=L.time.time() + L._PAUSA_TTL_S + 1), \
+                mock.patch.object(self.sdb, "fetch_one", return_value={"valor": False}) as fo:
+            self.assertIs(L.en_pausa("temu"), False, "vencida, se vuelve a leer")
+            self.assertEqual(fo.call_count, 1)
+
+    def test_si_kubera_no_contesta_es_no_se_y_no_se_guarda(self):
+        with mock.patch.object(self.sdb, "fetch_one", side_effect=RuntimeError("kubera caída")):
+            p = L.pausa("temu")
+            self.assertEqual((p["en_pausa"], p["legible"]), (None, False))
+            self.assertIsNone(L.en_pausa("temu"))
+        with mock.patch.object(self.sdb, "fetch_one", return_value={"valor": True}) as fo:
+            self.assertIs(L.en_pausa("temu"), True)
+            self.assertEqual(fo.call_count, 1, "el «no sé» no quedó en el caché")
+
+    def test_un_canal_que_no_es_de_esta_pantalla_nunca_esta_en_pausa(self):
+        with mock.patch.object(self.sdb, "fetch_one", side_effect=AssertionError("no debía preguntar")):
+            for canal in ("mercado_libre", "amazon", "", None):
+                self.assertIs(L.en_pausa(canal), False)
+        with self.assertRaises(ValueError):
+            L.pausa("amazon")
+
+    def test_ponerla_deja_quien_y_la_historia_y_olvida_el_cache(self):
+        with mock.patch.object(self.sdb, "fetch_one", return_value={"valor": False}):
+            L.pausa("temu")                                      # caché: sin pausa
+        fila = {"valor": True, "motivo": "stock dudoso", "actualizado_por": "jefe@kubera.mx", "desde": "ahora"}
+        with mock.patch.object(self.sdb, "execute") as ex, \
+                mock.patch.object(self.sdb, "fetch_one", return_value=fila):
+            p = L.fijar_pausa("temu", True, quien="jefe@kubera.mx", motivo="stock dudoso")
+        self.assertEqual((p["en_pausa"], p["por"]), (True, "jefe@kubera.mx"))
+        flag, historia = ex.call_args_list
+        plano = " ".join(flag[0][0].split())
+        self.assertIn("insert into ops.automatizacion_flags (flag, valor, motivo, actualizado_at, actualizado_por)", plano)
+        self.assertIn("on conflict (flag) do update set", plano)
+        self.assertEqual(flag[0][1], {"f": "canal_en_pausa:temu", "v": True, "m": "stock dudoso", "q": "jefe@kubera.mx"})
+        self.assertIn("insert into ops.process_log", historia[0][0])
+        self.assertEqual((historia[0][1][0], historia[0][1][1]), (L.PROCESO, "puesta"))
+        self.assertIn('"canal": "temu"', historia[0][1][2])
+
+    def test_quitarla(self):
+        with mock.patch.object(self.sdb, "execute") as ex, \
+                mock.patch.object(self.sdb, "fetch_one", return_value={"valor": False}):
+            p = L.fijar_pausa("tiktok", False, quien="jefe@kubera.mx")
+        self.assertFalse(p["en_pausa"])
+        self.assertEqual(ex.call_args_list[0][0][1]["f"], "canal_en_pausa:tiktok")
+        self.assertEqual(ex.call_args_list[0][0][1]["v"], False)
+        self.assertEqual(ex.call_args_list[1][0][1][1], "quitada")
+
+    def test_si_la_historia_no_se_guarda_la_pausa_queda_igual(self):
+        llamadas = []
+
+        def execute(sql, params=None):
+            llamadas.append(sql)
+            if "process_log" in sql:
+                raise RuntimeError("kubera caída")
+
+        with mock.patch.object(self.sdb, "execute", side_effect=execute), \
+                mock.patch.object(self.sdb, "fetch_one", return_value={"valor": True}):
+            self.assertTrue(L.fijar_pausa("temu", True)["en_pausa"])
+        self.assertEqual(len(llamadas), 2)
+
+    def test_si_la_relectura_falla_no_se_sirve_el_estado_viejo(self):
+        with mock.patch.object(self.sdb, "fetch_one", return_value={"valor": False}):
+            self.assertIs(L.en_pausa("temu"), False)             # caché: sin pausa
+        with mock.patch.object(self.sdb, "execute"),                 mock.patch.object(self.sdb, "fetch_one", side_effect=RuntimeError("kubera caída")):
+            p = L.fijar_pausa("temu", True)
+        self.assertIsNone(p["en_pausa"], "se guardó, pero no se pudo releer: «no sé»")
+        with mock.patch.object(self.sdb, "fetch_one", return_value={"valor": True}) as fo:
+            self.assertIs(L.en_pausa("temu"), True, "no el «sin pausa» que estaba en el caché")
+            self.assertEqual(fo.call_count, 1)
+
+    def test_si_el_interruptor_no_se_guarda_se_dice(self):
+        with mock.patch.object(self.sdb, "execute", side_effect=RuntimeError("kubera caída")):
+            with self.assertRaises(RuntimeError):
+                L.fijar_pausa("temu", True)
+
+    def test_canal_desconocido(self):
+        with self.assertRaises(ValueError):
+            L.fijar_pausa("amazon", True)
+
+    def test_la_historia_de_la_pausa_no_se_confunde_con_un_apagado(self):
+        # `_SQL_PANEL` sólo mira lo que se le hizo a una publicación.
+        self.assertIn("estado in ('ok', 'orden_enviada', 'sin_confirmar')", " ".join(L._SQL_PANEL.split()))
+
+
 class SeQuedaApagado(Arnes):
     """Lo que una persona manda apagar no lo regresa el seguro."""
 
@@ -613,10 +865,25 @@ class Rutas(unittest.TestCase):
         from core import rbac
         self.assertEqual(rbac.rol_requerido("POST", "/api/publicaciones/lote/desactivar"), "admin")
 
-    def test_las_dos_rutas_son_sincronas(self):
+    def test_las_tres_rutas_son_sincronas(self):
         # Regla 11: psycopg2 y las llamadas al canal bloquean; como `def` corren en el threadpool.
-        for metodo, path in (("GET", "/api/publicaciones/lote"), ("POST", "/api/publicaciones/lote/desactivar")):
+        for metodo, path in (("GET", "/api/publicaciones/lote"), ("POST", "/api/publicaciones/lote/desactivar"),
+                             ("POST", "/api/publicaciones/lote/pausa")):
             self.assertFalse(inspect.iscoroutinefunction(self._ruta(metodo, path).endpoint), path)
+
+    def test_la_pausa_es_solo_para_administradores_y_lleva_su_nombre(self):
+        ruta = self._ruta("POST", "/api/publicaciones/lote/pausa")
+        self.assertIn(RUTAS._admin_del_lote, [d.call for d in ruta.dependant.dependencies])
+        from core import rbac
+        self.assertEqual(rbac.rol_requerido("POST", "/api/publicaciones/lote/pausa"), "admin")
+        quien = SimpleNamespace(actor="jefe@kubera.mx")
+        with mock.patch.object(RUTAS.lote, "fijar_pausa", return_value={"en_pausa": True}) as f:
+            r = RUTAS.lote_pausa(RUTAS.LotePausa(canal="temu", en_pausa=True, motivo="stock dudoso"), quien=quien)
+        self.assertEqual(r, {"en_pausa": True})
+        f.assert_called_once_with("temu", True, quien="jefe@kubera.mx", motivo="stock dudoso")
+        with self.assertRaises(HTTPException) as cm:
+            RUTAS.lote_pausa(RUTAS.LotePausa(canal="amazon", en_pausa=True), quien=quien)
+        self.assertEqual(cm.exception.status_code, 400)
 
     def _pedir(self, identidad):
         pedido = SimpleNamespace(state=SimpleNamespace(identidad=identidad), method="POST",

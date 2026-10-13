@@ -8,6 +8,10 @@ publicaciones.py — Las publicaciones del catálogo para la pestaña Omnicanal.
                                              escogerlas en el Publicador (solo lee)
   POST /api/publicaciones/lote/desactivar  → {canal, skus}: las SACA DE LA VENTA en
                                              Temu o TikTok. Sólo admin. Inactiva, no borra.
+  POST /api/publicaciones/lote/pausa       → {canal, en_pausa, motivo?}: pone o quita la
+                                             PAUSA del canal. Sólo admin. Con la pausa, lo
+                                             que reaparezca a la venta se apaga tras cada
+                                             censo y el seguro de stock 0 no regresa nada.
 
 LECTURA PURA, con DOS excepciones declaradas:
 
@@ -194,6 +198,12 @@ class LoteDesactivar(BaseModel):
     skus: list[str]
 
 
+class LotePausa(BaseModel):
+    canal: str
+    en_pausa: bool
+    motivo: str | None = None
+
+
 async def _admin_del_lote(request: Request):
     """El mismo candado de las investigaciones (persona con sesión y rol admin),
     con un mensaje que dice de qué se trata."""
@@ -247,6 +257,26 @@ def lote_desactivar(datos: LoteDesactivar, quien=Depends(_admin_del_lote)):
         log.exception("publicaciones.lote_desactivar falló")
         raise HTTPException(status_code=502,
                             detail=f"No se pudo desactivar: {exc}") from exc
+
+
+@router.post("/lote/pausa")
+def lote_pausa(datos: LotePausa, quien=Depends(_admin_del_lote)):
+    """
+    Pone o quita la PAUSA de un canal (Temu o TikTok). Con la pausa puesta, al terminar
+    cada censo se saca de la venta lo que haya reaparecido, y el seguro de stock 0 no
+    regresa nada en ese canal. Queda quién y cuándo. Ponerla no apaga nada en el
+    momento (para eso está «Desactivar») y quitarla no prende nada.
+    """
+    try:
+        return lote.fijar_pausa(datos.canal, datos.en_pausa,
+                                quien=str(getattr(quien, "actor", "") or ""),
+                                motivo=datos.motivo or "")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        log.exception("publicaciones.lote_pausa falló")
+        raise HTTPException(status_code=502,
+                            detail=f"No se pudo cambiar la pausa: {exc}") from exc
 
 
 async def _a_hilo(fn, **kw):
