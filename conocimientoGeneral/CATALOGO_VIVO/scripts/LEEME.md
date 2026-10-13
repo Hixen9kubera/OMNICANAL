@@ -161,7 +161,10 @@ puede sobrescribir: hay que cerrarlo antes.
 `mayoreo` arma los DATOS del catálogo para tiendas de mayoreo en `<salida>/mayoreo/`: `catalogo.json` (SKU, título,
 categoría, precio, piezas y foto; nada de costos, proveedor ni contenedor) y `fotos/mNNN.jpg` (hojas de 32, sin fotos
 repetidas y en el orden del catálogo). Título, categoría, precio (la media de Mercado Libre) y foto salen de
-`datos_pl.json`; las piezas, de una lectura NUEVA de Odoo que se guarda aparte (`datos/odoo_mayoreo.json`, no toca la
+`datos_pl.json`. Si existe `datos/precios_v3/precios_catalogo_v3.json` (el paquete de Competencia que rehace el precio de
+mercado sin marcas de renombre y con la categoría corregida), ese precio manda en las filas que trae, menos en las
+`exacto`; una fila sin fuentes ni estimado queda sin precio y el catálogo no la deja pedir. Ese paquete trae costos: no
+se sube aquí. Las piezas salen de una lectura NUEVA de Odoo que se guarda aparte (`datos/odoo_mayoreo.json`, no toca la
 del inventario; `--mayoreo-sin-odoo` reusa la última). Entra lo que Odoo tiene libre en TEXCO y TEXCO II (DROP OFF no
 surte órdenes) y lo que NO existe en Odoo pero según los packing lists todavía queda, marcado para apartarse a mano;
 lo que existe en Odoo con cero libre queda fuera. Esta etapa solo deja archivos: quien los sirve es el módulo

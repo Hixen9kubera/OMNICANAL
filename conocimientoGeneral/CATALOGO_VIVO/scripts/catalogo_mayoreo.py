@@ -20,7 +20,9 @@ QUÉ ENTRA (decisiones de Brandon, 12-oct-2026)
   insumos, lo que no tiene SKU y cualquier cosa de costos, proveedor o contenedor.
 
 EL PRECIO es la media de Mercado Libre de la página del inventario, la misma del Excel: del producto
-cuando la hay (`p`), de su categoría cuando no (`c`), o estimada (`e`).
+cuando la hay (`p`), de su categoría cuando no (`c`), o estimada (`e`). Si existe
+`datos/precios_v3/precios_catalogo_v3.json` (el paquete de Competencia que quita las marcas de
+renombre y corrige categorías), ese precio manda en las filas que trae (`k`): ver `precio_v3`.
 
 Las fotos repetidas (veinte tallas con la misma foto) se guardan una sola vez, y van en el orden del
 catálogo: abrir una categoría baja pocas hojas.
@@ -79,9 +81,30 @@ def media_ml(r: dict[str, Any]) -> tuple[float | None, str | None]:
     return None, None
 
 
-def elegir(doc: dict[str, Any], libre: dict[str, int]) -> list[dict[str, Any]]:
+def precio_v3(actual: tuple[float | None, str | None], fila: dict[str, Any] | None) -> tuple[float | None, str | None]:
+    """
+    El precio del paquete «precios de Mercado Libre v3» (Competencia, 12-oct-2026), si la fila viene en él.
+
+    Ese paquete rehace el precio de mercado sin marcas de renombre y con la categoría corregida (unos
+    tenis genéricos bajan de $720.97 a $249.50). Sus reglas, tal como las pide su LEEME:
+      · `exacto` (precio exacto, el nuestro publicado o revisado a mano): no se toca;
+      · con `precio_ml_v3`: ese es el precio (tipo `k`);
+      · sin fuentes: su `estimado_costo` si lo trae (tipo `e`); si no, la fila queda SIN precio y el
+        catálogo no la deja pedir.
+    """
+    if fila is None or fila.get("fuente") == "exacto":
+        return actual
+    if fila.get("precio_ml_v3"):
+        return fila["precio_ml_v3"], "k"
+    if fila.get("estimado_costo"):
+        return fila["estimado_costo"], "e"
+    return None, None
+
+
+def elegir(doc: dict[str, Any], libre: dict[str, int], v3: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Los productos del catálogo: lo libre en Odoo y lo que no existe en Odoo pero queda en packing lists."""
     rutas = doc["K"]
+    v3 = v3 or {}
     salida = []
     for r in doc["R"]:
         if r.get("sin") or r.get("nv"):
@@ -94,7 +117,7 @@ def elegir(doc: dict[str, Any], libre: dict[str, int]) -> list[dict[str, Any]]:
         if piezas <= 0:
             continue
         ruta = rutas[r["k"]] if r.get("k") is not None else ["Sin categoría", ""]
-        precio, tipo = media_ml(r)
+        precio, tipo = precio_v3(media_ml(r), v3.get(sku))
         salida.append({"sku": sku, "titulo": re.sub(r"\s+", " ", r.get("t") or sku).strip(),
                        "cat": ruta[0], "sub": ruta[1] or "(sin subcategoría)", "modelo": "-".join(sku.split("-")[:2]),
                        "precio": round(float(precio), 2) if precio else None, "tipo": tipo,
@@ -205,7 +228,8 @@ def construir(cfg: Cfg, salida: Path, releer_odoo: bool = True) -> dict[str, Any
     odoo = leer_odoo(cfg, salida) if releer_odoo else leer_json(salida / "datos" / "odoo_mayoreo.json")
     if not odoo:
         raise RuntimeError("no hay lectura de Odoo para el catálogo de mayoreo (datos/odoo_mayoreo.json)")
-    productos = ordenar(elegir(doc, libre_surtible(odoo)))
+    v3 = (leer_json(salida / "datos" / "precios_v3" / "precios_catalogo_v3.json") or {}).get("filas") or {}
+    productos = ordenar(elegir(doc, libre_surtible(odoo), v3))
     destino = salida / "mayoreo"
     destino.mkdir(parents=True, exist_ok=True)
     fotos = armar_fotos(salida, destino, productos, doc)
@@ -214,6 +238,8 @@ def construir(cfg: Cfg, salida: Path, releer_odoo: bool = True) -> dict[str, Any
     resumen = comprobar(cat)
     (destino / "catalogo.json").write_text(json.dumps(cat, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     peso = sum(f.stat().st_size for f in (destino / "fotos").glob("m*.jpg"))
-    resumen.update(hojas=fotos["hojas"], fotos=fotos["fotos"], mb_fotos=round(peso / 1e6, 1), corte=corte, version=cat["version"])
+    resumen.update(hojas=fotos["hojas"], fotos=fotos["fotos"], mb_fotos=round(peso / 1e6, 1), corte=corte, version=cat["version"],
+                   precio_v3=sum(1 for p in productos if p["tipo"] == "k"), filas_en_v3=len(v3),
+                   valor_catalogo=round(sum(p["piezas"] * p["precio"] for p in productos if p["precio"])))
     aviso(f"catálogo de mayoreo → {destino} · " + " · ".join(f"{k} {v:,}" if isinstance(v, int) else f"{k} {v}" for k, v in resumen.items()))
     return resumen
