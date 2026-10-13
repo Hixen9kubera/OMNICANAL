@@ -116,7 +116,8 @@ def mensajes(folio: str, of: Oferta, limite: int = 3500) -> list[str]:
     total = of.total_catalogo
     renglones = [
         f":moneybag: *Oferta de mayoreo {folio}*",
-        f"*{_slack(of.nombre)}* ofrece *{_dinero(of.monto)}* por *{len(of.lineas):,} productos · {of.piezas:,} piezas*",
+        f"*{_slack(of.nombre)}* ofrece *{_dinero(of.monto)}* por "
+        f"*{len(of.lineas):,} producto{'' if len(of.lineas) == 1 else 's'} · {of.piezas:,} pieza{'' if of.piezas == 1 else 's'}*",
         f"Precio de catálogo: {_dinero(total)} · la oferta es el *{of.porcentaje:.1f} %* "
         f"({_dinero(abs(total - of.monto))} {'abajo' if of.monto < total else 'arriba'} del catálogo)",
     ]
