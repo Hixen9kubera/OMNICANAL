@@ -1336,6 +1336,48 @@ class Settings(BaseSettings):
     fanout_canales: str = ""
     # Piezas de colchón que NO se publican (cubre la ventana venta→escritura).
     fanout_reserva: int = 0
+    # Cola rápida del fan-out (services/fanout_stock.py, «Cola con debounce»). Medido el
+    # 12-oct-2026 con la venta S41906 de Odoo (183 SKUs apartados): el único hilo
+    # repartía 5.5 SKUs/min, Temu se llevaba ~9 s de cada uno (duerme 8 s y relee después
+    # de TODA escritura) y las bajadas que tocaban publicaciones A LA VENTA esperaban su
+    # turno alfabético. Las tres nacen APAGADAS: con las tres en su valor por omisión la
+    # cola es la de siempre (un hilo, lote en orden de llegada, Temu síncrono). Cambian el
+    # ritmo con el que se escribe stock en los canales: regla 3 de CLAUDE.md, dale de Brandon.
+    # PRIORIDAD: el worker toma de a un SKU entre los que ya reposaron: primero las
+    # bajadas que tocan algo A LA VENTA (TikTok ACTIVATE, Temu 2/8, ML active sin FULL),
+    # luego otras bajadas, luego subidas. Lo que lleva más de
+    # FANOUT_PRIORIDAD_ENVEJECER_MIN esperando toma uno de cada dos turnos: nunca se queda
+    # atrás para siempre, y una bajada a la venta que llega a media ráfaga no espera
+    # detrás de todo lo viejo.
+    fanout_prioridad: bool = False
+    fanout_prioridad_envejecer_min: float = 15.0
+    # TEMU DIFERIDO: la escritura de stock a Temu desde la cola ya no duerme 8 s para
+    # releer; la verificación (releer y corregir hasta 3 veces) la hace un hilo aparte.
+    # Los excedentes, la verificación de rancios y la reactivación del seguro siguen
+    # síncronos.
+    fanout_temu_verificar_diferido: bool = False
+    # Hilos que reparten la cola (1 = como siempre; tope 3). NO SUBIRLA todavía: el tope
+    # por hora del seguro y los contadores no tienen candado entre hilos, y en la
+    # simulación 2 o 3 hilos casi no ganan con el freno puesto (README v0.639.0).
+    fanout_workers: int = 1
+    # Freno por canal, en llamadas por MINUTO (más una ráfaga de 6), para cuando la cola va
+    # más rápido que hoy (Temu diferido o FANOUT_WORKERS > 1; la prioridad sola no cambia
+    # el paso): lo comparten los hilos de la cola, el verificador de Temu, el seguro y los
+    # excedentes. Los límites reales de las APIs no están documentados ni se pueden medir
+    # en el sandbox: lo único conocido es lo visto SIN error en 60 días de producción
+    # (0 errores de límite), contado con las llamadas reales por escritura (ML pausada 3,
+    # activa 2; TikTok 2; Temu 3, o 1 si ya tenía el valor). Temu: 38 en su peor minuto,
+    # 34/min sostenido 5 min y 29.6/min sostenido 10 min; TikTok 70 / 39.2 / 28.4; ML
+    # 186 / 95.2 / 85.4. Con la cola rápida el freno se SOSTIENE toda la ráfaga, así que lo
+    # que cuenta es lo sostenido 10 min: el freno más su ráfaga da a lo mucho 29.6 (Temu
+    # 29) y 27.6 (TikTok 27) llamadas/min en 10 min, dentro de lo visto. Subirlos es salir
+    # de lo conocido. NO lo pasan los censos ni los sondeos de pedidos
+    # de TikTok y Temu, que gastan la misma cuota por su lado (el 12-oct el censo y sus
+    # excedentes se encimaron con la cola sin errores, pero eso no es un límite medido).
+    # 0 = sin freno.
+    fanout_ritmo_temu: float = 29.0
+    fanout_ritmo_tiktok: float = 27.0
+    fanout_ritmo_ml: float = 67.0
     # Recuperador de cambios sin repartir (services/fanout_recuperar.py). La cola
     # del fan-out vive en memoria y un reinicio a media cola la tira: el 29-sep el
     # despliegue de v0.596.0 se llevó 69 de 72 cambios. Este barrido busca en

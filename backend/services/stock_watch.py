@@ -112,6 +112,9 @@ _TABLA = "stock_watch_foto"
 
 _ultimo: dict[str, Any] = {"estado": "sin_correr"}
 _lock = asyncio.Lock()
+# Epoch en que empezó la pasada en curso (o la última): con `_lock.locked()`, la matriz
+# del fan-out sabe qué cambios anotó ESTA pasada y todavía no encola (`fanout_vivo`).
+_pasada_desde: float | None = None
 
 
 def habilitado() -> bool:
@@ -565,7 +568,8 @@ async def revisar(forzar: bool = False) -> dict[str, Any]:
         return {"estado": "ya_corriendo"}
 
     async with _lock:
-        t0 = time.time()
+        global _pasada_desde
+        t0 = _pasada_desde = time.time()
         await asyncio.to_thread(_asegurar_schema)
         from services import odoo, fanout_stock
 

@@ -588,6 +588,21 @@ def iniciar() -> None:
         log.info("Recuperador del fan-out: al arrancar y cada %s min (últimas %s h, gracia %s min, tope %s).",
                  _min_rec, settings.fanout_recuperar_horas, settings.fanout_recuperar_gracia_min,
                  settings.fanout_recuperar_tope)
+    elif getattr(settings, "fanout_enabled", False):
+        # Sin recuperador, al arrancar se recuperan IGUAL las verificaciones de Temu que el
+        # proceso anterior dejó a medias (FANOUT_TEMU_VERIFICAR_DIFERIDO; su reversa es un
+        # reinicio). Con la bandera apagada desde siempre es una consulta de 0.04 ms.
+        from services import fanout_recuperar
+
+        async def _diferidas_temu() -> None:
+            await asyncio.to_thread(fanout_recuperar.reencolar_diferidas)   # regla 11: lee la base
+
+        _scheduler.add_job(
+            _diferidas_temu,
+            "date",
+            run_date=datetime.now(timezone.utc) + timedelta(seconds=120),
+            id="fanout_diferidas_temu_arranque",
+        )
     # Devoluciones de ML: la RED DE SEGURIDAD del webhook `post_purchase`.
     #
     # El webhook avisa en segundos, pero un webhook PERDIDO es invisible —nada

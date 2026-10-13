@@ -435,10 +435,14 @@ _SQL_VIVAS = """
         with w as (
           select distinct on (sku, canal) sku::text as sku, canal, ts,
                  case when accion = 'sin_cambio' then coalesce(stock_canal, objetivo)
+                      when accion = 'verif_temu' and resultado not ilike 'ok%%' then stock_canal
                       else objetivo end as objetivo
             from ops.fanout_log
            where ((accion = 'escribir' and resultado ilike 'ok%%')
-                  or (accion = 'sin_cambio' and resultado like 'verificado en vivo%%'))
+                  or (accion = 'sin_cambio' and resultado like 'verificado en vivo%%')
+                  -- la verificación diferida de Temu (`fanout_stock._temu_cerrar`): si
+                  -- falló, el canal quedó en lo que se leyó
+                  or (accion = 'verif_temu' and (resultado ilike 'ok%%' or stock_canal is not null)))
              and ts > now() - interval '3 days'
            order by sku, canal, ts desc, id desc),
         r as (
@@ -630,11 +634,16 @@ def _stock_watch(hoy: str) -> dict[str, Any]:
 
 
 def _fanout_estado() -> dict[str, Any]:
+    """«Cola N» es la cola REAL: lo pendiente, el lote y lo que está en proceso. Antes
+    contaba sólo lo pendiente: el 12-oct decía «Cola 57» con ~50 SKUs más en el lote."""
     from services import fanout_stock
-    with fanout_stock._lock:
-        cola = len(fanout_stock._pendientes)
+    foto = fanout_stock.cola()
+    # SKUs, no entradas: uno que se reparte y ya volvió a la cola cuenta una vez.
     return {"habilitado": fanout_stock.habilitado(), "dry_run": fanout_stock.dry_run(),
-            "cola": cola, "debounce_s": fanout_stock.DEBOUNCE_S, "reserva": fanout_stock._reserva()}
+            "cola": len({str(e["sku"]).upper() for e in foto}),
+            "en_proceso": sum(1 for e in foto if e["estado"] == "proceso"),
+            "seg_por_sku": round(fanout_stock.seg_por_sku(), 1),
+            "debounce_s": fanout_stock.DEBOUNCE_S, "reserva": fanout_stock._reserva()}
 
 
 def _seguro_cero() -> dict[str, Any] | None:
@@ -964,6 +973,8 @@ _CAUSA_TXT = {
     "error": "error al escribir",
     "perdido": "cambio perdido",
     "camino": "en camino",
+    "cola": "en cola",
+    "proceso": "repartiendo ahora",
     "canal": "cambió el canal",
     "tarde": "sin alinear",
     "fuera": "no recibe stock",
@@ -992,12 +1003,52 @@ def _no_destino(l: dict | None) -> str | None:
     return None
 
 
+# «En camino» sin estar en la cola: lo que la pasada EN CURSO de stock_watch ya anotó y
+# todavía no encola (anota los ~183 cambios de una pasada ANTES de encolarlos: el 12-oct
+# pasaron ~56 s), o lo de hace menos de esta gracia (el debounce). Sólo los cambios de
+# ESA pasada: un cambio perdido hace horas sigue «perdido» aunque haya una pasada
+# corriendo. Antes era un plazo fijo de 15 min que no miraba la cola: en la ráfaga
+# S41906 rotuló «cambio perdido» a 50 de 133 SKUs que sólo esperaban su turno.
+_GRACIA_CAMINO_S = 180
+
+
+def _hora_epoch(t: float | None) -> str:
+    if not t:
+        return "—"
+    from zoneinfo import ZoneInfo
+    return datetime.fromtimestamp(float(t), ZoneInfo(_ZONA)).strftime("%H:%M")
+
+
+def _cola_viva() -> tuple[dict[str, dict], float | None, bool]:
+    """La cola del fan-out de ESTE proceso ({SKU en mayúsculas: entrada de
+    `fanout_stock.cola()`}; si un SKU se está repartiendo y además volvió a la cola, vale
+    la de «proceso»), desde cuándo corre la pasada de stock_watch en curso (epoch; None si
+    no hay pasada) y si el fan-out corre aquí. Sin red ni disco. Si no se puede leer, o el
+    fan-out no corre en este proceso (el backend del sandbox), la cola no dice nada y la
+    matriz contesta como antes."""
+    try:
+        from services import fanout_stock, stock_watch
+        cola: dict[str, dict] = {}
+        for e in fanout_stock.cola():
+            clave = str(e["sku"]).upper()
+            if clave not in cola or e.get("estado") == "proceso":
+                cola[clave] = e
+        pasada = (stock_watch._pasada_desde or 0.0) if stock_watch._lock.locked() else None
+        return cola, pasada, fanout_stock.habilitado()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("fanout_vivo: no pude leer la cola del fan-out: %s", exc)
+        return {}, None, False
+
+
 def _causas(celdas: list[dict], hoy: str) -> dict[tuple[str, str, str], dict]:
     """POR QUÉ una publicación no coincide con Woo. Se contesta con la bitácora:
 
-      1. Woo cambió y el fan-out NUNCA procesó ese cambio → «cambio perdido» (la
-         cola vive en memoria: un reinicio a media cola la tira; el 29-sep un
-         despliegue se llevó 69 cambios), o «en camino» si fue hace < 15 min.
+      1. Woo cambió y el fan-out todavía no tiene un evento después. Lo dice la COLA
+         REAL del proceso (`fanout_stock.cola()`), no un plazo: «repartiendo ahora» si
+         ya lo tomó, «en cola (posición N, ~M min)» si espera su turno, «en camino» si
+         stock_watch aún no lo encola (lo anotó la pasada en curso, o < 3 min) y, si no está en
+         ninguna parte, «cambio perdido» (la cola vive en memoria: un reinicio a media
+         cola la tira; el 29-sep un despliegue se llevó 69 cambios).
       2. El último reparto del SKU sí la tocó → lo que contestó el canal: 403 o
          error, omitida con su motivo, o quedó igual y DESPUÉS cambió el canal.
       3. El último reparto no la incluyó → o no recibe stock por política, o
@@ -1036,6 +1087,9 @@ def _causas(celdas: list[dict], hoy: str) -> dict[tuple[str, str, str], dict]:
         """select resultado from ops.fanout_log where canal = 'mercado_libre' and accion = 'escribir'
             order by ts desc, id desc limit 1""") or {}
     ml_rechaza = "403" in str(ult_ml.get("resultado") or "")
+    cola, pasada, corre = _cola_viva()
+    # Sin la cola a la vista, el plazo fijo de siempre.
+    gracia = _GRACIA_CAMINO_S if corre else 900
 
     salida: dict[tuple[str, str, str], dict] = {}
     for c in celdas:
@@ -1051,9 +1105,29 @@ def _causas(celdas: list[dict], hoy: str) -> dict[tuple[str, str, str], dict]:
         elif cam and (not ult or ult["ts"] < cam["ts"]):
             m = _FLECHA.search(str(cam.get("resultado") or ""))
             mov = f" de {m.group(1)} a {m.group(2)}" if m else ""
-            if ahora and (ahora - cam["ts"]).total_seconds() < 900:
+            en = cola.get(sku.upper())
+            # Con fecha: lo que está en la cola puede venir de un cambio de otro día (lo
+            # devuelven el recuperador o el seguro).
+            cuando = _el(_fecha(cam["hora"], hoy))
+            if en and en.get("estado") == "proceso":
+                codigo, texto = "proceso", _CAUSA_TXT["proceso"]
+                detalle = (f"Woo cambió{mov} {cuando}; el fan-out lo está "
+                           "repartiendo en este momento.")
+            elif en:
+                minutos = max(1, round(float(en.get("eta_s") or 0) / 60))
+                codigo = "cola"
+                texto = f"{_CAUSA_TXT['cola']} (posición {en.get('posicion')}, ~{minutos} min)"
+                detalle = (f"Woo cambió{mov} {cuando}; espera su turno en la cola del "
+                           f"fan-out desde las {_hora_epoch(en.get('desde'))}"
+                           + (" (lo devolvió a la cola el recuperador)"
+                              if str(en.get("motivo") or "").startswith("recuperado") else "")
+                           + f" y le faltan ~{minutos} min.")
+            elif (de_la_pasada := pasada is not None and cam["ts"].timestamp() >= pasada) or (
+                    ahora and (ahora - cam["ts"]).total_seconds() < gracia):
                 codigo, texto = "camino", _CAUSA_TXT["camino"]
-                detalle = f"Woo cambió{mov} a las {cam['hora'][11:16]}; el fan-out todavía no lo procesa."
+                detalle = (f"Woo cambió{mov} {cuando}; "
+                           + ("stock_watch todavía no termina su pasada y no lo ha encolado."
+                              if de_la_pasada else "el fan-out todavía no lo procesa."))
             else:
                 codigo, texto = "perdido", _CAUSA_TXT["perdido"]
                 detalle = f"Woo cambió{mov} {_el(_fecha(cam['hora'], hoy))} y el fan-out nunca procesó ese cambio. "
@@ -1107,7 +1181,9 @@ def _causas(celdas: list[dict], hoy: str) -> dict[tuple[str, str, str], dict]:
 
 
 def _skus_perdidos(dias: int = 14, limite: int = 60) -> list[str]:
-    """SKUs cuyo ÚLTIMO cambio en Woo (de stock_watch) nunca pasó por el fan-out."""
+    """SKUs cuyo ÚLTIMO cambio en Woo (de stock_watch) nunca pasó por el fan-out, sin
+    los que siguen en la cola del proceso (ésos esperan su turno, no se perdieron)."""
+    cola = _cola_viva()[0]
     return [f["sku"] for f in sdb.fetch_all(
         """with c as (
              select distinct on (sku) sku::text as sku, ts from ops.fanout_log
@@ -1121,7 +1197,8 @@ def _skus_perdidos(dias: int = 14, limite: int = 60) -> list[str]:
               group by sku)
            select c.sku from c left join e using (sku)
             where c.ts < now() - interval '15 minutes' and (e.t is null or e.t < c.ts)
-            order by c.ts desc limit %(n)s""", {"d": int(dias), "a": _ACC_FANOUT, "n": int(limite)})]
+            order by c.ts desc limit %(n)s""", {"d": int(dias), "a": _ACC_FANOUT, "n": int(limite)})
+            if str(f["sku"]).upper() not in cola]
 
 
 def matriz() -> dict[str, Any]:
@@ -1141,7 +1218,8 @@ def matriz() -> dict[str, Any]:
                 continue
             ca = vivas.get((d["sku"], d["canal"], (d.get("cuenta_codigo") or "").upper()))
             if ca:
-                x = por.setdefault(ca["c"], {"c": ca["c"], "t": "omitida" if ca["c"] == "omitida" else ca["t"], "n": 0})
+                x = por.setdefault(ca["c"], {"c": ca["c"], "t": "omitida" if ca["c"] == "omitida"
+                                             else _CAUSA_TXT.get(ca["c"], ca["t"]), "n": 0})
                 x["n"] += 1
         b["causas"] = sorted(por.values(), key=lambda x: -x["n"])
 
@@ -1193,7 +1271,7 @@ def matriz() -> dict[str, Any]:
                   to_char(ts at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as hora
              from ops.fanout_log
             where sku::text = any(%(s)s) and ts > now() - interval '3 days'
-              and (accion = 'escribir'
+              and (accion = 'escribir' or accion = 'verif_temu'
                    or (accion = 'sin_cambio' and resultado like 'verificado en vivo%%'))
             order by sku, canal, cuenta, ts desc, id desc""", {"z": _ZONA, "s": skus})
     L = {(f["sku"], f["canal"], (f.get("cuenta") or "").upper()): f for f in lst}
@@ -2006,8 +2084,8 @@ def historia(sku: str, dias: int = 14, limite: int = 400, liga_dias: int | None 
     for f in log:
         if f["canal"] in ("", "woocommerce") or not f["reciente"]:
             continue
-        if f["accion"] == "escribir" or (f["accion"] == "sin_cambio"
-                                         and str(f.get("resultado") or "").startswith(_VERIFICADO)):
+        if f["accion"] in ("escribir", "verif_temu") or (
+                f["accion"] == "sin_cambio" and str(f.get("resultado") or "").startswith(_VERIFICADO)):
             W.setdefault((f["canal"], f["cuenta"]), f)
     M = _marcas_seguro([sku])
     celdas, pendientes = {}, []

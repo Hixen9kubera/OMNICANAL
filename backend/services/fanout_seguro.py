@@ -2001,8 +2001,13 @@ def _reencolar_marcas(canal: str, marcas: list[dict[str, Any]]) -> list[str]:
     reencolaba en cada censo, sin fin. Las huérfanas no se reencolan: el stock iría
     a otra publicación."""
     from services import fanout_stock
-    with fanout_stock._lock:
-        en_cola = {str(s).upper() for s in fanout_stock._pendientes}
+    if fanout_stock.cola_rapida():
+        # La cola completa: lo pendiente, el lote y lo que está en proceso (como el
+        # recuperador). Con las tres banderas apagadas, sólo lo pendiente, como siempre.
+        en_cola = fanout_stock.en_cola()
+    else:
+        with fanout_stock._lock:
+            en_cola = {str(s).upper() for s in fanout_stock._pendientes}
     with _lock:
         esperando = {s.upper() for s in _esperas}
     fuera: list[str] = []

@@ -34,7 +34,7 @@ const FILTROS = [
   { id: "demas", texto: "Ofrece de más" },
   { id: "sin_orden", texto: "Vendidas sin orden en Odoo" },
 ];
-const ORDEN_CAUSAS: Causa["c"][] = ["403", "perdido", "tarde", "canal", "omitida", "fuera", "error", "camino"];
+const ORDEN_CAUSAS: Causa["c"][] = ["403", "perdido", "tarde", "canal", "omitida", "fuera", "error", "cola", "proceso", "camino"];
 
 function Leyenda({ cls, texto }: { cls: string; texto: string }) {
   return <span className="flex items-center gap-1.5"><span className={`h-3 w-3 rounded-[3px] ${cls}`} />{texto}</span>;

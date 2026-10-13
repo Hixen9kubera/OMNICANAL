@@ -55,6 +55,8 @@ class Vuelta(unittest.TestCase):
             mock.patch.object(F, "habilitado", return_value=True),
             mock.patch.object(F, "encolar_varios", side_effect=lambda s, motivo: self.encolados.append((list(s), motivo))),
             mock.patch.dict(F._pendientes, {}, clear=True),
+            # Al arrancar también busca verificaciones de Temu a medias (test_fanout_cola).
+            mock.patch.object(R, "diferidas_recientes", return_value=[]),
         ]
         for p in self.parches:
             p.start()

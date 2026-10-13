@@ -52,7 +52,7 @@ export interface Coincidencia {
 
 /** Por qué una publicación no coincide con Woo (lo arma `fanout_vivo._causas`). */
 export interface Causa {
-  c: "403" | "error" | "perdido" | "camino" | "canal" | "tarde" | "omitida" | "fuera";
+  c: "403" | "error" | "perdido" | "cola" | "proceso" | "camino" | "canal" | "tarde" | "omitida" | "fuera";
   t: string; // etiqueta corta
   d: string; // el detalle, en una oración
 }
@@ -231,6 +231,8 @@ export const CAUSA_CLS: Record<Causa["c"], string> = {
   "403": "bg-rose-600 text-white",
   error: "bg-rose-100 text-rose-900",
   perdido: "bg-violet-600 text-white",
+  cola: "bg-indigo-50 text-indigo-900",
+  proceso: "bg-indigo-200 text-indigo-950",
   camino: "bg-indigo-100 text-indigo-900",
   canal: "bg-sky-100 text-sky-900",
   tarde: "bg-amber-100 text-amber-900",
@@ -242,6 +244,8 @@ export const CAUSA_NOMBRE: Record<Causa["c"], string> = {
   "403": "Rechazado (403)",
   error: "Error al escribir",
   perdido: "Cambio perdido",
+  cola: "En cola",
+  proceso: "Repartiendo ahora",
   camino: "En camino",
   canal: "Cambió el canal",
   tarde: "Sin alinear",

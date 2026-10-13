@@ -1001,6 +1001,215 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.639.0 — Fan-out · cola rápida: la espera de Temu ya no detiene el reparto, primero las bajadas a la venta y la matriz distingue «en cola» de «cambio perdido» (`FANOUT_PRIORIDAD`, `FANOUT_TEMU_VERIFICAR_DIFERIDO` y `FANOUT_WORKERS` nacen APAGADAS)
+
+**El síntoma (12-oct-2026, medido en producción en solo lectura).** A las 13:10 se creó en Odoo la venta S41906
+(«PUBLICO EN GENERAL BANCO», 305 renglones) y apartó piezas de 183 SKUs. stock_watch bajó Woo en su pasada de las
+13:33 y a las 13:33:54 encoló 133 en orden ALFABÉTICO; los otros 50 se quedaron fuera por un falso «ESCRITURA FALLÓ»
+de Woo y entraron en la pasada siguiente, a las 13:50:09 (+16.24 min). Un solo hilo los repartió a 5.3 SKUs/min: el
+lote 1 terminó a los 24.2 min del encolado (25.1 desde que empezó la pasada; p50 12.4 min por SKU, p90 22.1) y S41906
+a las 14:03:07 (29.2 min). Mientras tanto TikTok y Temu ofrecían las piezas apartadas en 77 publicaciones A LA VENTA
+(60 TikTok, 17 Temu 2/8; 151 piezas de más):
+
+| Exposición observada (piezas × min) | |
+|---|---|
+| antes de encolar (13:10 → 13:33:54), lo que ninguna bandera toca | 3,611 |
+| desde el encolado, sólo la cola | 1,444 (lote 1: 935 · lote 2: 510) |
+| desde el encolado, contando que los excedentes bajaron antes 16 de ellas (14 TikTok, 2 Temu) | 1,308 |
+| total desde las 13:10 | 4,919 |
+
+**Dónde se iba el tiempo.**
+
+| | |
+|---|---|
+| Temu | 9.1 s por SKU, de los que **8.0 s son el sueño** de `_escribir_temu` (relee después de TODA escritura). En la ráfaga, 15.3 de los 22 min de trabajo |
+| TikTok · ML | 1.18 s · ~0.6 s por escritura (ML a pausadas: GET + PUT + GET) |
+| plan · guardar | 0.33 s · 0.69 s por SKU |
+| reintentos de Temu | no pesan: 11 de 2,916 eventos esperaron 2 veces o más en 60 días |
+
+Y tres defectos de la cola: (1) el worker sacaba TODO lo listo a un lote local y lo que llegaba después esperaba a
+que terminara (a las 13:57, 57 SKUs, 18 con publicaciones a la venta); (2) ese lote no lo veía nadie: el panel decía
+«Cola 57», la matriz rotuló «cambio perdido» a 50 de 133 SKUs que sólo esperaban su turno (su regla era un plazo fijo
+de 15 min) y (3) el recuperador volvió a encolar 5 SKUs que seguían en el lote (TEC-1038, 1039, 1042, 1087, 1477).
+
+**1 · La matriz mira la cola REAL (sin bandera, sólo lectura).** `fanout_stock.cola()` da la cola en el orden en
+que se va a repartir —lo que está en proceso, el lote y lo pendiente— con posición y ETA (mediana de los últimos 40
+SKUs). El lote vive ahora en `_lote` y lo que se reparte en `_en_proceso`: es sólo contabilidad, el orden no cambia.
+`fanout_vivo._causas` contesta, cuando Woo cambió y no hay reparto después:
+
+| código | etiqueta | cuándo |
+|---|---|---|
+| `proceso` | repartiendo ahora | el SKU está en `_en_proceso` (aunque además haya vuelto a la cola) |
+| `cola` | en cola (posición N, ~M min) | está en el lote o pendiente (dice si lo devolvió el recuperador) |
+| `camino` | en camino | no está en la cola, pero lo anotó la pasada EN CURSO de stock_watch (`stock_watch._pasada_desde`) o tiene < 3 min |
+| `perdido` | cambio perdido | en ninguna parte (un cambio de hace horas sigue «perdido» aunque haya una pasada corriendo) |
+
+Si el fan-out no corre en ese proceso (el backend del sandbox) se queda el plazo de 15 min de siempre. «Cola N»
+(`_fanout_estado`) cuenta SKUs de la cola real, `_skus_perdidos` quita lo que está en cola y el frontend conoce los dos
+códigos nuevos (`tipos.ts`, `matriz/page.tsx`).
+
+**2 · `FANOUT_PRIORIDAD` (apagada).** El worker deja de vaciar el lote de golpe y toma de a UN SKU entre los que ya
+reposaron, por clase (`_clasificar`, una lectura de Woo y una de kubera por tanda, 19 ms en producción para los 183):
+0 = baja algo A LA VENTA (TikTok ACTIVATE, Temu 2/8, ML active sin FULL) o el objetivo es 0 con algo a la venta;
+1 = otra bajada; 2 = subida. Con el valor más nuevo entre el censo y nuestra última escritura (la regla de
+`_SQL_VIVAS`). El orden (`_orden_picker`) son DOS filas que se alternan turno a turno: la de clase (y, dentro de la
+clase, llegada) y la de las VIEJAS —clase 1 o 2 con más de `FANOUT_PRIORIDAD_ENVEJECER_MIN` (15) esperando—, que
+mientras haya toman uno de cada dos turnos. Así una bajada a la venta pasa delante de lo que no vende por larga que sea
+la ráfaga o por tarde que llegue, y nada espera para siempre: lo que pasa del umbral sale al menos a la mitad del paso
+de la cola. Dos diseños descartados: restar un nivel por cada 10 min de espera (a media ráfaga todos quedaban parejos y
+volvía el orden alfabético: la última bajada a la venta a los 37.6 min) y «llegada + 10 min por nivel», la primera
+versión de esta rama, que dejaba una venta que llega a media ráfaga detrás de TODAS las bajadas viejas: en S41906 las
+13 publicaciones del lote 2 sólo bajaban su exposición un 8 % (revisión del 12-oct). Si la clasificación falla, todo
+va en clase 1 y la cola avanza. Es sólo el ORDEN: lo que se escribe lo sigue decidiendo `plan`. Temu 3/3 (vende ~5 %
+de los pedidos de Temu) se queda en la clase 1: ver la simulación.
+
+**3a · `FANOUT_TEMU_VERIFICAR_DIFERIDO` (apagada).** Desde la cola, Temu lee, escribe el diff y regresa; el hilo
+`fanout-temu-verif` relee a los 8 s y corrige hasta 3 escrituras. Un goods con una verificación pendiente no recibe
+otro diff (el evento nuevo sólo le cambia el objetivo). Un candado por goods lo comparten la cola, el verificador y lo
+síncrono (excedentes, rancios y la reactivación del seguro, que siguen síncronos): lo síncrono espera a que termine la
+convergencia, vuelve a mirar YA con el candado tomado (si en el hueco se registró otra, lo suelta y espera de nuevo) y,
+si la espera vence (32 s), escribe igual, lo deja en el log y descarta la convergencia vieja si dejó el goods en su
+objetivo: antes el verificador «corregía» esa escritura más nueva de vuelta al objetivo viejo. Bitácora: la fila de
+la cola queda `ok (verificación diferida)`; el verificador sólo escribe si corrige (`verif_temu`,
+`ok (verificación diferida: corregido 2→3)`) o si falla (`ERROR (verificación diferida): …`, con lo leído en
+`stock_canal`), y nunca antes de que la fila del evento que la registró esté en la bitácora (si no, esa fila, más
+nueva, tapaba el ERROR en la matriz). La matriz, las barras, la trazabilidad y `_rancios` la toman como el último
+valor conocido. Al arrancar se vuelven a encolar los SKUs con una escritura diferida desde 2 min antes del arranque
+(`fanout_recuperar.reencolar_diferidas`) con la bandera encendida O APAGADA —su reversa es justo un reinicio— y
+aunque el recuperador esté apagado (el scheduler lo programa solo): con la bandera apagada desde siempre es una
+consulta de 0.04 ms.
+
+**3b · `FANOUT_WORKERS` (1 = hoy, tope 3) — NO subirla todavía.** N hilos con el mismo picker. Nunca dos eventos del
+mismo SKU a la vez (el siguiente arranca cuando el anterior pasó por `_persistir` y `_seguro("cerrar")`), y dos SKUs
+que comparten publicación (31 de ML) no la tocan a la vez: ni la escritura, ni la verificación de rancios, ni los pasos
+del seguro (`_accion` bajo `_candado_pub`). Lo que falta para subirla: el tope por hora del seguro se revisa y se
+cuenta en dos pasos y con N hilos se puede pasar hasta por N−1, y `_contadores` no es atómico. Y casi no gana (abajo).
+
+**El freno por canal** (`FANOUT_RITMO_TEMU`/`_TIKTOK`/`_ML`, llamadas por MINUTO más una ráfaga de 6; por omisión
+**29 / 27 / 67**) corre sólo cuando la cola va más rápido que hoy: Temu diferido o varios hilos (la prioridad sola
+cambia el orden, no el paso). Es una cubeta de fichas que comparten los hilos de la cola, el verificador, el seguro y
+los excedentes; NO la pasan los censos ni los sondeos de pedidos de TikTok y Temu, que gastan la misma cuota por su
+lado (el 12-oct el censo y sus excedentes se encimaron con la cola sin errores, pero eso no es un límite medido). Los
+límites reales de las APIs no están documentados ni se pueden medir en el sandbox: lo único conocido es lo visto SIN
+error en 60 días (0 errores de límite), recontado con las llamadas REALES por escritura (ML pausada 3, activa 2;
+TikTok 2; Temu 3, o 1 si ya tenía el valor):
+
+| visto sin error en 60 días | peor minuto | sostenido 5 min | sostenido 10 min |
+|---|---|---|---|
+| Temu | 38 | 34.0 /min | 29.6 /min |
+| TikTok | 70 | 39.2 /min | 28.4 /min |
+| ML | 186 | 95.2 /min | 85.4 /min |
+
+Con la cola rápida el freno se SOSTIENE toda la ráfaga, así que lo que cuenta es lo sostenido 10 min: freno + ráfaga
+dan a lo mucho 29.6 (Temu) y 27.6 (TikTok) llamadas/min en 10 min. (La primera versión de esta rama decía «38 / 33,
+el peor minuto visto»: 43.8 era el promedio de 5 min × 3 llamadas, contando como 3 las 836 lecturas «ya tenía» de
+Temu, que son 1; con 38/33 la simulación quedaba 13-19 % arriba de todo lo visto en Temu.) Se probaron antes dos
+diseños que la simulación descartó: «una llamada cada X s» frenaba hasta al hilo único (las 3 llamadas seguidas a una
+pausada de ML), y una ráfaga de 3 costaba ~1.5 min en los SKUs con ML en las dos cuentas.
+
+**La simulación** (`simulacion.py` v2 → `simulacion.json`): los 183 SKUs con sus destinos reales del 12-oct, contra el
+código real de la cola y canales falsos con las latencias medidas, y con la llegada REAL (133 en t=0, 50 a los
+16.24 min). Exposición = Σ piezas de más × min desde el encolado del lote 1 (13:33:54) hasta la escritura en esa
+publicación; picos = llamadas en el peor minuto · sostenidas en el peor tramo de 10 min (ML / TikTok / Temu).
+
+| Escenario | Vaciar la cola, min (el lote 1) | Bajadas a la venta: espera media / la última, min | Exposición, piezas×min (lote 1 + lote 2) | Llamadas ML / TikTok / Temu: peor minuto · por min en 10 min |
+|---|---|---|---|---|
+| Observado el 12-oct (sólo la cola) | 29.2 (24.2) | — / 28.6 | 1,444 (935 + 510) | — |
+| Hoy (las tres apagadas) | 35.0 (25.1) | 11.6 / 33.7 | 1,500 (942 + 558) | 33 · 24.0 / 24 · 11.6 / 17 · 14.6 |
+| `FANOUT_PRIORIDAD` | 35.0 (32.5) | 6.2 / 20.2 | 801 (441 + 360) | 36 · 24.3 / 24 · 12.2 / 17 · 14.4 |
+| `FANOUT_TEMU_VERIFICAR_DIFERIDO` | 20.9 (12.2) | 6.3 / 20.3 | 809 (458 + 352) | 63 · 37.5 / 30 · 21.4 / 35 · 28.9 |
+| **Temu diferido + prioridad** | 21.0 (12.2) | 4.4 / 17.0 | **550** (217 + 333) | 65 · 40.2 / 32 · 21.8 / 34 · 28.9 |
+| 2 hilos + prioridad (sin diferido) (3 corridas) | 21.4 (13.0) | 4.5 / 17.2 | 569–570 (235 + 334) | 57 · 39.6 / 30 · 20.6 / 32 · 27.3 |
+| Temu diferido + prioridad + 2 hilos (3 corridas) | 20.9–21.0 (12.1) | 4.3 / 16.9–17.0 | 534–536 (202–204 + 332) | 69 · 40.8 / 32–33 · 22.2 / 34–35 · 29.2 |
+| Temu diferido + prioridad + 3 hilos (3 corridas) | 20.7–20.8 (11.5–11.6) | 4.1 / 17.0 | 517 (186 + 331) | 72 · 40.8 / 32–33 · 23.4 / 35 · 29.5–29.6 |
+| Temu diferido + prioridad + 2 hilos, SIN freno (3 corridas) | 18.0 (4.3) | 3.4 / 16.6–16.7 | 413–414 (84 + 330) | 149–151 · 43.5 / 76 · 25.8 / 90–91 · 35.1 |
+| Temu diferido + prioridad, con el freno de la 1a versión (38 / 33 / 67) | 20.0 (9.5) | 4.1 / 17.0 | 509 (176 + 333) | 72 · 43.5 / 38 · 25.8 / 43 · 35.1 |
+| Prioridad con umbral de 10 min | 34.9 (29.8) | 6.2 / 20.1 | 799 (440 + 359) | 36 · 24.9 / 24 · 12.2 / 17 · 14.4 |
+| Temu diferido + prioridad, umbral de 10 min | 21.0 (12.2) | 4.4 / 17.0 | 550 (218 + 333) | 69 · 39.6 / 32 · 21.8 / 34 · 28.9 |
+| Temu diferido + prioridad, Temu 3/3 en la clase 0 | 21.0 (12.2) | 4.5 / 17.3 | 574 (239 + 335) | 60 · 40.2 / 32 · 21.8 / 35 · 28.9 |
+| Sin el falso FALLÓ (los 183 en t=0) · hoy | 34.8 (34.8) | 11.2 / 33.1 | 1,535 | 39 · 23.4 / 26 · 11.4 / 17 · 14.6 |
+| Sin el falso FALLÓ · Temu diferido + prioridad | 17.0 (17.0) | 2.2 / 4.7 | 304 | 57 · 45.3 / 32 · 22.6 / 34 · 29.5 |
+
+**Cómo leerla.** La simulación reproduce bien el lote 1 (vaciarlo: 25.1 min contra 24.2 observados, +3.7 %;
+exposición 942 contra 935, +0.8 %) y exagera el lote 2 (558 contra 510; termina a los 35.0 min contra 29.2): en
+producción los excedentes ya habían bajado esos goods de Temu y 46 de sus escrituras fueron el atajo de lectura (p50
+3.0 s contra 11.2 s en el lote 1), y la simulación deja fuera los excedentes. Por eso cada mejora se mide contra «hoy»
+SIMULADO (el mismo modelo) y el punto de partida real es lo observado.
+
+- **Temu diferido + prioridad** baja la exposición desde el encolado de 1,500 a 550 piezas×min (**−63 %**; contra lo
+  observado, 1,444 → ~550, −62 %, o −58 % contra los 1,308 que deja contar los excedentes). El lote 1 va de 942 a 217
+  (−77 %; la última bajada a la venta a los 4.0 min en vez de 23.4) y el lote 2 de 558 a 333, casi en su piso: llegó
+  16.24 min tarde por el falso FALLÓ y 20 piezas × 16.24 min ya son 325.
+- **Desde las 13:10** (contando los 23.9 min antes de encolar, que ninguna bandera toca): de 5,111 a 4,161 (**−19 %**;
+  contra los 4,919 reales, −15 %). La palanca mayor está antes de la cola (ver «Frentes aparte»).
+- **Cada bandera sola** da cerca de la mitad: prioridad 801 (−47 %), Temu diferido 809 (−46 %). La prioridad ahora
+  también ayuda a lo que llega tarde: lote 2 de 558 a 360 (−35 %; la primera versión de esta rama, «llegada + 10 min
+  por nivel», sólo −8 %).
+- **Los hilos casi no ganan con el freno:** 2 hilos 534–536 (−3 %) y 3 hilos 517 (−6 %), a cambio de lo que falta en
+  3b. 2 hilos SIN Temu diferido dan 569, peor que un hilo con Temu diferido. **Sin freno**, 413, pero Temu llega a 90
+  llamadas en un minuto y a 35.1/min sostenido 10 min, y TikTok a 76 en un minuto y 51.6/min en 5 min: fuera de lo
+  visto. El freno de la primera versión (38 / 33) daba 509 (−7 %) con Temu en 43 · 35.1, también arriba de lo visto
+  (38 · 29.6).
+- **Umbral de envejecimiento** en 10 o 15 min: igual (550 / 799 contra 550 / 801); se queda en 15.
+- **Temu 3/3 en la clase 0** empeora lo que más vende (2/8: 550 → 574) por ganar en 3/3 (contando 3/3 como a la
+  venta: 959 → 892). 3/3 vendió 17–19 de ~380 pedidos de Temu en 30 días: se queda en la clase 1.
+- **Sin el falso FALLÓ** (los 183 encolados juntos, que supone arreglar antes ese frente): de 1,535 a 304
+  (−80 %), la última bajada a la venta a los 4.7 min. Ésa es la cifra que la primera versión de esta entrada
+  daba como la de las banderas («257», con el freno de 38 / 33 y los 183 en t=0): con la llegada real no es
+  alcanzable sin ese arreglo.
+- En las 22 corridas: 0 eventos del mismo SKU a la vez y 0 goods de Temu fuera de su objetivo al terminar; con Temu
+  diferido + prioridad los picos quedan en ML 65 · 40.2, TikTok 32 · 21.8 y Temu 34 · 28.9 (peor minuto · por minuto en
+  10 min), dentro de lo visto.
+
+**Lo que la simulación deja fuera, a propósito:** el seguro stock 0 y el ensayo de rancios (en esta ráfaga hubo 2
+filas `cero_omitir` de Temu: efecto ~0; en una ráfaga con ceros a la venta sí pesan, ~15.6 s por escritura del seguro
+de TikTok, así que estas cifras valen para ráfagas sin ceros a la venta), los excedentes y los censos. ML va a 0.2 s
+por llamada (la regresión de 60 días daba 0.31: los residuos del lote 1 dan ~0.55-0.6 s por escritura de 3 llamadas).
+Corre en tiempo real escalado ×0.1: los escenarios con varios hilos se corrieron 3 veces y se da el rango.
+
+**Costo.** Apagadas: ninguno (ni una consulta ni una espera de más; lo fija `test_fanout_cola.py::Apagadas`). La
+matriz lee la cola en memoria (sin red). Prioridad: una lectura de Woo y una de kubera por tanda de SKUs listos
+(19 ms en producción para 183) y se reclasifica a los 2 min. Temu diferido: un hilo más que despierta cada 1 s y
+hace las mismas lecturas y correcciones que el escritor síncrono, ahora fuera del paso de la cola; al arrancar, una
+consulta de 0.04 ms. Ninguna migración ni índice nuevo.
+
+**Riesgos.** (1) Temu diferido: la fila de la cola dice «ok (verificación diferida)» antes de confirmar; si el
+verificador falla, la verdad es la fila `verif_temu` ERROR (la matriz la pinta como rechazo). (2) El freno sale de lo
+visto, no de un límite documentado, y no ve los censos ni los sondeos: vigilar códigos de límite (429 o equivalentes)
+en la primera ráfaga real. (3) La clase sale del censo y de nuestras escrituras: si se equivoca, sólo cambia el orden.
+(4) `FANOUT_WORKERS > 1` no está listo (3b).
+
+**Reversa.** La variable en `false` / `1`. Reinicia el contenedor: lo que estaba en la cola se pierde y lo devuelve el
+recuperador (`FANOUT_RECUPERAR_ENABLED`, encendido en producción), y las verificaciones de Temu a medias se vuelven a
+encolar solas al arrancar, con la bandera ya apagada y aunque el recuperador estuviera apagado.
+
+**Banderas apagadas = hoy**, y lo fija `tests/test_fanout_cola.py::Apagadas`: el lote en orden de llegada y en serie,
+Temu duerme y relee, los escritores se llaman igual, el recuperador y el seguro sólo miran lo pendiente, el freno no
+frena y no se clasifica nada. Pruebas: 68 nuevas en `tests/test_fanout_cola.py` (apagadas = hoy, hilos con candado por
+SKU y por publicación, prioridad y envejecimiento, Temu diferido —espera vencida, convergencia que entra entre la
+espera y el candado, verificador que espera la fila del evento, reinicio con la bandera apagada—, hilos reales sobre
+los mismos goods y la matriz) y un parche en `test_fanout_recuperar.py`. Las 554 del fan-out (`test_fanout*.py`: las
+486 de antes, sin tocarlas, + 68) pasan; la suite del backend (2,791) también, salvo la falla conocida y ajena de
+`test_regla_11_productos` (`productos.leer_contenido_canal`; `productos.py` no se toca aquí). `tsc --noEmit` limpio.
+
+**Encender es regla 3 (cambia el ritmo con el que se escribe stock en los canales): dale de Brandon antes de cada
+una.** Orden recomendado: 1 ya va (lectura) → `FANOUT_PRIORIDAD` → `FANOUT_TEMU_VERIFICAR_DIFERIDO` (con el freno en
+29 / 27 / 67), y `FANOUT_WORKERS` en 1.
+
+**Frentes aparte, que pesan más que estas tres banderas.** (a) La cadencia de stock_watch: 3,611 de los 4,919
+piezas×min (73 %) pasaron ANTES de que la cola recibiera nada (pasada cada 20 min); disparar una pasada ante una venta
+grande de Odoo es la palanca mayor. (b) El falso «ESCRITURA FALLÓ» de Woo, que metió 50 SKUs 16.24 min tarde: en esta
+ráfaga su lote 2 vale 333 piezas×min aun con las dos banderas, más que todo el lote 1.
+
+**Demo en el sandbox** (para VER «en cola (posición N, ~M min)» y «repartiendo ahora» en la matriz): el lanzador del
+scratchpad de la sesión (`cola_rapida/lanzar_backend.py`, backend del worktree contra el sandbox `yvootpbz`, todo
+apagado, sin MySQL/Woo/Odoo ni tokens de canal) encola EN MEMORIA (demo encendida por omisión; `COLA_DEMO=0` la apaga)
+una ráfaga de prueba con los SKUs que tienen celdas distintas de Woo en el sandbox; el reparto es falso (8 s por SKU,
+no lee ni escribe nada, `FANOUT_DRY_RUN=true`). Backend en 8160 y frontend en 3260 (`colarapida-backend` /
+`colarapida-frontend` de `.claude/launch.json`), página `/dashboard/matriz`. Probado el 13-oct: 40 SKUs encolados, la
+matriz con 71 celdas «en cola (posición N, ~M min)» y 2 «repartiendo ahora», y el panel «Cola 32 · 1 en proceso». La
+demo NO está en el repo: el backend real sólo enseña la cola del proceso en el que corre el fan-out.
+
 ### v0.638.0 — TikTok: editar un producto va con PUT, y por eso NINGUNA actualización había funcionado
 
 **El síntoma.** Cada «Actualizar en TikTok Shop» del panel moría con

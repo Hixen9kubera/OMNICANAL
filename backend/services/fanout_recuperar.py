@@ -28,7 +28,15 @@ LÍMITES (a propósito)
   la cola. Al arrancar la cola está recién vacía, así que la gracia baja a 3 min.
 - Solo cambios de las últimas `horas`: lo muy viejo pide una alineación
   consciente (`POST /api/fanout/alinear`), no un reenvío automático.
-- Tope de SKUs por vuelta, y se salta lo que ya está en la cola.
+- Tope de SKUs por vuelta, y se salta lo que ya está en la cola. Con la cola rápida
+  encendida (`fanout_stock.cola_rapida()`) mira la cola COMPLETA —lo pendiente, el lote
+  y lo que está en proceso—; con las tres banderas apagadas sólo lo pendiente, como
+  siempre (el 12-oct eso reencoló 5 SKUs que seguían en el lote).
+- Al arrancar también vuelve a encolar los SKUs con una escritura diferida a Temu desde
+  2 min antes del arranque (`reencolar_diferidas`): su verificación vivía en la memoria
+  del proceso anterior. Va con la bandera de Temu encendida o apagada (apagarla reinicia
+  el contenedor: es justo cuando quedan a medias) y, con el recuperador apagado, el
+  scheduler la programa sola.
 - Un mismo cambio (sku, ts) se reencola UNA vez por proceso: si su evento no llega
   a la bitácora (kubera caída), no entra en bucle.
 - Necesita que la bitácora se escriba en kubera (`supabase_write_fanout_log`):
@@ -51,6 +59,8 @@ log = logging.getLogger("omnicanal.fanout_recuperar")
 # Lo que cuenta como «el fan-out ya lo procesó»: cualquier fila de un evento suyo.
 _ACC_FANOUT = ["escribir", "omitir", "sin_cambio", "sin_destinos"]
 MOTIVO = "recuperado: cambio sin repartir"
+MOTIVO_DIFERIDA = "recuperado: verificación de Temu pendiente"
+VENTANA_DIFERIDA_S = 120
 GRACIA_ARRANQUE_MIN = 3
 
 _lock = threading.Lock()
@@ -89,6 +99,47 @@ def candidatos(horas: int, gracia_min: int, limite: int) -> list[dict[str, Any]]
         {"h": int(horas), "g": int(gracia_min), "a": _ACC_FANOUT, "n": int(limite)})
 
 
+def diferidas_recientes() -> list[str]:
+    """SKUs con una escritura a Temu «ok (verificación diferida…)» desde
+    `VENTANA_DIFERIDA_S` antes del arranque de este proceso: la convergencia vivía en la
+    RAM del anterior (que en un despliegue sigue escribiendo un rato junto al nuevo, por
+    eso la ventana llega hasta ahora). Volver a repartirlos es idempotente: el plan sale
+    otra vez de Woo y del censo, y Temu se relee en vivo si hay que escribirle."""
+    from services import fanout_stock
+    from services import supabase_db as sdb
+    desde = fanout_stock._ARRANQUE - VENTANA_DIFERIDA_S
+    return [f["sku"] for f in sdb.fetch_all(
+        """select distinct sku::text as sku from ops.fanout_log
+            where canal = 'temu' and accion = 'escribir' and not dry_run
+              and resultado like %(r)s
+              and ts between to_timestamp(%(a)s) and to_timestamp(%(b)s)""",
+        {"r": f"ok ({fanout_stock._TEMU_DIFERIDA}%", "a": desde, "b": time.time()})]
+
+
+def reencolar_diferidas(excluir: set[str] | None = None) -> list[str]:
+    """Al ARRANCAR: vuelve a encolar las verificaciones de Temu que el proceso anterior
+    dejó a medias. Corre con FANOUT_TEMU_VERIFICAR_DIFERIDO encendida O APAGADA —la
+    reversa de esa bandera es justo un reinicio, y apagada no quedaba nadie que las
+    recuperara— y aunque el recuperador esté apagado (el scheduler la programa sola). Con
+    la bandera apagada desde siempre no hay filas «ok (verificación diferida…)» en la
+    ventana: una consulta de 0.04 ms (medido en producción) y nada más."""
+    from services import fanout_stock
+    if not fanout_stock.habilitado() or not getattr(settings, "supabase_write_fanout_log", False):
+        return []
+    try:
+        filas = diferidas_recientes()
+    except Exception as exc:  # noqa: BLE001 — sin bitácora, el censo y los excedentes lo cubren
+        log.warning("Fan-out: no pude leer las verificaciones de Temu pendientes: %s", exc)
+        return []
+    ya = fanout_stock.en_cola() | {s.upper() for s in (excluir or set())}
+    diferidas = [s for s in filas if s.upper() not in ya]
+    if diferidas:
+        fanout_stock.encolar_varios(diferidas, motivo=MOTIVO_DIFERIDA)
+        log.warning("Fan-out: %d SKU(s) con la verificación de Temu a medias al reiniciar, "
+                    "de vuelta a la cola: %s", len(diferidas), ", ".join(diferidas[:10]))
+    return diferidas
+
+
 def revisar(arranque: bool = False) -> dict[str, Any]:
     """Una vuelta. SÍNCRONA a propósito: el scheduler la corre con
     `asyncio.to_thread` (regla 11: lee la base)."""
@@ -107,8 +158,17 @@ def revisar(arranque: bool = False) -> dict[str, Any]:
 
     t0 = time.time()
     filas = candidatos(horas, gracia, tope)
-    with fanout_stock._lock:
-        en_cola = set(fanout_stock._pendientes)
+    if fanout_stock.cola_rapida():
+        en_cola = fanout_stock.en_cola()          # pendientes + lote + en proceso, en mayúsculas
+
+        def esta(s: str) -> bool:
+            return s.upper() in en_cola
+    else:
+        with fanout_stock._lock:
+            en_cola = set(fanout_stock._pendientes)
+
+        def esta(s: str) -> bool:
+            return s in en_cola
     nuevos: list[str] = []
     with _lock:
         vencido = time.time() - 2 * horas * 3600
@@ -116,7 +176,7 @@ def revisar(arranque: bool = False) -> dict[str, Any]:
             _ya.pop(clave, None)
         for f in filas:
             clave = (str(f["sku"]), f["ts"].isoformat())
-            if clave in _ya or clave[0] in en_cola:
+            if clave in _ya or esta(clave[0]):
                 continue
             _ya[clave] = time.time()
             nuevos.append(clave[0])
@@ -124,8 +184,10 @@ def revisar(arranque: bool = False) -> dict[str, Any]:
         fanout_stock.encolar_varios(nuevos, motivo=MOTIVO)
         log.warning("Fan-out: %d cambio(s) que nunca se repartieron, de vuelta a la cola: %s%s",
                     len(nuevos), ", ".join(nuevos[:10]), " …" if len(nuevos) > 10 else "")
+    diferidas = reencolar_diferidas(set(nuevos)) if arranque else []
     _ultimo.clear()
     _ultimo.update(ts=time.time(), arranque=arranque, candidatos=len(filas), encolados=len(nuevos),
+                   diferidas_temu=len(diferidas),
                    muestra=nuevos[:15], segundos=round(time.time() - t0, 2), horas=horas,
                    gracia_min=gracia)
     return {"ok": True, **_ultimo}
