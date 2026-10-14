@@ -537,6 +537,11 @@ def _apagar(canal: str, item_id: str, sku_ids: list[Any] | None = None) -> Any:
 
 
 def _prender(canal: str, item_id: str, sku_ids: list[Any] | None = None) -> Any:
+    # CANDADO DE LA PAUSA, aquí abajo y no sólo en `_reactivar`: cualquier camino que algún
+    # día llegue a prender topa con él. Con el canal en pausa (o sin poder leerla) no se
+    # prende nada (Brandon, 14-oct-2026: «que no se vuelvan a prender»).
+    if _canal_en_pausa(canal):
+        raise RuntimeError(f"{canal}: {EN_PAUSA} — no se prende nada mientras dure")
     from services import fanout_stock
     if canal == "temu":
         from services import temu as tm

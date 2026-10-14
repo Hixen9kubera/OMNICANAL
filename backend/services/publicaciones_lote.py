@@ -47,8 +47,14 @@ con quién y cuándo, y mientras dura:
     esté «por apagar») y avisa cuáles fueron;
   · el seguro de stock 0 no regresa nada en ese canal (`fanout_seguro._canal_en_pausa`).
 No tiene variable de entorno: la pone y la quita una persona desde el Publicador
-(`fijar_pausa`). Sin pausa, `vigilar` no hace nada. Entre un censo y el siguiente (una
-hora) una publicación que Temu libere puede estar a la venta: no es instantáneo.
+(`fijar_pausa`). Sin pausa, `vigilar` no hace nada.
+
+UNA HORA ERA DEMASIADO (14-oct-2026). Media hora después de apagar TikTok y ponerle la
+pausa, alguien activó 162 productos en bloque desde fuera de omnicanal; volvieron 218 a
+la venta y el vigilante, con tope de 60 por censo, tardó tres censos en apagarlas. Desde
+entonces el vigilante va SIN TOPE y lo respalda `pausa_guardia`: un barrido EN VIVO cada
+10 minutos y, en TikTok, otro en cuanto TikTok avisa que auditó un producto. Los dos
+apagan con `apagar_pendientes` y comparten `_turno`: un barrido por canal a la vez.
 
 LO QUE NO HACE
   · No reactiva. Volver a prender es otra decisión; lo que se apagó desde aquí queda
@@ -66,9 +72,11 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 import uuid
-from typing import Any
+from contextlib import contextmanager
+from typing import Any, Iterator
 
 log = logging.getLogger("omnicanal.publicaciones_lote")
 
@@ -85,9 +93,26 @@ VIA = "panel_lote"                 # la firma en `channel.listing_history.detect
 # rechazó con `automatizacion_flags_flag_check`. Lo fija `Pausa.test_el_nombre_…`.
 _FLAG_PAUSA = "canal_en_pausa_{canal}"
 _PAUSA_TTL_S = 30.0                # cuánto vale la lectura de la pausa (la pregunta el seguro en cada evento)
-_VIGILAR_MAX = 60                  # SKUs por censo; lo que no quepa lo toma el siguiente
+# El vigilante y la guardia van SIN TOPE (14-oct-2026: con 60 por censo, 218 que volvieron a
+# la venta tardaron tres horas en apagarse). Lo único que se reparte son las tandas de 10.
 ACTOR_PAUSA = "pausa del canal"    # quién firma lo que apaga el vigilante
 _pausa_cache: dict[str, dict[str, Any]] = {}
+# Un barrido por canal a la vez: el vigilante del censo y los de `pausa_guardia` (cada 10
+# min y tras un aviso de TikTok) pueden coincidir, y dos sobre las mismas publicaciones sólo
+# duplican lecturas.
+_turnos: dict[str, threading.Lock] = {c: threading.Lock() for c in CANALES}
+
+
+@contextmanager
+def _turno(canal: str) -> Iterator[bool]:
+    """`with _turno(canal) as mio:` — `mio` es False si otro barrido de ese canal ya va."""
+    candado = _turnos[canal]
+    mio = candado.acquire(blocking=False)
+    try:
+        yield mio
+    finally:
+        if mio:
+            candado.release()
 
 # En qué GRUPO cae cada estado y cómo se le dice. Lo que no esté aquí se enseña crudo
 # y no se toca: un estado que nadie conoce no se adivina.
@@ -383,25 +408,44 @@ def vigilar(canal: str) -> dict[str, Any]:
     igual que si lo hubiera hecho una persona (firmado «pausa del canal»).
 
     Sin pausa no hace nada. Si no se puede leer la pausa, tampoco: apagar un canal por
-    un «no sé» sería peor que esperar al siguiente censo.
+    un «no sé» sería peor que esperar al siguiente censo. SIN TOPE: lo que el censo vio
+    por apagar se apaga entero (de 10 en 10). Si otro barrido del canal ya va, no se
+    encima: ese ya está apagando.
     """
-    from services import fanout_seguro as S
     canal = _canal(canal)
     p = pausa(canal, refrescar=True)
     if p.get("en_pausa") is not True:
         return ({"ok": True, "pausa": False} if p.get("legible")
                 else {"ok": False, "pausa": None, "motivo": "no pude leer la pausa del canal"})
-    t0 = time.time()
-    por_sku: dict[str, dict[str, Any]] = {}
-    for i in sorted(listar(canal)["items"], key=lambda x: x["grupo"] != "a_la_venta"):
-        if i["desactivable"] and not i["orden"]:
-            por_sku.setdefault(i["sku"].upper(), i)
-    pendientes = [i["sku"] for i in por_sku.values()]
+    with _turno(canal) as mio:
+        if not mio:
+            return {"ok": True, "pausa": True, "ocupado": True,
+                    "motivo": "ya hay un barrido de este canal en curso"}
+        t0 = time.time()
+        pendientes = [{"sku": i["sku"], "listing_id": i["listing_id"]}
+                      for i in sorted(listar(canal)["items"], key=lambda x: x["grupo"] != "a_la_venta")
+                      if i["desactivable"] and not i["orden"]]
+        hecho = apagar_pendientes(canal, pendientes)
+        salida = {"ok": True, "pausa": True, "por_apagar": len(pendientes), **hecho,
+                  "segundos": round(time.time() - t0, 1)}
+        if pendientes:
+            log.warning("PAUSA DEL CANAL %s: %s", canal, salida)
+        return salida
+
+
+def apagar_pendientes(canal: str, pendientes: list[dict[str, Any]],
+                      actor: str = ACTOR_PAUSA) -> dict[str, Any]:
+    """
+    Apaga TODAS las publicaciones de `pendientes` ({sku, listing_id}, ya ordenadas),
+    de 10 en 10, y avisa: en amarillo lo que vendía y se apagó, en rojo lo que no se
+    pudo. Lo comparten el vigilante del censo y la guardia en vivo (`pausa_guardia`).
+    """
+    from services import fanout_seguro as S
     resumen: dict[str, int] = {}
     reaparecidas: list[str] = []
     sin_apagar: list[str] = []
-    for k in range(0, min(len(pendientes), _VIGILAR_MAX), TOPE_POR_LLAMADA):
-        r = desactivar(canal, pendientes[k:k + TOPE_POR_LLAMADA], actor=ACTOR_PAUSA)
+    for k in range(0, len(pendientes), TOPE_POR_LLAMADA):
+        r = desactivar_publicaciones(canal, pendientes[k:k + TOPE_POR_LLAMADA], actor=actor)
         for x in r["resultados"]:
             resumen[x["resultado"]] = resumen.get(x["resultado"], 0) + 1
             vendia = S.a_la_venta(canal, x.get("antes"))
@@ -410,13 +454,8 @@ def vigilar(canal: str) -> dict[str, Any]:
             elif x["resultado"] in (ERROR, SIN_CONFIRMAR) and (vendia or x.get("antes") is None):
                 sin_apagar.append(x["sku"])
     _avisar_pausa(canal, reaparecidas, sin_apagar)
-    salida = {"ok": True, "pausa": True, "por_apagar": len(pendientes),
-              "atendidas": min(len(pendientes), _VIGILAR_MAX), "resumen": resumen,
-              "reaparecidas": reaparecidas[:20], "sin_apagar": sin_apagar[:20],
-              "segundos": round(time.time() - t0, 1)}
-    if pendientes:
-        log.warning("PAUSA DEL CANAL %s: %s", canal, salida)
-    return salida
+    return {"atendidas": len(pendientes), "resumen": resumen,
+            "reaparecidas": reaparecidas[:20], "sin_apagar": sin_apagar[:20]}
 
 
 # ── Desactivar ───────────────────────────────────────────────────────────────
@@ -492,19 +531,44 @@ def desactivar(canal: str, skus: list[str], actor: str = "") -> dict[str, Any]:
     Se decide con el estado VIVO, no con el del censo, que puede traer una hora de
     atraso: la que en vivo ya está apagada no se vuelve a llamar.
     """
-    from services import fanout_seguro as S
     canal = _canal(canal)
     skus = _limpiar_skus(skus)
-    t0 = time.time()
-    lote = uuid.uuid4().hex[:12]
     por_sku: dict[str, list[dict[str, Any]]] = {}
     for f in _publicaciones(canal, skus):
         por_sku.setdefault(str(f["sku"]).upper(), []).append(f)
+    return _desactivar(canal, [(sku, por_sku.get(sku.upper())) for sku in skus], actor)
 
+
+def desactivar_publicaciones(canal: str, pubs: list[dict[str, Any]], actor: str = "") -> dict[str, Any]:
+    """
+    Como `desactivar`, pero con las publicaciones YA identificadas ({sku, listing_id}):
+    las que la guardia acaba de ver a la venta EN VIVO, o las que el vigilante tomó del
+    censo. No las busca en `channel.listings`, así que también se apaga una que el censo
+    todavía no conoce o cuyo SKU no está en el catálogo. A lo mucho TOPE_POR_LLAMADA.
+    """
+    canal = _canal(canal)
+    limpias: dict[str, dict[str, Any]] = {}
+    for p in pubs or []:
+        item = str((p or {}).get("listing_id") or "").strip()
+        if item:
+            limpias.setdefault(item, {"sku": str(p.get("sku") or "").strip() or f"(sin SKU · {item})",
+                                      "listing_id": item})
+    if not limpias:
+        raise ValueError("pubs: ninguna publicación con listing_id")
+    if len(limpias) > TOPE_POR_LLAMADA:
+        raise ValueError(f"pubs: a lo mucho {TOPE_POR_LLAMADA} por llamada (llegaron {len(limpias)})")
+    return _desactivar(canal, [(p["sku"], [p]) for p in limpias.values()], actor)
+
+
+def _desactivar(canal: str, pedidos: list[tuple[str, list[dict[str, Any]] | None]],
+                actor: str) -> dict[str, Any]:
+    """El trabajo de `desactivar`: `pedidos` = [(sku, sus publicaciones o None)]."""
+    from services import fanout_seguro as S
+    t0 = time.time()
+    lote = uuid.uuid4().hex[:12]
     resultados: list[dict[str, Any]] = []
     por_confirmar: list[dict[str, Any]] = []
-    for sku in skus:
-        pubs = por_sku.get(sku.upper())
+    for sku, pubs in pedidos:
         if not pubs:
             resultados.append({"sku": sku, "listing_id": None, "antes": None, "despues": None,
                                "resultado": SIN_PUBLICACION,
@@ -582,7 +646,7 @@ def desactivar(canal: str, skus: list[str], actor: str = "") -> dict[str, Any]:
     apagadas = resumen.get(APAGADA, 0)
     if apagadas or resumen.get(ERROR) or resumen.get(SIN_CONFIRMAR) or resumen.get(ORDEN_ENVIADA):
         log.warning("LOTE %s · %s · %s pidió desactivar %d SKU(s): %s", lote, canal,
-                    actor or "?", len(skus), resumen)
-    return {"canal": canal, "nombre": NOMBRE[canal], "lote": lote, "pedidos": len(skus),
+                    actor or "?", len(pedidos), resumen)
+    return {"canal": canal, "nombre": NOMBRE[canal], "lote": lote, "pedidos": len(pedidos),
             "resumen": resumen, "resultados": resultados,
             "segundos": round(time.time() - t0, 1)}

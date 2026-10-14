@@ -536,22 +536,33 @@ class Vigilar(Arnes):
         self.assertEqual((tipo, nivel), ("canal_pausa_falla:temu", "🔴"))
         self.assertIn("NO se pudieron apagar", texto)
 
-    def test_va_por_tandas_y_con_tope_por_censo(self):
+    def test_va_por_tandas_y_sin_tope(self):
+        # 14-oct-2026: con tope de 60 por censo, 218 que volvieron a la venta tardaron tres
+        # horas en apagarse. Ahora se apaga TODO lo que el censo vio, de 10 en 10.
         self._pausar()
         for i in range(73):
             self.poner(f"ZZZ-1{i:03d}-AZL", f"95{i:03d}", "2/8")
         tandas = []
-        real = L.desactivar
+        real = L.desactivar_publicaciones
 
-        def desactivar(canal, skus, actor=""):
-            tandas.append(len(skus))
-            return real(canal, skus, actor=actor)
+        def desactivar(canal, pubs, actor=""):
+            tandas.append(len(pubs))
+            return real(canal, pubs, actor=actor)
 
-        with mock.patch.object(L, "desactivar", side_effect=desactivar):
+        with mock.patch.object(L, "desactivar_publicaciones", side_effect=desactivar):
             r = L.vigilar("temu")
-        self.assertEqual(tandas, [10] * 6, "de 10 en 10 y a lo mucho 60 por censo")
-        self.assertEqual((r["por_apagar"], r["atendidas"], len(self.llamadas())), (73, 60, 60))
-        self.assertEqual(len(r["reaparecidas"]), 20, "la respuesta trae una muestra, no las 60")
+        self.assertEqual(tandas, [10] * 7 + [3], "de 10 en 10 y SIN tope")
+        self.assertEqual((r["por_apagar"], r["atendidas"], len(self.llamadas())), (73, 73, 73))
+        self.assertEqual(len(r["reaparecidas"]), 20, "la respuesta trae una muestra, no las 73")
+
+    def test_si_otro_barrido_del_canal_ya_va_no_se_encima(self):
+        self._pausar()
+        self.poner("ZZZ-0001-AZL", "9001", "2/8")
+        with L._turno("temu"):
+            r = L.vigilar("temu")
+        self.assertEqual((r["ocupado"], self.orden), (True, []))
+        L.vigilar("temu")
+        self.assertEqual(self.llamadas(), [("apagar", "9001")], "suelto el turno, el siguiente sí apaga")
 
     def test_en_pausa_y_sin_nada_que_apagar_no_avisa(self):
         self._pausar()
@@ -795,8 +806,13 @@ class SoloInactiva(unittest.TestCase):
                          ["_apagar", "_candado", "_dormir", "_espera_s", "_leer_vivo", "_relecturas", "a_la_venta"])
 
     def test_lo_unico_que_mueve_el_canal_es_apagar(self):
-        fuente = inspect.getsource(L.desactivar)
-        self.assertEqual(fuente.count("S._apagar("), 1)
+        # El trabajo vive en `_desactivar`; las dos puertas (por SKU desde la pantalla y por
+        # publicación desde la guardia) sólo lo llaman.
+        self.assertEqual(inspect.getsource(L._desactivar).count("S._apagar("), 1)
+        for puerta in (L.desactivar, L.desactivar_publicaciones):
+            fuente = inspect.getsource(puerta)
+            self.assertNotIn("S._apagar(", fuente)
+            self.assertIn("return _desactivar(canal, ", fuente)
 
 
 class Consultas(unittest.TestCase):

@@ -726,8 +726,31 @@ def _aviso_titulo(req: dict[str, Any], modo: str | None = None) -> str | None:
             "antes de publicar.")
 
 
+def _bloqueo_por_pausa(canal: str) -> str | None:
+    """Con el canal EN PAUSA (Publicador › Desactivar por canal) no se publica ni se
+    edita: en TikTok editar o crear manda el producto a auditoría y de ahí sale A LA
+    VENTA. Si no se puede leer la pausa, tampoco (falla cerrado). SÍNCRONO."""
+    from services import publicaciones_lote
+    p = publicaciones_lote.pausa(canal, refrescar=True)
+    nombre = publicaciones_lote.NOMBRE.get(canal, canal)
+    if p.get("en_pausa") is True:
+        quien = f" por {p['por']}" if p.get("por") else ""
+        desde = f" desde {p['desde']}" if p.get("desde") else ""
+        return (f"{nombre} está EN PAUSA{desde}{quien}: no se publica ni se edita nada ahí. "
+                "Para volver a vender, quita la pausa en Publicador › Desactivar por canal.")
+    if p.get("en_pausa") is None:
+        return (f"No se pudo confirmar que {nombre} no esté en pausa; no se publicó nada. "
+                "Intenta de nuevo en un momento.")
+    return None
+
+
 async def confirmar(req: dict[str, Any]) -> dict[str, Any]:
     canal = req.get("canal")
+    if canal in ("tiktok", "temu"):
+        bloqueo = await asyncio.to_thread(_bloqueo_por_pausa, canal)
+        if bloqueo:
+            return {"ok": False, "canal": canal, "sku": req.get("sku"), "motivo": bloqueo,
+                    "en_pausa": True}
     await _rellenar_desde_guardado(req)
     # El MISMO par sku/wc_id y el MISMO candado que la vista previa: lo que se
     # revisó es lo que sale. El 409 llega legible al modal (ApiError.detail) y

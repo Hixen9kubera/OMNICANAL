@@ -750,6 +750,23 @@ def iniciar() -> None:
             coalesce=True,
         )
         log.info("Censo de Temu cada %s min.", settings.temu_censo_min)
+    # GUARDIA DE LA PAUSA (Brandon, 14-oct-2026: «que no se vuelvan a prender»). Con un
+    # canal en pausa, barrido EN VIVO cada 10 min de lo que tenga a la venta, y se apaga;
+    # el vigilante del censo pasaba una vez por hora. Sin pausa no le pregunta nada al
+    # canal (sólo lee la pausa en kubera). Sin variable: el interruptor es la pausa misma,
+    # que pone y quita una persona desde el Publicador.
+    from services import pausa_guardia
+    _scheduler.add_job(
+        pausa_guardia.job,
+        "interval",
+        minutes=pausa_guardia.CADA_MIN,
+        id="pausa_guardia",
+        next_run_time=datetime.now() + timedelta(seconds=150),
+        max_instances=1,
+        coalesce=True,
+    )
+    log.info("Guardia de la pausa cada %s min (sólo actúa con un canal en pausa).",
+             pausa_guardia.CADA_MIN)
     # RECONSTRUCTOR DE PEDIDOS: rellena channel.orders con lo que exista en Woo
     # y le falte al registro. Es el colchón que reemplaza a MySQL — el webhook de
     # ML contesta 200 SIEMPRE (si no, ML deshabilita el topic), así que el canal

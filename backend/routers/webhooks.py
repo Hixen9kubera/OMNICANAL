@@ -1094,6 +1094,15 @@ async def recibir_tiktok(request: Request, background: BackgroundTasks):
         guia_ya = bool(oid and getattr(settings, "tiktok_guias_enabled", False)
                        and _pt.estado_de_evento(payload) == "AWAITING_COLLECTION")
 
+        # ── GUARDIA DE LA PAUSA ──────────────────────────────────────────────
+        # Un aviso de auditoría de producto (tipo 37) puede ser alguien prendiendo
+        # publicaciones desde el Seller Center (14-oct-2026: 162 en 20 minutos con
+        # TikTok en pausa). Con TikTok en pausa, programa un barrido en vivo ~90 s
+        # después del último aviso. En segundo plano y sin tocar la respuesta.
+        from services import pausa_guardia as _pg
+        if firma is not False and _pg.es_aviso_de_producto(payload):
+            background.add_task(_pg.aviso_tiktok, payload)
+
         # ── LA VENTA SE VUELVE PEDIDO ────────────────────────────────────────
         # Del evento solo se toma el ID; la orden se pide a la API. Un evento es
         # el aviso de que algo cambió, no un documento contable — y esta URL es

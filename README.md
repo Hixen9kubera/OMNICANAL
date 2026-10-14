@@ -1001,6 +1001,65 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.646.0 — Guardia de la pausa: con un canal en pausa, lo que vuelva a la venta se apaga en minutos (barrido en vivo cada 10 min y, en TikTok, en cuanto TikTok avisa), sin tope, y omnicanal no publica ni prende ahí
+
+**Qué pidió Brandon (14-oct-2026).** «¿Puedes volver a checar si tenemos algún producto encendido?
+Si es así apágalo y genera una seguridad para que no se vuelvan a prender.»
+
+**Lo que pasó ese día, medido.**
+
+| Hora (CDMX) | Qué |
+|---|---|
+| 10:25–10:33 | Se apagan desde el Publicador las 81 publicaciones de TikTok a la venta (81 `ok`) |
+| 10:34 | Se pone TikTok en pausa |
+| 10:40–11:00 | TikTok manda 335 avisos de auditoría (webhook tipo 37, `AUDITING → APPROVED`) de **162 productos**: alguien los activó en bloque, y en TikTok activar pasa por auditoría |
+| 10:53 y 11:36 | Los censos ven 218 publicaciones de vuelta a la venta (`SELLER_DEACTIVATED → ACTIVATE`), 159 SKUs |
+| 10:58 → 13:38 | El vigilante del censo las apaga de 60 en 60, una vez por hora: **tres horas** con producto a la venta |
+
+**No fue omnicanal**: cero envíos a TikTok en `ops.channel_submissions`, cero llamadas del seguro
+(`fanout_log`), ninguna activación en los registros del backend. Lo más probable es el Seller Center.
+Eso no se puede bloquear desde aquí; lo que sí se puede es enterarse pronto y apagar.
+
+**La guardia (`services/pausa_guardia.py`).** Todo actúa SÓLO con el canal en pausa; sin pausa no le
+pregunta nada al canal (lee la pausa en kubera y ya). Sin variable de entorno: el interruptor es la
+pausa misma.
+
+1. **Barrido en vivo cada 10 minutos** (job `pausa_guardia`). Le pregunta AL CANAL, no al censo, qué
+   tiene a la venta —TikTok: `products/search` con `status: ACTIVATE`; Temu: la cubeta 1— y lo apaga
+   con el mismo flujo de la pantalla (lee en vivo, apaga, relee, refleja y anota), firmado «pausa del
+   canal». **Sin tope**, de 10 en 10, primero lo que vende. Es lo que cubre a Temu, que no avisa.
+2. **Aviso de TikTok.** Cada aviso de auditoría de producto (tipo 37) con TikTok en pausa programa un
+   barrido 90 s después del ÚLTIMO aviso: una ráfaga de 300 avisos es un solo barrido. Si otro barrido
+   iba a la mitad, vuelve a intentar. Va en segundo plano: no toca la respuesta a TikTok.
+3. **El vigilante del censo, sin tope** (antes 60 por censo). Comparte con la guardia un turno por
+   canal (`_turno`): nunca dos barridos del mismo canal encimados.
+4. **Candados propios.** Con el canal en pausa omnicanal **no publica ni edita** en Temu/TikTok
+   (`publicar.confirmar` contesta «TikTok está EN PAUSA desde … por …»; en TikTok editar manda el
+   producto a auditoría y de ahí sale a la venta) **ni prende** (`fanout_seguro._prender`, además del
+   freno que ya tenía `_reactivar`). Si no se puede leer la pausa, tampoco: falla cerrado.
+
+Qué cuenta como «por apagar», igual que en la pantalla: TikTok `ACTIVATE`; Temu `2/8`, `3/1`, `2/4`, y
+`3/3` sólo si nunca recibió la orden (Temu la acepta y no cambia de estado; repetírsela cada 10 minutos
+no enseña nada). `desactivar_publicaciones` apaga por publicación ya identificada, así que también
+cae una que el censo todavía no conoce o cuyo SKU no está en el catálogo.
+
+**Lo que hay que saber.**
+
+- El hueco ya no es de una hora: en TikTok, un par de minutos tras el aviso; en Temu, a lo mucho 10.
+- Avisa igual que el vigilante (🟡 lo que había vuelto y se apagó; 🔴 lo que no se pudo), con el
+  candado anti-spam de `alertas`.
+- Para publicar o vender en un canal en pausa, hay que quitar la pausa en Publicador › Desactivar por
+  canal. El panel ya lo dice.
+- Estado al publicar esto: **Temu y TikTok en pausa, 0 a la venta en los dos** (TikTok: las 218 que
+  volvieron ya apagadas, 362 apagadas en total).
+
+**Pruebas.** `tests/test_pausa_guardia.py` (nuevo): barrido con y sin pausa, «no sé», lectura viva de
+TikTok (filtro, paginación) y de Temu (cubeta 1), orden y retenidas, las 218 del 14-oct en un barrido,
+turno por canal, aviso de TikTok (ráfaga = un barrido, reintento si estaba ocupado), webhook real con
+firma buena/no evaluable/mala, scheduler sin variable, regla 11, candado de publicar y de prender.
+`tests/test_publicaciones_lote.py`: el vigilante sin tope y el turno. Batería del backend: 2,950 pruebas;
+la única falla es `test_regla_11_productos`, que ya falla igual en `main`. `tsc` limpio.
+
 ### v0.645.0 — Tarjeta de canal: el stock es el de la bodega del SKU (las publicaciones FULL ya no salen con «0 u» en rojo), «Pausada» y «bodega sin validar»; la banda «A precio de mercado» ya no encima etiquetas
 
 **El caso (Eduardo, 14-oct-2026).** ACC-0040-ROJ, activo en FULL en San Corpe

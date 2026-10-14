@@ -18,9 +18,11 @@
  *
  * LA PAUSA DEL CANAL («que no se reactiven solas», Brandon, 13-oct-2026). Apagar lo que
  * hoy está a la venta no basta: el canal regresa solo lo que tiene retenido o agotado, y
- * alguien puede publicar o prender algo. Con la pausa puesta, tras cada censo (cada hora)
- * se apaga lo que haya reaparecido y el seguro de stock 0 no regresa nada. La pone y la
- * quita una persona aquí mismo; no apaga nada en el momento y quitarla no prende nada.
+ * alguien puede publicar o prender algo. Con la pausa puesta se apaga lo que haya
+ * reaparecido —cada 10 minutos leyendo el canal en vivo y, en TikTok, en cuanto TikTok avisa
+ * que auditó un producto (14-oct-2026: alguien prendió 162 desde el Seller Center)—, el
+ * seguro de stock 0 no regresa nada y omnicanal no publica ni edita ahí. La pone y la quita
+ * una persona aquí mismo; no apaga nada en el momento y quitarla no prende nada.
  *
  * Cuatro cosas que esta pantalla no puede dejar a la imaginación:
  *   1. INACTIVA, NO BORRA. La publicación sigue en el canal, apagada, igual que si
@@ -350,17 +352,18 @@ export default function DesactivarPorCanal({ canales, onCerrar }: Props) {
                       <>
                         <strong className="text-rose-800">{lista.nombre} está EN PAUSA</strong>
                         {lista.pausa.desde ? ` desde ${lista.pausa.desde}` : ""}
-                        {lista.pausa.por ? ` (${lista.pausa.por})` : ""}. Tras cada censo (cada hora) se apaga lo que
-                        haya vuelto a la venta —lo libere {lista.nombre}, lo publique o lo prenda alguien— y el seguro
-                        de stock 0 no regresa nada.
+                        {lista.pausa.por ? ` (${lista.pausa.por})` : ""}. Cada 10 minutos{lista.canal === "tiktok"
+                          ? " (y en cuanto TikTok avisa)" : ""} se apaga lo que haya vuelto a la venta —lo libere
+                        {" "}{lista.nombre}, lo publique o lo prenda alguien—, el seguro de stock 0 no regresa nada y
+                        desde omnicanal no se publica ni se edita ahí.
                       </>
                     ) : lista.pausa.en_pausa === null ? (
                       <>No se pudo leer si {lista.nombre} está en pausa. Vuelve a cargar la lista.</>
                     ) : (
                       <>
-                        <strong>Mantener {lista.nombre} apagado.</strong> Con la pausa, tras cada censo (cada hora) se
-                        apaga lo que vuelva a la venta y el seguro de stock 0 no regresa nada. No apaga nada en este
-                        momento: para eso está «Desactivar».
+                        <strong>Mantener {lista.nombre} apagado.</strong> Con la pausa, cada 10 minutos se apaga lo que
+                        vuelva a la venta y el seguro de stock 0 no regresa nada. No apaga nada en este momento: para
+                        eso está «Desactivar».
                       </>
                     )}
                     {fallaPausa && <div className="mt-1 text-xs text-rose-700">{fallaPausa}</div>}
@@ -642,11 +645,13 @@ export default function DesactivarPorCanal({ canales, onCerrar }: Props) {
             </div>
             {confirmaPausa === "poner" ? (
               <ul className="mt-3 list-disc space-y-1.5 pl-5 text-sm text-slate-600">
-                <li>Tras cada censo (cada hora) se apaga <strong>todo lo que esté o vuelva a estar a la venta</strong>,
-                  también lo que alguien publique o prenda.</li>
+                <li>Cada 10 minutos{lista.canal === "tiktok" ? " (y en cuanto TikTok avisa)" : ""} se apaga
+                  {" "}<strong>todo lo que esté o vuelva a estar a la venta</strong>, también lo que alguien publique o
+                  prenda desde el Seller Center.</li>
+                <li>Desde omnicanal <strong>no se publica ni se edita</strong> nada en {lista.nombre}.</li>
                 <li>El seguro de stock 0 <strong>no regresa nada</strong> en {lista.nombre} aunque vuelva el stock.</li>
-                <li>No apaga nada en este momento: lo que hoy esté a la venta se apaga en el siguiente censo, o ya
-                  mismo con «Desactivar».</li>
+                <li>No apaga nada en este momento: lo que hoy esté a la venta se apaga en el siguiente barrido
+                  (a lo mucho 10 minutos), o ya mismo con «Desactivar».</li>
                 <li>Dura hasta que alguien la quite aquí.</li>
               </ul>
             ) : (
