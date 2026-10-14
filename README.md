@@ -1001,6 +1001,23 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.647.0 — Guardia de la pausa: TikTok se lee COMPLETO, sin el filtro de estado — un «0 a la venta» ya no puede ser un filtro mal entendido
+
+**Qué pasó.** El primer barrido de la guardia en producción (v0.646.0, 14-oct 13:57 CDMX) contestó:
+Temu `vistos: 415, por_apagar: 0` y TikTok `vistos: 0, por_apagar: 0`. Lo de TikTok era cierto ese
+día —las 218 que alguien prendió ya estaban apagadas—, pero la lectura pedía a la búsqueda de TikTok
+`{"status": "ACTIVATE"}`, y un «0» así no se distingue de un filtro que TikTok entendiera de otra forma
+y contestara vacío SIEMPRE. En ese caso la guardia quedaría ciega justo para lo que existe, y también el
+barrido que dispara el aviso de TikTok, que usa la misma lectura.
+
+**El arreglo.** `pausa_guardia._vivos_tiktok` pide la búsqueda SIN filtro —la misma lectura que el censo,
+probada en producción desde agosto— y `_por_apagar` se queda con lo que está `ACTIVATE`. Ahora «vistos»
+es el catálogo entero (~1,300 productos): si un día dice 0, algo está mal y se nota. Cuesta unas 13
+páginas por barrido.
+
+**Pruebas.** `tests/test_pausa_guardia.py`: la búsqueda va sin filtro y pagina; de todo el catálogo sólo
+se apaga lo que vende. 353 pruebas (guardia + lote + seguro + excedentes).
+
 ### v0.646.0 — Guardia de la pausa: con un canal en pausa, lo que vuelva a la venta se apaga en minutos (barrido en vivo cada 10 min y, en TikTok, en cuanto TikTok avisa), sin tope, y omnicanal no publica ni prende ahí
 
 **Qué pidió Brandon (14-oct-2026).** «¿Puedes volver a checar si tenemos algún producto encendido?

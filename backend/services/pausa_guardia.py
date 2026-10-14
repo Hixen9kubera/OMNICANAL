@@ -23,9 +23,10 @@ LAS CAPAS (todas actúan SÓLO con el canal en pausa; sin pausa no hacen nada):
      así una ráfaga de cientos de avisos es UN barrido. Lo que alguien active se apaga
      en un par de minutos.
   2. BARRIDO EN VIVO cada `CADA_MIN` minutos (`barrer_todo`, job del scheduler): le
-     pregunta AL CANAL qué tiene a la venta —no al censo, que puede traer una hora de
-     atraso— y lo apaga, sin tope. Es lo que cubre a Temu, que no avisa, y a TikTok si
-     un aviso se pierde.
+     pregunta AL CANAL qué tiene —no al censo, que puede traer una hora de atraso— y
+     apaga lo que esté a la venta, sin tope. Es lo que cubre a Temu, que no avisa, y a
+     TikTok si un aviso se pierde. TikTok: el catálogo completo por `products/search`
+     (sin filtro, ver `_vivos_tiktok`); Temu: la cubeta 1.
   3. El vigilante del censo (`publicaciones_lote.vigilar`), cada hora, ahora sin tope.
   Y del lado propio, un candado: con el canal en pausa omnicanal no publica, no edita
   y no prende nada ahí (`publicar.confirmar`, `fanout_seguro._prender`).
@@ -68,9 +69,16 @@ _TIPOS_TIKTOK = {37}
 # ── Lo que el canal tiene a la venta AHORA ───────────────────────────────────
 
 def _vivos_tiktok() -> list[dict[str, Any]]:
-    """Los productos de TikTok que la búsqueda trae con `status: ACTIVATE`. Si algún
-    día TikTok ignorara el filtro, llegarían todos y `_por_apagar` se queda sólo con
-    los que venden: el filtro ahorra páginas, no decide."""
+    """TODO el catálogo de TikTok, con el estado de cada producto; `_por_apagar` se
+    queda con los que venden.
+
+    SIN EL FILTRO `status` DE LA BÚSQUEDA, a propósito (v0.647.0). La primera versión
+    pedía `{"status": "ACTIVATE"}` y el primer barrido en producción contestó «0 vistos»
+    — correcto ese día (no había nada a la venta), pero indistinguible de un filtro que
+    TikTok entendiera de otra forma y devolviera siempre vacío: la guardia quedaría
+    ciega justo para lo que existe. Sin filtro es la MISMA lectura que el censo, probada
+    en producción desde agosto, y «vistos» dice cuántos productos se revisaron. Cuesta
+    unas 13 páginas por barrido."""
     from services import fanout_stock
     from services import tiktok as tk
     token, ciph = tk.access_token(), tk.cipher()
@@ -83,8 +91,7 @@ def _vivos_tiktok() -> list[dict[str, Any]]:
         if page_token:
             params["page_token"] = page_token
         data = fanout_stock._en_hilo(
-            lambda p=params: tk.llamar("/product/202309/products/search", token, p,
-                                       {"status": "ACTIVATE"}, "POST"),
+            lambda p=params: tk.llamar("/product/202309/products/search", token, p, {}, "POST"),
             "guardia: lectura tiktok") or {}
         lote = data.get("products") or []
         for p in lote:

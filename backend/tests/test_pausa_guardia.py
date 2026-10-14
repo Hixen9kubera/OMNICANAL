@@ -233,13 +233,15 @@ class Barrer(Arnes):
 class LecturasVivas(unittest.TestCase):
     """Las dos lecturas EN VIVO, contra un canal falso."""
 
-    def test_tiktok_pide_solo_lo_activo_y_pagina(self):
+    def test_tiktok_lee_todo_el_catalogo_sin_filtro_y_pagina(self):
+        # Sin `status` en la búsqueda (v0.647.0): un filtro que contestara «0» siempre
+        # dejaría ciega a la guardia, y ese 0 no se distingue de «no hay nada a la venta».
         from services import tiktok as tk
         llamadas = []
         paginas = {"": {"products": [{"id": "1", "status": "ACTIVATE", "skus": [{"seller_sku": "ZZZ-1"}]},
-                                     {"id": "2", "status": "ACTIVATE", "skus": [{"seller_sku": "ZZZ-2"}]}],
+                                     {"id": "2", "status": "SELLER_DEACTIVATED", "skus": [{"seller_sku": "ZZZ-2"}]}],
                         "next_page_token": "t2"},
-                   "t2": {"products": [{"id": "2", "status": "ACTIVATE", "skus": [{"seller_sku": "ZZZ-2"}]},
+                   "t2": {"products": [{"id": "2", "status": "SELLER_DEACTIVATED", "skus": [{"seller_sku": "ZZZ-2"}]},
                                        {"id": "3", "status": "activate", "skus": []}],
                           "next_page_token": ""}}
 
@@ -252,11 +254,21 @@ class LecturasVivas(unittest.TestCase):
                 mock.patch.object(tk, "llamar", side_effect=llamar):
             vivos = G._vivos_tiktok()
         self.assertEqual(vivos, [{"sku": "ZZZ-1", "listing_id": "1", "estado": "ACTIVATE"},
-                                 {"sku": "ZZZ-2", "listing_id": "2", "estado": "ACTIVATE"},
+                                 {"sku": "ZZZ-2", "listing_id": "2", "estado": "SELLER_DEACTIVATED"},
                                  {"sku": "", "listing_id": "3", "estado": "ACTIVATE"}])
         self.assertEqual([(r, c, m) for r, _, c, m in llamadas],
-                         [("/product/202309/products/search", {"status": "ACTIVATE"}, "POST")] * 2)
+                         [("/product/202309/products/search", {}, "POST")] * 2,
+                         "la misma lectura que el censo: sin filtro de estado")
         self.assertEqual(llamadas[1][1]["page_token"], "t2")
+
+    def test_de_todo_el_catalogo_solo_se_apaga_lo_que_vende(self):
+        with mock.patch.object(L, "_del_panel", return_value={}):
+            pendientes = G._por_apagar("tiktok", [
+                {"sku": "ZZZ-1", "listing_id": "1", "estado": "ACTIVATE"},
+                {"sku": "ZZZ-2", "listing_id": "2", "estado": "SELLER_DEACTIVATED"},
+                {"sku": "ZZZ-3", "listing_id": "3", "estado": "DRAFT"},
+                {"sku": "ZZZ-4", "listing_id": "4", "estado": "PENDING"}])
+        self.assertEqual([p["listing_id"] for p in pendientes], ["1"])
 
     def test_tiktok_sin_token_no_inventa_una_lista_vacia(self):
         from services import tiktok as tk
