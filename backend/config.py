@@ -896,6 +896,12 @@ class Settings(BaseSettings):
     competencia_juez_enabled: bool = False
     competencia_juez_visible: bool = False
     competencia_juez_escritura: bool = False
+    # EL PRECIO DE MERCADO DE PUBLICACIONES CON EL JUEZ (Eduardo, 14-oct-2026).
+    # Encendida: si un SKU tiene veredictos vigentes del juez de rivales, la
+    # tarjeta «A precio de mercado» cuenta SOLO a los rivales «mismo» (la regla
+    # de `enrich.market_rival_comparable_v`); los SKUs sin veredicto quedan como
+    # antes. Apagada: todo como antes, aunque haya veredictos.
+    competencia_mercado_juez: bool = False
     # Tiene que ser una llave de `ia_json.MODELOS`: un modelo sin precio no se
     # llama (dejaría ciego al tope de gasto).
     competencia_juez_modelo: str = "deepseek-flash"

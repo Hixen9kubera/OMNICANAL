@@ -476,7 +476,8 @@ class Panel(unittest.TestCase):
         m = items[0]["mercado"]
         self.assertEqual(set(m), {"promedio", "mediana", "n", "n_marcas", "dias", "termino",
                                   "costo_veces", "margen_pct", "ganancia_neta",
-                                  "precio_equilibrio", "precio_para_piso"})
+                                  "precio_equilibrio", "precio_para_piso",
+                                  "juez", "n_fuera_juez"})
         self.assertEqual((m["promedio"], m["n"], m["n_marcas"], m["termino"]),
                          (205.0, 4, 2, "tenis"))
         self.assertEqual(m["costo_veces"], round(100 / 205, 1))
@@ -491,6 +492,23 @@ class Panel(unittest.TestCase):
                        "r.precio > 0", "coalesce(r.es_nuestro, false) = false"):
             self.assertIn(pedazo, sql)
 
+    def test_sql_mercado_usa_la_regla_del_juez_de_la_vista(self):
+        # v0.649.0: `juez_vigente`/`juez_comparable` repiten la regla de
+        # enrich.market_rival_comparable_v (0063). Si la vista cambia, esto avisa.
+        import re
+        from pathlib import Path
+        plano = lambda s: re.sub(r"\s+", " ", s)
+        sql = plano(PP._SQL_MERCADO)
+        mig = (Path(__file__).resolve().parents[2] / "supabase/migrations/"
+               "0063_enrich_market_rival_juicio.sql").read_text(encoding="utf-8")
+        vista = mig[mig.index("create view enrich.market_rival_comparable_v"):]
+        vista = plano(vista[:vista.index(";")])
+        for pedazo in ("j.titulo_rival is not distinct from r.titulo",
+                       "j.titulo_nuestro is not distinct from t.titulo", "j.clase = 'mismo'",
+                       "j.sku = cfg.sku and j.canal = cfg.canal and j.externo_id = r.externo_id"):
+            self.assertIn(pedazo, vista)
+            self.assertIn(pedazo, sql)
+        self.assertIn("enrich.market_sku_titulo_v", sql)
 
 if __name__ == "__main__":
     unittest.main()

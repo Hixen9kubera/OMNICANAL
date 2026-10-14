@@ -1001,6 +1001,43 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.649.0 — Precio de mercado con el juez: la tarjeta «A precio de mercado» cuenta solo a los rivales que son el MISMO producto (bandera `COMPETENCIA_MERCADO_JUEZ`, apagada)
+
+**Qué pidió Eduardo (14-oct-2026).** Cargar a omnicanal la competencia revisada de las publicaciones FULL
+(términos corregidos, resultados de hoy y el veredicto del revisor por rival) y que la tarjeta de
+Publicaciones la use: «Datos + juez». Hasta hoy la tarjeta promediaba TODO lo que traía la búsqueda
+(sin las marcas de renombre desde v0.644.0), aunque fueran accesorios, refacciones u otra gama; el
+juez de rivales (v0.606.0, 0063) ya guardaba veredictos en `enrich.market_rival_juicio`, pero solo la
+pestaña de Competencia los leía.
+
+**El cambio (`services/publicaciones_panel.py`).** `_SQL_MERCADO` trae con cada rival dos columnas,
+`juez_vigente` y `juez_comparable`, con la MISMA regla de `enrich.market_rival_comparable_v`: hay
+veredicto, el título del rival es el que se juzgó y el título del SKU (`market_sku_titulo_v`) también;
+comparable = vigente + clase `mismo`. No se lee la vista porque calcula el título del SKU por rival: en
+producción tardó 0.7 s por 50 SKUs y se pasó del timeout con 100; aquí el título va en un CTE
+materializado, una vez por SKU (0.1 s por 50, lo mismo que antes). `agregar_mercado(con_juez=…)`:
+- **Bandera encendida y el SKU tiene AL MENOS UN veredicto vigente:** solo cuentan los `mismo`; los de
+  otra clase y los pendientes se apartan y se cuentan en `n_fuera_juez`. Bastan 2 (`MERCADO_N_MIN_JUEZ`),
+  porque cada uno ya es el mismo producto. Las marcas de renombre siguen fuera primero (`n_marcas`).
+- **SKU sin veredictos:** como siempre (mínimo 3, todo cuenta). `juez` = False.
+- **Bandera apagada (el default):** idéntico a v0.648.0 aunque haya veredictos.
+- `otro_paquete` (el mismo producto en otra cantidad) NO entra: no se convierte por unidades, igual que
+  en la vista.
+
+La tarjeta recibe `mercado.juez` y `mercado.n_fuera_juez` (el frontend todavía no los pinta).
+
+**Lo que mueve, medido en producción con los veredictos que ya hay (DeepSeek, j3).** De 1,457 SKUs con
+precio de mercado, con la bandera quedarían 906; 551 lo pierden porque el juez no les dejó 2 `mismo`, y
+832 cambian (mediana −4 %, p10 −44 %, p90 +32 %). Esa cifra NO incluye la carga revisada: va en el acta.
+
+**Reversa.** `COMPETENCIA_MERCADO_JUEZ=false` (o quitarla) y la tarjeta vuelve a ser la de v0.648.0. No
+hay migración.
+
+**Pruebas.** `tests/test_mercado_juez.py` (7): con la bandera solo cuentan los `mismo`; sin veredictos
+queda como antes; dos bastan y uno no; los pendientes no cuentan si el SKU ya tiene juicio; las marcas
+siguen fuera; apagada es idéntica; la bandera viene de la configuración. `tests/test_marcas_renombre.py`:
+la SQL de la tarjeta usa los mismos predicados que la vista de la 0063 (si una cambia, la prueba falla).
+
 ### v0.648.0 — Editor de imágenes: si Gemini está saturado, espera y reintenta solo (10, 30 y 60 s) en vez de fallar al primer 503
 
 **Qué pasó.** Andrea, 15-oct-2026: «¿por qué no se me procesan las imágenes de TEC-0289-NEG?». De 8:58 a

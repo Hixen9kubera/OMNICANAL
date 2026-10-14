@@ -267,6 +267,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
+from config import settings
 from services import costos, marcas_renombre
 from services import supabase_db as sdb
 
@@ -1171,42 +1172,77 @@ def listar(*, canal: str | None = None, estado: str | None = None,
 # saca el promedio, la mediana y el «al menos 3» en Python, sin las filas de
 # marca. Los filtros son los mismos de cuando se agregaba en SQL.
 _SQL_MERCADO = """
+with titulo as materialized (
+  select tv.sku, tv.canal, tv.titulo
+    from enrich.market_sku_titulo_v tv
+   where tv.sku = any(%(skus)s)
+     and tv.canal = 'mercado_libre')
 select cfg.sku::text                                                  as sku,
        st.termino                                                     as termino,
        r.precio                                                       as precio,
        r.titulo                                                       as titulo,
        r.seller                                                       as seller,
-       r.capturado_en                                                 as capturado_en
+       r.capturado_en                                                 as capturado_en,
+       (j.sku is not null
+          and j.titulo_rival is not distinct from r.titulo
+          and j.titulo_nuestro is not distinct from t.titulo)         as juez_vigente,
+       (j.sku is not null
+          and j.titulo_rival is not distinct from r.titulo
+          and j.titulo_nuestro is not distinct from t.titulo
+          and j.clase = 'mismo')                                      as juez_comparable
   from enrich.market_sku_config cfg
   join enrich.market_search_term st on st.id = cfg.termino_id
   join enrich.market_search_results r on r.termino_id = cfg.termino_id
+  left join titulo t on t.sku = cfg.sku and t.canal = cfg.canal
+  left join enrich.market_rival_juicio j
+         on j.sku = cfg.sku and j.canal = cfg.canal and j.externo_id = r.externo_id
  where cfg.sku = any(%(skus)s)
    and cfg.canal = 'mercado_libre'
    and r.precio > 0
    and coalesce(r.es_nuestro, false) = false
 """
+# v0.649.0 · EL VEREDICTO DEL JUEZ VIAJA CON CADA RIVAL. `juez_vigente` y
+# `juez_comparable` son la MISMA regla de `enrich.market_rival_comparable_v`
+# (0063) y de `competencia_juez.filas()`: si se toca una, se tocan las tres.
+# No se lee la vista porque calcula el título del SKU POR RIVAL (un lateral sobre
+# market_listing_metrics): medido en producción, 0.7 s por 50 SKUs y >timeout por
+# 100. Aquí el título se calcula una vez por SKU (0.1 s por 50, igual que antes).
 
 # Con menos observaciones la mediana es esa una: no hay mercado que reportar.
 MERCADO_N_MIN = 3
+# Con el juez, cada rival que cuenta ya es el MISMO producto: dos bastan.
+MERCADO_N_MIN_JUEZ = 2
 
 
 def agregar_mercado(filas: list[dict], *,
-                    sin_marcas: bool | None = None) -> dict[str, dict[str, Any]]:
+                    sin_marcas: bool | None = None,
+                    con_juez: bool | None = None) -> dict[str, dict[str, Any]]:
     """PURA. Las filas de `_SQL_MERCADO` → {sku: {termino, promedio, mediana, n,
     ultima, n_marcas}}, solo para los SKUs con al menos MERCADO_N_MIN
     observaciones SIN marcas de renombre (la regla que antes era `having
     count(*) >= 3`). `ultima` es la fecha de la búsqueda (todas sus filas, de
     marca o no). `sin_marcas` None = lo que diga `COMPETENCIA_SIN_MARCAS`;
-    apagado, todo cuenta como antes y `n_marcas` es 0."""
+    apagado, todo cuenta como antes y `n_marcas` es 0.
+
+    `con_juez` (None = `COMPETENCIA_MERCADO_JUEZ`): si el SKU tiene AL MENOS UN
+    veredicto vigente del juez de rivales, solo cuentan los rivales comparables
+    (clase «mismo»); los pendientes y los de otra clase quedan fuera y se cuentan
+    en `n_fuera_juez`. Basta con MERCADO_N_MIN_JUEZ. Sin veredictos, el SKU se
+    agrega como siempre y `juez` es False."""
     if sin_marcas is None:
         sin_marcas = marcas_renombre.es_activo()
+    if con_juez is None:
+        con_juez = bool(settings.competencia_mercado_juez)
+    juzgados = ({f["sku"] for f in filas if f.get("sku") and f.get("juez_vigente")}
+                if con_juez else set())
     grupos: dict[str, dict[str, Any]] = {}
     for f in filas:
         precio = _num(f.get("precio"))
         if not f.get("sku") or not precio or precio <= 0:
             continue
         g = grupos.setdefault(f["sku"], {"termino": None, "precios": [],
-                                         "ultima": None, "n_marcas": 0})
+                                         "ultima": None, "n_marcas": 0,
+                                         "n_fuera_juez": 0})
         t = f.get("termino")
         if t and (g["termino"] is None or t < g["termino"]):
             g["termino"] = t
@@ -1215,17 +1251,21 @@ def agregar_mercado(filas: list[dict], *,
             g["ultima"] = u
         if sin_marcas and marcas_renombre.detectar(f.get("titulo"), f.get("seller")):
             g["n_marcas"] += 1
+        elif f["sku"] in juzgados and not f.get("juez_comparable"):
+            g["n_fuera_juez"] += 1
         else:
             g["precios"].append(float(precio))
     out: dict[str, dict[str, Any]] = {}
     for sku, g in grupos.items():
         p = sorted(g["precios"])
-        if len(p) < MERCADO_N_MIN:
+        juez = sku in juzgados
+        if len(p) < (MERCADO_N_MIN_JUEZ if juez else MERCADO_N_MIN):
             continue
         m = len(p) // 2
         out[sku] = {"termino": g["termino"], "promedio": sum(p) / len(p),
                     "mediana": p[m] if len(p) % 2 else (p[m - 1] + p[m]) / 2,
-                    "n": len(p), "ultima": g["ultima"], "n_marcas": g["n_marcas"]}
+                    "n": len(p), "ultima": g["ultima"], "n_marcas": g["n_marcas"],
+                    "juez": juez, "n_fuera_juez": g["n_fuera_juez"]}
     return out
 
 
@@ -1274,6 +1314,11 @@ def _adjuntar_mercado(items: list[dict]) -> None:
             # Cuántas filas de MARCA DE RENOMBRE se apartaron del promedio y de
             # la mediana (v0.639.0). 0 con COMPETENCIA_SIN_MARCAS=false.
             "n_marcas": int(f["n_marcas"]),
+            # Con COMPETENCIA_MERCADO_JUEZ: True si el precio sale SOLO de rivales
+            # que el juez marcó como el mismo producto; `n_fuera_juez` = cuántos
+            # quedaron fuera por otra clase o por estar pendientes.
+            "juez": bool(f.get("juez")),
+            "n_fuera_juez": int(f.get("n_fuera_juez") or 0),
             "dias": (hoy - ultima).days if ultima else None,
             # La búsqueda de la que sale el precio de mercado (`market_search_term`).
             "termino": f.get("termino"),
