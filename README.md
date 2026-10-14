@@ -1001,6 +1001,178 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.644.0 — Competencia: las marcas de renombre ya no inflan la mediana
+
+**El síntoma (Eduardo, 12-oct-2026).** En Competencia, las búsquedas por palabra
+clave y el ranking de más vendidos traen productos de **marcas de renombre**
+(Vans, adidas, Puma, New Balance, Converse…) que cobran 3 a 5 veces lo que un
+genérico. Caso real: en la subcategoría **Tenis (MLM6585)** los genéricos del top
+cuestan **$190–$300** y los de marca **$619–$1,420**; la mediana salía en
+**$398**, cuando lo razonable para nuestros tenis genéricos ronda **$200**. Con
+esa mediana, la brecha de cada SKU decía «estás barato» y el Radar o la tarjeta
+de Publicaciones podían empujar el precio hacia arriba contra rivales que no son
+nuestra competencia.
+
+**La regla.** Vendemos genéricos importados: una marca de renombre **no entra a
+ninguna mediana, promedio ni referencia de precio de mercado**. Se sigue
+MOSTRANDO, marcada, para que se vea qué se apartó y por qué.
+
+**Cómo se reconoce una marca** — `services/marcas_renombre.py` (funciones puras,
+sin red ni base) sobre la lista `services/marcas_renombre.json`
+(`{"marcas": [{marca, alias, solo_vendedor}]}`, **570 marcas**; el código no
+depende de su contenido). La lista se armó con datos, no de memoria:
+
+- la marca (atributo `BRAND`) de **13,279 productos más vendidos** de ML,
+  bajados para la valuación de los contenedores;
+- los vendedores que son tienda oficial en Competencia («MARCA por X») o
+  cuyo nombre aparece en su propio título;
+- una semilla escrita a mano.
+
+Cada marca candidata se clasificó por lotes («cobra precio de marca frente a
+un genérico» o no) y luego se revisó a mano en dos pasadas: precisión (las 638
+«de renombre») y cobertura (las 600 «genéricas» más frecuentes). Al final un
+crítico puso a prueba los alias contra títulos reales y pasó a `solo_vendedor`
+los que aparecen en títulos de genéricos. Ejemplos:
+
+- 3 m de cable;
+- proyectores «Galaxy»;
+- «Filtro UV Canon, Nikon, Sony»;
+- refacciones «Whirlpool»;
+- personajes con licencia en mercancía de terceros (Disney, Pikachu, Paw
+  Patrol, K-Pop Demon Hunters, Jurassic, Looney Tunes, Monster High);
+- homónimos (Salvo, Escualo, Presto, Turín, Wrangler, Huggies).
+
+**Truper se queda** como marca de renombre: es la referencia de herramienta en
+México. Si se decide lo contrario, basta quitar su entrada.
+
+1. **Vendedor**: la tienda ES la marca (`NEW BALANCE` → New Balance), o es una
+   tienda oficial de ML «MARCA por X» (`ADIDAS por Look Sport` → Adidas). Aquí
+   cuentan el nombre, los `alias` y los `solo_vendedor`.
+2. **Título**: un `alias` como palabras completas («Tenis Vans Classics…» →
+   Vans; «Caravanserai» no). Los `solo_vendedor` (`on`, `fila`, `cat`, `lg`…) NO
+   cuentan en el título: «Pon on la mesa» no es la marca On.
+3. **Negación**: la aparición no cuenta si alguna de las 3 palabras anteriores es
+   para · compatible(s) · tipo · estilo · similar · replica · imitacion ·
+   generico/a · alternativo · repuesto · for. «Funda para iPhone 15», «Correa
+   compatible con Apple Watch», «Tenis tipo Nike» venden un genérico que NOMBRA a
+   la marca. **Salvedad**: «para/for» seguido de a quién va dirigido (hombre,
+   mujer, dama, niño, unisex…) no niega — «Tenis Para Hombre Nike Revolution» es
+   la forma más común de titular un tenis de marca, y sin la salvedad se escapaba
+   justo en la categoría que motivó el cambio. «Agujetas para tenis Nike» sigue
+   negado.
+
+Se recorre el título una vez por sus n-gramas contra un diccionario (la vista
+hace ~18,000 detecciones por carga: medido en local, 18,000 títulos distintos en
+~0.3 s) y el resultado se cachea por (título, vendedor).
+
+**Dónde se aplica — los cuatro lugares que calculan un precio de mercado:**
+
+| Lugar | Antes | Ahora | Llaves nuevas |
+|---|---|---|---|
+| Competencia · vista (`competencia_store.vista`) | mediana/mín/máx del top 20 de la subcategoría con todo | sin marcas; la brecha de cada SKU usa la mediana nueva | fila del top (subcategoría y raíz): `marca_renombre` · subcategoría: `mediana_con_marcas` (la de antes), `n_marcas_excluidas` |
+| Competencia · detalle de SKU (`GET /api/competencia/sku/{sku}`) | — | cada rival dice si es de marca | `busqueda_general[].marca_renombre`, `top[].marca_renombre` |
+| Radar de precios (`radar_precios`) | referencia = mediana de la búsqueda; contexto = mediana del top de la categoría en SQL | las dos sin marcas; el mínimo de 3 rivales se cuenta sin ellas; el contexto se calcula en Python (`contexto_categoria_de`) con la misma ventana de última captura | `referencia.n_marcas`, `contexto_categoria.n_marcas`, `comparables[].marca_renombre` |
+| Publicaciones · tarjeta de mercado (`publicaciones_panel`) | `avg`/`percentile_cont`/`having count(*) >= 3` en SQL | filas en SQL, agregación en Python (`agregar_mercado`) sin marcas; «al menos 3» contado sin ellas | `mercado.n_marcas` |
+
+Las llaves de siempre no cambian de nombre ni de forma. Un efecto que conviene
+saber: en el Radar, una búsqueda que antes salía `rivales_dispersos` porque las
+marcas estiraban el cuartil alto ahora puede dar referencia; y una que tenía 3
+rivales justos puede quedar en `pocos_rivales` si uno era de marca (la pantalla
+lo explica con `n_marcas`).
+
+**Reversa**: `COMPETENCIA_SIN_MARCAS=false` en Railway (por omisión encendida;
+"false"/"0"/"no" la apagan). Apagada, todas las medianas salen exactamente como
+antes y `n_marcas*` vale 0; la marca se sigue detectando y viajando para que la
+pantalla la pinte. Cambiar la variable reinicia el contenedor (regla 12).
+
+**Qué no toca**: ninguna tabla, migración ni escritura; no llama a ML. Solo
+lectura y cálculo. Fuera de alcance y sin cambios: `services/competencia.py`
+(«Mejorar con IA» del Estudio: busca en vivo y una IA calcula su propio rango) y
+los scripts `scripts/competencia_analisis.py`, `competencia_analisis_ia.py` y
+`competencia_precios.py`, que siguen calculando medianas con marcas.
+
+**Pruebas**: `tests/test_marcas_renombre.py` (31, sin red ni base) fija la
+detección (los ejemplos de arriba), que la lista es reemplazable, la variable, y
+los cuatro lugares con el top de Tenis del ejemplo — mediana de la subcategoría
+$254 sin marcas contra $299 con ellas (top inyectado de 8 genéricos y 5 marcas,
+no medido en producción) — y que apagada todo sale como antes.
+
+**La pantalla** (mismo v0.644.0, solo frontend; todas las llaves nuevas son
+opcionales en `lib/types.ts` y `lib/api.ts`, así que un backend anterior pinta
+como siempre). Una etiqueta gris **«marca»** con
+`title="Marca de renombre (X): no cuenta para la mediana"` y una nota
+**«sin N de marca»** junto a la mediana que ya las apartó:
+
+| Dónde | Etiqueta «marca» | Nota «sin N de marca» |
+|---|---|---|
+| Competencia · tarjetas del top (raíz y subcategoría) | junto a «NUESTRO» | — |
+| Competencia · detalle de SKU, búsqueda general | después del título | — |
+| Competencia · cabecera de la subcategoría | — | junto a «med. $X» (`title` = la mediana con marcas) |
+| Competencia · fila de cada SKU (columna mediana) | — | debajo de la mediana (la de su subcategoría) |
+| Radar · tabla, columna Mercado | — | junto a «Búsqueda · N rivales» o al motivo sin referencia |
+| Radar · detalle: encabezado de la escalera y comparables | en la fila del rival, junto al vendedor | junto a «Referencia: mediana de N rivales»; y en «Top de la categoría» |
+| Publicaciones · tarjeta «A precio de mercado» | — | «promedio de N · «término» · sin N de marca» (y en la nota al pasar el cursor) |
+
+La escalera del Radar sigue dibujando a TODOS los rivales como puntos, marcas
+incluidas: no se tocó.
+
+**Ajustes de la revisión** (mismo v0.644.0, solo backend). Una revisión probó
+`detectar()` con títulos reales de genéricos y encontró cinco formas de marcar
+un genérico como marca —o de no ver una marca—; las cinco se confirmaron y se
+corrigieron (la de accesorios, con dos reglas):
+
+| Caso | Antes | Ahora |
+|---|---|---|
+| «3m» = 3 metros | «Cable Hdmi 4k 3m», «Extension Electrica 3m», «Manguera 3m» → **3M**: en cables, extensiones y mangueras se apartaba casi todo el top | `3m` pasa a `solo_vendedor`; en el título quedan `scotch`, `3m command`, `command 3m` |
+| «Galaxy» suelto | «Proyector Galaxy Astronauta», «Lampara Proyector Galaxy Nebulosa» → **Samsung** | sale `galaxy`; entran `galaxy buds/watch/tab/z` (el teléfono ya lo delata `samsung`) |
+| Accesorio SIN «para» | «Funda Uso Rudo iPhone 15», «Mica Cristal Templado Samsung Galaxy A54», «Cable Usb C A Lightning iPhone», «Correa Mi Band 8» → Apple/Samsung/Xiaomi: en «funda iphone 15» se apartaban TODOS los rivales y la referencia quedaba en `pocos_rivales` | si el sustantivo del producto (la 1ª palabra, saltando cantidades y «kit/paquete/set/de») es un accesorio —funda, mica, hidrogel, protector, cristal, vidrio, case, carcasa, estuche, cable, cargador, adaptador, correa, pulso, control, soporte, tapa, display, repuesto…— el TÍTULO no delata marca; el VENDEDOR sí (la tienda oficial de Apple sigue siendo Apple). Fuera a propósito lo ambiguo: «base» (maquillaje), «pantalla» (televisor), «bateria», «audifonos» |
+| Se declara genérico al final | «Control Inalambrico Ps4 Playstation Generico» → Sony | genérico/a(s) · generic · réplica(s) · imitación · clon(es) niegan en CUALQUIER posición, no solo en las 3 palabras previas |
+| Vendedor con el formato de la tarjeta | el scraper web guarda `.poly-component__seller` tal cual: «Por Nike», «Vendido por FILA» → **None**; las `solo_vendedor` (Fila, Charly, On, LG…) nunca salían | se quitan los prefijos «por », «vendido por », «tienda oficial (de) » y el sufijo «(tienda) oficial» antes del corte «MARCA por X» |
+| Perfume «dupe» | «Perfume Inspirado En Carolina Herrera 212» → Carolina Herrera | negadores nuevos: inspirado/a(s) · inspired · equivalente · equivalencia · alternativa(s) · alternativos · aroma |
+
+Y una guarda: **una publicación nuestra nunca es marca** (`etiquetar` con
+`sku_nuestro`/`es_nuestro`, y los comparables del Radar). Vendemos genéricos; si
+el título de una nuestra nombra una marca, no debe salir de la mediana del top de
+Competencia, que sí la incluye.
+
+**Forma real del vendedor (medida con `SELECT` de solo lectura, 12-oct).** En
+`enrich.market_bestsellers` hay 750 vendedores «MARCA por X» y 11 «… Oficial».
+En `enrich.market_search_results` hay 335 «MARCA por X» y 4 «Oficial». Ninguno
+empieza con «Por». El código acepta todas esas formas.
+
+**Listas de compatibilidad y auditoría** (mismo v0.644.0). Los genéricos que vende
+Kubera citan marcas de dispositivos en listas de compatibilidad, lejos de
+cualquier «para». Ejemplos: «Cable Tipo C 60W … Compatible Samsung S24 Redmi»,
+«Pastilla De Deshielo Sirve Mabe Acros». Reglas que se agregaron:
+
+- **Niegan en cualquier parte del título:** «compatible(s)», «compatibilidad»,
+  «universal(es)», «sirve», «repuesto(s)» y «refacción(es)».
+- **Más sustantivos de accesorio:** filtro(s) y cartucho(s).
+- **Cantidades con unidad** («45 W», «65w», «2m», «500ml») ya no tapan el
+  sustantivo: «65w Cargador…» tenía por cabeza «65w».
+- **«Para» seguido solo de público o de uso** (correr, caminar, gym, casual…)
+  ya no niega: «Tenis Para Correr Hombre Nike» es Nike.
+- **Si una aparición de la marca está negada,** las demás de la misma marca en
+  ese título tampoco cuentan: «Vaso Para Licuadora T-fal … Vidrio T Fal».
+
+Auditoría de las 1,048 detecciones del ranking del sandbox: la tasa de falsos
+positivos era de ~3 % antes de estos ajustes. 76 % de las detecciones salen del
+vendedor, con casi ningún error. Lo que queda son homónimos de vendedor
+(«Yamaha Technology» de generadores chinos) y datos sucios del raspado; se
+acepta como ruido.
+
+**Verificado en el sandbox** (backend de la rama con
+`COMPETENCIA_SIN_MARCAS=true` contra `=false`, mismos datos):
+
+| Lugar | Resultado |
+|---|---|
+| Vista | La mediana cambia en 224 de 1,281 subcategorías: baja 5 % en la mediana y 27 % en el p90. 3 se quedan sin mediana porque su top es puro producto de marca. La brecha cambia en 665 de 3,094 SKUs. Con la variable apagada, `mediana_con_marcas` es idéntica a la mediana de antes en las 1,281. |
+| Publicaciones | 82 de 270 tarjetas cambian su precio de mercado y 1 se queda sin él. |
+| Radar | La referencia cambia en 26 de 540 SKUs; con referencia pasan de 43 a 42. Se verificó con las funciones del Radar directo, porque el endpoint exige sesión de administrador y el sandbox no tiene usuarios. |
+
+Pruebas: `tests/test_marcas_renombre.py` pasa de 31 a **40**
+(`python -m unittest tests.test_marcas_renombre`).
+
 ### v0.643.0 — Pausa del canal: no se podía guardar — el nombre del interruptor llevaba «:» y la tabla sólo admite letras, números y guion bajo
 
 **Qué pasó (13-oct-2026).** Con v0.642.0 ya desplegada, al dar «Poner en pausa» a Temu en el panel

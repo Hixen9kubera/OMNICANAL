@@ -30,6 +30,7 @@ import {
   ChipDireccion,
   EtiquetaProcedencia,
   ICONO_DIRECCION,
+  NotaSinMarcas,
   PuntoExperiencia,
   SinDato,
   Valor,
@@ -250,7 +251,15 @@ export function TablaRadar({
                 <td className="px-3 py-2.5">
                   <div className="flex flex-col gap-0.5">
                     <Valor texto={pesos(item.referencia?.precio)} className="font-semibold tabular-nums" />
-                    <span className="text-xs text-[#4A5163]">{fuenteReferencia(item, nMin)}</span>
+                    <span className="text-xs text-[#4A5163]">
+                      {fuenteReferencia(item, nMin)}
+                      {(item.referencia?.n_marcas ?? 0) > 0 && (
+                        <>
+                          {" · "}
+                          <NotaSinMarcas n={item.referencia?.n_marcas} />
+                        </>
+                      )}
+                    </span>
                   </div>
                 </td>
                 <td className="px-3 py-2.5">

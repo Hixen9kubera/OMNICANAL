@@ -2304,6 +2304,9 @@ export interface RadarReferencia {
   motivo?: string | null;
   /** Rivales capturados en total, frescos o no. */
   n_total?: number | null;
+  /** Rivales apartados por ser de marca de renombre (v0.639.0): no entran a
+   *  la mediana ni al mínimo de rivales. 0 con la bandera apagada. */
+  n_marcas?: number | null;
 }
 
 export interface RadarItem {
@@ -2401,6 +2404,8 @@ export interface RadarComparable {
   es_nuestro: boolean;
   titulo?: string | null;
   capturado_en?: string | null;
+  /** Marca de renombre detectada, o null (v0.639.0). Se muestra, no cuenta. */
+  marca_renombre?: string | null;
 }
 
 export interface RadarDiaVenta {
@@ -2417,6 +2422,9 @@ export interface RadarDetalle extends RadarItem {
     n: number | null;
     categoria_id?: string | null;
     capturado_en?: string | null;
+    /** Filas del top apartadas por ser de marca. Si TODAS lo eran, llega
+     *  `mediana: null` y `n: 0` (antes el objeto era null). */
+    n_marcas?: number | null;
   } | null;
   generado_en?: string | null;
   ambiente?: string | null;

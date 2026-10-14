@@ -313,6 +313,7 @@ function ReglaMercado({ p }: { p: Publicacion }) {
             "el término de este SKU"
           )}
           {cuando ? ` · ${cuando}` : ""}
+          {m.n_marcas ? ` · sin ${m.n_marcas} de marca de renombre (no cuentan)` : ""}
         </span>
         {tu != null && (
           <>
@@ -425,6 +426,7 @@ function ReglaMercado({ p }: { p: Publicacion }) {
             </>
           )}
           {cuando ? ` · ${cuando}` : ""}
+          {m.n_marcas ? ` · sin ${m.n_marcas} de marca` : ""}
           {conZonas && !verificado ? " · costo sin verificar" : ""}
         </span>
       </div>

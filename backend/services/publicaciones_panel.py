@@ -267,7 +267,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from services import costos
+from services import costos, marcas_renombre
 from services import supabase_db as sdb
 
 log = logging.getLogger("omnicanal.publicaciones")
@@ -1163,13 +1163,20 @@ def listar(*, canal: str | None = None, estado: str | None = None,
 # sartenes» la mueven los protectores de $58 y las baterías de $1,599—, y eso es
 # justo lo que el término a la vista ayuda a detectar. La mediana sigue viajando
 # porque la pantalla anterior a v0.518.0 la lee.
+#
+# SIN MARCAS DE RENOMBRE (Eduardo, 12-oct-2026, v0.639.0): vendemos genéricos, y
+# un Vans o un New Balance cobran 3–5 veces lo que un genérico; con ellos el
+# «precio de mercado» de unos tenis salía en el doble de lo razonable. Por eso
+# la consulta trae FILA POR FILA (con título y vendedor) y `agregar_mercado`
+# saca el promedio, la mediana y el «al menos 3» en Python, sin las filas de
+# marca. Los filtros son los mismos de cuando se agregaba en SQL.
 _SQL_MERCADO = """
 select cfg.sku::text                                                  as sku,
-       min(st.termino)                                                as termino,
-       avg(r.precio)                                                  as promedio,
-       percentile_cont(0.5) within group (order by r.precio)          as mediana,
-       count(*)                                                       as n,
-       max(r.capturado_en)                                            as ultima
+       st.termino                                                     as termino,
+       r.precio                                                       as precio,
+       r.titulo                                                       as titulo,
+       r.seller                                                       as seller,
+       r.capturado_en                                                 as capturado_en
   from enrich.market_sku_config cfg
   join enrich.market_search_term st on st.id = cfg.termino_id
   join enrich.market_search_results r on r.termino_id = cfg.termino_id
@@ -1177,9 +1184,49 @@ select cfg.sku::text                                                  as sku,
    and cfg.canal = 'mercado_libre'
    and r.precio > 0
    and coalesce(r.es_nuestro, false) = false
- group by 1
-having count(*) >= 3
 """
+
+# Con menos observaciones la mediana es esa una: no hay mercado que reportar.
+MERCADO_N_MIN = 3
+
+
+def agregar_mercado(filas: list[dict], *,
+                    sin_marcas: bool | None = None) -> dict[str, dict[str, Any]]:
+    """PURA. Las filas de `_SQL_MERCADO` → {sku: {termino, promedio, mediana, n,
+    ultima, n_marcas}}, solo para los SKUs con al menos MERCADO_N_MIN
+    observaciones SIN marcas de renombre (la regla que antes era `having
+    count(*) >= 3`). `ultima` es la fecha de la búsqueda (todas sus filas, de
+    marca o no). `sin_marcas` None = lo que diga `COMPETENCIA_SIN_MARCAS`;
+    apagado, todo cuenta como antes y `n_marcas` es 0."""
+    if sin_marcas is None:
+        sin_marcas = marcas_renombre.es_activo()
+    grupos: dict[str, dict[str, Any]] = {}
+    for f in filas:
+        precio = _num(f.get("precio"))
+        if not f.get("sku") or not precio or precio <= 0:
+            continue
+        g = grupos.setdefault(f["sku"], {"termino": None, "precios": [],
+                                         "ultima": None, "n_marcas": 0})
+        t = f.get("termino")
+        if t and (g["termino"] is None or t < g["termino"]):
+            g["termino"] = t
+        u = f.get("capturado_en")
+        if u is not None and (g["ultima"] is None or u > g["ultima"]):
+            g["ultima"] = u
+        if sin_marcas and marcas_renombre.detectar(f.get("titulo"), f.get("seller")):
+            g["n_marcas"] += 1
+        else:
+            g["precios"].append(float(precio))
+    out: dict[str, dict[str, Any]] = {}
+    for sku, g in grupos.items():
+        p = sorted(g["precios"])
+        if len(p) < MERCADO_N_MIN:
+            continue
+        m = len(p) // 2
+        out[sku] = {"termino": g["termino"], "promedio": sum(p) / len(p),
+                    "mediana": p[m] if len(p) % 2 else (p[m - 1] + p[m]) / 2,
+                    "n": len(p), "ultima": g["ultima"], "n_marcas": g["n_marcas"]}
+    return out
 
 
 def _adjuntar_mercado(items: list[dict]) -> None:
@@ -1205,7 +1252,7 @@ def _adjuntar_mercado(items: list[dict]) -> None:
         log.warning("mercado: no se pudo leer Competencia (%s)", exc)
         return
 
-    por_sku = {f["sku"]: f for f in filas}
+    por_sku = agregar_mercado(filas)
     hoy = datetime.now(timezone.utc)
     for i in items:
         f = por_sku.get(i.get("sku"))
@@ -1224,6 +1271,9 @@ def _adjuntar_mercado(items: list[dict]) -> None:
             # Solo informativa desde v0.518.0: la lee la pantalla anterior.
             "mediana": round(mediana, 2),
             "n": int(f["n"]),
+            # Cuántas filas de MARCA DE RENOMBRE se apartaron del promedio y de
+            # la mediana (v0.639.0). 0 con COMPETENCIA_SIN_MARCAS=false.
+            "n_marcas": int(f["n_marcas"]),
             "dias": (hoy - ultima).days if ultima else None,
             # La búsqueda de la que sale el precio de mercado (`market_search_term`).
             "termino": f.get("termino"),

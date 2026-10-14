@@ -45,8 +45,10 @@ import {
   CajaError,
   Cargando,
   ChipDireccion,
+  EtiquetaMarca,
   EtiquetaProcedencia,
   NoDisponible,
+  NotaSinMarcas,
   PuntoExperiencia,
   SinDato,
   SubnavRadar,
@@ -327,6 +329,12 @@ function Contenido({ d, volver }: { d: RadarDetalle; volver: string }) {
         derecha={
           <span className="text-xs text-[#4A5163]">
             {fuenteRef}
+            {(ref?.n_marcas ?? 0) > 0 && (
+              <>
+                {" · "}
+                <NotaSinMarcas n={ref?.n_marcas} />
+              </>
+            )}
             {ref?.capturado_en && <> · captura {fechaCorta(ref.capturado_en)}</>}
           </span>
         }
@@ -554,6 +562,7 @@ function Comparables({ d }: { d: RadarDetalle }) {
                       {r.es_nuestro && (
                         <span className="rounded bg-[#3730A3] px-1.5 py-px text-[10px] font-semibold text-white">Nuestra</span>
                       )}
+                      <EtiquetaMarca marca={r.marca_renombre} />
                     </span>
                     {r.titulo && (
                       <span className="block max-w-[320px] truncate text-xs text-[#4A5163]" title={r.titulo}>
@@ -585,7 +594,15 @@ function Comparables({ d }: { d: RadarDetalle }) {
         {ctx && (ctx.mediana !== null || ctx.n !== null) && (
           <>
             {" "}Top de la categoría: mediana {pesos(ctx.mediana) ?? "sin dato"}
-            {ctx.n !== null ? ` de ${entero(ctx.n)} publicaciones` : ""} — solo contexto, no decide.
+            {ctx.n !== null ? ` de ${entero(ctx.n)} publicaciones` : ""}
+            {(ctx.n_marcas ?? 0) > 0 && (
+              <>
+                {" ("}
+                <NotaSinMarcas n={ctx.n_marcas} />
+                {")"}
+              </>
+            )}
+            {" "}— solo contexto, no decide.
           </>
         )}
       </p>

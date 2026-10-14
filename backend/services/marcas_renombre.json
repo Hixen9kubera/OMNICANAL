@@ -1,0 +1,4379 @@
+{
+ "version": "2026-10-12",
+ "nota": "Marcas de renombre: cobran precio de marca frente a un genérico. 'alias' cuenta en el título (palabras completas, sin 'para/compatible/tipo/inspirado' antes); 'solo_vendedor' solo si el vendedor o la tienda oficial es la marca. Armada con la marca (atributo BRAND) de 13,279 productos más vendidos de ML, los vendedores-tienda oficial de Competencia y una revisión por lotes.",
+ "marcas": [
+  {
+   "marca": "3M",
+   "alias": [
+    "3m command",
+    "command 3m",
+    "littmann",
+    "nexcare",
+    "scotch"
+   ],
+   "solo_vendedor": [
+    "3m"
+   ]
+  },
+  {
+   "marca": "5.11 Tactical",
+   "alias": [
+    "5 11 tactical",
+    "511 tactical"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "70mai",
+   "alias": [
+    "70mai"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "8BitDo",
+   "alias": [
+    "8bitdo"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Acer",
+   "alias": [],
+   "solo_vendedor": [
+    "acer"
+   ]
+  },
+  {
+   "marca": "Acros",
+   "alias": [],
+   "solo_vendedor": [
+    "acros"
+   ]
+  },
+  {
+   "marca": "Adidas",
+   "alias": [
+    "adidas"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Afnan",
+   "alias": [
+    "afnan"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "AGV",
+   "alias": [
+    "agv"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Air Wick",
+   "alias": [
+    "air wick",
+    "airwick"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Aiwa",
+   "alias": [
+    "aiwa"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Ajax",
+   "alias": [
+    "ajax"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Aldo",
+   "alias": [],
+   "solo_vendedor": [
+    "aldo"
+   ]
+  },
+  {
+   "marca": "Amazon",
+   "alias": [
+    "amazon echo",
+    "echo dot",
+    "echo pop",
+    "echo show",
+    "fire tv",
+    "fire tv stick",
+    "kindle paperwhite"
+   ],
+   "solo_vendedor": [
+    "alexa",
+    "amazon",
+    "kindle"
+   ]
+  },
+  {
+   "marca": "Ambiderm",
+   "alias": [
+    "ambiderm"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Andis",
+   "alias": [
+    "andis"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Andrea",
+   "alias": [],
+   "solo_vendedor": [
+    "andrea"
+   ]
+  },
+  {
+   "marca": "Anker",
+   "alias": [
+    "anker",
+    "soundcore"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Ansell",
+   "alias": [
+    "ansell"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Apple",
+   "alias": [
+    "apple pencil"
+   ],
+   "solo_vendedor": [
+    "airpods",
+    "apple",
+    "apple watch",
+    "ipad",
+    "iphone",
+    "macbook"
+   ]
+  },
+  {
+   "marca": "Aqua Velva",
+   "alias": [
+    "aqua velva"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Aquarian",
+   "alias": [
+    "aquarian"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Arctic",
+   "alias": [
+    "arctic cooling"
+   ],
+   "solo_vendedor": [
+    "arctic"
+   ]
+  },
+  {
+   "marca": "Arduino",
+   "alias": [],
+   "solo_vendedor": [
+    "arduino"
+   ]
+  },
+  {
+   "marca": "Arena",
+   "alias": [],
+   "solo_vendedor": [
+    "arena"
+   ]
+  },
+  {
+   "marca": "Arm & Hammer",
+   "alias": [
+    "arm and hammer",
+    "arm hammer"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Armaf",
+   "alias": [
+    "armaf",
+    "club de nuit"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Armor All",
+   "alias": [
+    "armor all",
+    "armorall"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Asics",
+   "alias": [
+    "asics"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Asus",
+   "alias": [
+    "asus",
+    "rog strix"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Audiobahn",
+   "alias": [
+    "audiobahn"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Austromex",
+   "alias": [
+    "austromex"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Avent",
+   "alias": [
+    "avent"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Avery",
+   "alias": [
+    "avery"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Axion",
+   "alias": [
+    "axion"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Azor",
+   "alias": [
+    "azor"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Babyliss",
+   "alias": [
+    "babyliss"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "BaBylissPRO",
+   "alias": [
+    "babyliss",
+    "babyliss pro",
+    "babylisspro"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Baco",
+   "alias": [
+    "baco"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Bambu Lab",
+   "alias": [
+    "bambu lab",
+    "bambulab"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Bandai",
+   "alias": [
+    "bandai"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Barbie",
+   "alias": [
+    "barbie"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Barcel",
+   "alias": [
+    "barcel",
+    "takis"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Bardahl",
+   "alias": [
+    "bardahl"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Barrilito",
+   "alias": [
+    "barrilito"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Bath & Body Works",
+   "alias": [
+    "bath and body works",
+    "bath body works"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Beats",
+   "alias": [
+    "beats by dre",
+    "beats solo",
+    "beats studio",
+    "powerbeats"
+   ],
+   "solo_vendedor": [
+    "beats"
+   ]
+  },
+  {
+   "marca": "Behringer",
+   "alias": [
+    "behringer"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Belkin",
+   "alias": [
+    "belkin"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Bellota",
+   "alias": [],
+   "solo_vendedor": [
+    "bellota"
+   ]
+  },
+  {
+   "marca": "Benotto",
+   "alias": [
+    "benotto"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Betterware",
+   "alias": [
+    "betterware"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Beurer",
+   "alias": [
+    "beurer"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Bic",
+   "alias": [],
+   "solo_vendedor": [
+    "bic"
+   ]
+  },
+  {
+   "marca": "Birdman",
+   "alias": [
+    "birdman"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Birkenstock",
+   "alias": [
+    "birkenstock"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Bitzee",
+   "alias": [
+    "bitzee"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Black & White",
+   "alias": [],
+   "solo_vendedor": [
+    "black white"
+   ]
+  },
+  {
+   "marca": "Black+Decker",
+   "alias": [
+    "black and decker",
+    "black decker",
+    "blackdecker"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Bosch",
+   "alias": [
+    "bosch"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Bose",
+   "alias": [
+    "bose"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Bostitch",
+   "alias": [
+    "bostitch"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Bratz",
+   "alias": [
+    "bratz"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Bridgestone",
+   "alias": [
+    "bridgestone"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Brita",
+   "alias": [
+    "brita"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Brooks",
+   "alias": [
+    "brooks running"
+   ],
+   "solo_vendedor": [
+    "brooks"
+   ]
+  },
+  {
+   "marca": "Brother",
+   "alias": [
+    "impresora brother",
+    "maquina de coser brother",
+    "multifuncional brother"
+   ],
+   "solo_vendedor": [
+    "brother"
+   ]
+  },
+  {
+   "marca": "BTicino",
+   "alias": [
+    "bticino"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Buchanan's",
+   "alias": [
+    "buchanan s",
+    "buchanans"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "California Scents",
+   "alias": [
+    "california scents"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Calvin Klein",
+   "alias": [
+    "calvin klein"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Canon",
+   "alias": [
+    "canon eos",
+    "canon rebel",
+    "powershot"
+   ],
+   "solo_vendedor": [
+    "canon"
+   ]
+  },
+  {
+   "marca": "Carolina Herrera",
+   "alias": [
+    "carolina herrera"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Casio",
+   "alias": [
+    "casio",
+    "g shock",
+    "gshock"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Castrol",
+   "alias": [
+    "castrol"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Catchmaster",
+   "alias": [
+    "catchmaster"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Caterpillar",
+   "alias": [
+    "caterpillar"
+   ],
+   "solo_vendedor": [
+    "cat"
+   ]
+  },
+  {
+   "marca": "Cemix",
+   "alias": [
+    "cemix"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "CeraVe",
+   "alias": [
+    "cerave"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Champion",
+   "alias": [],
+   "solo_vendedor": [
+    "champion"
+   ]
+  },
+  {
+   "marca": "Chanel",
+   "alias": [],
+   "solo_vendedor": [
+    "chanel"
+   ]
+  },
+  {
+   "marca": "Charly",
+   "alias": [
+    "charly"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Chicco",
+   "alias": [
+    "chicco"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Cinsa",
+   "alias": [
+    "cinsa"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Citizen",
+   "alias": [
+    "citizen"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Cklass",
+   "alias": [
+    "cklass"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Clarks",
+   "alias": [
+    "clarks"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Clementoni",
+   "alias": [
+    "clementoni"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Cleto Reyes",
+   "alias": [
+    "cleto reyes"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Clinique",
+   "alias": [
+    "clinique"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Clip",
+   "alias": [
+    "clip total"
+   ],
+   "solo_vendedor": [
+    "clip",
+    "terminal clip"
+   ]
+  },
+  {
+   "marca": "Cloralex",
+   "alias": [
+    "cloralex"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Clorox",
+   "alias": [
+    "clorox"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Coach",
+   "alias": [],
+   "solo_vendedor": [
+    "coach"
+   ]
+  },
+  {
+   "marca": "Coflex",
+   "alias": [
+    "coflex"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Cole Haan",
+   "alias": [
+    "cole haan"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Coleman",
+   "alias": [
+    "coleman"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Colgate",
+   "alias": [
+    "colgate"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Columbia",
+   "alias": [
+    "columbia sportswear"
+   ],
+   "solo_vendedor": [
+    "columbia"
+   ]
+  },
+  {
+   "marca": "Comex",
+   "alias": [
+    "comex"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Conair",
+   "alias": [
+    "conair"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Converse",
+   "alias": [
+    "chuck taylor",
+    "converse"
+   ],
+   "solo_vendedor": [
+    "all star"
+   ]
+  },
+  {
+   "marca": "Cooler Master",
+   "alias": [
+    "cooler master",
+    "coolermaster"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Coppel",
+   "alias": [],
+   "solo_vendedor": [
+    "coppel"
+   ]
+  },
+  {
+   "marca": "Corelle",
+   "alias": [
+    "corelle"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Corsair",
+   "alias": [
+    "corsair"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Costa Del Mar",
+   "alias": [
+    "costa del mar"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Craftsman",
+   "alias": [
+    "craftsman"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Crayola",
+   "alias": [
+    "crayola"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Creality",
+   "alias": [
+    "creality"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Cressi",
+   "alias": [
+    "cressi"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Crest",
+   "alias": [
+    "crest"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Cricut",
+   "alias": [
+    "cricut explore",
+    "cricut joy",
+    "cricut maker"
+   ],
+   "solo_vendedor": [
+    "cricut"
+   ]
+  },
+  {
+   "marca": "Crisa Libbey",
+   "alias": [
+    "crisa",
+    "libbey"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Crocs",
+   "alias": [
+    "crocband"
+   ],
+   "solo_vendedor": [
+    "crocs"
+   ]
+  },
+  {
+   "marca": "Crosman",
+   "alias": [
+    "crosman"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Cuisinart",
+   "alias": [
+    "cuisinart"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Cumlaude Lab",
+   "alias": [
+    "cumlaude",
+    "cumlaude lab"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Curitas",
+   "alias": [],
+   "solo_vendedor": [
+    "curitas"
+   ]
+  },
+  {
+   "marca": "Dahua",
+   "alias": [
+    "dahua"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "DC Shoes",
+   "alias": [
+    "dc shoes"
+   ],
+   "solo_vendedor": [
+    "dc"
+   ]
+  },
+  {
+   "marca": "Decathlon",
+   "alias": [
+    "decathlon"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Dell",
+   "alias": [],
+   "solo_vendedor": [
+    "dell"
+   ]
+  },
+  {
+   "marca": "Depend",
+   "alias": [
+    "depend"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "DeVilbiss",
+   "alias": [
+    "devilbiss"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "DeWalt",
+   "alias": [
+    "dewalt"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Dior",
+   "alias": [
+    "dior"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Disney",
+   "alias": [],
+   "solo_vendedor": [
+    "disney",
+    "pixar"
+   ]
+  },
+  {
+   "marca": "DJI",
+   "alias": [
+    "osmo pocket"
+   ],
+   "solo_vendedor": [
+    "dji"
+   ]
+  },
+  {
+   "marca": "Dockers",
+   "alias": [
+    "dockers"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Dolce Gusto",
+   "alias": [
+    "dolce gusto"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Dove",
+   "alias": [],
+   "solo_vendedor": [
+    "dove"
+   ]
+  },
+  {
+   "marca": "Dr. Beckmann",
+   "alias": [
+    "dr beckmann"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Dr. Brown's",
+   "alias": [
+    "dr brown",
+    "dr brown s",
+    "dr browns"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Dr. Martens",
+   "alias": [
+    "doc martens",
+    "dr martens"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Drano",
+   "alias": [
+    "drano"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Dremel",
+   "alias": [
+    "dremel 3000",
+    "dremel 4300",
+    "dremel 8220",
+    "dremel lite"
+   ],
+   "solo_vendedor": [
+    "dremel"
+   ]
+  },
+  {
+   "marca": "Ducray",
+   "alias": [
+    "ducray"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "DYMO",
+   "alias": [
+    "dymo labelmanager",
+    "dymo letratag",
+    "rotuladora dymo"
+   ],
+   "solo_vendedor": [
+    "dymo"
+   ]
+  },
+  {
+   "marca": "Dyson",
+   "alias": [
+    "dyson"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "EA Sports",
+   "alias": [
+    "ea sports"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Easton",
+   "alias": [
+    "easton"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "EcoFlow",
+   "alias": [
+    "ecoflow"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Ekco",
+   "alias": [
+    "ekco"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Elixir",
+   "alias": [
+    "cuerdas elixir",
+    "elixir nanoweb",
+    "elixir polyweb"
+   ],
+   "solo_vendedor": [
+    "elixir"
+   ]
+  },
+  {
+   "marca": "Elvive",
+   "alias": [
+    "elvive"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Epson",
+   "alias": [
+    "epson"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Ernie Ball",
+   "alias": [
+    "ernie ball"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Escualo",
+   "alias": [],
+   "solo_vendedor": [
+    "escualo"
+   ]
+  },
+  {
+   "marca": "Estée Lauder",
+   "alias": [
+    "estee lauder"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Eucerin",
+   "alias": [
+    "eucerin"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Evans",
+   "alias": [
+    "evans"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Evenflo",
+   "alias": [
+    "evenflo"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Everlast",
+   "alias": [
+    "everlast"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Ezviz",
+   "alias": [
+    "ezviz"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Faber-Castell",
+   "alias": [
+    "faber castell"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Fabuloso",
+   "alias": [],
+   "solo_vendedor": [
+    "fabuloso"
+   ]
+  },
+  {
+   "marca": "Farberware",
+   "alias": [
+    "farberware"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Fender",
+   "alias": [
+    "armonica fender",
+    "squier"
+   ],
+   "solo_vendedor": [
+    "fender",
+    "stratocaster",
+    "telecaster"
+   ]
+  },
+  {
+   "marca": "Fester",
+   "alias": [
+    "fester"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "FIFA",
+   "alias": [],
+   "solo_vendedor": [
+    "fifa"
+   ]
+  },
+  {
+   "marca": "Fila",
+   "alias": [],
+   "solo_vendedor": [
+    "fila"
+   ]
+  },
+  {
+   "marca": "Fischer",
+   "alias": [
+    "fischer"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Fisher-Price",
+   "alias": [
+    "fisher price",
+    "fisherprice",
+    "mega bloks"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Fjällräven",
+   "alias": [
+    "fjallraven",
+    "kanken"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Flexi",
+   "alias": [
+    "zapato flexi",
+    "zapatos flexi"
+   ],
+   "solo_vendedor": [
+    "flexi"
+   ]
+  },
+  {
+   "marca": "Fleximatic",
+   "alias": [
+    "fleximatic"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Florsheim",
+   "alias": [
+    "florsheim"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Fluke",
+   "alias": [
+    "fluke"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Focusrite",
+   "alias": [
+    "focusrite"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Formula 420",
+   "alias": [
+    "formula 420"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Foset",
+   "alias": [
+    "foset"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Fossil",
+   "alias": [
+    "fossil"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Fotorama",
+   "alias": [
+    "fotorama"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Fresh Step",
+   "alias": [
+    "fresh step"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Funko",
+   "alias": [
+    "funko"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Gabby's Dollhouse",
+   "alias": [],
+   "solo_vendedor": [
+    "gabby s dollhouse",
+    "gabbys dollhouse"
+   ]
+  },
+  {
+   "marca": "Gama",
+   "alias": [],
+   "solo_vendedor": [
+    "gama"
+   ]
+  },
+  {
+   "marca": "GameSir",
+   "alias": [
+    "gamesir"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Ganador",
+   "alias": [
+    "croquetas ganador"
+   ],
+   "solo_vendedor": [
+    "ganador"
+   ]
+  },
+  {
+   "marca": "Garmin",
+   "alias": [
+    "garmin"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Garnier",
+   "alias": [
+    "fructis",
+    "garnier"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "GBC",
+   "alias": [
+    "gbc"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Gerber",
+   "alias": [
+    "gerber"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Gigabyte",
+   "alias": [
+    "aorus",
+    "gigabyte"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Gigaset",
+   "alias": [
+    "gigaset"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Gillette",
+   "alias": [
+    "gillette",
+    "gillette venus",
+    "prestobarba"
+   ],
+   "solo_vendedor": [
+    "mach3",
+    "venus"
+   ]
+  },
+  {
+   "marca": "Glade",
+   "alias": [],
+   "solo_vendedor": [
+    "glade"
+   ]
+  },
+  {
+   "marca": "Godox",
+   "alias": [
+    "godox"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Google",
+   "alias": [
+    "chromecast",
+    "google nest",
+    "google pixel",
+    "google tv"
+   ],
+   "solo_vendedor": [
+    "google"
+   ]
+  },
+  {
+   "marca": "GoPro",
+   "alias": [
+    "camara gopro"
+   ],
+   "solo_vendedor": [
+    "go pro",
+    "gopro"
+   ]
+  },
+  {
+   "marca": "Graco",
+   "alias": [
+    "graco"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Grisi",
+   "alias": [
+    "grisi",
+    "ricitos de oro"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Guess",
+   "alias": [],
+   "solo_vendedor": [
+    "guess"
+   ]
+  },
+  {
+   "marca": "Hamilton Beach",
+   "alias": [
+    "hamilton beach"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Harman Kardon",
+   "alias": [
+    "harman kardon"
+   ],
+   "solo_vendedor": [
+    "harman"
+   ]
+  },
+  {
+   "marca": "Harry Potter (Warner Bros.)",
+   "alias": [],
+   "solo_vendedor": [
+    "harry potter",
+    "wizarding world"
+   ]
+  },
+  {
+   "marca": "Hasbro",
+   "alias": [
+    "hasbro",
+    "hasbro games"
+   ],
+   "solo_vendedor": [
+    "furby",
+    "nerf",
+    "play doh",
+    "transformers"
+   ]
+  },
+  {
+   "marca": "Head",
+   "alias": [],
+   "solo_vendedor": [
+    "head"
+   ]
+  },
+  {
+   "marca": "Hello Kitty / Sanrio",
+   "alias": [],
+   "solo_vendedor": [
+    "hello kitty",
+    "kuromi",
+    "sanrio"
+   ]
+  },
+  {
+   "marca": "Herbal Essences",
+   "alias": [
+    "herbal essences"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Hermex",
+   "alias": [
+    "hermex"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Hikmicro",
+   "alias": [
+    "hikmicro"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Hikvision",
+   "alias": [
+    "hikvision"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Hill's",
+   "alias": [
+    "hill s",
+    "hills science",
+    "science diet"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Hilti",
+   "alias": [
+    "hilti"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Hisense",
+   "alias": [
+    "hisense"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Hoka",
+   "alias": [
+    "hoka"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Hollyland",
+   "alias": [
+    "hollyland"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Honda",
+   "alias": [],
+   "solo_vendedor": [
+    "honda"
+   ]
+  },
+  {
+   "marca": "Honor",
+   "alias": [
+    "honor band",
+    "honor choice",
+    "honor magic",
+    "honor watch"
+   ],
+   "solo_vendedor": [
+    "honor"
+   ]
+  },
+  {
+   "marca": "Hot Wheels",
+   "alias": [
+    "hot wheels",
+    "hotwheels"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "HP",
+   "alias": [
+    "hewlett packard",
+    "hp omen",
+    "hp victus"
+   ],
+   "solo_vendedor": [
+    "hp"
+   ]
+  },
+  {
+   "marca": "HTC",
+   "alias": [
+    "htc vive"
+   ],
+   "solo_vendedor": [
+    "htc"
+   ]
+  },
+  {
+   "marca": "Huawei",
+   "alias": [
+    "huawei",
+    "huawei freebuds",
+    "matepad"
+   ],
+   "solo_vendedor": [
+    "hawei",
+    "matebook"
+   ]
+  },
+  {
+   "marca": "Huggies",
+   "alias": [],
+   "solo_vendedor": [
+    "huggies"
+   ]
+  },
+  {
+   "marca": "Hugo Boss",
+   "alias": [
+    "hugo boss"
+   ],
+   "solo_vendedor": [
+    "boss",
+    "hugo"
+   ]
+  },
+  {
+   "marca": "Huion",
+   "alias": [
+    "huion"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Hush Puppies",
+   "alias": [
+    "hush puppies"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "HyperX",
+   "alias": [
+    "hyperx"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Hyundai",
+   "alias": [
+    "generador hyundai"
+   ],
+   "solo_vendedor": [
+    "hyundai"
+   ]
+  },
+  {
+   "marca": "Igloo",
+   "alias": [
+    "igloo"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Ikea",
+   "alias": [
+    "ikea"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Imou",
+   "alias": [
+    "imou"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Imusa",
+   "alias": [
+    "imusa"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Infanti",
+   "alias": [],
+   "solo_vendedor": [
+    "infanti"
+   ]
+  },
+  {
+   "marca": "Ingenuity",
+   "alias": [
+    "ingenuity"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Insize",
+   "alias": [
+    "insize"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Insta360",
+   "alias": [
+    "insta 360"
+   ],
+   "solo_vendedor": [
+    "insta360"
+   ]
+  },
+  {
+   "marca": "Instax",
+   "alias": [
+    "instax"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Intex",
+   "alias": [
+    "intex"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Invicta",
+   "alias": [
+    "invicta"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "iRobot",
+   "alias": [
+    "irobot"
+   ],
+   "solo_vendedor": [
+    "roomba"
+   ]
+  },
+  {
+   "marca": "Irwin",
+   "alias": [
+    "irwin"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "ISDIN",
+   "alias": [
+    "germisdin",
+    "isdin"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "IUSA",
+   "alias": [
+    "iusa"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Jack Daniel's",
+   "alias": [
+    "jack daniel s",
+    "jack daniels"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Jaloma",
+   "alias": [
+    "jaloma"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "JanSport",
+   "alias": [
+    "jansport"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "JBL",
+   "alias": [
+    "jbl",
+    "partybox"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Johnnie Walker",
+   "alias": [
+    "johnnie walker",
+    "johnny walker"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Joma",
+   "alias": [
+    "joma"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Jordan (Nike)",
+   "alias": [
+    "air jordan",
+    "jumpman"
+   ],
+   "solo_vendedor": [
+    "jordan"
+   ]
+  },
+  {
+   "marca": "Jurassic World",
+   "alias": [],
+   "solo_vendedor": [
+    "jurassic park",
+    "jurassic world"
+   ]
+  },
+  {
+   "marca": "Kawasaki",
+   "alias": [],
+   "solo_vendedor": [
+    "kawasaki"
+   ]
+  },
+  {
+   "marca": "Kenneth Cole",
+   "alias": [
+    "kenneth cole"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Kenwood",
+   "alias": [
+    "kenwood"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Keter",
+   "alias": [
+    "keter"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Kicker",
+   "alias": [
+    "kicker"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Kimberly-Clark",
+   "alias": [
+    "kimberly clark"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Kingston",
+   "alias": [
+    "kingston"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Kipling",
+   "alias": [
+    "kipling"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Kirkland Signature",
+   "alias": [
+    "kirkland",
+    "kirkland signature"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "KitchenAid",
+   "alias": [
+    "kitchen aid",
+    "kitchenaid"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Kleenbebé",
+   "alias": [
+    "kleen bebe",
+    "kleenbebe"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Kleenex",
+   "alias": [
+    "kleenex"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "KleenGuard",
+   "alias": [
+    "kleenguard"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Klein Tools",
+   "alias": [
+    "klein tools"
+   ],
+   "solo_vendedor": [
+    "klein"
+   ]
+  },
+  {
+   "marca": "KMC",
+   "alias": [
+    "kmc"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Kobalt",
+   "alias": [
+    "kobalt"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Koblenz",
+   "alias": [
+    "koblenz"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Kodak",
+   "alias": [
+    "kodak",
+    "pixpro"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Kong",
+   "alias": [],
+   "solo_vendedor": [
+    "kong"
+   ]
+  },
+  {
+   "marca": "Kotex",
+   "alias": [
+    "kotex"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "KPop Demon Hunters",
+   "alias": [],
+   "solo_vendedor": [
+    "guerreras k pop",
+    "guerreras kpop",
+    "k pop demon hunters",
+    "kpop demon hunters"
+   ]
+  },
+  {
+   "marca": "Kärcher",
+   "alias": [
+    "karcher"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "L'Oréal",
+   "alias": [
+    "l oreal",
+    "loreal"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "L'Oréal Paris",
+   "alias": [
+    "elvive",
+    "l oreal",
+    "loreal",
+    "revitalift"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "La Costeña",
+   "alias": [
+    "la costena"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "La Roche-Posay",
+   "alias": [
+    "anthelios",
+    "cicaplast",
+    "effaclar",
+    "la roche posay"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Lacoste",
+   "alias": [
+    "lacoste"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Lactovit",
+   "alias": [
+    "lactovit"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Lancôme",
+   "alias": [
+    "lancome"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Lattafa",
+   "alias": [
+    "khamrah",
+    "lattafa"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "LeapFrog",
+   "alias": [
+    "leapfrog"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Lee",
+   "alias": [],
+   "solo_vendedor": [
+    "lee"
+   ]
+  },
+  {
+   "marca": "Lego",
+   "alias": [
+    "lego"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Lenovo",
+   "alias": [
+    "lenovo legion"
+   ],
+   "solo_vendedor": [
+    "ideapad",
+    "lenovo",
+    "thinkpad",
+    "thinkplus"
+   ]
+  },
+  {
+   "marca": "Leonisa",
+   "alias": [
+    "leonisa"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Leuchtturm1917",
+   "alias": [
+    "leuchtturm",
+    "leuchtturm1917"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Levi's",
+   "alias": [
+    "levi s",
+    "levis"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Leviton",
+   "alias": [
+    "leviton"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "LG",
+   "alias": [],
+   "solo_vendedor": [
+    "lg"
+   ]
+  },
+  {
+   "marca": "LiftMaster",
+   "alias": [
+    "lift master",
+    "liftmaster"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Little Tikes",
+   "alias": [
+    "little tikes"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Lizze",
+   "alias": [
+    "lizze",
+    "lizze extreme"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Logitech",
+   "alias": [
+    "logitech"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Lomecan",
+   "alias": [
+    "lomecan"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Looney Tunes",
+   "alias": [],
+   "solo_vendedor": [
+    "bugs bunny",
+    "looney tunes"
+   ]
+  },
+  {
+   "marca": "Lotto",
+   "alias": [],
+   "solo_vendedor": [
+    "lotto"
+   ]
+  },
+  {
+   "marca": "LTH",
+   "alias": [
+    "acumulador lth",
+    "bateria lth"
+   ],
+   "solo_vendedor": [
+    "lth"
+   ]
+  },
+  {
+   "marca": "Lubriderm",
+   "alias": [
+    "lubriderm"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "lululemon",
+   "alias": [
+    "lululemon"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Luuna",
+   "alias": [
+    "luuna"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Lysol",
+   "alias": [
+    "lysol"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Mabe",
+   "alias": [],
+   "solo_vendedor": [
+    "mabe"
+   ]
+  },
+  {
+   "marca": "MAC",
+   "alias": [],
+   "solo_vendedor": [
+    "mac cosmetics"
+   ]
+  },
+  {
+   "marca": "MAC Cosmetics",
+   "alias": [
+    "mac cosmetics"
+   ],
+   "solo_vendedor": [
+    "mac"
+   ]
+  },
+  {
+   "marca": "Maggi",
+   "alias": [
+    "maggi"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Maisto",
+   "alias": [
+    "maisto"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Makita",
+   "alias": [
+    "makita"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Maped",
+   "alias": [
+    "maped"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Marinela",
+   "alias": [
+    "marinela"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Marshall",
+   "alias": [],
+   "solo_vendedor": [
+    "marshall"
+   ]
+  },
+  {
+   "marca": "Marvel",
+   "alias": [
+    "marvel legends"
+   ],
+   "solo_vendedor": [
+    "marvel"
+   ]
+  },
+  {
+   "marca": "Master Lock",
+   "alias": [
+    "master lock",
+    "masterlock"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "MasterChef",
+   "alias": [
+    "masterchef"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Mattel",
+   "alias": [
+    "mattel"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Maxxis",
+   "alias": [
+    "maxxis"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Maybelline",
+   "alias": [
+    "maybelline"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Mead",
+   "alias": [
+    "mead"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Medela",
+   "alias": [
+    "medela"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Meguiar's",
+   "alias": [
+    "meguiar s",
+    "meguiars"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Melissa & Doug",
+   "alias": [
+    "melissa and doug",
+    "melissa doug"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Mercado Pago",
+   "alias": [
+    "mercado pago"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Merik",
+   "alias": [
+    "merik"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Merrell",
+   "alias": [
+    "merrell"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Meta",
+   "alias": [
+    "meta quest",
+    "oculus quest"
+   ],
+   "solo_vendedor": [
+    "meta"
+   ]
+  },
+  {
+   "marca": "Mi Alegría",
+   "alias": [
+    "mi alegria"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Michael Kors",
+   "alias": [
+    "michael kors"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Michelin",
+   "alias": [
+    "michelin"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Microsoft",
+   "alias": [
+    "microsoft"
+   ],
+   "solo_vendedor": [
+    "xbox"
+   ]
+  },
+  {
+   "marca": "Midea",
+   "alias": [],
+   "solo_vendedor": [
+    "midea"
+   ]
+  },
+  {
+   "marca": "Mikasa",
+   "alias": [
+    "balon mikasa"
+   ],
+   "solo_vendedor": [
+    "mikasa"
+   ]
+  },
+  {
+   "marca": "Miller",
+   "alias": [
+    "miller high life",
+    "miller lite"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Milwaukee",
+   "alias": [
+    "milwaukee"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Minino",
+   "alias": [
+    "minino plus"
+   ],
+   "solo_vendedor": [
+    "minino"
+   ]
+  },
+  {
+   "marca": "Miniverse",
+   "alias": [
+    "miniverse"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Mirage",
+   "alias": [],
+   "solo_vendedor": [
+    "mirage"
+   ]
+  },
+  {
+   "marca": "Mizuno",
+   "alias": [
+    "mizuno"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Mobil",
+   "alias": [
+    "mobil 1"
+   ],
+   "solo_vendedor": [
+    "mobil"
+   ]
+  },
+  {
+   "marca": "Molten",
+   "alias": [
+    "molten"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Momcozy",
+   "alias": [
+    "momcozy"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Monster High",
+   "alias": [],
+   "solo_vendedor": [
+    "monster high"
+   ]
+  },
+  {
+   "marca": "Monster Jam",
+   "alias": [
+    "monster jam"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Motorola",
+   "alias": [
+    "moto buds"
+   ],
+   "solo_vendedor": [
+    "moto",
+    "motorola"
+   ]
+  },
+  {
+   "marca": "Motul",
+   "alias": [
+    "motul"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Moulinex",
+   "alias": [
+    "moulinex"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Mr. Coffee",
+   "alias": [
+    "mr coffee"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "MSA",
+   "alias": [
+    "v gard"
+   ],
+   "solo_vendedor": [
+    "msa"
+   ]
+  },
+  {
+   "marca": "MSI",
+   "alias": [
+    "msi gaming"
+   ],
+   "solo_vendedor": [
+    "msi"
+   ]
+  },
+  {
+   "marca": "MT Helmets",
+   "alias": [
+    "mt helmets"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Nautica",
+   "alias": [],
+   "solo_vendedor": [
+    "nautica"
+   ]
+  },
+  {
+   "marca": "Nerf",
+   "alias": [],
+   "solo_vendedor": [
+    "nerf"
+   ]
+  },
+  {
+   "marca": "Nescafé Dolce Gusto",
+   "alias": [
+    "dolce gusto genio",
+    "dolce gusto piccolo"
+   ],
+   "solo_vendedor": [
+    "dolce gusto"
+   ]
+  },
+  {
+   "marca": "Nespresso",
+   "alias": [],
+   "solo_vendedor": [
+    "nespresso"
+   ]
+  },
+  {
+   "marca": "Nesquik",
+   "alias": [
+    "nesquik"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Neutrogena",
+   "alias": [
+    "neutrogena"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "New Balance",
+   "alias": [
+    "new balance"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "New Era",
+   "alias": [
+    "59fifty",
+    "9fifty",
+    "new era"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Nike",
+   "alias": [
+    "air force 1",
+    "air max",
+    "nike"
+   ],
+   "solo_vendedor": [
+    "jordan"
+   ]
+  },
+  {
+   "marca": "Nikon",
+   "alias": [],
+   "solo_vendedor": [
+    "nikon"
+   ]
+  },
+  {
+   "marca": "Ninja",
+   "alias": [
+    "licuadora ninja",
+    "ninja creami",
+    "ninja foodi",
+    "nutri ninja",
+    "sharkninja"
+   ],
+   "solo_vendedor": [
+    "ninja"
+   ]
+  },
+  {
+   "marca": "Nintendo",
+   "alias": [],
+   "solo_vendedor": [
+    "amiibo",
+    "consola nintendo",
+    "joy con",
+    "joycon",
+    "nintendo",
+    "nintendo switch",
+    "switch"
+   ]
+  },
+  {
+   "marca": "Nissan",
+   "alias": [],
+   "solo_vendedor": [
+    "nissan"
+   ]
+  },
+  {
+   "marca": "Nivea",
+   "alias": [
+    "nivea"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Norma",
+   "alias": [
+    "norma kiut"
+   ],
+   "solo_vendedor": [
+    "norma"
+   ]
+  },
+  {
+   "marca": "Nuby",
+   "alias": [
+    "nuby"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Nupec",
+   "alias": [
+    "nupec"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "NutriBullet",
+   "alias": [
+    "baby bullet",
+    "nutri bullet",
+    "nutribullet"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Nutrioli",
+   "alias": [
+    "nutrioli"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "NUX",
+   "alias": [
+    "nux"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "NYX Professional Makeup",
+   "alias": [
+    "nyx",
+    "nyx professional makeup"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Oakley",
+   "alias": [
+    "oakley"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "OFF!",
+   "alias": [
+    "off extra duracion",
+    "off family",
+    "repelente off"
+   ],
+   "solo_vendedor": [
+    "off"
+   ]
+  },
+  {
+   "marca": "Office Depot",
+   "alias": [],
+   "solo_vendedor": [
+    "office depot"
+   ]
+  },
+  {
+   "marca": "OGX",
+   "alias": [
+    "ogx",
+    "organix"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "OLFA",
+   "alias": [
+    "olfa"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Omron",
+   "alias": [
+    "omron"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "On",
+   "alias": [
+    "cloudmonster",
+    "on cloud",
+    "on running",
+    "oncloud"
+   ],
+   "solo_vendedor": [
+    "on"
+   ]
+  },
+  {
+   "marca": "Oracal",
+   "alias": [
+    "oracal"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Oral-B",
+   "alias": [
+    "oral b",
+    "oralb"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Ortho",
+   "alias": [
+    "orthene"
+   ],
+   "solo_vendedor": [
+    "ortho"
+   ]
+  },
+  {
+   "marca": "Oster",
+   "alias": [
+    "oster",
+    "osterizer"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Owala",
+   "alias": [
+    "freesip",
+    "owala"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Paco Rabanne",
+   "alias": [
+    "paco rabanne"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Palette",
+   "alias": [],
+   "solo_vendedor": [
+    "palette"
+   ]
+  },
+  {
+   "marca": "Pampers",
+   "alias": [
+    "pampers"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Panam",
+   "alias": [
+    "panam"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Panasonic",
+   "alias": [],
+   "solo_vendedor": [
+    "panasonic"
+   ]
+  },
+  {
+   "marca": "Pandora",
+   "alias": [],
+   "solo_vendedor": [
+    "pandora"
+   ]
+  },
+  {
+   "marca": "Pantene",
+   "alias": [
+    "pantene"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Paper Mate",
+   "alias": [
+    "inkjoy",
+    "paper mate",
+    "papermate"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Parker",
+   "alias": [
+    "parker jotter"
+   ],
+   "solo_vendedor": [
+    "parker"
+   ]
+  },
+  {
+   "marca": "Patagonia",
+   "alias": [
+    "patagonia"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Paw Patrol",
+   "alias": [],
+   "solo_vendedor": [
+    "patrulla canina",
+    "paw patrol"
+   ]
+  },
+  {
+   "marca": "Pedigree",
+   "alias": [
+    "pedigree"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Pelikan",
+   "alias": [
+    "pelikan"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Pentel",
+   "alias": [
+    "energel",
+    "pentel"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Perry Ellis",
+   "alias": [
+    "perry ellis"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Philips",
+   "alias": [
+    "philips",
+    "sonicare"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Philips Avent",
+   "alias": [
+    "avent",
+    "philips avent"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Phillips",
+   "alias": [
+    "assa abloy"
+   ],
+   "solo_vendedor": [
+    "phillips"
+   ]
+  },
+  {
+   "marca": "Pigeon",
+   "alias": [
+    "pigeon"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Pilot",
+   "alias": [
+    "pilot bps",
+    "pilot frixion",
+    "pilot g2"
+   ],
+   "solo_vendedor": [
+    "pilot"
+   ]
+  },
+  {
+   "marca": "Pinol",
+   "alias": [
+    "pinol"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Pioneer",
+   "alias": [],
+   "solo_vendedor": [
+    "pioneer"
+   ]
+  },
+  {
+   "marca": "Pirma",
+   "alias": [
+    "pirma"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Pixar",
+   "alias": [],
+   "solo_vendedor": [
+    "pixar"
+   ]
+  },
+  {
+   "marca": "Plaud",
+   "alias": [
+    "plaud"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Play-Doh",
+   "alias": [
+    "play doh",
+    "playdoh"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Playmobil",
+   "alias": [
+    "playmobil"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "PlayStation",
+   "alias": [
+    "playstation"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Poett",
+   "alias": [
+    "poett"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Pokémon",
+   "alias": [],
+   "solo_vendedor": [
+    "pikachu",
+    "pokemon"
+   ]
+  },
+  {
+   "marca": "Politec",
+   "alias": [
+    "politec"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Poulan Pro",
+   "alias": [
+    "poulan",
+    "poulan pro"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Presto",
+   "alias": [],
+   "solo_vendedor": [
+    "presto"
+   ]
+  },
+  {
+   "marca": "Prinsel",
+   "alias": [
+    "prinsel"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Printaform",
+   "alias": [
+    "printaform"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Prismacolor",
+   "alias": [
+    "prismacolor"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Puma",
+   "alias": [
+    "puma"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Purina",
+   "alias": [
+    "cat chow",
+    "dog chow",
+    "pro plan",
+    "purina"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Pyrex",
+   "alias": [],
+   "solo_vendedor": [
+    "pyrex"
+   ]
+  },
+  {
+   "marca": "Quechua",
+   "alias": [
+    "quechua"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Quiksilver",
+   "alias": [
+    "quiksilver"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Raid",
+   "alias": [
+    "raidolitos"
+   ],
+   "solo_vendedor": [
+    "raid"
+   ]
+  },
+  {
+   "marca": "Rain Bird",
+   "alias": [
+    "rain bird",
+    "rainbird"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Ralph Lauren",
+   "alias": [
+    "ralph lauren",
+    "polo ralph lauren"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Rasasi",
+   "alias": [
+    "rasasi"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Ravensburger",
+   "alias": [
+    "ravensburger"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Rawlings",
+   "alias": [
+    "rawlings"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Ray-Ban",
+   "alias": [
+    "ray ban",
+    "rayban"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Razer",
+   "alias": [
+    "razer"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "RCA",
+   "alias": [],
+   "solo_vendedor": [
+    "rca"
+   ]
+  },
+  {
+   "marca": "RedMagic",
+   "alias": [
+    "red magic",
+    "redmagic"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Redragon",
+   "alias": [
+    "redragon"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Reebok",
+   "alias": [
+    "reebok"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Regio",
+   "alias": [
+    "papel higienico regio"
+   ],
+   "solo_vendedor": [
+    "regio"
+   ]
+  },
+  {
+   "marca": "Remington",
+   "alias": [
+    "remington"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Remo",
+   "alias": [
+    "parche remo",
+    "remo ambassador",
+    "remo emperor",
+    "remo powerstroke"
+   ],
+   "solo_vendedor": [
+    "remo"
+   ]
+  },
+  {
+   "marca": "Resistol",
+   "alias": [
+    "resistol"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Restonic",
+   "alias": [
+    "restonic"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Revlon",
+   "alias": [
+    "revlon"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Rhino",
+   "alias": [],
+   "solo_vendedor": [
+    "rhino"
+   ]
+  },
+  {
+   "marca": "Ricitos de Oro",
+   "alias": [
+    "ricitos de oro"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Ricolino",
+   "alias": [
+    "ricolino"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Rimax",
+   "alias": [
+    "rimax"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Rinat",
+   "alias": [
+    "rinat"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Robin (Subaru)",
+   "alias": [],
+   "solo_vendedor": [
+    "robin"
+   ]
+  },
+  {
+   "marca": "Roblox",
+   "alias": [
+    "roblox"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Roku",
+   "alias": [
+    "roku"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Rotoplas",
+   "alias": [],
+   "solo_vendedor": [
+    "rotoplas"
+   ]
+  },
+  {
+   "marca": "Rowenta",
+   "alias": [
+    "rowenta"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Royal Canin",
+   "alias": [
+    "royal canin"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Rubbermaid",
+   "alias": [
+    "rubbermaid"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Rugo",
+   "alias": [],
+   "solo_vendedor": [
+    "rugo"
+   ]
+  },
+  {
+   "marca": "Ryobi",
+   "alias": [
+    "ryobi"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Saba",
+   "alias": [
+    "saba"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Sabritas",
+   "alias": [
+    "sabrisurtido",
+    "sabritas",
+    "tostitos"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Safety 1st",
+   "alias": [
+    "safety 1st",
+    "safety first"
+   ],
+   "solo_vendedor": [
+    "safety"
+   ]
+  },
+  {
+   "marca": "Salomon",
+   "alias": [
+    "salomon"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Salonpas",
+   "alias": [
+    "salonpas"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Salvo",
+   "alias": [],
+   "solo_vendedor": [
+    "salvo"
+   ]
+  },
+  {
+   "marca": "Samsung",
+   "alias": [
+    "galaxy buds",
+    "galaxy tab",
+    "galaxy watch",
+    "galaxy z",
+    "samsung"
+   ],
+   "solo_vendedor": [
+    "galaxy"
+   ]
+  },
+  {
+   "marca": "Samyang",
+   "alias": [
+    "buldak",
+    "samyang"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Sanborns",
+   "alias": [],
+   "solo_vendedor": [
+    "sanborns"
+   ]
+  },
+  {
+   "marca": "SanDisk",
+   "alias": [
+    "sandisk"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Saucony",
+   "alias": [
+    "saucony"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Savage Universal",
+   "alias": [
+    "savage universal"
+   ],
+   "solo_vendedor": [
+    "savage"
+   ]
+  },
+  {
+   "marca": "Schick",
+   "alias": [
+    "schick"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Schneider Electric",
+   "alias": [
+    "schneider",
+    "schneider electric",
+    "square d"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Scoop Away",
+   "alias": [
+    "scoop away"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Scotch",
+   "alias": [],
+   "solo_vendedor": [
+    "scotch"
+   ]
+  },
+  {
+   "marca": "Scott",
+   "alias": [],
+   "solo_vendedor": [
+    "scott"
+   ]
+  },
+  {
+   "marca": "Scribe",
+   "alias": [],
+   "solo_vendedor": [
+    "scribe"
+   ]
+  },
+  {
+   "marca": "Sculpey",
+   "alias": [
+    "sculpey"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Seachem",
+   "alias": [
+    "purigen",
+    "seachem"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Seagate",
+   "alias": [
+    "seagate"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Sennheiser",
+   "alias": [
+    "sennheiser"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Shark",
+   "alias": [
+    "sharkninja"
+   ],
+   "solo_vendedor": [
+    "shark"
+   ]
+  },
+  {
+   "marca": "Sharpie",
+   "alias": [
+    "sharpie"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Shimano",
+   "alias": [],
+   "solo_vendedor": [
+    "shimano"
+   ]
+  },
+  {
+   "marca": "Shiseido",
+   "alias": [
+    "shiseido"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Shure",
+   "alias": [],
+   "solo_vendedor": [
+    "shure"
+   ]
+  },
+  {
+   "marca": "Sika",
+   "alias": [
+    "sika"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Singer",
+   "alias": [],
+   "solo_vendedor": [
+    "singer"
+   ]
+  },
+  {
+   "marca": "Skechers",
+   "alias": [
+    "skechers",
+    "sketchers"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "SKIN1004",
+   "alias": [
+    "skin 1004",
+    "skin1004"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Skullcandy",
+   "alias": [
+    "skullcandy"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Sony",
+   "alias": [
+    "playstation",
+    "sony"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Soundcore",
+   "alias": [
+    "soundcore"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Spalding",
+   "alias": [
+    "spalding"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "SPAX",
+   "alias": [
+    "spax"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Speedo",
+   "alias": [
+    "speedo"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Spin Master",
+   "alias": [
+    "spin master"
+   ],
+   "solo_vendedor": [
+    "paw patrol"
+   ]
+  },
+  {
+   "marca": "Spring Air",
+   "alias": [
+    "spring air"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Square D",
+   "alias": [
+    "square d"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "SRAM",
+   "alias": [],
+   "solo_vendedor": [
+    "sram"
+   ]
+  },
+  {
+   "marca": "Stabilo",
+   "alias": [
+    "stabilo"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Stanhome",
+   "alias": [
+    "stanhome"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Stanley",
+   "alias": [
+    "stanley"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Starlink",
+   "alias": [],
+   "solo_vendedor": [
+    "starlink"
+   ]
+  },
+  {
+   "marca": "Steren",
+   "alias": [
+    "steren"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Steve Madden",
+   "alias": [
+    "steve madden"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Stihl",
+   "alias": [
+    "stihl"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Suavinex",
+   "alias": [
+    "suavinex"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Summer Infant",
+   "alias": [
+    "summer infant"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Sunbeam",
+   "alias": [
+    "sunbeam"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Supra",
+   "alias": [],
+   "solo_vendedor": [
+    "supra"
+   ]
+  },
+  {
+   "marca": "Surtek",
+   "alias": [
+    "surtek"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Swiss Army",
+   "alias": [
+    "swiss army",
+    "victorinox"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Syngenta",
+   "alias": [
+    "advion",
+    "syngenta"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "T-fal",
+   "alias": [
+    "t fal",
+    "tfal"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Tamagotchi",
+   "alias": [
+    "bandai",
+    "tamagotchi paradise",
+    "tamagotchi pix",
+    "tamagotchi uni"
+   ],
+   "solo_vendedor": [
+    "tamagotchi"
+   ]
+  },
+  {
+   "marca": "Tamiya",
+   "alias": [
+    "tamiya"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Taurus",
+   "alias": [],
+   "solo_vendedor": [
+    "taurus"
+   ]
+  },
+  {
+   "marca": "TCL",
+   "alias": [],
+   "solo_vendedor": [
+    "tcl"
+   ]
+  },
+  {
+   "marca": "Tefal",
+   "alias": [
+    "tefal"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "TENA",
+   "alias": [
+    "tena lady",
+    "tena pants",
+    "tena slip"
+   ],
+   "solo_vendedor": [
+    "tena"
+   ]
+  },
+  {
+   "marca": "The North Face",
+   "alias": [
+    "north face",
+    "the north face"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "The Ordinary",
+   "alias": [
+    "the ordinary"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Thermal Grizzly",
+   "alias": [
+    "kryonaut",
+    "thermal grizzly"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Timberland",
+   "alias": [
+    "timberland"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Timesco",
+   "alias": [
+    "timesco"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Tommy Hilfiger",
+   "alias": [
+    "tommy hilfiger",
+    "tommy jeans"
+   ],
+   "solo_vendedor": [
+    "tommy"
+   ]
+  },
+  {
+   "marca": "Toshiba",
+   "alias": [
+    "toshiba"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Totis",
+   "alias": [
+    "totis"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Totto",
+   "alias": [
+    "totto"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "TP-Link",
+   "alias": [
+    "tp link",
+    "tplink"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Tramontina",
+   "alias": [
+    "tramontina"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Trodat",
+   "alias": [
+    "trodat"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Truper",
+   "alias": [
+    "truper"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Tupperware",
+   "alias": [
+    "tupperware"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Turmix",
+   "alias": [
+    "turmix"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Turtle Wax",
+   "alias": [
+    "turtle wax"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Turín",
+   "alias": [],
+   "solo_vendedor": [
+    "turin"
+   ]
+  },
+  {
+   "marca": "Tweezerman",
+   "alias": [
+    "tweezerman"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Ubiquiti",
+   "alias": [
+    "ubiquiti",
+    "unifi"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "UGREEN",
+   "alias": [
+    "ugreen"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Umarex",
+   "alias": [
+    "umarex"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Umbro",
+   "alias": [
+    "umbro"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Under Armour",
+   "alias": [
+    "under armour",
+    "underarmour"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "UNO",
+   "alias": [
+    "uno attack",
+    "uno flip",
+    "uno no mercy"
+   ],
+   "solo_vendedor": [
+    "uno"
+   ]
+  },
+  {
+   "marca": "Urrea",
+   "alias": [
+    "urrea"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Vans",
+   "alias": [
+    "vans"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Vasconia",
+   "alias": [
+    "vasconia"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Venum",
+   "alias": [
+    "venum"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Verbatim",
+   "alias": [
+    "verbatim"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Verde Valle",
+   "alias": [
+    "verde valle"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Versace",
+   "alias": [
+    "versace"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Vichy",
+   "alias": [
+    "dercos",
+    "liftactiv",
+    "mineral 89"
+   ],
+   "solo_vendedor": [
+    "vichy"
+   ]
+  },
+  {
+   "marca": "Victoria's Secret",
+   "alias": [
+    "victoria s secret",
+    "victoria secret",
+    "victorias secret"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Victorinox",
+   "alias": [
+    "victorinox"
+   ],
+   "solo_vendedor": [
+    "swiss army",
+    "swiss gear",
+    "swissgear"
+   ]
+  },
+  {
+   "marca": "Vileda",
+   "alias": [
+    "vileda"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Voit",
+   "alias": [
+    "voit"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Volteck",
+   "alias": [
+    "volteck"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "VTech",
+   "alias": [
+    "vtech"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "WABCO",
+   "alias": [
+    "wabco"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Wacom",
+   "alias": [
+    "wacom"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "WAGO",
+   "alias": [],
+   "solo_vendedor": [
+    "wago"
+   ]
+  },
+  {
+   "marca": "Wahl",
+   "alias": [
+    "wahl"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Waterpik",
+   "alias": [
+    "water pik",
+    "waterpik"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Western Digital",
+   "alias": [
+    "wd black",
+    "wd blue",
+    "wd purple",
+    "wd red",
+    "western digital"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Wet Brush",
+   "alias": [
+    "wet brush",
+    "wetbrush"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Whirlpool",
+   "alias": [],
+   "solo_vendedor": [
+    "whirlpool"
+   ]
+  },
+  {
+   "marca": "Whiskas",
+   "alias": [
+    "whiskas"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Wilson",
+   "alias": [],
+   "solo_vendedor": [
+    "wilson"
+   ]
+  },
+  {
+   "marca": "Wilson Jones",
+   "alias": [
+    "wilson jones"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Wilton",
+   "alias": [],
+   "solo_vendedor": [
+    "wilton"
+   ]
+  },
+  {
+   "marca": "Wrangler",
+   "alias": [],
+   "solo_vendedor": [
+    "wrangler"
+   ]
+  },
+  {
+   "marca": "Xerox",
+   "alias": [
+    "xerox"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Xiaomi",
+   "alias": [
+    "pocophone",
+    "redmi",
+    "xiaomi"
+   ],
+   "solo_vendedor": [
+    "mi band",
+    "poco"
+   ]
+  },
+  {
+   "marca": "XP-Pen",
+   "alias": [
+    "xp pen",
+    "xppen"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Yamaha",
+   "alias": [
+    "guitarra yamaha",
+    "mezcladora yamaha",
+    "piano yamaha",
+    "teclado yamaha"
+   ],
+   "solo_vendedor": [
+    "yamaha"
+   ]
+  },
+  {
+   "marca": "YETI",
+   "alias": [],
+   "solo_vendedor": [
+    "yeti"
+   ]
+  },
+  {
+   "marca": "Yuya",
+   "alias": [
+    "republic cosmetics",
+    "yuya"
+   ],
+   "solo_vendedor": []
+  },
+  {
+   "marca": "Zebra",
+   "alias": [
+    "impresora zebra"
+   ],
+   "solo_vendedor": [
+    "zebra"
+   ]
+  },
+  {
+   "marca": "Ziploc",
+   "alias": [],
+   "solo_vendedor": [
+    "ziploc"
+   ]
+  },
+  {
+   "marca": "ZURU",
+   "alias": [
+    "x shot",
+    "zuru"
+   ],
+   "solo_vendedor": []
+  }
+ ]
+}

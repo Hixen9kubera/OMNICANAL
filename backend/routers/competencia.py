@@ -33,7 +33,7 @@ from config import settings
 from routers.investigacion import solo_admin
 from services import (
     competencia_captura, competencia_juez, competencia_mejora, competencia_scraper,
-    competencia_store, competencia_trabajos,
+    competencia_store, competencia_trabajos, marcas_renombre,
 )
 
 log = logging.getLogger("omnicanal.routers.competencia")
@@ -277,6 +277,11 @@ def detalle_sku(sku: str, limite_terminos: int = 20):
     # igual que una de hoy — el mismo defecto que la 0038 corrigió en el resto
     # del tab. `None` significa "nunca se midió", que NO es lo mismo que "viejo".
     est_term = competencia_store.estado_termino(fila.get("termino_general") or "")
+    # MARCAS DE RENOMBRE (v0.639.0): cada rival dice si es de marca, para que la
+    # pantalla lo pinte aparte. Aquí no se calcula ninguna mediana; las que sí
+    # (vista, Radar, Publicaciones) ya las apartan.
+    marcas_renombre.etiquetar(general)
+    marcas_renombre.etiquetar(top)
 
     return {
         **_juicio_de(sku, general),

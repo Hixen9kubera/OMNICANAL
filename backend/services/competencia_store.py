@@ -21,6 +21,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from services import marcas_renombre
+
 log = logging.getLogger("omnicanal.competencia.store")
 
 
@@ -540,21 +542,34 @@ def vista(canal: str = "mercado_libre") -> list[dict[str, Any]]:
             if 1 in comunes:
                 destino["top_primero_cambio"] = vivo[1] != nuestro[1]
 
+    # MARCAS DE RENOMBRE (Eduardo, 12-oct-2026): vendemos genéricos, y un Vans
+    # de $1,200 en el top de Tenis (MLM6585) no es nuestra competencia: con
+    # ellos la mediana salía en $398 cuando los genéricos del top cobran
+    # $190–$300. Cada fila del top lleva `marca_renombre` (se sigue pintando,
+    # marcada) y la mediana, el mínimo y el máximo se sacan SIN ellas.
+    # `mediana_con_marcas` es la de antes, para comparar; la reversa es
+    # COMPETENCIA_SIN_MARCAS=false.
+    sin_marcas = marcas_renombre.es_activo()
+
     out = []
     for r in raices.values():
         # Ranking y términos de la raíz.
         r["top"] = rk.get((r["raiz_id"], "raiz"), [])[:10] if r["raiz_id"] else []
+        marcas_renombre.etiquetar(r["top"])
         r["terminos_raiz"] = nterm.get(r["raiz_id"], 0) if r["raiz_id"] else 0
         _avisos(r, r["raiz_id"], r["top"])
 
         for cid, sub in r["subcategorias"].items():
             top = rk.get((cid, "hoja"), [])[:20] if sub["categoria_id"] else []
-            precios = sorted(x["precio"] for x in top if x.get("precio"))
+            marcas_renombre.etiquetar(top)
+            todos = sorted(x["precio"] for x in top if x.get("precio"))
+            precios = sorted(x["precio"] for x in top if x.get("precio")
+                             and not (sin_marcas and x.get("marca_renombre")))
             sub["top"] = top
             sub["n_ranking"] = len(top)
-            sub["mediana"] = (precios[len(precios) // 2] if len(precios) % 2
-                              else (precios[len(precios) // 2 - 1] +
-                                    precios[len(precios) // 2]) / 2) if precios else None
+            sub["mediana"] = _mediana(precios)
+            sub["mediana_con_marcas"] = _mediana(todos)
+            sub["n_marcas_excluidas"] = len(todos) - len(precios)
             sub["precio_min"] = precios[0] if precios else None
             sub["precio_max"] = precios[-1] if precios else None
             sub["n_terminos"] = nterm.get(cid, 0) if sub["categoria_id"] else 0
@@ -658,6 +673,14 @@ def vista(canal: str = "mercado_libre") -> list[dict[str, Any]]:
         out.append(r)
     out.sort(key=lambda r: (-r["n_skus"], r["raiz_nombre"]))
     return out
+
+
+def _mediana(precios: list[float]) -> float | None:
+    """La mediana de una lista YA ORDENADA; None si está vacía."""
+    if not precios:
+        return None
+    m = len(precios) // 2
+    return precios[m] if len(precios) % 2 else (precios[m - 1] + precios[m]) / 2
 
 
 def _ahora() -> str:

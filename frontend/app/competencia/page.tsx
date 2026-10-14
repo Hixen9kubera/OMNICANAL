@@ -189,6 +189,36 @@ function Foto({ src, alt, size = 40 }: { src: string | null; alt: string; size?:
   );
 }
 
+/**
+ * MARCAS DE RENOMBRE (v0.639.0): vendemos genéricos, así que un Vans de $1,200
+ * no es nuestro rival. Se sigue mostrando, marcado; el backend ya lo apartó de
+ * la mediana. Sin `marca` (genérico, o backend anterior) no pinta nada.
+ */
+function EtiquetaMarca({ marca }: { marca?: string | null }) {
+  if (!marca) return null;
+  return (
+    <span
+      className="shrink-0 rounded bg-slate-100 px-1 py-0.5 text-[9px] font-medium text-slate-500"
+      title={`Marca de renombre (${marca}): no cuenta para la mediana`}
+    >
+      marca
+    </span>
+  );
+}
+
+/** «sin N de marca» junto a una mediana que ya las apartó. 0 o sin dato: nada. */
+function NotaSinMarcas({ n, conMarcas }: { n?: number | null; conMarcas?: number | null }) {
+  if (!n || n <= 0) return null;
+  return (
+    <span
+      className="whitespace-nowrap text-[10px] font-normal text-slate-400"
+      title={`Mediana con las marcas de renombre: ${mxn(conMarcas)}`}
+    >
+      sin {n} de marca
+    </span>
+  );
+}
+
 /** Una tarjeta del top de más vendidos de la categoría padre. */
 function Tarjeta({ r }: { r: RankingCategoria }) {
   return (
@@ -200,11 +230,14 @@ function Tarjeta({ r }: { r: RankingCategoria }) {
     >
       <div className="flex items-start justify-between gap-1">
         <Medalla pos={r.posicion} />
-        {r.es_nuestro ? (
-          <span className="rounded bg-indigo-600 px-1 py-0.5 text-[9px] font-bold text-white">
-            NUESTRO
-          </span>
-        ) : null}
+        <span className="flex items-center gap-1">
+          <EtiquetaMarca marca={r.marca_renombre} />
+          {r.es_nuestro ? (
+            <span className="rounded bg-indigo-600 px-1 py-0.5 text-[9px] font-bold text-white">
+              NUESTRO
+            </span>
+          ) : null}
+        </span>
       </div>
       <Foto src={r.imagen} alt={r.titulo ?? r.externo_id} size={148} />
       <div className="line-clamp-2 text-[11px] leading-tight text-slate-700 group-hover:text-indigo-700">
@@ -449,10 +482,15 @@ function FilasSku({
   s,
   abierto,
   onToggle,
+  nMarcas,
+  medianaConMarcas,
 }: {
   s: CompetenciaSkuVista;
   abierto: boolean;
   onToggle: () => void;
+  /** De su subcategoría: `mediana_mercado` ES la mediana de la subcategoría. */
+  nMarcas?: number | null;
+  medianaConMarcas?: number | null;
 }) {
   const tiendas = s.tiendas.length ? s.tiendas : [null];
   const span = tiendas.length;
@@ -556,6 +594,11 @@ function FilasSku({
                 className="py-2 pr-3 align-top text-right text-xs tabular-nums text-slate-500"
               >
                 {mxn(s.mediana_mercado)}
+                {nMarcas && nMarcas > 0 ? (
+                  <div>
+                    <NotaSinMarcas n={nMarcas} conMarcas={medianaConMarcas} />
+                  </div>
+                ) : null}
               </td>
               <td rowSpan={span} className="py-2 pr-3 align-top text-right">
                 <Brecha x={s.brecha} />
@@ -833,6 +876,7 @@ function ResultadosBusqueda({
             <span className="min-w-0 flex-1 truncate text-[11px] text-slate-600">
               {r.titulo ?? r.externo_id}
             </span>
+            <EtiquetaMarca marca={r.marca_renombre} />
             {veredicto ? <InsigniaVeredicto r={r} /> : null}
             {r.es_nuestro ? <Crown size={11} className="shrink-0 text-amber-600" /> : null}
             {/* Las VISITAS de cada resultado: sin ellas la lista dice a qué precio
@@ -2644,6 +2688,12 @@ function BloqueSubcategoria({
         <div className="hidden shrink-0 items-center gap-4 text-[11px] text-slate-500 sm:flex">
           <span title="Mediana de precio del top de la subcategoría">
             med. {mxn(sub.mediana)}
+            {sub.n_marcas_excluidas ? (
+              <>
+                {" "}
+                <NotaSinMarcas n={sub.n_marcas_excluidas} conMarcas={sub.mediana_con_marcas} />
+              </>
+            ) : null}
           </span>
           {/* Visitas del nicho: la DEMANDA. Junto con la mediana es lo que
               permite buscar categorías de ticket alto y mucho tráfico. */}
@@ -2720,6 +2770,8 @@ function BloqueSubcategoria({
                       s={s}
                       abierto={abiertoSku === s.sku}
                       onToggle={() => onAbrirSku(s.sku)}
+                      nMarcas={sub.n_marcas_excluidas}
+                      medianaConMarcas={sub.mediana_con_marcas}
                     />
                     {abiertoSku === s.sku ? (
                       <tr>

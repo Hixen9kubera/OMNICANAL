@@ -31,7 +31,8 @@ ESTRUCTURA
     1. PARAMS — las perillas. Todas son DECISIÓN, no medición.
     2. Funciones PURAS (probadas en tests/test_radar_precios.py):
        contribucion_de · piso_por_clase · clasificar · referencia_de ·
-       premio_calidad · direccion_de · redondear_precio.
+       premio_calidad · direccion_de · redondear_precio · contexto_categoria_de.
+       Las marcas de renombre no entran a ninguna mediana (`marcas_renombre`).
     3. Capa SQL: arma el universo (un item por SKU) leyendo channel, enrich y
        costing. BLOQUEANTE: quien la llame desde una corrutina la manda a
        `asyncio.to_thread` (regla 11).
@@ -45,7 +46,7 @@ import statistics
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Iterable
 
-from services import costos
+from services import costos, marcas_renombre
 
 log = logging.getLogger("omnicanal.radar_precios")
 
@@ -320,29 +321,45 @@ def _utc(ts: Any) -> datetime | None:
 
 def referencia_de(resultados: Iterable[dict], *, termino: str | None,
                   ahora: datetime | None = None,
-                  params: dict | None = None) -> dict[str, Any]:
+                  params: dict | None = None,
+                  sin_marcas: bool | None = None) -> dict[str, Any]:
     """La referencia de mercado: MEDIANA del precio de los resultados de
-    búsqueda del término del SKU, sin los nuestros, capturados hace ≤
-    frescura_referencia_dias, con al menos n_min_referencia rivales.
+    búsqueda del término del SKU, sin los nuestros NI LAS MARCAS DE RENOMBRE,
+    capturados hace ≤ frescura_referencia_dias, con al menos n_min_referencia
+    rivales.
 
-    `resultados`: [{precio, capturado_en, es_nuestro}]. Siempre devuelve las
-    mismas llaves; sin referencia, `precio` es None y `motivo` dice por qué:
-    sin_termino · pocos_rivales · captura_vieja.
+    `resultados`: [{precio, capturado_en, es_nuestro, titulo?, seller?}].
+    Siempre devuelve las mismas llaves; sin referencia, `precio` es None y
+    `motivo` dice por qué: sin_termino · pocos_rivales · captura_vieja ·
+    rivales_dispersos.
+
+    MARCAS (Eduardo, 12-oct-2026): un Vans de $1,200 no es el rival de nuestro
+    tenis genérico de $200. Las filas de marca (`marcas_renombre.detectar`) no
+    cuentan como rivales —ni para la mediana ni para el mínimo de rivales— y
+    `n_marcas` dice cuántas se apartaron. `sin_marcas` None = lo que diga
+    `COMPETENCIA_SIN_MARCAS`; apagado, todo cuenta como antes y `n_marcas` es 0.
     """
     P = _p(params)
     ahora = _utc(ahora) or datetime.now(timezone.utc)
+    if sin_marcas is None:
+        sin_marcas = marcas_renombre.es_activo()
     base = {"precio": None, "fuente": None, "n": 0, "termino": termino or None,
-            "capturado_en": None, "motivo": None, "n_total": 0, "mediana_dudosa": None}
+            "capturado_en": None, "motivo": None, "n_total": 0, "mediana_dudosa": None,
+            "n_marcas": 0}
     if not (termino or "").strip():
         return {**base, "motivo": "sin_termino"}
-    rivales = [r for r in resultados
-               if (_num(r.get("precio")) or 0) > 0 and not r.get("es_nuestro")]
+    ajenos = [r for r in resultados
+              if (_num(r.get("precio")) or 0) > 0 and not r.get("es_nuestro")]
+    rivales = [r for r in ajenos
+               if not (sin_marcas and marcas_renombre.detectar(r.get("titulo"), r.get("seller")))]
     limite = ahora - timedelta(days=float(P["frescura_referencia_dias"]))
     frescos = [r for r in rivales
                if (_utc(r.get("capturado_en")) or datetime.min.replace(tzinfo=timezone.utc)) >= limite]
-    fechas = [f for f in (_utc(r.get("capturado_en")) for r in rivales) if f]
+    # La fecha es de la BÚSQUEDA, no de quién cuenta: se toma de todas las ajenas.
+    fechas = [f for f in (_utc(r.get("capturado_en")) for r in ajenos) if f]
     ultima = max(fechas).isoformat() if fechas else None
-    base.update({"n_total": len(rivales), "capturado_en": ultima})
+    base.update({"n_total": len(rivales), "capturado_en": ultima,
+                 "n_marcas": len(ajenos) - len(rivales)})
     n_min = int(P["n_min_referencia"])
     if len(frescos) >= n_min:
         precios = sorted(float(r["precio"]) for r in frescos)
@@ -643,7 +660,7 @@ select sku::text as sku, peso, largo, ancho, alto
 # mediana los decide `referencia_de`, que es pura y tiene pruebas.
 _SQL_REF = """
 select cfg.sku::text as sku, st.termino, r.precio, r.capturado_en,
-       coalesce(r.es_nuestro, false) as es_nuestro
+       coalesce(r.es_nuestro, false) as es_nuestro, r.titulo, r.seller
   from enrich.market_sku_config cfg
   left join enrich.market_search_term st on st.id = cfg.termino_id
   left join enrich.market_search_results r
@@ -673,19 +690,41 @@ select sku::text as sku, item_id, date, sum(units_sold) as unidades
 """
 
 # Contexto (NUNCA referencia): la mediana del top de la categoría, de su
-# última captura.
+# última captura. FILA POR FILA desde v0.639.0: la mediana la saca
+# `contexto_categoria_de` en Python para apartar las marcas de renombre (en SQL
+# habría que traducir la lista de alias). El filtro de la última captura es el
+# mismo de antes.
 _SQL_CATEGORIA = """
 with b as (
-  select precio, capturado_en,
+  select precio, titulo, seller, capturado_en,
          max(capturado_en) over () as ultima
     from enrich.market_bestsellers
    where canal = 'mercado_libre' and categoria_id = %(cat)s
      and precio > 0 and not coalesce(es_nuestro, false)
 )
-select percentile_cont(0.5) within group (order by precio) as mediana,
-       count(*) as n, max(ultima) as capturado_en
+select precio, titulo, seller, capturado_en, ultima
   from b where capturado_en >= ultima - interval '1 day'
 """
+
+
+def contexto_categoria_de(filas: Iterable[dict], *,
+                          sin_marcas: bool | None = None) -> dict[str, Any] | None:
+    """PURA. La mediana del top de la categoría sin las marcas de renombre:
+    {mediana, n, capturado_en, n_marcas}, o None si no hay filas (como antes).
+    Con filas pero todas de marca, `mediana` es None y `n` 0: la pantalla ya
+    dice «sin dato» y `n_marcas` explica por qué."""
+    filas = [f for f in filas if (_num(f.get("precio")) or 0) > 0]
+    if not filas:
+        return None
+    if sin_marcas is None:
+        sin_marcas = marcas_renombre.es_activo()
+    cuentan = [float(_num(f["precio"])) for f in filas
+               if not (sin_marcas and marcas_renombre.detectar(f.get("titulo"), f.get("seller")))]
+    ultimas = [u for u in (_utc(f.get("ultima")) for f in filas) if u]
+    return {"mediana": round(statistics.median(cuentan), 2) if cuentan else None,
+            "n": len(cuentan),
+            "capturado_en": max(ultimas).isoformat() if ultimas else None,
+            "n_marcas": len(filas) - len(cuentan)}
 
 
 def _zona_mx():
@@ -996,7 +1035,7 @@ def _armar_item(sku: str, filas: list[dict], *, vista, stock, u90, comis, envios
         "cuenta_principal": principal["cuenta"], "cuentas": publicas,
         "referencia": {k: ref[k] for k in ("precio", "fuente", "n", "termino",
                                            "capturado_en", "motivo", "n_total",
-                                           "mediana_dudosa")},
+                                           "mediana_dudosa", "n_marcas")},
         "en_promocion": en_promocion,
         "posicion_pct": dire["posicion_pct"],
         "contribucion": principal["contribucion"]["valor"],
@@ -1132,6 +1171,10 @@ def detalle_de(universo: dict, sku: str) -> dict[str, Any] | None:
             "visitas_30d": f.get("visitas_30d"),
             "es_nuestro": bool(f.get("es_nuestro")),
             "titulo": f.get("titulo"),
+            # Se pinta igual, marcada; no entra a la referencia (`referencia_de`).
+            # La nuestra nunca es marca: vendemos genéricos (revisión v0.639.0).
+            "marca_renombre": (None if f.get("es_nuestro")
+                               else marcas_renombre.detectar(f.get("titulo"), f.get("seller"))),
             "capturado_en": (_utc(f.get("capturado_en")).isoformat()
                              if _utc(f.get("capturado_en")) else None),
         })
@@ -1152,12 +1195,9 @@ def detalle_de(universo: dict, sku: str) -> dict[str, Any] | None:
     contexto = None
     cat = it.get("_categoria")
     if cat:
-        f = sdb.fetch_one(_SQL_CATEGORIA, {"cat": cat})
-        if f and f.get("n"):
-            contexto = {"categoria_id": cat, "mediana": round(float(f["mediana"]), 2),
-                        "n": int(f["n"]),
-                        "capturado_en": (_utc(f.get("capturado_en")).isoformat()
-                                         if _utc(f.get("capturado_en")) else None)}
+        ctx = contexto_categoria_de(sdb.fetch_all(_SQL_CATEGORIA, {"cat": cat}))
+        if ctx:
+            contexto = {"categoria_id": cat, **ctx}
     return {**_publico(it), "generado_en": universo.get("generado_en"),
             "comparables": comparables, "serie_90d": serie,
             "contexto_categoria": contexto}

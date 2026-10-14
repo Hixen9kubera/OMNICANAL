@@ -985,6 +985,9 @@ export interface CompetenciaResultado {
   /** Cuántos productos completos trae la publicación del rival. Solo viene en
    *  `mismo` y `otro_paquete`: en las demás clases la cuenta no aplica. */
   veredicto_unidades?: number | null;
+  /** Marca de renombre detectada (por vendedor o título), o null si es un
+   *  genérico. Se pinta marcada; un backend anterior a v0.639.0 no la manda. */
+  marca_renombre?: string | null;
 }
 
 // CompetenciaPosicion PODADA (paso 6): posiciones() leía el SQLite efímero
@@ -1065,6 +1068,9 @@ export interface RankingCategoria {
    *  `enrich.market_bestsellers`); el tipo no lo declaraba, así que el panel
    *  no podía decir qué tan vieja es la captura. */
   capturado_en: string | null;
+  /** Marca de renombre detectada, o null. Desde v0.639.0 no cuenta para la
+   *  mediana ni el mín/máx de la subcategoría (se sigue mostrando, marcada). */
+  marca_renombre?: string | null;
 }
 
 /** Un SKU nuestro con su posición frente al mercado de su subcategoría. */
@@ -1126,6 +1132,12 @@ export interface CompetenciaSubcategoria extends AvisosDelTop {
   mediana: number | null;
   precio_min: number | null;
   precio_max: number | null;
+  /** v0.639.0: `mediana`, `precio_min` y `precio_max` salen SIN las marcas de
+   *  renombre del top. Esta es la mediana de antes (con todo), para comparar. */
+  mediana_con_marcas?: number | null;
+  /** Cuántas filas del top se apartaron por ser de marca. 0 con
+   *  COMPETENCIA_SIN_MARCAS apagada. */
+  n_marcas_excluidas?: number;
   volumen_mercado: number | null;
   /** Visitas de 30 días sumadas del top del nicho: el tamaño de la demanda. */
   visitas_mercado: number | null;
@@ -1898,8 +1910,12 @@ export interface Publicacion {
    *  cruce es por término ("perchero de pie"), no por producto exacto. */
   mercado?: {
     mediana: number;
-    /** Cuántas publicaciones ajenas se midieron (mínimo 3). */
+    /** Cuántas publicaciones ajenas se midieron (mínimo 3). Desde v0.639.0
+     *  sin contar las de marca de renombre. */
     n: number;
+    /** Cuántas de la búsqueda se apartaron por ser de marca de renombre
+     *  (no entran al promedio ni a la mediana). 0 con la bandera apagada. */
+    n_marcas?: number;
     /** EL PRECIO DE MERCADO desde v0.518.0: el promedio de la búsqueda. Contra
      *  él se miden `margen_pct` y `ganancia_neta`. Opcional: un backend
      *  anterior no lo manda, y entonces vale `mediana`. */

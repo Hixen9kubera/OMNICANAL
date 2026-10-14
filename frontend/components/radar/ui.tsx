@@ -64,6 +64,35 @@ export function EtiquetaProcedencia({ estado }: { estado: Procedencia | null | u
   );
 }
 
+/**
+ * MARCAS DE RENOMBRE (v0.639.0): un rival de marca se sigue mostrando, pero el
+ * backend ya lo apartó de la mediana. Sin `marca` (genérico) no pinta nada.
+ */
+export function EtiquetaMarca({ marca }: { marca: string | null | undefined }) {
+  if (!marca) return null;
+  return (
+    <span
+      className="shrink-0 rounded bg-slate-100 px-1.5 py-px text-[10px] font-medium text-slate-500"
+      title={`Marca de renombre (${marca}): no cuenta para la mediana`}
+    >
+      marca
+    </span>
+  );
+}
+
+/** «sin N de marca» junto a una mediana que ya las apartó. 0 o sin dato: nada. */
+export function NotaSinMarcas({ n }: { n: number | null | undefined }) {
+  if (!n || n <= 0) return null;
+  return (
+    <span
+      className="whitespace-nowrap"
+      title={`${n} ${n === 1 ? "rival es" : "rivales son"} de marca de renombre: no cuentan para la mediana`}
+    >
+      sin {n} de marca
+    </span>
+  );
+}
+
 /** Lo que se pinta cuando el dato NO existe. Nunca un 0. */
 export function SinDato({ texto = "Sin dato" }: { texto?: string }) {
   return <span className="text-xs font-medium italic text-slate-400">{texto}</span>;
