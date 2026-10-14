@@ -135,6 +135,13 @@ export interface Producto {
   stock_fba: number | null;
   situacion: string | null;
   estado: string | null;
+  /** Solo pestañas de canal: el almacén propio DEL SKU (Woo; un padre suma sus
+   *  variantes en Woo; sin fila en Woo, el mayor de los espejos). `stock_real`
+   *  es el espejo de ESTA publicación, que en una FULL vale 0 siempre. */
+  stock_bodega?: number | null;
+  stock_bodega_fuente?: "woo" | "woo_variantes" | "espejo" | null;
+  /** FULL (ML) + FBA (Amazon) del SKU en todas sus cuentas. */
+  full_fba_sku?: number | null;
   categoria_path: CategoriaNivel[];
   categoria_id: string | number | null;
   full: boolean | null;

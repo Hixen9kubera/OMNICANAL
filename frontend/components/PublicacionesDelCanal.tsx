@@ -22,11 +22,12 @@
  * regla de cuándo un costo no se puede creer.
  */
 
-import { useState, type ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, ArrowDown, ArrowUp, ChevronDown, ExternalLink, Info, RefreshCw, Tag, Target } from "lucide-react";
 
 import PanelHover from "@/components/PanelHover";
 import { costoImplausible, avisoCostoImplausible } from "@/lib/margen";
+import { acomodarEtiquetas, type Colocada } from "@/lib/etiquetasBanda";
 import { enlacePublicacion } from "@/lib/enlaces";
 import {
   ESTADO_UI,
@@ -160,45 +161,61 @@ const TONO_REGLA = {
 } as const;
 
 /**
- * Hasta dos etiquetas sobre la misma pista sin encimarse: centradas si hay
- * aire, abiertas hacia fuera si están cerca, y en un solo renglón si ni así
- * caben (los dos marcadores pegados a una orilla). `aire` es la distancia, en
- * puntos de la escala, desde la que ya caben centradas.
+ * Las etiquetas de una pista, en uno o más renglones, SIN ENCIMARSE nunca
+ * (Eduardo, 14-oct-2026). Mide el ancho real de cada una y deja que
+ * `acomodarEtiquetas` decida: centradas en su marcador si hay aire, abiertas a
+ * partes iguales si chocan y, si ni así caben, la que choca baja un renglón.
+ * Vuelve a medir cuando cambia el ancho (cajón en móvil, giro de pantalla) o
+ * el de una etiqueta (fuente que termina de cargar, monto que cambia).
+ * `renglon` es el alto de cada renglón en px: la pista crece con ellos.
  */
-function ParEtiquetas({ piezas, top, aire }: { piezas: Pieza[]; top: string; aire: number }) {
-  const base = `absolute ${top} flex items-baseline gap-1 whitespace-nowrap`;
-  const centrada = (p: number) => (p < 12 ? "" : p > 88 ? "-translate-x-full" : "-translate-x-1/2");
-  const orden = [...piezas].sort((x, y) => x.p - y.p);
-  const sueltas = (
-    <>
-      {orden.map((x, i) => (
-        <div key={i} className={`${base} ${centrada(x.p)}`} style={{ left: `${x.p}%` }}>
-          {x.nodo}
-        </div>
-      ))}
-    </>
-  );
-  if (orden.length < 2) return sueltas;
-  const a = orden[0]!;
-  const b = orden[1]!;
-  if (b.p - a.p >= aire) return sueltas;
-  if (a.p >= 20 && b.p <= 80) {
-    return (
-      <>
-        <div className={`${base} -translate-x-full pr-1.5`} style={{ left: `${a.p}%` }}>{a.nodo}</div>
-        <div className={`${base} pl-1.5`} style={{ left: `${b.p}%` }}>{b.nodo}</div>
-      </>
-    );
-  }
-  const medio = (a.p + b.p) / 2;
+function FilaEtiquetas({ piezas, renglon, className = "" }: {
+  piezas: Pieza[]; renglon: number; className?: string;
+}) {
+  const caja = useRef<HTMLDivElement>(null);
+  const nodos = useRef<(HTMLDivElement | null)[]>([]);
+  const [lugar, setLugar] = useState<Colocada[] | null>(null);
+  const clave = piezas.map((x) => x.p.toFixed(3)).join("|");
+
+  // Antes de pintar: con `useEffect` se vería un cuadro con las etiquetas
+  // encimadas antes de acomodarse.
+  useLayoutEffect(() => {
+    const el = caja.current;
+    if (!el) return;
+    const ps = clave.split("|").map(Number);
+    const medir = () => {
+      const ancho = el.clientWidth;
+      if (!ancho) return;
+      const nuevo = acomodarEtiquetas(
+        ps.map((p, i) => ({ p, w: nodos.current[i]?.offsetWidth ?? 0 })), ancho);
+      setLugar((antes) =>
+        antes && antes.length === nuevo.length
+        && antes.every((x, i) => Math.abs(x.left - nuevo[i]!.left) < 0.5 && x.fila === nuevo[i]!.fila)
+          ? antes : nuevo);
+    };
+    medir();
+    const ro = new ResizeObserver(medir);
+    ro.observe(el);
+    nodos.current.slice(0, ps.length).forEach((n) => n && ro.observe(n));
+    return () => ro.disconnect();
+  }, [clave]);
+
+  const filas = lugar?.length ? Math.max(...lugar.map((x) => x.fila)) + 1 : 1;
   return (
-    <div
-      className={`${base} gap-1.5 ${medio < 25 || medio > 75 ? "" : "-translate-x-1/2"}`}
-      style={medio < 25 ? { left: "0%" } : medio > 75 ? { right: "0%" } : { left: `${medio}%` }}
-    >
-      {a.nodo}
-      <span className="text-slate-300">·</span>
-      {b.nodo}
+    <div ref={caja} className={`relative ${className}`} style={{ height: filas * renglon }}>
+      {piezas.map((x, i) => {
+        const l = lugar?.[i];
+        return (
+          <div
+            key={i}
+            ref={(n) => { nodos.current[i] = n; }}
+            className="absolute flex items-baseline gap-1 whitespace-nowrap"
+            style={l ? { left: l.left, top: l.fila * renglon } : { left: 0, top: 0, visibility: "hidden" }}
+          >
+            {x.nodo}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -431,31 +448,35 @@ function ReglaMercado({ p }: { p: Publicacion }) {
         </span>
       </div>
 
-      <div className={`relative mt-1.5 ${conZonas ? "h-[60px]" : "h-[42px]"}`}>
-        <ParEtiquetas piezas={marcadores} top="top-0" aire={22} />
-        <div className="absolute inset-x-0 top-6 flex h-2 overflow-hidden rounded-full bg-slate-200">
-          {conZonas && (
-            <>
-              <div className="bg-rose-200" style={{ width: `${pos(eq!)}%` }} />
-              <div className="bg-amber-200" style={{ width: `${pos(piso!) - pos(eq!)}%` }} />
-              <div className="flex-1 bg-emerald-200" />
-            </>
+      {/* Tres pisos: etiquetas de los marcadores, la pista y las fronteras.
+          Cada fila de etiquetas crece si necesita otro renglón. */}
+      <div className="mt-1.5">
+        <FilaEtiquetas piezas={marcadores} renglon={17} />
+        <div className="relative h-[22px]">
+          <div className="absolute inset-x-0 top-[7px] flex h-2 overflow-hidden rounded-full bg-slate-200">
+            {conZonas && (
+              <>
+                <div className="bg-rose-200" style={{ width: `${pos(eq!)}%` }} />
+                <div className="bg-amber-200" style={{ width: `${pos(piso!) - pos(eq!)}%` }} />
+                <div className="flex-1 bg-emerald-200" />
+              </>
+            )}
+          </div>
+          <div
+            className="absolute top-0 h-[22px] w-[3px] -translate-x-1/2 rounded-sm bg-indigo-600 ring-2 ring-white"
+            style={{ left: `${pMe}%` }}
+          />
+          {pTu !== null && (
+            <div
+              className="absolute top-0 h-[22px] w-[3px] -translate-x-1/2 rounded-sm bg-slate-900 ring-2 ring-white"
+              style={{ left: `${pTu}%` }}
+            />
           )}
         </div>
-        <div
-          className="absolute top-[17px] h-[22px] w-[3px] -translate-x-1/2 rounded-sm bg-indigo-600 ring-2 ring-white"
-          style={{ left: `${pMe}%` }}
-        />
-        {pTu !== null && (
-          <div
-            className="absolute top-[17px] h-[22px] w-[3px] -translate-x-1/2 rounded-sm bg-slate-900 ring-2 ring-white"
-            style={{ left: `${pTu}%` }}
-          />
-        )}
         {conZonas && (
-          <ParEtiquetas
-            top="top-[44px]"
-            aire={18}
+          <FilaEtiquetas
+            className="mt-[5px]"
+            renglon={15}
             piezas={[
               {
                 p: pos(eq!),

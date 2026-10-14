@@ -245,9 +245,13 @@ function TarjetaConSello(props: DatosFila & { sello: SelloFlujo }) {
   const apagada = sello.etapa === "ninguna" || sello.etapa === "sin_dato";
   const { titulo, detalle } = lineas(sello);
   const b = sello.pasos.bodega;
+  // Fuera de la lista de Inventario los cuatro cuadros son `na`: nadie lo ha
+  // puesto a validar. Decir «sin dato» ahí se leía como «no sabemos cuánto hay
+  // en bodega» junto a un SKU con 3 piezas en Woo (ACC-0040-ROJ, 14-oct-2026).
   const bodega = sello.variantes
     ? "padre"
-    : b.n_listo === null ? "bodega sin dato" : `bodega ${b.n_listo} de 4`;
+    : !sello.en_piloto ? "bodega sin validar"
+      : b.n_listo === null ? "bodega sin dato" : `bodega ${b.n_listo} de 4`;
 
   return (
     <div

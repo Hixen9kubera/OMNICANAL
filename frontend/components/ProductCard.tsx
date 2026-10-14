@@ -1,13 +1,14 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ImageIcon, PackageCheck, PackageX, Truck, Warehouse, X } from "lucide-react";
+import { ImageIcon, PackageCheck, PackageX, Pause, Truck, Warehouse, X } from "lucide-react";
 import type { Producto } from "@/lib/types";
 import ChannelDots from "./ChannelDots";
 import { esPadre, TipoBadge, VariantesBoton, VariantesTabla } from "./Variantes";
 import { ChipMoneda } from "./Moneda";
 import ChipRevision, { ChipRevisionVariantes } from "./ChipRevision";
 import { SelloTarjeta } from "./SelloFlujo";
+import { stockDeTarjeta } from "@/lib/stockTarjeta";
 
 interface Props {
   producto: Producto;
@@ -41,8 +42,7 @@ export default function ProductCard({
   etiquetasCuenta = {},
 }: Props) {
   const cat = producto.categoria_path;
-  const stockNum = producto.stock ?? 0;
-  const sinStock = producto.stock !== null && stockNum <= 0;
+  const stock = stockDeTarjeta(producto);
 
   const padre = esGeneral && esPadre(producto);
   const [verVariantes, setVerVariantes] = useState(false);
@@ -129,7 +129,17 @@ export default function ProductCard({
             Eduardo). items-start para que cada uno mida lo suyo y no se estiren
             al ancho del más largo. */}
         <div className="absolute left-2.5 top-2.5 flex flex-col items-start gap-1">
-          {producto.publicado ? (
+          {/* PAUSADA no es «Publicado» (14-oct-2026): ACC-0040-ROJ tiene dos
+              tarjetas en Mercado Libre y la de BEKURA, pausada, se leía como
+              la activa en FULL de San Corpe. `paused` solo existe en ML. */}
+          {producto.publicado && !esGeneral && (producto.situacion ?? "").toLowerCase() === "paused" ? (
+            <span
+              title="La publicación existe pero está pausada en el canal: no vende."
+              className="flex items-center gap-1 rounded-full bg-amber-500 px-2 py-1 text-[10px] font-bold text-white shadow-sm"
+            >
+              <Pause size={11} /> Pausada
+            </span>
+          ) : producto.publicado ? (
             <span
               className="flex items-center gap-1 rounded-full px-2 py-1 text-[10px] font-bold text-white shadow-sm"
               style={{ backgroundColor: color }}
@@ -334,15 +344,17 @@ export default function ProductCard({
             </div>
           ) : (
             <div className="flex flex-col items-end gap-1">
-              {/* stock real (lo que se sincroniza) */}
+              {/* Stock de la bodega propia del SKU (ver `stockDeTarjeta`) */}
               <span
-                title="Stock propio (se sincroniza entre canales)"
+                title={stock.titulo}
                 className={[
                   "rounded-lg px-2 py-1 text-xs font-bold",
-                  sinStock ? "bg-red-50 text-red-600" : "bg-emerald-50 text-emerald-600",
+                  stock.tono === "rojo" ? "bg-red-50 text-red-600"
+                    : stock.tono === "neutro" ? "bg-slate-100 text-slate-500"
+                      : "bg-emerald-50 text-emerald-600",
                 ].join(" ")}
               >
-                {producto.stock_real ?? producto.stock ?? "—"} u
+                {stock.valor ?? "—"} u
               </span>
               {/* FULL / FBA (inventario en bodega del marketplace) */}
               <div className="flex gap-1">

@@ -1001,6 +1001,88 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.645.0 — Tarjeta de canal: el stock es el de la bodega del SKU (las publicaciones FULL ya no salen con «0 u» en rojo), «Pausada» y «bodega sin validar»; la banda «A precio de mercado» ya no encima etiquetas
+
+**El caso (Eduardo, 14-oct-2026).** ACC-0040-ROJ, activo en FULL en San Corpe
+(MLM5064736576). Su tarjeta en Omnicanal › Mercado Libre decía «Publicado»,
+«FULL», «En FULL · por San Corpe», «bodega sin dato» y **«0 u» en rojo**, mientras
+el cajón decía General 3 u y FULL 5 u. Y en la banda «A precio de mercado» del
+cajón se leía «TÚ $253.00ADO $342.20».
+
+**Falla 1 — de dónde salía cada número de la tarjeta.**
+
+- `GET /api/productos?canal=mercado_libre` → `routers/productos.py` pinta
+  `stock_real`, que es `channel.listings.stock_own` de ESA publicación
+  (`channel_read.leer_inventario`, una fila por `canal|cuenta`). El precio y el
+  FULL salen de la misma fila.
+- Una publicación FULL guarda sus piezas en `stock_full`: su `stock_own` vale 0
+  SIEMPRE. Medido en producción el 14-oct (solo `SELECT`): **645 de 645**
+  publicaciones activas en FULL con piezas (593 SKUs) salían con «0 u» en rojo;
+  **994** tarjetas de ML decían 0 con piezas en Woo; **155** en rojo de SKUs que sí
+  tienen FULL en la otra cuenta.
+- La tarjeta de la captura era la de **BEKURA** (MLM5112925204, **pausada**,
+  $489.00, 0 propio y 0 en FULL). La de San Corpe ($253.00) también estaba en
+  rojo, con «FULL 5» al lado. Ninguna de las dos decía que una está pausada.
+- «bodega sin dato» no hablaba del stock: es el paso «Validado bodega» del Flujo
+  del SKU (ubicación, stock, foto, specs). ACC-0040-ROJ está fuera de la lista de
+  Inventario, sus cuatro cuadros son `na` (nadie lo ha puesto a validar) y la
+  tarjeta lo llamaba «sin dato», que se leía como «no sabemos cuánto hay».
+
+**Arreglo (reglas de la casa: el espejo se cuenta una vez y la fuente buena es
+Woo; `stock_full` es de ML y `stock_fba` de Amazon).**
+
+- `channel_read.stock_bodega(skus)`: por SKU, la fila de Woo (`canal='general'`)
+  y el MÁXIMO —jamás la suma— de los espejos.
+- `routers/productos.py` agrega a cada tarjeta de canal `stock_bodega` (con
+  `stock_bodega_fuente`: `woo`, `woo_variantes` o `espejo`) y `full_fba_sku`
+  (FULL de ML + FBA de Amazon del SKU en todas sus cuentas). Un padre suma SOLO
+  las filas de Woo de sus variantes; si la familia no tiene ninguna, el máximo
+  del espejo. Best-effort y en hilo (regla 11): si falla, la tarjeta pinta el
+  espejo como antes. `stock_real` y `stock` no cambian (los usa el cajón).
+- `lib/stockTarjeta.ts` + `ProductCard`: la tarjeta pinta la bodega del SKU.
+  Verde con piezas; **gris** si la bodega está en 0 pero el SKU vende desde
+  FULL/FBA; **rojo** solo si no hay de dónde vender. Al pasar el cursor dice de
+  dónde sale el número y qué ofrece esa publicación.
+- `ProductCard`: **«Pausada»** (ámbar) en lugar de «Publicado» cuando la
+  publicación está `paused` (solo existe en ML).
+- `SelloFlujo`: **«bodega sin validar»** para el SKU fuera de la lista de
+  Inventario; «bodega sin dato» queda para cuando de verdad falta el dato.
+
+**Falla 2 — la banda.** `ParEtiquetas` decidía con un umbral en puntos de la
+escala (22 arriba, 18 abajo) sin saber cuánto mide cada texto ni que pasado el
+88 % la etiqueta se recarga a la izquierda. Tú al 66 % y Mercado al 89 % pasaban
+el umbral y se montaban. Medido antes del cambio con Chrome sobre el panel:
+25.9 px en escritorio y 64.6 px en móvil (San Corpe), 40.5 px en móvil (BEKURA:
+Mercado $342.20 contra Tú $489.00) y, con el costo verificado, las fronteras
+«0 % · $177.70» y «20 % · $250.00» también chocaban (8 px en móvil).
+
+- `lib/etiquetasBanda.ts` (`acomodarEtiquetas`, lógica pura): trabaja en px con
+  el ancho MEDIDO de cada etiqueta. Cada una centrada en su marcador y dentro de
+  la pista; si chocan, el grupo se abre a partes iguales alrededor de sus
+  marcadores sin salirse; si ni así caben en un renglón, la que choca baja a otro.
+- `FilaEtiquetas` (en `PublicacionesDelCanal.tsx`, reemplaza a `ParEtiquetas`):
+  mide antes de pintar y vuelve a medir con `ResizeObserver` (cajón en móvil,
+  fuente que carga, monto que cambia). La banda queda en tres pisos: etiquetas
+  de los marcadores, pista, fronteras; cada piso crece si necesita otro renglón.
+  Textos, datos, colores y la nota del cursor no cambian (incluido el «sin N de
+  marca» de v0.644.0; avisado a la sesión COMPETENCIA antes de tocar la banda).
+- Después: **0 choques** en precio real, iguales, muy cercanos, muy lejanos y
+  costo verificado, en escritorio (1280 px) y móvil (390 px).
+
+**Pruebas.** `frontend/lib/pruebas/tarjeta_y_banda.prueba.cjs` (16: STOCK-1…8 y
+BANDA-1…8, con un barrido de 5,000 combinaciones de posiciones, anchos y
+pistas); `npx tsc --noEmit` limpio; las 120 de Órdenes siguen verdes. Backend:
+159 pruebas con `unittest`, 1 falla que YA ESTÁ en origin/main
+(`test_regla_11_productos`: `wp_db.norma_titulo` en `leer_contenido_canal`, que
+este cambio no toca).
+
+**Verificado.** Backend de la rama contra el SANDBOX: ACC-0040-ROJ → `stock_bodega`
+3 (`woo`) y `full_fba_sku` 8 en sus dos tarjetas (el clon es del 2-oct); el padre
+ETQ-0492 → 386 (`woo_variantes`). Frontend de la rama contra el proxy de solo
+lectura de producción: la banda sin choques en los diez escenarios, «Pausada» y
+«bodega sin validar» en las tarjetas. Sin flags, sin migración, sin escrituras:
+una consulta agrupada más por página del listado de un canal.
+
 ### v0.644.0 — Competencia: las marcas de renombre ya no inflan la mediana
 
 **El síntoma (Eduardo, 12-oct-2026).** En Competencia, las búsquedas por palabra

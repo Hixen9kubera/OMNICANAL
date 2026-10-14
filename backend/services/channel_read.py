@@ -101,6 +101,31 @@ def hijos_por_wc_id(wc_ids: list[int]) -> dict[int, list[str]]:
     return out
 
 
+def stock_bodega(skus: list[str]) -> dict[str, dict[str, Any]]:
+    """
+    ``{ SKU EN MAYÚSCULAS: {"woo": int|None, "espejo": int|None} }`` — el
+    almacén PROPIO de cada SKU, para la tarjeta de un canal.
+
+    El `stock_own` de una publicación de marketplace es un ESPEJO del mismo
+    almacén, y el de una publicación FULL vale 0 siempre: ML guarda sus piezas
+    en `stock_full`. La tarjeta pintaba ese espejo y marcaba «0 u» en rojo a las
+    645 publicaciones activas en FULL (14-oct-2026, ACC-0040-ROJ con 3 en Woo y
+    5 en FULL). La fuente buena es la fila de Woo (`canal='general'`), que SÍ
+    pasa por aquí aunque `leer_inventario` la deje fuera; `espejo` es el
+    máximo —jamás la suma— de las demás, para el SKU que no tiene fila en Woo.
+    """
+    if not skus:
+        return {}
+    rows = sdb.fetch_all(
+        """select upper(l.sku::text) as sku,
+                  max(l.stock_own) filter (where l.canal = 'general')  as woo,
+                  max(l.stock_own) filter (where l.canal <> 'general') as espejo
+             from channel.listings l
+            where l.sku = any(%s::citext[])
+            group by 1""", (list(skus),))
+    return {r["sku"]: {"woo": r["woo"], "espejo": r["espejo"]} for r in rows}
+
+
 def leer_inventario(skus: list[str]) -> dict[str, dict[str, dict[str, Any]]]:
     if not skus:
         return {}

@@ -659,6 +659,7 @@ async def listar_productos(
         # ESTE canal y ESTA cuenta, sin las cerradas. Best-effort y en hilo: es
         # una consulta más y no puede tumbar el listado. `precio`/`precio_base`
         # del padre se conservan: el rango es lo que se muestra.
+        hijos: dict[int, list[str]] = {}
         try:
             wc_ids = [it["wc_id"] for it in items_raw if it.get("wc_id")]
             hijos = (await asyncio.to_thread(channel_read.hijos_por_wc_id, wc_ids)
@@ -686,6 +687,44 @@ async def listar_productos(
                                           "n": len(cobran), "total": len(lista_h)}
         except Exception as exc:  # noqa: BLE001
             log.warning("precio de variantes no disponible (el listado sigue): %s", exc)
+
+        # EL STOCK DE UNA TARJETA DE CANAL ES EL DE LA BODEGA DEL SKU (Eduardo,
+        # 14-oct-2026). La tarjeta pintaba `stock_real`, el espejo de ESTA
+        # publicación, y el de una publicación FULL vale 0 siempre —ML guarda
+        # sus piezas en `stock_full`—: las 645 publicaciones activas en FULL
+        # salían con «0 u» en rojo (ACC-0040-ROJ: 3 en Woo, 5 en FULL en San
+        # Corpe, y su tarjeta de BEKURA, pausada, también en rojo). La regla de
+        # la casa: el espejo se cuenta una vez, la fuente buena es Woo, un
+        # padre suma SOLO las filas de Woo de sus variantes y, si la familia no
+        # tiene ninguna, el MÁXIMO del espejo —jamás la suma—. `stock_real` se
+        # queda como estaba: es lo que ofrece la publicación, y la tarjeta lo
+        # dice al pasar el cursor. Best-effort: sin esto la tarjeta vuelve a
+        # pintar el espejo, como antes.
+        try:
+            skus_b = sorted({it["sku"] for it in items_raw}
+                            | {s for it in items_raw for s in hijos.get(it.get("wc_id")) or []})
+            bod = await asyncio.to_thread(channel_read.stock_bodega, skus_b)
+            for it in items_raw:
+                propia = bod.get(str(it["sku"]).upper()) or {}
+                de_hijos = [b["woo"] for s in hijos.get(it.get("wc_id")) or []
+                            if (b := bod.get(s.upper())) and b.get("woo") is not None]
+                if de_hijos:
+                    it["stock_bodega"], it["stock_bodega_fuente"] = sum(de_hijos), "woo_variantes"
+                elif propia.get("woo") is not None:
+                    it["stock_bodega"], it["stock_bodega_fuente"] = propia["woo"], "woo"
+                elif propia.get("espejo") is not None:
+                    it["stock_bodega"], it["stock_bodega_fuente"] = propia["espejo"], "espejo"
+                # FULL es de Mercado Libre y FBA de Amazon, en TODAS las cuentas:
+                # con el SKU vendiendo desde la bodega del marketplace, un 0 en
+                # la nuestra no es «agotado».
+                filas = inv.get(it["sku"], {})
+                it["full_fba_sku"] = (
+                    sum(int(d.get("stock_full") or 0) for k, d in filas.items()
+                        if k.startswith("mercado_libre|"))
+                    + sum(int(d.get("stock_fba") or 0) for k, d in filas.items()
+                          if k.startswith("amazon|")))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("stock de bodega no disponible (la tarjeta pinta el espejo): %s", exc)
 
     # Marca de validación del costeo (0032). Va después de armar `items_raw`
     # para cubrir TODOS los canales por igual — la tarjeta es la misma en todos.

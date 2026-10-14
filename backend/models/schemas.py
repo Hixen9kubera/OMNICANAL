@@ -134,6 +134,14 @@ class Producto(BaseModel):
     stock_fba: int | None = None      # bodega Amazon (FBA)
     situacion: str | None = None      # estatus del listing (active/paused/published/...)
     estado: str | None = None         # publish / draft / activo / pausado...
+    # Solo en pestañas de canal: el almacén propio DEL SKU (Woo; padres = suma
+    # de sus variantes en Woo; sin fila en Woo, el mayor de los espejos) y de
+    # dónde salió. `stock_real` sigue siendo el espejo de ESTA publicación.
+    stock_bodega: int | None = None
+    stock_bodega_fuente: str | None = None   # woo | woo_variantes | espejo
+    # FULL (ML) + FBA (Amazon) del SKU en TODAS sus cuentas: decide si un 0 en
+    # bodega es «agotado» o «vende desde la bodega del marketplace».
+    full_fba_sku: int | None = None
 
     # Categoría completa (todos los niveles) del canal solicitado
     categoria_path: list[CategoriaNivel] = Field(default_factory=list)
