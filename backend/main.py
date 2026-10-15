@@ -28,7 +28,7 @@ from routers import (alertas as r_alertas, auth, automatizacion, canales, checkl
                      crear, fanout,
                      fba, fulfillment, fulfillment_envios, fulfillment_full, ia, imagenes, inventario, investigacion, metricas, migracion,
                      ordenes_venta,
-                     productos, publicaciones, publicar, publico, radar_precios, resolver, sync, ventas,
+                     pricing, productos, publicaciones, publicar, publico, radar_precios, resolver, sync, ventas,
                      tiktok, webhooks)
 from services import db, odoo, scheduler, woocommerce
 
@@ -220,7 +220,7 @@ app = FastAPI(
         "Temu, Shein)."
     ),
 
-    version="0.649.0",
+    version="0.650.0",
     lifespan=lifespan,
     # /docs, /redoc y /openapi.json publican el mapa COMPLETO de los 84
     # endpoints: rutas, parámetros y esquemas. Con la API abierta eso es un
@@ -318,6 +318,10 @@ app.include_router(investigacion.router)
 # y el piso por clase. SOLO LECTURA y sólo admin con sesión — ver la
 # cabecera de routers/radar_precios.py.
 app.include_router(radar_precios.router)
+# PRICING (15-oct-2026): el «Monitor de precios FULL» de José, que tomó el lugar
+# del Radar en la barra. SOLO LECTURA y sólo admin con sesión: sirve una FOTO
+# (las reglas de «Qué hacer» corren en la pantalla) — ver routers/pricing.py.
+app.include_router(pricing.router)
 # Inventario · Órdenes de venta PROPIAS (folio OV-00001…): el documento que
 # hasta hoy sólo vivía en Odoo. Sólo escribe en `ventas.ov_*`; no toca Odoo, Woo
 # ni ningún marketplace. Confirmar/reservar/entregar, detrás de
@@ -334,7 +338,7 @@ def raiz():
     return {
         "app": "OMNICANAL Â· Kubera",
 
-        "version": "0.649.0",
+        "version": "0.650.0",
         "docs": "/docs",
         "canales": [c["id"] for c in lista_canales()],
     }

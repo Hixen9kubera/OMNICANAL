@@ -1913,6 +1913,20 @@ class Settings(BaseSettings):
     # aunque el vigilante despierte cada `alertas_min`.
     alertas_costos_hora_utc: int = 15
 
+    # ── PRICING (v0.650.0): la foto del «Monitor de precios FULL» ──────────
+    # La pestaña PRICING sirve una FOTO (precios, ventas, visitas y revisión de
+    # competencia de las publicaciones FULL de ML) que arma
+    # `scripts/pricing_preparar_foto.py`. Se busca primero en `pricing_foto_dir`
+    # (relativa a backend/); si ahí no está, en el repo PRIVADO de GitHub
+    # `pricing_github_repo` con `pricing_github_token` (basta permiso de
+    # lectura de contenidos). Sin ninguna de las dos, la pestaña lo dice y no
+    # pinta nada. SOLO LECTURA: nada de esto escribe en ningún lado.
+    pricing_foto_dir: str = "data/pricing"
+    pricing_github_repo: str = "joseKubera/precios_full"
+    pricing_github_ref: str = "main"
+    pricing_github_ruta: str = "monitor/foto"
+    pricing_github_token: str = ""
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

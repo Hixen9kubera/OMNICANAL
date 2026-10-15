@@ -107,6 +107,10 @@ REGLAS: tuple[tuple[str, str, str], ...] = (
     # admin. El router exige además admin CON SESIÓN por su cuenta
     # (`solo_admin`), igual que investigación.
     ("GET", "/api/radar-precios", "admin"),
+    # PRICING (15-oct-2026, v0.650.0): el «Monitor de precios FULL» que tomó el
+    # lugar del Radar en la barra. Lectura pura, sólo admin: la foto trae ventas
+    # y visitas por publicación. El router exige además admin CON SESIÓN.
+    ("GET", "/api/pricing", "admin"),
     # Estas cuatro familias YA pedían admin —por omisión, no por decisión— y
     # está bien que lo pidan: sus pestañas son soloAdmin y traen datos del
     # comprador o tokens. Se listan para que el auditor pueda llegar a CERO;

@@ -29,7 +29,7 @@ import {
   Warehouse,
   ClipboardCheck,
   ClipboardList,
-  Radar,
+  BadgeDollarSign,
 } from "lucide-react";
 import NotificationBell from "./NotificationBell";
 import IndicadorIA from "./fulfillment/IndicadorIA";
@@ -196,10 +196,13 @@ const ITEMS: NavItem[] = [
         descripcion: "Qué webhooks existen, si están vivos y qué han recibido" },
     ],
   },
-  // RADAR DE PRECIOS (F1, 28-sep-2026): precio por mercado en Mercado Libre,
-  // SOLO LECTURA — la pantalla no cambia ningún precio. Oculta: solo admin
-  // (Brandon, José y Eduardo). BETA mientras sea v0 (solo ML).
-  { id: "radar", label: "Radar", icon: Radar, href: "/radar",
+  // PRICING (15-oct-2026, Brandon): el «Monitor de precios FULL» de José —
+  // precio, competencia, stock, ventas y «Qué hacer» de cada publicación FULL
+  // de ML, con las reglas de SIN VENTAS de Brandon—. Tomó el LUGAR de Radar:
+  // la pestaña de Radar se quitó de la barra; su ruta /radar sigue viva para
+  // quien tenga el enlace. SOLO LECTURA y, como Radar, oculta: solo admin
+  // (la foto trae ventas y visitas por publicación). BETA: hoy es una foto.
+  { id: "pricing", label: "Pricing", icon: BadgeDollarSign, href: "/pricing",
     soloAdmin: true, beta: true, oculta: true },
   { id: "facturas", label: "Facturas", icon: FileText, proximamente: true,
     soloAdmin: true },

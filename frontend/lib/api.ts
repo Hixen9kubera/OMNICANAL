@@ -2463,6 +2463,112 @@ export function radarPreciosSku(sku: string, signal?: AbortSignal): Promise<Rada
   return getJSON<RadarDetalle>(`/api/radar-precios/${encodeURIComponent(sku)}`, signal);
 }
 
+// ── PRICING: el «Monitor de precios FULL» (solo admin, solo lectura) ─────────
+//
+// Una FOTO que arma `backend/scripts/pricing_preparar_foto.py` a partir del
+// artifact de José (14-oct-2026). El backend la sirve tal cual; las reglas de
+// «Qué hacer» corren en `components/pricing/reglas.ts`, con umbrales editables.
+// Los arreglos compactos (órdenes y rivales) conservan la forma del artifact.
+
+/** [día (0 = meta.d0), precio cobrado, piezas, 1 = cancelada]. */
+export type PricingOrden = [number, number, number, number];
+
+/** [título, precio, vendedor, url, modo, nuestras piezas, sus piezas, miniatura]. */
+export type PricingRival = [string, number, string | null, string, string, number | null, number | null, number | null];
+
+export interface PricingComp {
+  fuente?: string;
+  termino?: string;
+  nota?: string;
+  /** true = hay precio de competencia fiel (mediana de comparables). */
+  ok?: boolean;
+  med?: number | null;
+  min?: number | null;
+  max?: number | null;
+  n?: number | null;
+  conf?: string;
+  motivo?: string;
+  busqueda_mala?: boolean;
+  /** Menos de 2 rivales en la misma cantidad: el revisor convirtió packs. */
+  convertido?: boolean;
+  adultos?: boolean;
+  visual?: { n: number; no: number; no_se: number; busqueda?: boolean; distintas?: boolean } | null;
+}
+
+export interface PricingCat {
+  v: "correcta" | "incorrecta" | "revisar";
+  actual?: string | null;
+  id?: string | null;
+  sug?: string | null;
+  motivo?: string | null;
+}
+
+export interface PricingPub {
+  /** MLM… */
+  id: string;
+  /** Cuenta de ML: BEKURA o SANCORFASHION. */
+  c: string;
+  sku: string | null;
+  t: string;
+  u: string;
+  st: string;
+  /** Fecha de publicación (YYYY-MM-DD). */
+  pub?: string | null;
+  /** Piezas disponibles en FULL. */
+  stock: number;
+  sold?: number;
+  /** a = lo que paga el comprador (sale_price); n = precio normal. */
+  p: { a: number | null; n: number | null; tipo?: string | null };
+  comp?: PricingComp | null;
+  cat: PricingCat;
+  o: PricingOrden[];
+  /** Visitas por día, del día 0 (meta.d0) a hoy. */
+  vis: number[];
+  /** Celda en las hojas `p*` de miniaturas. */
+  img: number | null;
+}
+
+export interface PricingRivales {
+  termino: string;
+  capturado: string;
+  r: PricingRival[];
+}
+
+export interface PricingMeta {
+  img: { celda: number; lado: number; pubs: string; riv: string };
+  /** Día de corte de ventas y visitas (YYYY-MM-DD). */
+  hoy: string;
+  /** El día 0 de los arreglos de visitas y órdenes. */
+  d0: string;
+  generado: string;
+  fallas?: string[];
+  n?: number;
+  preparado?: string;
+}
+
+export interface PricingFoto {
+  meta: PricingMeta;
+  pubs: PricingPub[];
+  riv: Record<string, PricingRivales>;
+}
+
+/** La foto completa. 404 = no hay foto todavía (ver backend/services/pricing_monitor.py). */
+export function pricingMonitor(signal?: AbortSignal): Promise<PricingFoto> {
+  return getJSON<PricingFoto>("/api/pricing/monitor", signal);
+}
+
+/**
+ * Una hoja de miniaturas como URL de objeto. Va por `fetchSesion` porque un
+ * `background-image: url(…)` directo al backend no lleva el token. `version`
+ * (la fecha de la foto) cambia la URL cuando llega una foto nueva.
+ */
+export async function pricingHoja(nombre: string, version: string): Promise<string> {
+  const ruta = `/api/pricing/img/${encodeURIComponent(nombre)}?v=${encodeURIComponent(version)}`;
+  const res = await fetchSesion(`${BASE}${ruta}`);
+  if (!res.ok) throw await errorDeRespuesta(res, ruta);
+  return URL.createObjectURL(await res.blob());
+}
+
 // ── Fan-out · Devoluciones (Operaciones › Fan-out, solo admin; solo lee) ─────
 
 import type { BandejaDevol, DetalleDevol } from "@/components/fanout/tipos";

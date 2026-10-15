@@ -1001,6 +1001,74 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.650.0 — PRICING: el «Monitor de precios FULL» de José entra al panel en lugar de Radar, con las reglas de SIN VENTAS en «Qué hacer»
+
+**Qué pidió Brandon (15-oct-2026).** Quitar la pestaña Radar y poner PRICING con TODO el artifact de José
+(«Monitor de precios FULL», 14-oct), y meter en la columna «Qué hacer» estas reglas para los productos
+SIN VENTAS de las dos cuentas de ML:
+
+1. Descuento super agresivo (más de 60 %): solo 3 % más esta semana. Si vende, mantener; si no, ajustar el
+   precio para mostrar 30 % de descuento.
+2. Sin descuento: 5 % si el ticket es menor a $300; 10 % si es mayor.
+3. Con descuento menor al 60 %: 5 % más.
+
+**Qué es la pestaña.** Las 658 publicaciones FULL de BEKURA y SANCORFASHION: precio (`sale_price` de ML) y
+normal, competencia revisada con fotos, «vs. comp.», stock en FULL, ventas 30 d, conversión, «se agota»,
+venta 7 d (hoy y con lo sugerido), categoría y «Qué hacer». Tarjetas por acción, filtros (ventas,
+categoría, competencia, cuenta, búsqueda, orden), «Reglas y umbrales» editables (se recuerdan en el
+navegador), detalle por fila con «Qué hacer y por qué», competencia, categoría, historia de precio y la
+gráfica (precio de cada venta, visitas y conversión por semana, proyección para agotar) y el diálogo de lo
+scrapeado. Oculta y solo admin, como Radar. **Solo lectura: no cambia ningún precio.**
+
+**Cómo quedaron las reglas nuevas** (`frontend/components/pricing/reglas.ts::accionSinVentas`):
+
+- «Sin ventas» = cero piezas pagadas en 30 días, con stock en FULL. Van **antes** que las de José (después
+  de «sin stock») y no dependen de la competencia. Con la foto del 14-oct son 307: **33** agresivas, **150**
+  con descuento y **124** sin descuento (29 de ticket < $300, 95 de $300 o más).
+- El % adicional se suma **al descuento sobre el precio normal** (ORG-0281-CAF: $1,000 −62 % → −65 % =
+  $350). En «Reglas y umbrales» se puede cambiar a «sobre el precio de hoy» (× 0.97).
+- «Si no vende, mostrar 30 %» se lee como **bajar el precio normal para que el MISMO precio muestre 30 %**
+  (ORG-0281-CAF: normal $500, se sigue cobrando $350): subir el precio de algo que no vende no tiene
+  sentido. La otra lectura (cobrar normal − 30 %) es una opción del mismo panel. La celda lo dice en una
+  segunda línea: «sin venta en 7 d → normal $500 (−30 %)».
+- Los precios van en pesos enteros, el propuesto redondeado hacia ABAJO y el normal re-basado hacia
+  ARRIBA: el descuento que se ve nunca queda corto ($188 × 0.95 = $178.6 → $178 = 5.3 %; con redondeo normal
+  serían $179 = 4.8 % y ML pide al menos 5 %). Verificado en las 307: ninguna queda bajo su %.
+- La foto no sabe si el ajuste de la semana ya se aplicó: se ve en la siguiente foto, por las ventas.
+- Un selector apaga las reglas nuevas y deja el monitor como lo dejó José.
+
+**Fidelidad del port.** Las funciones de José (`metricas`, `historia`, `accion`, `proyeccion7`) se
+portaron a TypeScript y se compararon contra el JS original del artifact sobre las 658 publicaciones con
+las reglas nuevas apagadas: **0 diferencias** en acción, precio, texto, métricas y proyección.
+
+**De dónde salen los datos.** Es una FOTO, no datos en vivo: `backend/scripts/pricing_preparar_foto.py`
+toma el JSON (o el HTML) del artifact y sus hojas de miniaturas y deja `monitor.json.gz` (0.9 MB; 3.6 MB
+sin comprimir) + `img/`. Las miniaturas de NUESTRAS publicaciones venían regadas en 27 hojas (16 MB); se
+re-empacan en 2 (`p0`, `p1`) para no bajar todo al abrir la tabla, y las de rivales (`s*`) se piden solo al
+abrir lo scrapeado de un SKU (casi siempre una hoja). El backend (`services/pricing_monitor.py`) la busca
+en `PRICING_FOTO_DIR` (por omisión `backend/data/pricing`) y, si no está, en el repo **privado**
+`PRICING_GITHUB_REPO` (por omisión `joseKubera/precios_full`, ruta `monitor/foto`) con
+`PRICING_GITHUB_TOKEN`. Sin ninguna, la pestaña dice «No hay foto». Se sirve comprimida y en caché 10 min.
+
+**Contra la competencia revisada del 15-oct (v0.649.0 de Eduardo).** Se cruzó la foto con la competencia que
+Eduardo cargó en kubera y regeneró en `competencia_full.html` (rama `competencia-revisada-15oct` de
+`joseKubera/precios_full`: 635 publicaciones, 11,470 rivales). Es **la misma revisión**: 11,395 rivales en
+las dos, 10,843 (95 %) con la misma clase. Lo distinto son casi todo **marcas de renombre** (411 que José
+apartó y kubera no clasifica, 108 que kubera cuenta como «mismo»). De los 370 SKUs con referencia en las dos,
+285 tienen la misma mediana (±2 %), 61 se mueven 2–15 % (precios de hoy de los rivales) y 24 más de 15 %,
+casi siempre por marcas (CALZ-0119-NEG-*: $330–381 en la foto, $848–917 contando marcas). La foto sigue
+siendo la fuente de PRICING: es la única con ventas y visitas por día, y su media ya aparta las marcas.
+
+**Rutas.** `GET /api/pricing/monitor` y `GET /api/pricing/img/{hoja}`: solo admin con sesión
+(`solo_admin`) + regla `("GET", "/api/pricing", "admin")` en `core/rbac.py`. Solo GET.
+
+**Radar.** Sale de la barra; su ruta `/radar` y su backend siguen vivos para quien tenga el enlace.
+
+**Pruebas.** `tests/test_pricing_monitor.py` (8): acceso 401/403 sin leer la foto, gzip y plano, nombres de
+hoja raros fuera, sin foto = 404, foto rota = 502, lectura de GitHub con token (y 401 = falla de fuente), y
+el re-empaque de miniaturas. Frontend: `tsc` y `next build` limpios; revisado en navegador a 1600, 1366 y
+390 px contra la foto real.
+
 ### v0.649.0 — Precio de mercado con el juez: la tarjeta «A precio de mercado» cuenta solo a los rivales que son el MISMO producto (bandera `COMPETENCIA_MERCADO_JUEZ`, apagada)
 
 **Qué pidió Eduardo (14-oct-2026).** Cargar a omnicanal la competencia revisada de las publicaciones FULL

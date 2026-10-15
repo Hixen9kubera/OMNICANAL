@@ -1,0 +1,62 @@
+"""
+pricing.py — La pestaña PRICING (v0.650.0): el «Monitor de precios FULL».
+
+  GET /api/pricing/monitor      → la foto completa (meta, pubs, riv), comprimida
+  GET /api/pricing/img/{hoja}   → una hoja de miniaturas (`p0`, `s12`…), JPEG
+
+SOLO LECTURA. Ninguna ruta escribe: la pantalla SUGIERE qué hacer con cada
+precio y no cambia ninguno. El servicio (`services/pricing_monitor.py`) solo
+lee la foto de su carpeta o de GitHub.
+
+ACCESO: sólo admin con sesión del panel (`solo_admin`, igual que el Radar al que
+reemplaza en la barra): la foto trae ventas y visitas por publicación. Además la
+regla explícita ("GET", "/api/pricing", "admin") en core/rbac.py.
+
+La foto viaja ya comprimida (`Content-Encoding: gzip`, ≈0.9 MB en vez de 3.6):
+el navegador la descomprime solo. Un cliente que no acepte gzip la recibe plana.
+"""
+from __future__ import annotations
+
+import gzip
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import Response
+
+from routers.investigacion import solo_admin
+from services import pricing_monitor as pm
+
+log = logging.getLogger("omnicanal.pricing")
+router = APIRouter(prefix="/api/pricing", tags=["pricing"])
+
+
+def _http(exc: Exception) -> HTTPException:
+    if isinstance(exc, pm.SinFoto):
+        return HTTPException(status_code=404, detail=str(exc))
+    log.warning("pricing: %s", exc)
+    return HTTPException(status_code=502, detail=str(exc))
+
+
+@router.get("/monitor")
+async def monitor(request: Request, quien=Depends(solo_admin)) -> Response:
+    try:
+        gz, meta = await pm.foto()
+    except (pm.SinFoto, pm.FalloFuente) as exc:
+        raise _http(exc) from exc
+    cab = {"Cache-Control": "private, no-store", "X-Pricing-Generado": str(meta.get("generado", ""))}
+    if "gzip" in request.headers.get("accept-encoding", "").lower():
+        return Response(content=gz, media_type="application/json",
+                        headers={**cab, "Content-Encoding": "gzip", "Vary": "Accept-Encoding"})
+    return Response(content=gzip.decompress(gz), media_type="application/json", headers=cab)
+
+
+@router.get("/img/{hoja}")
+async def imagen(hoja: str, quien=Depends(solo_admin)) -> Response:
+    try:
+        dato = await pm.hoja(hoja)
+    except (pm.SinFoto, pm.FalloFuente) as exc:
+        raise _http(exc) from exc
+    # La pantalla pide `?v=<generado>`: una foto nueva cambia la URL y no se
+    # mezcla con la hoja vieja que el navegador tenga guardada.
+    return Response(content=dato, media_type="image/jpeg",
+                    headers={"Cache-Control": "private, max-age=86400"})
