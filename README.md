@@ -1001,6 +1001,39 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.653.0 — PRICING con datos: la foto del Monitor viaja en el repo y «Qué hacer» muestra la PROMOCIÓN de los productos sin ventas
+
+**Qué pidió Brandon (15-oct-2026).** La pestaña PRICING de v0.650.0 salió a producción diciendo «No hay foto del
+monitor»: el código estaba, los datos no. Pidió traer los datos a OMNICANAL y subirlo, y en la columna «Qué hacer»
+mostrar el ajuste de precio con promoción de los productos sin ventas (los ~260 de su captura: «Sin ventas» +
+categoría «Correctas»).
+
+**Los datos.** `backend/data/pricing/` (18 MB): `monitor.json.gz` + `img/` —la foto que deja
+`scripts/pricing_preparar_foto.py` a partir del artifact de José del 14-oct (sigue siendo su versión vigente)—
+y un README de cómo se actualiza. Es la carpeta que el backend lee por omisión (`PRICING_FOTO_DIR`), así que **no
+hace falta ninguna variable en Railway**. ⚠️ El repo es público: quedan visibles las ventas y visitas por día de
+las 658 publicaciones FULL y la revisión de competencia. Lo decidió Brandon sabiéndolo (la otra opción era el
+repo privado de José con un token en Railway; el cargador la sigue soportando).
+
+**La columna.** En las filas sin ventas, «Qué hacer» ya no dice «$350 −8 % · desc 65 %», sino la promoción que hay
+que poner en ML:
+
+```
+Sin ventas: +3 % (ya > 60 %)
+promo  $1,000 → $350  −65 %        ← precio normal tachado → precio con promoción
+hoy $380 (−62 %) · −8 %            ← lo que se cobra hoy y cuánto cambia
+7 d sin venta: normal $500 (−30 %) ← solo las agresivas: el paso siguiente
+```
+
+Con «Sin ventas» + «Correctas» la tabla da **260** (la cuenta de la captura): **21** con descuento agresivo
+(+3 %), **133** con descuento de 60 % o menos (+5 %) y **106** sin descuento (5 % bajo $300 / 10 %). Sin el
+filtro de categoría son 307 (28 incorrecta, 19 revisar). Las celdas largas se acortaron para que la columna
+fija no tape «Venta 7 d».
+
+**Pruebas.** `tests/test_pricing_monitor.py` suma `FotoDelRepo`: la foto del repo abre, es una foto válida y
+trae TODAS las hojas de miniaturas que usa (9 pruebas). Revisado en navegador con el backend leyendo la carpeta
+por omisión, sin variables: 260 filas y las tres reglas.
+
 ### v0.652.0 — ETL de core.products: Odoo RETIRADO; `odoo_id` y la etiqueta `odoo` se conservan como hecho histórico (no se borra la liga SKU ↔ copia de Odoo)
 
 **Por qué (urgente, 15-oct-2026).** Eduardo decidió: «ya no operaremos con Odoo para nada». La cuenta API de Odoo está bloqueada a propósito desde ~18:30 UTC. El cron `etl-core-products` (06:15 UTC) seguía intentando leer Odoo y, al fallar, **ponía `odoo_id = NULL` en 13,177 filas de `core.products` y quitaba `odoo` de `source`**, aunque su aviso decía «odoo_id no se actualizará». Esa columna es la ÚNICA liga entre cada SKU y la copia de Odoo del 15-oct (respaldo cifrado). El acta habría salido «ok», porque `seam_gap` solo mira name, wc_id y status.

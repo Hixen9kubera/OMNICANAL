@@ -181,6 +181,27 @@ class GitHub(Base):
         self.assertIn("401", r.json()["detail"])
 
 
+class FotoDelRepo(unittest.TestCase):
+    """La foto que viaja en `backend/data/pricing` (la que lee producción sin variables)."""
+
+    def test_abre_y_trae_todas_las_hojas_que_usa(self):
+        carpeta = Path(__file__).resolve().parents[1] / "data" / "pricing"
+        archivo = carpeta / "monitor.json.gz"
+        if not archivo.is_file():
+            self.skipTest("sin foto en el repo")
+        gz = archivo.read_bytes()
+        meta = pm.validar(gz)
+        datos = json.loads(gzip.decompress(gz))
+        lado = meta["img"]["lado"]
+        usadas = {f"{meta['img']['pubs']}{p['img'] // (lado * lado)}" for p in datos["pubs"] if p.get("img") is not None}
+        usadas |= {f"{meta['img']['riv']}{r[7] // (lado * lado)}" for v in datos["riv"].values() for r in v["r"]
+                   if r[7] is not None}
+        faltan = sorted(h for h in usadas if not (carpeta / "img" / f"{h}.jpg").is_file())
+        self.assertEqual(faltan, [])
+        self.assertTrue(all(pm.NOMBRE_HOJA.match(h) for h in usadas))
+        self.assertGreater(len(datos["pubs"]), 0)
+
+
 class Preparar(unittest.TestCase):
     def test_reempaca_las_nuestras_y_copia_solo_las_hojas_usadas(self):
         from PIL import Image

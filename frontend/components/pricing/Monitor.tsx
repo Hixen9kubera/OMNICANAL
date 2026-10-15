@@ -578,6 +578,41 @@ function CeldaAccion({ f, R }: { f: Fila; R: Reglas }) {
   if (!a.precio) return <span className={`pill p-${SENTIDO[a.k]}`}>{texto}</span>;
   const d = descuentoPara(m.normal, a.precio);
   const cambio = a.precio / m.precio - 1;
+  // SIN VENTAS: el ajuste se lee como la PROMOCIÓN que hay que poner en ML —
+  // precio normal tachado → precio con promoción y su % — y debajo cuánto
+  // cambia contra lo que se cobra hoy.
+  if (ES_SV(a.k)) {
+    const normal = m.normal && m.normal > 0 ? m.normal : m.precio;
+    const desc = a.descNuevo ?? (normal > 0 ? 1 - a.precio / normal : 0);
+    return (
+      <>
+        <span className={`pill p-${SENTIDO[a.k]}`}>{texto}</span>
+        <div className="promo" title={`Promoción en ML: precio normal ${pesos(normal)} con ${Math.round(desc * 100)} % de descuento`}>
+          <span className="lbl">promo</span>
+          <s>{pesos(normal)}</s> → <b>{pesos(a.precio)}</b> <span className="pct">−{Math.round(desc * 100)} %</span>
+        </div>
+        <div className="luego">
+          hoy {pesos(m.precio)}
+          {m.desc > 0.004 ? ` (−${Math.round(m.desc * 100)} %)` : " sin promo"} ·{" "}
+          {cambio > 0 ? "+" : "−"}
+          {Math.abs(Math.round(cambio * 100))} %
+        </div>
+        {a.luego && (
+          <div
+            className="luego"
+            title={R.svLuego === "normal"
+              ? `Si en 7 días no vende: precio normal ${pesos(a.luego.normal)} y se sigue cobrando ${pesos(a.luego.precio)} (${Math.round(a.luego.desc * 100)} % de descuento)`
+              : `Si en 7 días no vende: cobrar ${pesos(a.luego.precio)} (precio normal ${pesos(a.luego.normal)} con ${Math.round(a.luego.desc * 100)} % de descuento)`}
+          >
+            7 d sin venta:{" "}
+            {R.svLuego === "normal"
+              ? `normal ${pesos(a.luego.normal)} (−${Math.round(a.luego.desc * 100)} %)`
+              : `${pesos(a.luego.precio)} (−${Math.round(a.luego.desc * 100)} %)`}
+          </div>
+        )}
+      </>
+    );
+  }
   const titulo = d
     ? d.subirNormal
       ? "Hay que subir el precio normal"

@@ -105,6 +105,10 @@
 .pm .sinref .pill { cursor: help; }
 .pm .obj { font-family: var(--font-num); font-size: 12.5px; margin-top: 3px; white-space: nowrap; }
 .pm .luego { font-size: 11.5px; color: var(--muted); margin-top: 2px; white-space: nowrap; }
+.pm .promo { font-family: var(--font-num); font-size: 12.5px; margin-top: 4px; white-space: nowrap; }
+.pm .promo .lbl { font-family: inherit; font-size: 11px; color: var(--muted); margin-right: 4px; }
+.pm .promo b { font-weight: 600; }
+.pm .promo .pct { display: inline-block; padding: 0 6px; border-radius: 999px; background: var(--down-wash); color: var(--down); font-weight: 600; }
 .pm .cuenta { font-size: 11px; font-weight: 600; letter-spacing: .04em; color: var(--muted); }
 .pm .vacio { padding: 32px; text-align: center; color: var(--muted); }
 .pm .total { margin: 0; font-size: 13.5px; color: var(--muted); }
