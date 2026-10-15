@@ -1001,6 +1001,27 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.648.0 — Editor de imágenes: si Gemini está saturado, espera y reintenta solo (10, 30 y 60 s) en vez de fallar al primer 503
+
+**Qué pasó.** Andrea, 15-oct-2026: «¿por qué no se me procesan las imágenes de TEC-0289-NEG?». De 8:58 a
+9:06 (CDMX) lo intentó 8 veces: 7 murieron en `Gemini HTTP 503: This model is currently experiencing high
+demand` y una en `ReadTimeout`. No era el producto ni omnicanal: Google tenía saturado
+`gemini-3-pro-image-preview`. Pero `_gemini_edit` daba UN solo reintento a los 8 s —nada para una
+saturación— y la única salida era seguir dándole clic.
+
+**El arreglo.** `imagenes_editor._gemini_edit`: ante 429/500/502/503/504 espera 10, 30 y 60 s y reintenta,
+**sin gastar** los intentos de `retries` (así el candado del marco, que llama con `retries=1`, también
+aguanta una saturación). Cada espera se ve en la etiqueta de la imagen del Studio: «La IA está saturada;
+reintento n de 3 en N s…» (el `avisar` ya existía para el candado del marco y ahora se pasa también a
+`_gemini_edit`). Agotadas las esperas sigue el camino de siempre y devuelve el error de Google.
+
+**Lo que NO cambia.** Un 400 u otro error que no es saturación se comporta igual que antes. El
+`ReadTimeout` tampoco entra en las esperas: cada uno ya costó 240 s. En el peor caso una imagen tarda
+~100 s más antes de reportar el error; las 3 imágenes en paralelo esperan cada una por su lado.
+
+**Pruebas.** `tests/test_imagenes_saturacion.py` (5): 503→espera→sale; saturado siempre→error de Google;
+el reintento del marco no se gasta; 400 y timeout sin esperas largas.
+
 ### v0.647.0 — Guardia de la pausa: TikTok se lee COMPLETO, sin el filtro de estado — un «0 a la venta» ya no puede ser un filtro mal entendido
 
 **Qué pasó.** El primer barrido de la guardia en producción (v0.646.0, 14-oct 13:57 CDMX) contestó:

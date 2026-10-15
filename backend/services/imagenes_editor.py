@@ -286,8 +286,18 @@ async def _gemini_describe_person(img_b64: str, mime: str) -> Optional[str]:
     return None
 
 
+# Gemini saturado («This model is currently experiencing high demand»): se
+# espera y se reintenta, aparte de `retries`. Antes un 503 tenía UN reintento a
+# los 8 s y la usuaria terminaba dándole clic una y otra vez (TEC-0289-NEG,
+# 15-oct: 7 de 8 intentos en 503). Un ReadTimeout NO entra aquí: cada uno ya
+# costó `espera` segundos.
+_HTTP_SATURADO = {429, 500, 502, 503, 504}
+_ESPERAS_SATURACION = (10, 30, 60)
+
+
 async def _gemini_edit(
     img_b64: str, mime: str, prompt: str, retries: int = 2, espera: float = 240.0,
+    avisar: Any = None,
 ) -> tuple[Optional[bytes], str, Optional[str]]:
     """Edita la imagen con Gemini. Devuelve (bytes|None, mime_salida, error)."""
     if not settings.gemini_api_key:
@@ -300,15 +310,29 @@ async def _gemini_edit(
         "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
     }
     last_err = "sin imagen en la respuesta"
-    for intento in range(retries):
+    intento, saturado = 0, 0
+    while intento < retries:
         if intento > 0:
             await asyncio.sleep(8)
+        contado = False
         try:
             async with httpx.AsyncClient(timeout=espera) as cli:
                 r = await cli.post(
                     f"{_GEMINI_BASE}/{GEMINI_MODEL}:generateContent",
                     params={"key": settings.gemini_api_key}, json=body,
                 )
+            if r.status_code in _HTTP_SATURADO and saturado < len(_ESPERAS_SATURACION):
+                pausa = _ESPERAS_SATURACION[saturado]
+                saturado += 1
+                last_err = f"Gemini HTTP {r.status_code}: {r.text[:160]}"
+                log.warning("%s — saturado, reintento %s de %s en %s s", last_err,
+                            saturado, len(_ESPERAS_SATURACION), pausa)
+                if avisar:
+                    avisar(f"La IA está saturada; reintento {saturado} de "
+                           f"{len(_ESPERAS_SATURACION)} en {pausa} s…")
+                await asyncio.sleep(pausa)
+                continue            # no gasta un intento de `retries`
+            intento, contado = intento + 1, True
             if r.status_code != 200:
                 last_err = f"Gemini HTTP {r.status_code}: {r.text[:160]}"
                 log.warning(last_err)
@@ -325,6 +349,8 @@ async def _gemini_edit(
                         textos.append(part["text"].strip())
             last_err = "sin imagen" + (f" — {' | '.join(textos)[:200]}" if textos else "")
         except Exception as exc:  # noqa: BLE001
+            if not contado:
+                intento += 1
             last_err = f"{type(exc).__name__}: {exc}"
             log.warning("gemini_edit: %s", last_err)
     return None, mime, last_err
@@ -425,7 +451,7 @@ async def _editar_sin_marco(
     justo el que no dibuja el marco. Si ninguno entrega una foto limpia,
     devuelve None con el motivo: una foto con marco NO se sube.
     """
-    edited, out_mime, err = await _gemini_edit(img_b64, mime, prompt)
+    edited, out_mime, err = await _gemini_edit(img_b64, mime, prompt, avisar=avisar)
     if edited is None or not flags.get("quitar_logos"):
         return edited, out_mime, err, 0, prompt
     if not await asyncio.to_thread(_marco_agregado, original, edited):
@@ -444,7 +470,7 @@ async def _editar_sin_marco(
             flags.get("cambiar_modelo", False), person_desc, sin_marco=ultimo,
         ) or prompt
         nueva, nuevo_mime, nuevo_err = await _gemini_edit(
-            img_b64, mime, otro, retries=1, espera=_ESPERA_REINTENTO_MARCO)
+            img_b64, mime, otro, retries=1, espera=_ESPERA_REINTENTO_MARCO, avisar=avisar)
         if nueva is None:
             sin_respuesta = nuevo_err
             continue
