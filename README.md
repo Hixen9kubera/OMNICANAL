@@ -1001,6 +1001,45 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.651.0 — Análisis › Conversión: ventas contra visitas por publicación, con mapa de burbujas y bandeja de alertas
+
+**Qué se pidió.** Eduardo, 15-oct-2026: «un panel nuevo para gestionar el monitoreo de las ventas a visitas con las
+burbujitas» del Monitor de precios FULL (artifact de la sesión COMPETENCIA), para TODAS las publicaciones. De tres
+diseños eligió el **mapa de burbujas** como pantalla principal y la **bandeja de alertas** como segunda vista, en
+Análisis › Conversión (`/monitoreo` ya existe y es otra cosa: quién hizo qué).
+
+**No es PRICING.** PRICING (v0.650.0) es el Monitor de FULL de José dentro del panel: una FOTO de 658 publicaciones
+FULL con reglas de precio. Conversión lee en vivo TODAS las publicaciones de ML y no sugiere precios.
+
+**Qué hace.**
+- **Mapa** (`components/conversion/MapaBurbujas.tsx`): una burbuja por publicación de ML; X = visitas en 30 días,
+  Y = piezas vendidas en la misma ventana, las dos en escala logarítmica. En log-log una conversión fija es una
+  diagonal: la línea índigo es la meta. Cuatro grupos: Ganadoras, Tráfico sin venta, Joyas ocultas y Dormidas; las de
+  menos de 30 visitas van punteadas («muy pocas para juzgar»). Tamaño = stock (o ingreso o precio); color = grupo o
+  cuenta. Cada burbuja es un `<button>`: al tocarla se ve su resumen y se abre el detalle.
+- **Bandeja** (`BandejaAlertas.tsx`): tarjetas por alerta que filtran y una tabla ordenada por las piezas que faltan
+  para la meta con el tráfico que ya tiene. Alertas: muchas visitas y casi sin ventas, la conversión cayó, se agota y
+  convierte bien, casi sin visitas, las visitas bajaron.
+- **Detalle** (`DetallePublicacion.tsx`): las burbujas de COMPETENCIA para una publicación — cada venta por día y
+  precio (radio 4 + 3·√piezas, hueca si se canceló), visitas por día y conversión por semana contra la meta; 30, 90 o
+  150 días.
+- **Otros canales**: Amazon, TikTok, Temu y Walmart no dan visitas: se ven sus piezas por SKU y las visitas como
+  «sin medición» con la textura rayada de Monitoreo (no es cero).
+
+**De dónde salen los datos** (`routers/conversion.py`, solo lectura):
+- Visitas: `enrich.market_listing_metrics.visits_30d` (Competencia la refresca a diario), elegida por VALOR y no por
+  fila (lección de la 0039). Es un total de 30 días; la medición del mes anterior hace de «antes».
+- Piezas: `channel.order_items` × `channel.orders` por `item_id` = MLM, contadas **en la misma ventana que la
+  medición de visitas** para que la conversión compare lo mismo. Canceladas = `estado_canal ilike 'cancel%'`.
+- Visitas por día del detalle: de `market.item_dia_v` si la 0062 está aplicada (hoy solo el sandbox); si no, se le
+  piden a ML al abrir (`/items/{id}/visits/time_window`, una llamada, caché de 6 h, sin el día de hoy a medias).
+
+**Lo que NO hace.** No escribe nada, no enciende ningún proceso y no agrega variables. Los umbrales viven en el
+navegador de cada quien (`lib/conversion.ts`, localStorage) y son **propuestos**: Eduardo no los ha confirmado,
+salvo «conversión ≥ 5 % y stock para ≤ 9 días», que viene de sus reglas de FULL.
+
+**Verificado** en el sandbox (backend local con todo lo que escribe apagado y un proxy que solo deja pasar GET):
+574 publicaciones activas, lista en ~1 s y detalle en ~2 s.
 ### v0.650.0 — PRICING: el «Monitor de precios FULL» de José entra al panel en lugar de Radar, con las reglas de SIN VENTAS en «Qué hacer»
 
 **Qué pidió Brandon (15-oct-2026).** Quitar la pestaña Radar y poner PRICING con TODO el artifact de José

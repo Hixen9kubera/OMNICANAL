@@ -23,7 +23,7 @@ from core.marketplaces import lista_canales
 from core.middleware import identidad
 from models.schemas import HealthCheck
 from routers import (alertas as r_alertas, auth, automatizacion, canales, checklist,
-                     competencia,
+                     competencia, conversion,
                      costos_publicados, flujo, monitoreo,
                      crear, fanout,
                      fba, fulfillment, fulfillment_envios, fulfillment_full, ia, imagenes, inventario, investigacion, metricas, migracion,
@@ -220,7 +220,7 @@ app = FastAPI(
         "Temu, Shein)."
     ),
 
-    version="0.650.0",
+    version="0.651.0",
     lifespan=lifespan,
     # /docs, /redoc y /openapi.json publican el mapa COMPLETO de los 84
     # endpoints: rutas, parámetros y esquemas. Con la API abierta eso es un
@@ -293,6 +293,7 @@ app.include_router(fulfillment_envios.router)
 app.include_router(fulfillment_full.router)
 app.include_router(fba.router)
 app.include_router(metricas.router)
+app.include_router(conversion.router)
 app.include_router(tiktok.router)
 # Resolver: packing list vs costos_validados (herramienta de /costos).
 app.include_router(resolver.router)
@@ -338,7 +339,7 @@ def raiz():
     return {
         "app": "OMNICANAL Â· Kubera",
 
-        "version": "0.650.0",
+        "version": "0.651.0",
         "docs": "/docs",
         "canales": [c["id"] for c in lista_canales()],
     }
