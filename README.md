@@ -1001,6 +1001,24 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.652.0 — ETL de core.products: Odoo RETIRADO; `odoo_id` y la etiqueta `odoo` se conservan como hecho histórico (no se borra la liga SKU ↔ copia de Odoo)
+
+**Por qué (urgente, 15-oct-2026).** Eduardo decidió: «ya no operaremos con Odoo para nada». La cuenta API de Odoo está bloqueada a propósito desde ~18:30 UTC. El cron `etl-core-products` (06:15 UTC) seguía intentando leer Odoo y, al fallar, **ponía `odoo_id = NULL` en 13,177 filas de `core.products` y quitaba `odoo` de `source`**, aunque su aviso decía «odoo_id no se actualizará». Esa columna es la ÚNICA liga entre cada SKU y la copia de Odoo del 15-oct (respaldo cifrado). El acta habría salido «ok», porque `seam_gap` solo mira name, wc_id y status.
+
+**Qué cambia (`backend/scripts/etl_core_products_v2.py`).**
+- El ETL ya no consulta Odoo: sin `authenticate` ni `search_read`.
+- Igual que con la fuente retirada `productos`, haber estado en Odoo es un hecho histórico. Para cada SKU que ya está en el padrón, `odoo_id` y la etiqueta `odoo` de `source` se copian del padrón ANTES de calcular `status`. Así un SKU que era `odoo_only` no cambia de status (campo del seam) ni de `source`.
+- Los SKUs que solo vivían en Odoo ya no nacen por este ETL. El alta pasa a kubera según el plan de salida.
+
+**Verificado (dry-run contra producción, solo lectura, 15-oct).**
+- Código de main (v0.651.0): «actualizar 13,178», borrando la liga.
+- Con este cambio: «actualizar 2, sin_cambio 16,166», con 0 cambios de `odoo_id` y `seam_gap` = 0. Los 2 son trabajo normal: etiquetas por entrar a costos (ORG-0594-NEG conserva `odoo`).
+- La revisión adversarial encontró que 2 SKUs `odoo_only` (JUGU-0202-MUL y MASC-0101-BLN) solo traían su nombre desde Odoo y se quedarían con `name = NULL`. Se conserva el nombre del padrón.
+
+**Pruebas.** Nueva `EtlCoreOdooRetirado`: un SKU ligado a Odoo (odoo_only, con nombre) no se reescribe y seam_gap = 0; falla sin la corrección del nombre. `EtlCoreNoLoRevive` se ajustó a la regla nueva: Odoo no se consulta (`authenticate`/`execute_kw` sin llamadas); el SKU que solo estaba en Odoo ya no nace; seam_gap 4 → 3 y provisionales_omitidos 8 → 6. Suite completa: 2,972 pruebas, con la única falla ajena de main (`test_regla_11_productos`).
+
+**Respaldo previo de la liga:** `core_products_odoo_id_20261015.csv` (16,169 filas, 13,177 con `odoo_id`), en el scratchpad de MAESTRO OMNICANAL, `salida_odoo/`.
+
 ### v0.651.0 — Análisis › Conversión: ventas contra visitas por publicación, con mapa de burbujas y bandeja de alertas
 
 **Qué se pidió.** Eduardo, 15-oct-2026: «un panel nuevo para gestionar el monitoreo de las ventas a visitas con las

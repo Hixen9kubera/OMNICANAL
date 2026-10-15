@@ -525,6 +525,57 @@ class _PgConn:
         pass
 
 
+class EtlCoreOdooRetirado(unittest.TestCase):
+    """Odoo RETIRADO (15-oct-2026): el ETL no lo consulta, y un SKU que el padrón
+    tiene ligado a Odoo NO pierde ni su ``odoo_id`` ni la etiqueta ``odoo`` ni su
+    nombre ni su status. Antes, con Odoo caído, el cron les ponía ``odoo_id = NULL``
+    a 13,177 filas y, al SKU ``odoo_only``, además el nombre."""
+
+    def test_sku_ligado_a_odoo_no_cambia(self):
+        etl = _cargar_etl()
+        escrito: list = []
+        lotes: list[tuple[str, list]] = []
+        fuentes_kubera = _PgCur([
+            ("from costing.costos_validados", []),
+            ("from channel.product_category", [("JUGU-0202-MUL",)]),
+            ("from costing.costos_finales", []),
+        ], escrito)
+        destino = _PgCur([
+            ("count(*)", [(1,)]),
+            ("from core.products", [("JUGU-0202-MUL", "Juguete que solo nombraba Odoo",
+                                      None, None, 94047, "odoo_only", False,
+                                      "categorias_ml,odoo")]),
+            ("from migration.id_map", []),
+            ("from channel.listings", []),
+            ("from ops.migration_issues", []),
+        ], escrito)
+        conexiones = iter([_PgConn(fuentes_kubera), _PgConn(destino)])
+        wcur = mock.MagicMock()
+        wcur.fetchall.return_value = []
+        wp = mock.MagicMock()
+        wp.cursor.return_value = wcur
+        odoo = mock.MagicMock()
+
+        with mock.patch.object(etl, "DEST", {"SUPABASE_DB_URL": _DSN_FALSO}),                 mock.patch.object(etl, "PROD", dict(_PROD_FALSO)),                 mock.patch.object(etl, "_armar_watchdog"),                 mock.patch.object(etl.psycopg2, "connect",
+                                  side_effect=lambda *a, **k: next(conexiones)),                 mock.patch.object(etl.pymysql, "connect", return_value=wp),                 mock.patch.object(etl.xmlrpc.client, "ServerProxy", return_value=odoo),                 mock.patch.object(etl.psycopg2.extras, "execute_values",
+                                  side_effect=lambda _c, sql, filas, **k:
+                                  lotes.append((" ".join(sql.split()).lower(),
+                                                list(filas)))),                 mock.patch.object(sys, "argv", ["etl", "--real",
+                                                "--acepto-destino", "tukwcvsi"]),                 contextlib.redirect_stdout(io.StringIO()):
+            etl.main()
+
+        # Ni se consulta Odoo, ni se reescribe la fila: sigue igual que en el padrón.
+        odoo.authenticate.assert_not_called()
+        odoo.execute_kw.assert_not_called()
+        filas_core = [f for sql, filas in lotes if "insert into core.products" in sql
+                      for f in filas]
+        self.assertEqual(filas_core, [], filas_core)
+        import json
+        acta = [p for s, p in escrito if "reconciliation_runs" in s]
+        self.assertEqual(len(acta), 1)
+        self.assertEqual(json.loads(acta[0][1])["seam_gap"], 0)
+
+
 class EtlCoreNoLoRevive(unittest.TestCase):
     """``incorporar()`` y el lazo de ``marketplace_only``: las dos altas del ETL."""
 
@@ -591,9 +642,12 @@ class EtlCoreNoLoRevive(unittest.TestCase):
 
         # 1) El maestro: entran los reales —la contraprueba de que el arnés ve
         #    las altas— y ningún provisional, ni el que llega por alias.
+        #    Odoo está RETIRADO desde el 15-oct-2026: el ETL ya no lo consulta,
+        #    así que el SKU que solo vivía en Odoo (1CALZ-…) ya no nace aquí.
         altas = {f[0] for f in _lote("core.products")}
-        self.assertEqual(altas, {"BAÑ-0486-EST", "ROP-AZL-GRICLA-GRIOBS-S",
-                                 "1CALZ-0108-BLN-ROJ-NEG-44", "MX-7661"})
+        self.assertEqual(altas, {"BAÑ-0486-EST", "ROP-AZL-GRICLA-GRIOBS-S", "MX-7661"})
+        odoo.authenticate.assert_not_called()
+        odoo.execute_kw.assert_not_called()
         # 2) Tampoco se aprende un alias hacia un provisional.
         for original, canonico, _fase in _lote("migration.id_map"):
             self.assertFalse(sku_provisional.es_provisional(canonico), original)
@@ -601,15 +655,14 @@ class EtlCoreNoLoRevive(unittest.TestCase):
         anotados = {(t, s) for (_f, t, s, m, _v) in _lote("ops.migration_issues")
                     if m == "provisional"}
         self.assertEqual(anotados, {("woocommerce", "ACC-VIEJO"),
-                                    ("odoo", "4814-0001"), ("odoo", "5070 - 0021"),
                                     ("channel.listings", "0032-0002")})
         # 4) El acta: los provisionales NO rompen la racha; se cuentan aparte.
         import json
         acta = [p for s, p in escrito if "reconciliation_runs" in s]
         self.assertEqual(len(acta), 1)
         conteos = json.loads(acta[0][1])
-        self.assertEqual(conteos["seam_gap"], 4)
-        self.assertEqual(conteos["provisionales_omitidos"], 8)
+        self.assertEqual(conteos["seam_gap"], 3)   # 3 altas reales; la de Odoo ya no existe
+        self.assertEqual(conteos["provisionales_omitidos"], 6)   # sin los 2 provisionales que traía Odoo
         self.assertFalse(any(sku_provisional.es_provisional(x["sku"])
                              for x in conteos["seam_gap_skus"]))
 

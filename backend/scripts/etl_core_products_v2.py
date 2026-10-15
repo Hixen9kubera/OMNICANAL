@@ -184,7 +184,7 @@ def main() -> None:
     #
     # `productos` SE RETIRA como fuente. Su precedencia (1, debajo de Woo) solo
     # decidiría para SKUs que no estén en WooCommerce, y **no hay ninguno**:
-    # los 5,381 están en Woo, que gana siempre. `odoo_id` se sobreescribe
+    # los 5,381 están en Woo, que gana siempre. `odoo_id` (desde el 15-oct, histórico: Odoo retirado) no se sobreescribe
     # siempre desde el Odoo vivo y `has_variations` está muerta. Lo único que
     # cambia es la etiqueta `source`, que deja de nombrarla — un update de una
     # sola vez que NO entra a seam_gap (ver CAMPOS_SEAM).
@@ -223,29 +223,17 @@ def main() -> None:
     wp.close()
     woo_sku_por_wcid = {int(r["wc_id"]): str(r["sku"]).strip() for r in t_woo}
 
+    # ODOO RETIRADO (decisión de Eduardo, 15-oct-2026: «ya no operaremos con
+    # Odoo para nada»; la cuenta API está bloqueada a propósito). Este ETL ya no
+    # lo lee. Antes, con Odoo caído, el bucle de abajo ponía `odoo_id = NULL` en
+    # las ~13 mil filas que lo tenían y quitaba `odoo` de `source`, aunque el
+    # aviso decía «odoo_id no se actualizará»: esa columna es la ÚNICA liga entre
+    # cada SKU y la copia de Odoo del 15-oct. Ahora, igual que con `productos`,
+    # haber estado en Odoo es un HECHO HISTÓRICO: `odoo_id` y la etiqueta `odoo`
+    # se conservan tal como están en el padrón y nunca se tocan.
     odoo_skus: dict[str, dict] = {}
-    try:
-        common = xmlrpc.client.ServerProxy(f"{PROD['ODOO_URL']}/xmlrpc/2/common")
-        uid = common.authenticate(PROD["ODOO_DB"], PROD["ODOO_USER"], PROD["ODOO_PASSWORD"], {})
-        models = xmlrpc.client.ServerProxy(f"{PROD['ODOO_URL']}/xmlrpc/2/object")
-        offset = 0
-        for _pagina in range(ODOO_MAX_PAGINAS):
-            lote = models.execute_kw(
-                PROD["ODOO_DB"], uid, PROD["ODOO_PASSWORD"],
-                "product.product", "search_read",
-                [[["default_code", "!=", False]]],
-                {"fields": ["default_code", "name"], "offset": offset, "limit": 500},
-            )
-            if not lote:
-                break
-            for p in lote:
-                odoo_skus[str(p["default_code"]).strip()] = {"odoo_id": p["id"], "name": p["name"]}
-            offset += 500
-        else:
-            print(f"AVISO: Odoo superó {ODOO_MAX_PAGINAS} páginas — corto la "
-                  "paginación (tope anti-loop).", flush=True)
-    except Exception as exc:  # noqa: BLE001
-        print(f"AVISO: Odoo no disponible ({exc}) — continúo; odoo_id no se actualizará.")
+    print("Odoo RETIRADO (15-oct-2026): no se lee; odoo_id y la etiqueta 'odoo' "
+          "se conservan como hecho histórico.", flush=True)
 
     print(f"Fuentes: woo={len(t_woo)} productos(RETIRADA)={len(t_productos)} "
           f"costos_validados(kb)={len(t_cv)} categorias_ml(kb)={len(t_cat)} "
@@ -387,20 +375,20 @@ def main() -> None:
     for r in t_cf:
         incorporar(r["sku"], "costos_finales")
 
-    # odoo_id SIEMPRE del Odoo vivo; nombre_no_coincide (Odoo vs Woo, informativo)
+    # odoo_id y la etiqueta `odoo`: HECHO HISTÓRICO (Odoo retirado el 15-oct).
+    # Se copian del padrón ANTES de calcular `status`, para que un SKU que era
+    # `odoo_only` no cambie de status (status es campo del seam) ni de `source`.
     for reg in por_clave.values():
-        vivo = (odoo_skus.get(reg["sku"]) or odoo_skus.get(reg["sku"].upper())
-                or odoo_skus.get(reg["sku"].lower()))
-        reg["odoo_id"] = vivo["odoo_id"] if vivo else None
-        if vivo and reg["name"] and "woocommerce" in reg["fuentes"]:
-            if not (_tokens(reg["name"]) & _tokens(vivo["name"] or "")):
-                tally_issues["nombre_no_coincide"] += 1
-                ci = (reg["sku"], "nombre_no_coincide")
-                if ci not in issues_abiertas:
-                    issues_abiertas.add(ci)
-                    issues_nuevas.append(("union", reg["sku"], "nombre_no_coincide",
-                                          json.dumps({"woo": (reg["name"] or "")[:80],
-                                                      "odoo": (vivo["name"] or "")[:80]})))
+        actual = core_actual.get(reg["sku"].lower())
+        if actual is None:
+            continue
+        reg["odoo_id"] = actual.get("odoo_id")
+        # Un SKU `odoo_only` solo traía su nombre desde Odoo: sin esa fuente se
+        # quedaría sin nombre (y name es campo del seam). Se conserva el del padrón.
+        if reg["name"] is None:
+            reg["name"] = actual.get("name")
+        if "odoo" in str(actual.get("source") or "").split(","):
+            reg["fuentes"].add("odoo")
 
     # status para los que no traen el de Woo
     for reg in por_clave.values():
