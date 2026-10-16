@@ -162,9 +162,10 @@ async def hoja(nombre: str) -> bytes:
 
 def olvidar() -> None:
     """Vacía la caché (pruebas, o tras dejar una foto nueva en la carpeta)."""
-    global _foto, _hechos
+    global _foto, _hechos, _vivo
     _foto = None
     _hechos = None
+    _vivo = None
     _cache.clear()
 
 
@@ -265,4 +266,115 @@ async def hechos() -> dict:
                  "promos": promos["promos"], "promos_leido": promos["leido"],
                  "leido": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
         _hechos = (time.monotonic(), datos)
+        return datos
+
+
+# ── EN VIVO (v0.655.0): stock FULL y ritmo de venta de AHORA ─────────────────
+#
+# La foto es de un día; el filtro «Se agota» y el low stock tienen que ser de
+# este momento. Stock: Mercado Libre directo (`GET /items?ids=…`, de 20 en 20,
+# `available_quantity` = lo disponible en FULL); la copia de kubera
+# (`channel.listings`) se refresca por turnos (~80 publicaciones por hora) y
+# puede traer horas de atraso. Ventas: kubera (`channel.orders`), que entra al
+# minuto por el webhook. Solo GET a ML (el token solo se LEE, nunca se renueva)
+# y solo SELECT a kubera, cada uno sin bloquear el loop (regla 11).
+
+TTL_VIVO_S = 300
+_vivo: tuple[float, dict] | None = None
+_candado_vivo = asyncio.Lock()
+
+
+def _pubs_de_foto(gz: bytes) -> list[tuple[str, str]]:
+    """BLOQUEANTE (CPU). [(id, cuenta)] de las publicaciones de la foto."""
+    return [(p["id"], p["c"]) for p in json.loads(gzip.decompress(gz)).get("pubs", []) if p.get("id") and p.get("c")]
+
+
+def _ventas_vivo(ids: list[str]) -> dict[str, dict]:
+    """BLOQUEANTE (kubera, solo SELECT). Piezas pagadas en los últimos 14 y 30 días, al minuto."""
+    from services import supabase_db as sdb
+
+    if not ids or not sdb.disponible():
+        return {}
+    filas = sdb.fetch_all(
+        """
+        select oi.item_id,
+               coalesce(sum(oi.cantidad) filter (where o.creado_at >= now() - interval '14 days'), 0)::int as u14,
+               coalesce(sum(oi.cantidad), 0)::int as u30
+          from channel.order_items oi
+          join channel.orders o on o.canal = oi.canal and o.cuenta = oi.cuenta and o.external_order_id = oi.external_order_id
+         where oi.canal = 'mercado_libre' and oi.item_id = any(%(ids)s)
+           and o.creado_at >= now() - interval '30 days' and lower(coalesce(o.estado_canal, '')) <> 'cancelled'
+         group by oi.item_id
+        """,
+        {"ids": ids},
+    )
+    return {r["item_id"]: {"u14": r["u14"], "u30": r["u30"]} for r in filas}
+
+
+async def _stock_vivo(pubs: list[tuple[str, str]]) -> dict[str, dict]:
+    """Stock FULL de ML ahora mismo. Una cuenta sin token, o un lote que falla, se queda sin dato (no inventa)."""
+    from services import meli
+
+    out: dict[str, dict] = {}
+    por_cuenta: dict[str, list[str]] = {}
+    for i, c in pubs:
+        por_cuenta.setdefault(c, []).append(i)
+    async with httpx.AsyncClient(base_url="https://api.mercadolibre.com", timeout=30) as cli:
+        for cuenta, ids in por_cuenta.items():
+            tk = await meli.access_token_async(cuenta)
+            if not tk:
+                log.warning("pricing vivo: sin token de %s", cuenta)
+                continue
+            lotes = [ids[k:k + 20] for k in range(0, len(ids), 20)]
+            sem = asyncio.Semaphore(4)
+
+            async def uno(lote: list[str]) -> None:
+                async with sem:
+                    try:
+                        r = await cli.get("/items", params={"ids": ",".join(lote), "attributes": "id,available_quantity,status"},
+                                          headers={"Authorization": f"Bearer {tk}"})
+                    except httpx.HTTPError as exc:
+                        log.warning("pricing vivo: ML no contestó un lote: %s", type(exc).__name__)
+                        return
+                    if r.status_code != 200:
+                        log.warning("pricing vivo: ML %s en un lote de %s", r.status_code, cuenta)
+                        return
+                    for x in r.json():
+                        b = x.get("body") or {}
+                        if x.get("code") == 200 and b.get("id"):
+                            out[b["id"]] = {"stock": b.get("available_quantity"), "status": b.get("status")}
+
+            await asyncio.gather(*(uno(l) for l in lotes))
+    return out
+
+
+async def vivo() -> dict:
+    """{"leido", "pubs": {id: {stock, status, u14, u30}}} de las publicaciones de la foto. Caché de 5 min."""
+    global _vivo
+    async with _candado_vivo:
+        ahora = time.monotonic()
+        if _vivo and ahora - _vivo[0] <= TTL_VIVO_S:
+            return _vivo[1]
+        gz, _ = await foto()
+        pubs = await asyncio.to_thread(_pubs_de_foto, gz)
+        ids = [i for i, _ in pubs]
+        stock, ventas = await asyncio.gather(_stock_vivo(pubs), asyncio.to_thread(_ventas_vivo, ids), return_exceptions=True)
+        if isinstance(stock, BaseException):
+            log.warning("pricing vivo: stock de ML falló: %s", stock)
+            stock = {}
+        kubera = not isinstance(ventas, BaseException)
+        if not kubera:
+            log.warning("pricing vivo: ventas de kubera fallaron: %s", ventas)
+            ventas = {}
+        res = {}
+        for i in ids:
+            s = stock.get(i)
+            v = ventas.get(i, {"u14": 0, "u30": 0}) if kubera else None
+            if s is None and v is None:
+                continue
+            res[i] = {"stock": s["stock"] if s else None, "status": s["status"] if s else None,
+                      "u14": v["u14"] if v else None, "u30": v["u30"] if v else None}
+        datos = {"leido": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "pubs": res,
+                 "con_stock": sum(1 for x in res.values() if x["stock"] is not None), "total": len(ids), "kubera": kubera}
+        _vivo = (time.monotonic(), datos)
         return datos

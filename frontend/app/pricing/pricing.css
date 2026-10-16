@@ -96,6 +96,7 @@
 .pm .ph-chips { display: flex; flex-wrap: wrap; gap: 3px; }
 .pm .chip { font-size: 11px; padding: 0 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel-2); white-space: nowrap; }
 .pm .chip.prog { border-style: dashed; }
+.pm .seg .cnt { font-family: var(--font-num); font-weight: 600; margin-left: 4px; }
 .pm td.n { text-align: right; white-space: nowrap; }
 .pm tr.fila { cursor: pointer; }
 .pm tr.fila:hover > td { background: var(--panel-2); }

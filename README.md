@@ -1001,6 +1001,34 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.655.0 — PRICING: filtro «Se agota» (1–7 / 7–30 / +30 días / agotadas) y «Low stock ≤ 7» en tiempo real
+
+**Qué pidió Brandon (16-oct-2026).** El reporte de días de stock contaba desde la foto del 14-oct y no desde hoy
+(«se acaba el 14-oct» el día 16). Pidió verlo en tiempo real y tenerlo en PRICING como filtro con sus tres
+categorías —de 1 a 7 días, de 7 a 30 y de 30 o más— y un low stock de 7 piezas para abajo.
+
+**En vivo.** `GET /api/pricing/vivo` (solo admin, solo lectura, caché 5 min): por cada publicación de la foto, el
+**stock FULL de Mercado Libre ahora** (`GET /items?ids=…` de 20 en 20, `available_quantity`; ~3 s las 658) y las
+**piezas vendidas en 14 y 30 días** de kubera (`channel.orders`, al minuto). No se usa `channel.listings` para el
+stock: el sync la recorre por turnos (~80 publicaciones por hora) y trae horas de atraso. Si ML o kubera fallan,
+la otra fuente sigue y la pantalla cae a la foto (dice «· foto»). El token solo se LEE (`access_token_async`).
+
+**La pantalla.**
+- Filtro **«Se agota · en vivo»**: Todas / **1–7 días** / **7–30 días** / **Más de 30 días** (incluye las que no
+  venden) / **Agotadas**, cada uno con su conteo (con los demás filtros aplicados). Y **«Low stock ≤ 7 pzs»**
+  (1 a 7 piezas en FULL), que se combina con cualquiera.
+- **Días** = stock de ahora ÷ ritmo de ahora (14 días si vendió 3 o más, si no 30 — la regla de `reglas.ts`), y la
+  fecha en que se acaba **contada desde hoy**.
+- Columnas **Stock** (las piezas de ahora; si cambió, «ahora · foto N»; etiqueta «low stock») y **Se agota**
+  (días y fecha desde hoy; «agotada» en rojo). Ordenar por stock o por «Se agota antes» usa lo de ahora.
+- En el renglón de totales: **piezas en FULL ahora y su valor** (piezas × lo que se cobra según la lectura de
+  promociones; si no la hay, el precio de la foto).
+- «Ventas 30 d», «Qué hacer» y lo demás siguen saliendo de la foto del 14-oct.
+
+**Pruebas.** +2 (16): la ruta exige admin; junta stock y ventas, no inventa stock que ML no devolvió y con las
+dos fuentes caídas contesta vacío sin 500. `tsc --noEmit` limpio. Revisado en navegador: con «Con ventas», 32 /
+69 / 226 / 24 y 89 low stock (16-oct 10:59), el mismo reparto que el reporte en vivo.
+
 ### v0.654.0 — PRICING: columna «Hecho» (lo que ya se movió en ML) y «Promoción hoy» (cupón, campaña, relámpago…)
 
 **Qué pidió Brandon (15-oct-2026).** Después de aplicar en ML el «Qué hacer» de las publicaciones SIN VENTAS

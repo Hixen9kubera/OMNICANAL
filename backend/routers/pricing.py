@@ -5,6 +5,8 @@ pricing.py — La pestaña PRICING (v0.650.0): el «Monitor de precios FULL».
   GET /api/pricing/img/{hoja}   → una hoja de miniaturas (`p0`, `s12`…), JPEG
   GET /api/pricing/hechos       → los precios que sí se movieron en ML (v0.654.0)
                                   y lo vendido desde el cambio (kubera, SELECT)
+  GET /api/pricing/vivo         → stock FULL de ML y ventas de 14/30 días de AHORA
+                                  (v0.655.0; solo GET a ML, solo SELECT a kubera)
 
 SOLO LECTURA. Ninguna ruta escribe: la pantalla SUGIERE qué hacer con cada
 precio y no cambia ninguno. El servicio (`services/pricing_monitor.py`) solo
@@ -56,6 +58,15 @@ async def monitor(request: Request, quien=Depends(solo_admin)) -> Response:
 async def hechos(quien=Depends(solo_admin)) -> dict:
     """Los precios que SÍ se movieron en ML (columna «Hecho») y lo vendido desde el cambio. Solo lee."""
     return await pm.hechos()
+
+
+@router.get("/vivo")
+async def vivo(quien=Depends(solo_admin)) -> dict:
+    """Stock FULL de ML y ventas de 14/30 días de AHORA, para «Se agota» y low stock (v0.655.0). Solo lee."""
+    try:
+        return await pm.vivo()
+    except (pm.SinFoto, pm.FalloFuente) as exc:
+        raise _http(exc) from exc
 
 
 @router.get("/img/{hoja}")

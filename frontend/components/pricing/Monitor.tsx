@@ -11,7 +11,7 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { EyeOff, Info } from "lucide-react";
 
-import type { PricingComp, PricingFoto, PricingHecho, PricingHechos, PricingPromoHoy } from "@/lib/api";
+import type { PricingComp, PricingFoto, PricingHecho, PricingHechos, PricingPromoHoy, PricingVivo, PricingVivoPub } from "@/lib/api";
 import { pct1, pctS, pesos, pzs, reloj, type Reloj } from "./formato";
 import Grafica from "./Grafica";
 import { Mini } from "./Miniaturas";
@@ -49,9 +49,50 @@ interface Filtros {
   orden: string;
   /** «Hecho»: todas, las que sí se movieron en ML o las que no. */
   mov: "todas" | "si" | "no";
+  /** «Se agota» (en vivo): días que dura el stock FULL al ritmo de hoy. */
+  agota: "todas" | CatAgota;
+  /** Low stock: 1 a LOW_STOCK piezas en FULL. */
+  low: boolean;
 }
 
-const F0: Filtros = { ventas: "todas", cat: "todas", comp: "todas", cuenta: "todas", accion: null, q: "", orden: "accion", mov: "todas" };
+const F0: Filtros = {
+  ventas: "todas", cat: "todas", comp: "todas", cuenta: "todas", accion: null, q: "", orden: "accion", mov: "todas",
+  agota: "todas", low: false,
+};
+
+// ── SE AGOTA y LOW STOCK (Brandon, 16-oct-2026) ──────────────────────────────
+// Con el stock de ML y las ventas de kubera de AHORA (/api/pricing/vivo); si
+// no llegaron, con la foto. Ritmo como en reglas.ts: 14 días si vendió 3 o
+// más piezas, si no 30. Categorías: 1 a 7 días, más de 7 a 30, más de 30
+// (incluye las que no venden), y agotadas (0 en FULL).
+type CatAgota = "c1" | "c2" | "c3" | "cero";
+const LOW_STOCK = 7;
+const CAT_AGOTA: [CatAgota, string, string][] = [
+  ["c1", "1–7 días", "Se acaban en 7 días o menos al ritmo de hoy"],
+  ["c2", "7–30 días", "Se acaban en más de 7 y hasta 30 días"],
+  ["c3", "Más de 30 días", "Tardan más de 30 días, o no venden"],
+  ["cero", "Agotadas", "0 piezas en FULL ahora"],
+];
+
+interface Agota {
+  stock: number;
+  vel: number;
+  dias: number;
+  cat: CatAgota;
+  /** true = stock leído de ML ahora; false = el de la foto. */
+  vivo: boolean;
+}
+type FilaV = Fila & { v: Agota };
+
+function agotaDe(f: Fila, V: Map<string, PricingVivoPub> | null): Agota {
+  const x = V?.get(f.p.id);
+  const enVivo = x != null && x.stock != null;
+  const stock = enVivo ? (x!.stock as number) : f.p.stock;
+  const vel = x && x.u14 != null && x.u30 != null ? (x.u14 >= 3 ? x.u14 / 14 : x.u30 / 30) : f.m.vel;
+  const dias = stock > 0 ? (vel > 0 ? stock / vel : Infinity) : 0;
+  const cat: CatAgota = !(stock > 0) ? "cero" : dias <= 7 ? "c1" : dias <= 30 ? "c2" : "c3";
+  return { stock, vel, dias, cat, vivo: enVivo };
+}
 
 /** Lo que llega de /api/pricing/hechos, ya por id de publicación. */
 interface Extra {
@@ -64,8 +105,12 @@ interface Extra {
 
 const editable = (f: Fila) => f.p.cat.v === "incorrecta" && !((f.p.sold ?? 0) > 0);
 
-function pasa(f: Fila, F: Filtros, sinAccion = false, X?: Extra): boolean {
+function pasa(f: FilaV, F: Filtros, sinAccion = false, X?: Extra, sinAgota = false): boolean {
   const { p, m, a } = f;
+  if (!sinAgota) {
+    if (F.agota !== "todas" && f.v.cat !== F.agota) return false;
+    if (F.low && !(f.v.stock > 0 && f.v.stock <= LOW_STOCK)) return false;
+  }
   if (F.mov !== "todas" && X?.estado === "listo" && X.hecho.has(p.id) !== (F.mov === "si")) return false;
   if (F.ventas === "con" && !(m.u30 > 0)) return false;
   if (F.ventas === "sin" && m.u30 > 0) return false;
@@ -82,18 +127,18 @@ function pasa(f: Fila, F: Filtros, sinAccion = false, X?: Extra): boolean {
 }
 
 // Por encabezado: llave → valor (los que no tienen dato van al final en las dos direcciones).
-const VALOR: Record<string, (f: Fila) => number | null> = {
+const VALOR: Record<string, (f: FilaV) => number | null> = {
   precio: (f) => f.m.precio,
   comp: (f) => f.m.ref,
   dif: (f) => f.m.dif,
-  stock: (f) => f.p.stock,
+  stock: (f) => f.v.stock,
   ventas: (f) => f.m.u30,
   conv: (f) => f.m.conv,
-  dias: (f) => (isFinite(f.m.dias) ? f.m.dias : null),
+  dias: (f) => (isFinite(f.v.dias) ? f.v.dias : null),
   v7: (f) => f.x.sug ?? f.x.hoy,
   ganan: (f) => (f.x.sug ?? f.x.hoy) - f.x.hoy,
 };
-const porValor = (k: string, dir: number) => (x: Fila, y: Fila) => {
+const porValor = (k: string, dir: number) => (x: FilaV, y: FilaV) => {
   const a = VALOR[k](x);
   const b = VALOR[k](y);
   if (a == null && b == null) return 0;
@@ -101,14 +146,14 @@ const porValor = (k: string, dir: number) => (x: Fila, y: Fila) => {
   if (b == null) return -1;
   return dir * (a - b);
 };
-const ORDENES: Record<string, (x: Fila, y: Fila) => number> = {
-  accion: (x, y) => ORDEN_ACC.indexOf(x.a.k) - ORDEN_ACC.indexOf(y.a.k) || y.p.stock - x.p.stock,
+const ORDENES: Record<string, (x: FilaV, y: FilaV) => number> = {
+  accion: (x, y) => ORDEN_ACC.indexOf(x.a.k) - ORDEN_ACC.indexOf(y.a.k) || y.v.stock - x.v.stock,
   precio_desc: porValor("precio", -1),
   precio_asc: porValor("precio", 1),
   v7: porValor("v7", -1),
   ganan: porValor("ganan", -1),
-  stock: (x, y) => y.p.stock - x.p.stock,
-  dias: (x, y) => x.m.dias - y.m.dias || y.p.stock - x.p.stock,
+  stock: (x, y) => y.v.stock - x.v.stock,
+  dias: (x, y) => x.v.dias - y.v.dias || y.v.stock - x.v.stock,
   arriba: (x, y) => (y.m.dif ?? -9) - (x.m.dif ?? -9),
   abajo: (x, y) => (x.m.dif ?? 9) - (y.m.dif ?? 9),
   ventas: (x, y) => y.m.u30 - x.m.u30,
@@ -142,7 +187,15 @@ function guardarReglas(R: Reglas) {
   }
 }
 
-export default function Monitor({ foto, hechos }: { foto: PricingFoto; hechos?: PricingHechos | null | "error" }) {
+export default function Monitor({
+  foto,
+  hechos,
+  vivo,
+}: {
+  foto: PricingFoto;
+  hechos?: PricingHechos | null | "error";
+  vivo?: PricingVivo | null | "error";
+}) {
   const [R, setR] = useState<Reglas>(REGLAS);
   const [F, setF] = useState<Filtros>(F0);
   const [abiertos, setAbiertos] = useState<Set<number>>(() => new Set());
@@ -170,15 +223,33 @@ export default function Monitor({ foto, hechos }: { foto: PricingFoto; hechos?: 
     };
   }, [hechos]);
   const { filas, convTipica } = useMemo(() => calcular(foto.pubs, R), [foto.pubs, R]);
+  const V = useMemo(
+    () => (vivo && vivo !== "error" ? new Map(Object.entries(vivo.pubs)) : null),
+    [vivo],
+  );
+  const filasV = useMemo<FilaV[]>(() => filas.map((f) => ({ ...f, v: agotaDe(f, V) })), [filas, V]);
   const series = { pubs: foto.meta.img.pubs || "p", riv: foto.meta.img.riv || "s" };
 
-  const base = useMemo(() => filas.filter((f) => pasa(f, F, true, X)), [filas, F, X]);
+  const base = useMemo(() => filasV.filter((f) => pasa(f, F, true, X)), [filasV, F, X]);
+  // Conteos de «Se agota»: con los demás filtros, sin el suyo.
+  const baseAgota = useMemo(() => filasV.filter((f) => pasa(f, F, false, X, true)), [filasV, F, X]);
+  const nAgota = useMemo(() => {
+    const n: Record<string, number> = { c1: 0, c2: 0, c3: 0, cero: 0, low: 0 };
+    baseAgota.forEach((f) => {
+      n[f.v.cat] += 1;
+      if (f.v.stock > 0 && f.v.stock <= LOW_STOCK) n.low += 1;
+    });
+    return n;
+  }, [baseAgota]);
   const vista = useMemo(() => {
     const ord = F.orden.startsWith("h:")
       ? porValor(F.orden.split(":")[1], +F.orden.split(":")[2])
       : ORDENES[F.orden] ?? ORDENES.accion;
-    return filas.filter((f) => pasa(f, F, false, X)).sort(ord);
-  }, [filas, F, X]);
+    return filasV.filter((f) => pasa(f, F, false, X)).sort(ord);
+  }, [filasV, F, X]);
+  // Valor en FULL de la vista: piezas de ahora × lo que se cobra (la promoción leída de ML; si no, la foto).
+  const valorFull = vista.reduce((s, f) => s + f.v.stock * (X.promo[f.p.id]?.cobra ?? f.m.precio), 0);
+  const piezasFull = vista.reduce((s, f) => s + f.v.stock, 0);
   const movidas = useMemo(() => vista.filter((f) => X.hecho.has(f.p.id)), [vista, X]);
   const pzsDespues = movidas.reduce((s, f) => s + (X.hecho.get(f.p.id)?.despues?.pzs ?? 0), 0);
 
@@ -292,6 +363,29 @@ export default function Monitor({ foto, hechos }: { foto: PricingFoto; hechos?: 
           <span>Cuenta</span>
           {seg("cuenta", [["todas", "Ambas"], ["BEKURA", "BEKURA"], ["SANCORFASHION", "SANCORFASHION"]])}
         </div>
+        <div className="grupo" title={vivo && vivo !== "error" ? `Stock de ML y ventas de kubera leídos ${fechaCorta(vivo.leido)}` : "Con la foto: no llegó la lectura en vivo"}>
+          <span>Se agota {vivo && vivo !== "error" ? "· en vivo" : vivo === "error" ? "· foto" : "…"}</span>
+          <div className="seg">
+            <button type="button" aria-pressed={F.agota === "todas"} onClick={() => setF((prev) => ({ ...prev, agota: "todas" }))}>
+              Todas
+            </button>
+            {CAT_AGOTA.map(([k, t, tip]) => (
+              <button key={k} type="button" title={tip} aria-pressed={F.agota === k} onClick={() => setF((prev) => ({ ...prev, agota: k }))}>
+                {t} <b className="cnt">{nAgota[k]}</b>
+              </button>
+            ))}
+          </div>
+          <div className="seg">
+            <button
+              type="button"
+              title={`Publicaciones con 1 a ${LOW_STOCK} piezas en FULL`}
+              aria-pressed={F.low}
+              onClick={() => setF((prev) => ({ ...prev, low: !prev.low }))}
+            >
+              Low stock ≤ {LOW_STOCK} pzs <b className="cnt">{nAgota.low}</b>
+            </button>
+          </div>
+        </div>
         <div className="grupo">
           <span>Hecho</span>
           {seg("mov", [["todas", "Todas"], ["si", "Precio movido"], ["no", "Sin movimiento"]])}
@@ -344,6 +438,12 @@ export default function Monitor({ foto, hechos }: { foto: PricingFoto; hechos?: 
         </b>{" "}
         ({difTot >= 0 ? "+" : ""}
         {Math.round(difTot * 100)} % en pesos).
+        {" "}
+        En FULL{vivo && vivo !== "error" ? " ahora" : ""}:{" "}
+        <b>
+          {pzs(piezasFull)} pzs · {pesos(valorFull)}
+        </b>
+        .
         {X.estado === "listo" && (
           <>
             {" "}
@@ -382,7 +482,7 @@ export default function Monitor({ foto, hechos }: { foto: PricingFoto; hechos?: 
               <th className="n orden" aria-sort={ariaSort("dif")} onClick={() => ordenarPor("dif")}>
                 Vs. comp.
               </th>
-              <th className="n orden" aria-sort={ariaSort("stock")} onClick={() => ordenarPor("stock")}>
+              <th className="n orden" aria-sort={ariaSort("stock")} onClick={() => ordenarPor("stock")} title="Piezas en FULL: en vivo de ML si llegó la lectura">
                 Stock
               </th>
               <th className="n orden" aria-sort={ariaSort("ventas")} onClick={() => ordenarPor("ventas")}>
@@ -391,7 +491,7 @@ export default function Monitor({ foto, hechos }: { foto: PricingFoto; hechos?: 
               <th className="n orden" aria-sort={ariaSort("conv")} onClick={() => ordenarPor("conv")}>
                 Conversión
               </th>
-              <th className="n orden" aria-sort={ariaSort("dias")} onClick={() => ordenarPor("dias")}>
+              <th className="n orden" aria-sort={ariaSort("dias")} onClick={() => ordenarPor("dias")} title="Días que dura el stock al ritmo de hoy, contados desde hoy">
                 Se agota
               </th>
               <th
@@ -454,7 +554,7 @@ function FilaPub({
   X,
 }: {
   X: Extra;
-  f: Fila;
+  f: FilaV;
   R: Reglas;
   rel: Reloj;
   abierta: boolean;
@@ -550,8 +650,11 @@ function FilaPub({
         )}
       </td>
       <td className="n">
-        <div className="big">{p.stock}</div>
-        <div className="sm">pzs en FULL</div>
+        <div className="big">{f.v.stock}</div>
+        <div className="sm" title={f.v.vivo ? `Leído de ML ahora; en la foto del 14-oct: ${p.stock}` : "De la foto"}>
+          {f.v.vivo ? (f.v.stock !== p.stock ? `ahora · foto ${p.stock}` : "pzs ahora") : "pzs en FULL"}
+        </div>
+        {f.v.stock > 0 && f.v.stock <= LOW_STOCK && <span className="pill p-warn">low stock</span>}
       </td>
       <td className="n">
         <div className="mono">{m.u30} pzs</div>
@@ -562,11 +665,12 @@ function FilaPub({
         <div className="sm">{m.vis30.toLocaleString("es-MX")} visitas</div>
       </td>
       <td className="n">
-        {!(p.stock > 0) ? (
-          <span className="sm">agotada</span>
-        ) : isFinite(m.dias) ? (
+        {!(f.v.stock > 0) ? (
+          <span className="pill p-bad">agotada</span>
+        ) : isFinite(f.v.dias) ? (
           <>
-            {Math.round(m.dias)} días<div className="sm">{rel.fFecha(H + m.dias)}</div>
+            {f.v.dias < 1 ? "<1" : Math.round(f.v.dias)} días
+            <div className="sm">{f.v.vivo ? desdeHoy(f.v.dias) : rel.fFecha(H + f.v.dias)}</div>
           </>
         ) : (
           <span className="sm">sin ventas</span>
@@ -594,6 +698,12 @@ function FilaPub({
   );
 }
 
+/** La fecha en que se acaba, contando desde HOY. */
+const desdeHoy = (dias: number) => {
+  const d = new Date();
+  d.setDate(d.getDate() + Math.round(dias));
+  return d.toLocaleDateString("es-MX", { day: "numeric", month: "short", ...(d.getFullYear() !== new Date().getFullYear() ? { year: "numeric" } : {}) });
+};
 const fechaCorta = (iso: string) =>
   new Date(iso).toLocaleString("es-MX", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "America/Mexico_City" });
 const diaCorto = (s: string) => new Date(s.length <= 10 ? s + "T12:00:00" : s).toLocaleDateString("es-MX", { day: "numeric", month: "short" });

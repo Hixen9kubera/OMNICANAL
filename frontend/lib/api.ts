@@ -2609,6 +2609,27 @@ export interface PricingHechos {
   promos_leido: string | null;
 }
 
+/** Stock FULL (ML) y ventas de 14/30 días (kubera) de AHORA, por publicación (v0.655.0). */
+export interface PricingVivoPub {
+  stock: number | null;
+  status: string | null;
+  u14: number | null;
+  u30: number | null;
+}
+
+export interface PricingVivo {
+  leido: string;
+  pubs: Record<string, PricingVivoPub>;
+  con_stock: number;
+  total: number;
+  kubera: boolean;
+}
+
+/** Lo de ahora para «Se agota» y low stock (caché de 5 min en el backend). Solo lee. */
+export function pricingVivo(signal?: AbortSignal): Promise<PricingVivo> {
+  return getJSON<PricingVivo>("/api/pricing/vivo", signal);
+}
+
 /** Los precios movidos y la promoción de hoy. Solo lee. */
 export function pricingHechos(signal?: AbortSignal): Promise<PricingHechos> {
   return getJSON<PricingHechos>("/api/pricing/hechos", signal);

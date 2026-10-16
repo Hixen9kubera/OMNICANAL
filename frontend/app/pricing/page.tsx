@@ -23,7 +23,16 @@ import AppNavbar from "@/components/AppNavbar";
 import { ProveedorHojas } from "@/components/pricing/Miniaturas";
 import Monitor from "@/components/pricing/Monitor";
 import { quienSoy } from "@/lib/sesion";
-import { ApiError, mensajeDeError, pricingHechos, pricingMonitor, type PricingFoto, type PricingHechos } from "@/lib/api";
+import {
+  ApiError,
+  mensajeDeError,
+  pricingHechos,
+  pricingMonitor,
+  pricingVivo,
+  type PricingFoto,
+  type PricingHechos,
+  type PricingVivo,
+} from "@/lib/api";
 
 import "./pricing.css";
 
@@ -62,6 +71,8 @@ function Pricing() {
   // «Hecho» y «Promoción hoy» llegan aparte: si fallan, la tabla se ve igual
   // y esas dos columnas lo dicen.
   const [hechos, setHechos] = useState<PricingHechos | null | "error">(null);
+  // Stock y ventas de AHORA (filtro «Se agota» y low stock); si falla, se usa la foto.
+  const [vivo, setVivo] = useState<PricingVivo | null | "error">(null);
   const [error, setError] = useState<string | null>(null);
   const [noDisponible, setNoDisponible] = useState(false);
   const [intento, setIntento] = useState(0);
@@ -84,6 +95,13 @@ function Pricing() {
           return;
         }
         setError(mensajeDeError(e, "No se pudo leer el monitor de precios. Revisa que el backend esté arriba."));
+      });
+    pricingVivo(ctl.signal)
+      .then((d) => {
+        if (!ctl.signal.aborted) setVivo(d);
+      })
+      .catch(() => {
+        if (!ctl.signal.aborted) setVivo("error");
       });
     pricingHechos(ctl.signal)
       .then((d) => {
@@ -117,7 +135,7 @@ function Pricing() {
         <Cargando texto="Leyendo el monitor de precios…" />
       ) : (
         <ProveedorHojas version={foto.meta.generado} celda={foto.meta.img.celda} lado={foto.meta.img.lado}>
-          <Monitor foto={foto} hechos={hechos} />
+          <Monitor foto={foto} hechos={hechos} vivo={vivo} />
         </ProveedorHojas>
       )}
     </div>

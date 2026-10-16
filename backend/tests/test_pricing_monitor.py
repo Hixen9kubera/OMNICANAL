@@ -277,6 +277,30 @@ class Hechos(Base):
         self.assertIsNone(d["hechos"][0]["despues"])           # el movimiento se ve igual, sin lo de después
 
 
+class Vivo(Base):
+    """«Se agota» y low stock (v0.655.0): stock de ML + ventas de kubera de ahora; si una fuente falla, la otra sigue."""
+
+    def test_exige_admin(self):
+        anonimo = SimpleNamespace(autenticado=False, tipo="", rol="", actor="?")
+        with _como(anonimo), mock.patch.object(pm, "vivo") as v:
+            self.assertEqual(_cliente().get("/api/pricing/vivo").status_code, 401)
+            v.assert_not_called()
+
+    def test_junta_stock_y_ventas_y_aguanta_fallas(self):
+        self.poner_foto({**FOTO, "pubs": [{"id": "MLM1", "c": "BEKURA"}, {"id": "MLM2", "c": "SANCORFASHION"}]})
+        stock = {"MLM1": {"stock": 3, "status": "active"}}
+        ventas = {"MLM1": {"u14": 6, "u30": 10}}
+        with _como(ADMIN), mock.patch.object(pm, "_stock_vivo", new=mock.AsyncMock(return_value=stock)),              mock.patch.object(pm, "_ventas_vivo", return_value=ventas):
+            d = _cliente().get("/api/pricing/vivo").json()
+        self.assertEqual(d["pubs"]["MLM1"], {"stock": 3, "status": "active", "u14": 6, "u30": 10})
+        self.assertEqual(d["pubs"]["MLM2"], {"stock": None, "status": None, "u14": 0, "u30": 0})   # sin dato de ML: no se inventa
+        self.assertEqual((d["con_stock"], d["total"], d["kubera"]), (1, 2, True))
+        pm.olvidar()
+        with _como(ADMIN), mock.patch.object(pm, "_stock_vivo", new=mock.AsyncMock(side_effect=RuntimeError("ML caído"))),              mock.patch.object(pm, "_ventas_vivo", side_effect=RuntimeError("kubera caída")):
+            d = _cliente().get("/api/pricing/vivo").json()
+        self.assertEqual((d["pubs"], d["kubera"]), ({}, False))                          # todo falló: vacío, sin 500
+
+
 class ScriptsHechoYPromos(unittest.TestCase):
     def test_bitacora_a_hechos_sin_lo_revertido_ni_lo_fallido(self):
         from scripts import pricing_hechos as ph
