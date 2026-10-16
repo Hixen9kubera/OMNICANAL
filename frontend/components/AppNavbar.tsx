@@ -79,6 +79,11 @@ interface NavItem {
    * el backend (`solo_admin` + core/rbac.py) y el guard de la propia página.
    */
   oculta?: boolean;
+  /**
+   * Permiso que decide el BACKEND por persona (`/api/auth/me` → `puede`), no el rol.
+   * Con esto la pestaña aparece solo si `puede[requiere]` es true (o en el sandbox).
+   */
+  requiere?: string;
 }
 
 // Sandbox sin login (ver SesionGuard): ahí no hay rol que confirmar.
@@ -205,8 +210,10 @@ const ITEMS: NavItem[] = [
   // la pestaña de Radar se quitó de la barra; su ruta /radar sigue viva para
   // quien tenga el enlace. SOLO LECTURA y, como Radar, oculta: solo admin
   // (la foto trae ventas y visitas por publicación). BETA: hoy es una foto.
+  // Desde v0.661.0 (16-oct, Brandon) la ven también Haim y Andrea: el backend lo
+  // dice en `puede.pricing` (lista en core/rbac.py: PRICING_INVITADOS).
   { id: "pricing", label: "Pricing", icon: BadgeDollarSign, href: "/pricing",
-    soloAdmin: true, beta: true, oculta: true },
+    beta: true, requiere: "pricing" },
   { id: "facturas", label: "Facturas", icon: FileText, proximamente: true,
     soloAdmin: true },
   // "Reportes" se retiró del navbar (Eduardo, 29-jul): ahora vive dentro de
@@ -238,6 +245,7 @@ export default function AppNavbar() {
   const visibles = ITEMS
     .filter((i) => !i.soloAdmin || puedeAdmin)
     .filter((i) => !i.oculta || adminConfirmado)
+    .filter((i) => !i.requiere || SIN_LOGIN || !!yo?.puede?.[i.requiere])
     .map((i) => {
       if (!i.submenu) return i;
       const submenu = i.submenu.filter((s) => !s.soloAdmin || puedeAdmin);

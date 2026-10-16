@@ -72,11 +72,13 @@ class Base(unittest.TestCase):
 
 
 class Acceso(Base):
-    def test_regla_rbac_admin_y_sin_prefijo_que_la_tape(self):
+    def test_regla_rbac_deja_pasar_al_operador_y_sin_prefijo_que_la_tape(self):
+        # v0.661.0: el operador LLEGA al router (los invitados son operadores) y el router decide.
         from core import rbac
-        self.assertIn(("GET", "/api/pricing", "admin"), rbac.REGLAS)
-        self.assertEqual(rbac.rol_requerido("GET", "/api/pricing/monitor"), "admin")
-        self.assertEqual(rbac.rol_requerido("GET", "/api/pricing/img/p0"), "admin")
+        self.assertIn(("GET", "/api/pricing", "operador"), rbac.REGLAS)
+        self.assertEqual(rbac.rol_requerido("GET", "/api/pricing/monitor"), "operador")
+        self.assertEqual(rbac.rol_requerido("GET", "/api/pricing/img/p0"), "operador")
+        self.assertFalse(rbac.permite("lectura", "GET", "/api/pricing/monitor"))
         tapan = [r for r in rbac.REGLAS
                  if r[0] == "GET" and "/api/pricing".startswith(r[1]) and r[1] != "/api/pricing"]
         self.assertEqual(tapan, [])
@@ -99,6 +101,23 @@ class Acceso(Base):
                  mock.patch.object(pm, "foto") as f:
                 self.assertEqual(cli.get("/api/pricing/monitor").status_code, 403)
                 f.assert_not_called()
+
+    def test_invitados_entran_y_los_demas_operadores_no(self):
+        from core import rbac
+        self.poner_foto()
+        cli = _cliente()
+        for correo in ("haim@kubera.mx", "Andrea.Pardo@kubera.mx"):
+            invitado = SimpleNamespace(autenticado=True, tipo="persona", rol="operador", actor=correo)
+            with self.subTest(correo=correo), _como(invitado):
+                self.assertTrue(rbac.ve_pricing(invitado))
+                self.assertEqual(cli.get("/api/pricing/monitor").status_code, 200)
+        otro = SimpleNamespace(autenticado=True, tipo="persona", rol="operador", actor="valeria@kubera.mx")
+        with _como(otro), mock.patch.object(pm, "foto") as f:
+            self.assertFalse(rbac.ve_pricing(otro))
+            self.assertEqual(cli.get("/api/pricing/monitor").status_code, 403)
+            f.assert_not_called()
+        # una LLAVE de máquina con el correo de un invitado no cuenta: tiene que ser persona
+        self.assertFalse(rbac.ve_pricing(SimpleNamespace(autenticado=True, tipo="maquina", rol="admin", actor="haim@kubera.mx")))
 
 
 class FotoLocal(Base):
@@ -250,7 +269,7 @@ class Hechos(Base):
         with _como(anonimo), mock.patch.object(pm, "hechos") as h:
             self.assertEqual(_cliente().get("/api/pricing/hechos").status_code, 401)
             h.assert_not_called()
-        self.assertEqual(__import__("core.rbac", fromlist=["x"]).rol_requerido("GET", "/api/pricing/hechos"), "admin")
+        self.assertEqual(__import__("core.rbac", fromlist=["x"]).rol_requerido("GET", "/api/pricing/hechos"), "operador")
 
     def test_sin_archivos_no_hay_movidos(self):
         with _como(ADMIN), mock.patch.object(pm, "_despues", return_value={}) as d:

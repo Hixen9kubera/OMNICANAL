@@ -16,9 +16,10 @@ SOLO LECTURA. Ninguna ruta escribe: la pantalla SUGIERE qué hacer con cada
 precio y no cambia ninguno. El servicio (`services/pricing_monitor.py`) solo
 lee la foto de su carpeta o de GitHub, y para «Hecho» lee kubera.
 
-ACCESO: sólo admin con sesión del panel (`solo_admin`, igual que el Radar al que
-reemplaza en la barra): la foto trae ventas y visitas por publicación. Además la
-regla explícita ("GET", "/api/pricing", "admin") en core/rbac.py.
+ACCESO: admin con sesión del panel, y desde v0.661.0 también las personas de
+`core.rbac.PRICING_INVITADOS` (Haim y Andrea Pardo, Brandon 16-oct-2026): la foto
+trae ventas y visitas por publicación. Lo decide `acceso_pricing` en cada ruta;
+la regla ("GET", "/api/pricing", "operador") de core/rbac.py solo deja llegar aquí.
 
 La foto viaja ya comprimida (`Content-Encoding: gzip`, ≈0.9 MB en vez de 3.6):
 el navegador la descomprime solo. Un cliente que no acepte gzip la recibe plana.
@@ -31,11 +32,27 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 
-from routers.investigacion import solo_admin
+from core import identidad as core_identidad
+from core import rbac
 from services import pricing_monitor as pm
 
 log = logging.getLogger("omnicanal.pricing")
 router = APIRouter(prefix="/api/pricing", tags=["pricing"])
+
+
+async def acceso_pricing(request: Request):
+    """Persona con sesión: admin o invitada (`rbac.PRICING_INVITADOS`). Si no, 401/403 — SIEMPRE."""
+    quien = getattr(request.state, "identidad", None)
+    if quien is None:
+        quien = await core_identidad.resolver(request)
+    if not getattr(quien, "autenticado", False):
+        log.warning("PRICING 401: %s sin sesión", request.url.path)
+        raise HTTPException(status_code=401, detail="Inicia sesión en el panel para ver Pricing.")
+    if not rbac.ve_pricing(quien):
+        log.warning("PRICING 403: %s (%s, %s) intentó %s", quien.actor, getattr(quien, "tipo", ""),
+                    getattr(quien, "rol", ""), request.url.path)
+        raise HTTPException(status_code=403, detail="Pricing no está disponible para tu cuenta.")
+    return quien
 
 
 def _http(exc: Exception) -> HTTPException:
@@ -46,7 +63,7 @@ def _http(exc: Exception) -> HTTPException:
 
 
 @router.get("/monitor")
-async def monitor(request: Request, quien=Depends(solo_admin)) -> Response:
+async def monitor(request: Request, quien=Depends(acceso_pricing)) -> Response:
     try:
         gz, meta = await pm.foto()
     except (pm.SinFoto, pm.FalloFuente) as exc:
@@ -59,13 +76,13 @@ async def monitor(request: Request, quien=Depends(solo_admin)) -> Response:
 
 
 @router.get("/hechos")
-async def hechos(quien=Depends(solo_admin)) -> dict:
+async def hechos(quien=Depends(acceso_pricing)) -> dict:
     """Los precios que SÍ se movieron en ML (columna «Hecho») y lo vendido desde el cambio. Solo lee."""
     return await pm.hechos()
 
 
 @router.get("/vivo")
-async def vivo(quien=Depends(solo_admin)) -> dict:
+async def vivo(quien=Depends(acceso_pricing)) -> dict:
     """Stock FULL de ML y ventas de 14/30 días de AHORA, para «Se agota» y low stock (v0.655.0). Solo lee."""
     try:
         return await pm.vivo()
@@ -74,7 +91,7 @@ async def vivo(quien=Depends(solo_admin)) -> dict:
 
 
 @router.get("/salud")
-async def salud(quien=Depends(solo_admin)) -> dict:
+async def salud(quien=Depends(acceso_pricing)) -> dict:
     """Calidad y experiencia de compra de ML por publicación (v0.659.0), de lo que guarda calidad_ml. Solo lee."""
     try:
         return await pm.salud()
@@ -83,7 +100,7 @@ async def salud(quien=Depends(solo_admin)) -> dict:
 
 
 @router.get("/motivos/{item_id}")
-async def motivos(item_id: str, quien=Depends(solo_admin)) -> dict:
+async def motivos(item_id: str, quien=Depends(acceso_pricing)) -> dict:
     """Por qué se canceló o se devolvió cada venta de una publicación (v0.659.0). Solo SELECT a kubera y GET a ML."""
     try:
         return await pm.motivos(item_id)
@@ -92,7 +109,7 @@ async def motivos(item_id: str, quien=Depends(solo_admin)) -> dict:
 
 
 @router.get("/img/{hoja}")
-async def imagen(hoja: str, quien=Depends(solo_admin)) -> Response:
+async def imagen(hoja: str, quien=Depends(acceso_pricing)) -> Response:
     try:
         dato = await pm.hoja(hoja)
     except (pm.SinFoto, pm.FalloFuente) as exc:

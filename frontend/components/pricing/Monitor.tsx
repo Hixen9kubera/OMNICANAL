@@ -380,7 +380,7 @@ export default function Monitor({
         </div>
         <div className="sello">
           <span className="badge">
-            <EyeOff size={13} aria-hidden /> Oculta · solo admin
+            <EyeOff size={13} aria-hidden /> Oculta · admin e invitados
           </span>
           <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
             <Info size={14} aria-hidden /> Solo lectura: esta pantalla no cambia ningún precio; «Hecho» muestra lo ya movido en ML

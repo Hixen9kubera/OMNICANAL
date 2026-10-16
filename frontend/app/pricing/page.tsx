@@ -47,7 +47,8 @@ export default function PricingPage() {
     if (SIN_LOGIN) return;
     let vivo = true;
     void quienSoy().then((u) => {
-      if (vivo) setAcceso(u.autenticado && u.rol === "admin" ? "admin" : "no");
+      // Admin o invitado: lo decide el backend (`puede.pricing`, ver core/rbac.py).
+      if (vivo) setAcceso(u.autenticado && (u.rol === "admin" || !!u.puede?.pricing) ? "admin" : "no");
     });
     return () => {
       vivo = false;

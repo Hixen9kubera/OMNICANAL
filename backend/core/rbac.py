@@ -108,9 +108,11 @@ REGLAS: tuple[tuple[str, str, str], ...] = (
     # (`solo_admin`), igual que investigación.
     ("GET", "/api/radar-precios", "admin"),
     # PRICING (15-oct-2026, v0.650.0): el «Monitor de precios FULL» que tomó el
-    # lugar del Radar en la barra. Lectura pura, sólo admin: la foto trae ventas
-    # y visitas por publicación. El router exige además admin CON SESIÓN.
-    ("GET", "/api/pricing", "admin"),
+    # lugar del Radar en la barra. Lectura pura. Desde v0.661.0 (16-oct, Brandon)
+    # la ven los admin Y las personas de PRICING_INVITADOS: esta regla deja pasar
+    # al operador y el router la vuelve a cerrar con `ve_pricing` (admin con
+    # sesión o invitado con sesión). Un operador que no esté en la lista: 403.
+    ("GET", "/api/pricing", "operador"),
     # Estas cuatro familias YA pedían admin —por omisión, no por decisión— y
     # está bien que lo pidan: sus pestañas son soloAdmin y traen datos del
     # comprador o tokens. Se listan para que el auditor pueda llegar a CERO;
@@ -299,6 +301,22 @@ REGLAS: tuple[tuple[str, str, str], ...] = (
 _ORDENADAS = tuple(sorted(REGLAS, key=lambda r: len(r[1]), reverse=True))
 
 ROL_POR_DEFECTO = "admin"   # lo no listado nace cerrado — ver decisión 1
+
+
+# PRICING: además de los admin, quién la ve (Brandon, 16-oct-2026). Correos de
+# core.usuarios, en minúsculas. Agregar a alguien aquí es darle acceso a las ventas
+# y visitas por publicación de la pestaña; quitarlo, retirárselo en el siguiente deploy.
+PRICING_INVITADOS = frozenset({
+    "haim@kubera.mx",
+    "andrea.pardo@kubera.mx",   # «Andy»
+})
+
+
+def ve_pricing(quien) -> bool:
+    """¿Esta identidad puede ver PRICING? Persona con sesión: admin, o invitada por correo."""
+    if not getattr(quien, "autenticado", False) or getattr(quien, "tipo", "") != "persona":
+        return False
+    return getattr(quien, "rol", "") == "admin" or str(getattr(quien, "actor", "")).strip().lower() in PRICING_INVITADOS
 
 
 def rol_requerido(metodo: str, ruta: str) -> str:

@@ -1001,6 +1001,25 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.661.0 — PRICING: también la ven Haim y Andrea Pardo («Andy»)
+
+**Qué pidió Brandon (16-oct-2026).** Que Andy y Haim puedan ver la pestaña PRICING. En el panel no existe «Andy»:
+Brandon confirmó que es **Andrea Pardo** (`andrea.pardo@kubera.mx`). Haim es `haim@kubera.mx`. Los dos son `operador`.
+
+**Cómo.** No se les sube el rol (admin abre todo lo demás): se agrega una lista de invitados para esta pestaña.
+- `core/rbac.py`: `PRICING_INVITADOS` (correos en minúsculas) y `ve_pricing(quien)` = persona con sesión y rol
+  admin **o** correo en la lista. La regla de RBAC de `/api/pricing` baja de `admin` a `operador` para que el
+  invitado llegue al router; un `lectura` sigue fuera.
+- `routers/pricing.py`: `acceso_pricing` reemplaza a `solo_admin` en las 6 rutas — 401 sin sesión, 403 si no es
+  admin ni invitado (un operador cualquiera, o una llave de máquina aunque traiga el correo de un invitado).
+- `/api/auth/me` → `puede.pricing`. La barra muestra la pestaña con ese permiso (`requiere: "pricing"`) y la
+  página entra con admin o `puede.pricing`.
+
+**Para agregar o quitar a alguien:** editar `PRICING_INVITADOS` y desplegar.
+
+**Pruebas.** `test_pricing_monitor` +1 (los invitados entran —sin importar mayúsculas—, otro operador 403, una llave
+con el correo de un invitado no cuenta); las de RBAC, flujo, inventario, publicaciones y radar en verde. `tsc` limpio.
+
 ### v0.660.0 — PRICING: tabla sin «Vs. comp.» ni «Qué hacer»; encabezado fijo y barra horizontal siempre a la vista
 
 **Qué pidió Eduardo (16-oct-2026).** Quitar de la tabla las columnas «Vs. comp.» y «Qué hacer»; que al bajar se quede

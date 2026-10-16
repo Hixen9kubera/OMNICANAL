@@ -53,5 +53,7 @@ def me(request: Request):
             "ver_costos": rbac.permite(quien.rol, "GET", "/api/crear/costos"),
             "editar_contenido": rbac.permite(quien.rol, "POST", "/api/productos/x/contenido"),
             "ver_auditoria": rbac.permite(quien.rol, "GET", "/api/auditoria"),
+            # PRICING: admin o invitado por correo (rbac.PRICING_INVITADOS), no solo el rol.
+            "pricing": rbac.ve_pricing(quien),
         },
     }
