@@ -36,7 +36,16 @@ CADENCIA
 --------
 **Una vez al día y punto.** `/visits/time_window` devuelve una ventana MÓVIL de
 30 días: correrlo dos veces el mismo día agrega un día y quita otro, o sea casi
-nada. Temprano, para que el panel amanezca al día.
+nada. Temprano, para que el panel amanezca al día: a las **12:30 UTC** (6:30 CDMX).
+
+**Por qué 12:30 y no 12:00 (v0.658.0).** El token de SANCORFASHION se renueva cada
+día hacia las 12:05 UTC (el 16-oct a las 12:07:49). El cron lee los tokens al
+arrancar y no puede renovarlos —no tiene `TOKENS_SOLO_KUBERA` ni credenciales de
+la app, y no debe: la renovación es del backend—, así que corriendo a las 12:00
+cada llamada de SANC daba 401 desde la renovación. Medido: el 15-oct 1,358 y el
+16-oct 834 publicaciones sin dato; 109 activas de SANC se quedaron en el 14-oct.
+Como red, si una cuenta pierde ≥ 20 % en la primera pasada se espera su token
+nuevo y se repiten SOLO las fallidas (ver `segunda_pasada`).
 
 USO
 ---
@@ -62,12 +71,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 logging.basicConfig(level=logging.WARNING,
                     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
-from services import competencia_ml, competencia_store, supabase_db  # noqa: E402
+from services import competencia_ml, competencia_store, meli, supabase_db  # noqa: E402
 from services.competencia_captura import CUENTAS  # noqa: E402  (la pareja token↔etiqueta)
 
 # Ocho en paralelo: medido, 0.56 s por llamada, así que 3,118 salen en ~4 min.
 # Subirlo tienta a que ML empiece a responder 429; bajarlo alarga el cron.
 CONCURRENCIA = 8
+# La segunda pasada va más despacio: lo que falló por 429 vuelve a pedirse con
+# menos presión sobre el cupo que el backend comparte.
+CONCURRENCIA_REINTENTO = 4
+# Una cuenta que pierde esta fracción o más en la primera pasada tiene un problema
+# de TOKEN (401 parejo desde la renovación), no de ritmo: los 429 salen dispersos.
+UMBRAL_HUECO_TOKEN = 0.20
+# Lo mismo que el cron de /highlights (`competencia_highlights.esperar_token_nuevo`).
+ESPERA_TOKEN_MAX_S = 900
+ESPERA_TOKEN_PASO_S = 30
 
 
 def objetivo(limite: int | None = None) -> list[dict[str, Any]]:
@@ -131,10 +149,11 @@ def objetivo(limite: int | None = None) -> list[dict[str, Any]]:
     return supabase_db.fetch_all(sql)
 
 
-async def medir(filas: list[dict[str, Any]]) -> tuple[int, int]:
+async def medir(filas: list[dict[str, Any]],
+                concurrencia: int = CONCURRENCIA) -> tuple[int, int]:
     """Llena `visitas_30d` en cada fila. Devuelve (con dato, sin dato)."""
     tok_de = {etiqueta: tok for tok, etiqueta in CUENTAS}
-    sem = asyncio.Semaphore(CONCURRENCIA)
+    sem = asyncio.Semaphore(concurrencia)
 
     async def una(f: dict[str, Any]) -> None:
         tok = tok_de.get(f["cuenta"])
@@ -153,6 +172,64 @@ async def medir(filas: list[dict[str, Any]]) -> tuple[int, int]:
     await asyncio.gather(*(una(f) for f in filas))
     ok = sum(1 for f in filas if f.get("visitas_30d") is not None)
     return ok, len(filas) - ok
+
+
+def tokens_en_uso() -> dict[str, str | None]:
+    """El token con el que va a medir cada cuenta (el que `competencia_ml` pedirá)."""
+    return {etiqueta: meli._access_token(etiqueta) for _tok, etiqueta in CUENTAS}
+
+
+def cuentas_con_hueco(filas: list[dict[str, Any]]) -> set[str]:
+    """Las cuentas que perdieron ≥ UMBRAL_HUECO_TOKEN de sus filas medibles."""
+    por: dict[str, list[int]] = {}
+    for f in filas:
+        if not f.get("ml_item_id"):
+            continue
+        t = por.setdefault(f["cuenta"], [0, 0])
+        t[0] += 1
+        t[1] += f.get("visitas_30d") is None
+    return {c for c, (n, sin) in por.items() if n and sin / n >= UMBRAL_HUECO_TOKEN}
+
+
+def esperar_tokens_nuevos(usados: dict[str, str | None], cuentas: set[str]) -> set[str]:
+    """
+    Espera a que el BACKEND renueve el token de esas cuentas y devuelve las que ya
+    tienen uno distinto al de la primera pasada (aunque haya cambiado antes de
+    empezar a esperar). Se lee de la base SIN caché y se deja en las dos cachés
+    —la de `meli` (60 s) y la de `competencia_ml` (5 min)—, que si no seguirían
+    sirviendo el viejo. El cron nunca renueva.
+    """
+    fin = time.monotonic() + ESPERA_TOKEN_MAX_S
+    pendientes, nuevas = set(cuentas), set()
+    while True:
+        for c in sorted(pendientes):
+            actual = meli._access_token_leer(c)
+            if actual and actual != usados.get(c):
+                meli._recordar_token(c, actual)
+                competencia_ml._olvidar_token(c)
+                nuevas.add(c)
+        pendientes -= nuevas
+        if not pendientes or time.monotonic() >= fin:
+            return nuevas
+        time.sleep(ESPERA_TOKEN_PASO_S)
+
+
+def segunda_pasada(filas: list[dict[str, Any]], usados: dict[str, str | None]) -> int:
+    """Vuelve a medir SOLO las filas sin dato. Devuelve cuántas recuperó."""
+    fallidas = [f for f in filas if f.get("visitas_30d") is None and f.get("ml_item_id")]
+    if not fallidas:
+        return 0
+    huecos = cuentas_con_hueco(filas)
+    if huecos:
+        print(f"  {', '.join(sorted(huecos))}: perdió ≥{UMBRAL_HUECO_TOKEN:.0%} de sus filas → "
+              f"se espera su token nuevo (hasta {ESPERA_TOKEN_MAX_S // 60} min)")
+        nuevas = esperar_tokens_nuevos(usados, huecos)
+        print(f"  token nuevo de: {', '.join(sorted(nuevas)) or 'ninguna (se reintenta igual)'}")
+    for _tok, etiqueta in CUENTAS:
+        competencia_ml._olvidar_token(etiqueta)
+    ok2, sin2 = asyncio.run(medir(fallidas, CONCURRENCIA_REINTENTO))
+    print(f"  segunda pasada: {len(fallidas)} filas · {ok2} recuperadas · {sin2} siguen sin dato")
+    return ok2
 
 
 def main() -> int:
@@ -177,8 +254,12 @@ def main() -> int:
     print(f"  medidas por última vez: {min((f['medido_el'] for f in filas if f['medido_el']), default='—')}")
     print(f"  concurrencia          : {CONCURRENCIA}")
 
+    usados = tokens_en_uso()
     t0 = time.time()
     ok, sin = asyncio.run(medir(filas))
+    if sin:
+        recuperadas = segunda_pasada(filas, usados)
+        ok, sin = ok + recuperadas, sin - recuperadas
     dt = time.time() - t0
     print(f"\n  medidas en {dt/60:.1f} min · {ok} con dato · {sin} sin dato")
 

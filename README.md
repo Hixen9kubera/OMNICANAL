@@ -1001,6 +1001,44 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.658.0 — Cron de visitas: ya no pierde a SANCORFASHION por la renovación del token (corre a las 12:30 UTC y repite lo que falló con el token nuevo)
+
+**Qué pasaba (medido el 16-oct-2026).** El cron `competencia-visitas` corría a las 12:00 UTC y lee los tokens de ML
+una sola vez al arrancar. El token de SANCORFASHION se renueva cada día hacia las 12:05 UTC (el 16-oct a las
+12:07:49). Desde ese momento, cada llamada de esa cuenta daba **401 «invalid access token»** hasta el final de la
+corrida.
+- Resultado: el 15-oct quedaron 1,358 publicaciones sin dato y el 16-oct 834.
+- De 627 publicaciones ML activas, 127 no tenían visitas del día; 122 eran de SANC y 109 seguían con la medición
+  del 14-oct.
+- Una fila sin dato no se reescribe («no sé ≠ 0»), así que el panel de Conversión las mostraba con visitas viejas
+  como si fueran de hoy.
+- El reintento de `competencia_ml._get` ante un 401 intenta **renovar**, y el cron no puede (no tiene
+  `TOKENS_SOLO_KUBERA` ni credenciales de la app). Tampoco debe: la renovación es del backend. El 401 quedaba tal cual.
+
+**El arreglo (`scripts/competencia_visitas.py`).**
+- **Horario:** `cronSchedule` pasa a `30 12 * * *`, después de la renovación. Se puso por API (el servicio no lee
+  `railway.competencia-visitas.json`) y también en el archivo, para que quede escrito.
+- **Segunda pasada (`segunda_pasada`):** se anota el token de cada cuenta al arrancar. Si al terminar una cuenta
+  perdió ≥ 20 % de sus filas (el 401 es parejo; los 429 salen dispersos), se espera hasta 15 min a que el backend
+  renueve su token.
+  - Se lee de la base SIN caché con `meli._access_token_leer` y se deja en las dos cachés (`meli` 60 s,
+    `competencia_ml` 5 min).
+  - Luego se repiten SOLO las filas sin dato, con concurrencia 4 en vez de 8.
+  - Las fallas dispersas se repiten sin esperar. El cron sigue sin renovar nunca.
+- Es el mismo patrón que `competencia_highlights.esperar_token_nuevo` (incidente del 24-sep).
+
+**Pruebas.** `tests/test_competencia_visitas_token.py` (10):
+- qué cuentas cuentan como «hueco de token»;
+- la espera deja el token nuevo en las dos cachés, no espera si ya había cambiado y se rinde a tiempo;
+- la segunda pasada repite solo las fallidas, con menos concurrencia;
+- las fallas dispersas no esperan;
+- sin fallas no hay segunda pasada;
+- el horario del archivo es 12:30.
+
+Ensayo del script contra producción con `--limite 60`, sin `--real`: 60 de 60 con dato.
+
+**Reversa.** `cronSchedule` de vuelta a `0 12 * * *` por API; el código nuevo solo actúa cuando hay filas sin dato.
+
 ### v0.657.0 — PRICING: filtro «Visitas 30 d» (con visitas / sin visitas)
 
 **Qué pidió Eduardo (16-oct-2026).** Un filtro en Pricing para separar las publicaciones con visitas de las que no
