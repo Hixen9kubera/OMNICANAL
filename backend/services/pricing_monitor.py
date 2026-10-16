@@ -162,6 +162,107 @@ async def hoja(nombre: str) -> bytes:
 
 def olvidar() -> None:
     """Vacía la caché (pruebas, o tras dejar una foto nueva en la carpeta)."""
-    global _foto
+    global _foto, _hechos
     _foto = None
+    _hechos = None
     _cache.clear()
+
+
+# ── HECHO (v0.654.0): los precios que sí se movieron en ML ───────────────────
+#
+# `hechos.json` (en la misma carpeta que la foto) lo arma
+# `scripts/pricing_hechos.py` con la bitácora de lo aplicado: precio antes,
+# precio nuevo, precio normal, desde cuándo. Aquí se le suma lo que pasó
+# DESPUÉS del cambio, leído de kubera: piezas pagadas desde ese momento y el
+# precio y stock que la publicación tiene hoy (`channel.listings`, sync de
+# 15 min). Solo SELECT; si kubera no está, se entregan los movimientos sin eso.
+
+ARCHIVO_HECHOS = "hechos.json"
+# La promoción que tiene HOY cada publicación (columna «Promoción hoy»): foto con
+# su hora que deja `scripts/pricing_promos.py` (solo GET a ML).
+ARCHIVO_PROMOS = "promos.json"
+TTL_HECHOS_S = 300
+_hechos: tuple[float, dict] | None = None
+_candado_hechos = asyncio.Lock()
+
+
+def _leer_hechos() -> list[dict]:
+    """BLOQUEANTE (disco). Sin archivo = ningún precio movido."""
+    archivo = _carpeta() / ARCHIVO_HECHOS
+    if not archivo.is_file():
+        return []
+    datos = json.loads(archivo.read_text(encoding="utf-8"))
+    return [h for h in (datos.get("hechos") or []) if isinstance(h, dict) and h.get("id") and h.get("desde")]
+
+
+def _leer_promos() -> dict:
+    """BLOQUEANTE (disco). {"leido": …, "promos": {id: …}}; sin archivo, vacío."""
+    archivo = _carpeta() / ARCHIVO_PROMOS
+    if not archivo.is_file():
+        return {"leido": None, "promos": {}}
+    datos = json.loads(archivo.read_text(encoding="utf-8"))
+    return {"leido": datos.get("leido"), "promos": datos.get("promos") or {}}
+
+
+def _despues(hechos: list[dict]) -> dict[str, dict]:
+    """BLOQUEANTE (kubera, solo SELECT). Por publicación: lo vendido desde su cambio y su precio de hoy."""
+    from services import supabase_db as sdb
+
+    if not hechos or not sdb.disponible():
+        return {}
+    ids = [h["id"] for h in hechos]
+    desdes = [h["desde"] for h in hechos]
+    ventas = sdb.fetch_all(
+        """
+        select h.item_id, sum(oi.cantidad)::int as pzs, count(distinct o.external_order_id)::int as ordenes,
+               round(sum(oi.cantidad * oi.precio_unitario)::numeric, 2) as pesos
+          from unnest(%(ids)s::text[], %(desdes)s::timestamptz[]) as h(item_id, desde)
+          join channel.order_items oi on oi.canal = 'mercado_libre' and oi.item_id = h.item_id
+          join channel.orders o on o.canal = oi.canal and o.cuenta = oi.cuenta and o.external_order_id = oi.external_order_id
+         where o.creado_at >= h.desde and lower(coalesce(o.estado_canal, '')) <> 'cancelled'
+         group by h.item_id
+        """,
+        {"ids": ids, "desdes": desdes},
+    )
+    hoy = sdb.fetch_all(
+        """
+        select distinct on (l.listing_id) l.listing_id, l.price_sale, l.stock_full, l.situacion, l.updated_at
+          from channel.listings l
+         where l.canal = 'mercado_libre' and l.listing_id = any(%(ids)s)
+         order by l.listing_id, l.updated_at desc nulls last
+        """,
+        {"ids": ids},
+    )
+    out: dict[str, dict] = {i: {"pzs": 0, "ordenes": 0, "pesos": 0.0} for i in ids}
+    for v in ventas:
+        out[v["item_id"]].update(pzs=v["pzs"] or 0, ordenes=v["ordenes"] or 0, pesos=float(v["pesos"] or 0))
+    for l in hoy:
+        out[l["listing_id"]].update(
+            cobra_hoy=float(l["price_sale"]) if l["price_sale"] is not None else None,
+            stock_hoy=l["stock_full"], situacion=l["situacion"],
+            leido=l["updated_at"].isoformat() if l["updated_at"] else None,
+        )
+    return out
+
+
+async def hechos() -> dict:
+    """Los precios movidos, con lo vendido desde el cambio, y la promoción de hoy de cada publicación. Caché de 5 min."""
+    global _hechos
+    async with _candado_hechos:
+        ahora = time.monotonic()
+        if _hechos and ahora - _hechos[0] <= TTL_HECHOS_S:
+            return _hechos[1]
+        lista = await asyncio.to_thread(_leer_hechos)
+        promos = await asyncio.to_thread(_leer_promos)
+        kubera = True
+        try:
+            despues = await asyncio.to_thread(_despues, lista)
+        except Exception as exc:  # kubera caída o lenta: los movimientos se ven igual, sin lo de después
+            log.warning("pricing: no se pudo leer lo vendido desde el cambio: %s", exc)
+            despues, kubera = {}, False
+        datos = {"hechos": [{**h, "despues": despues.get(h["id"])} for h in lista],
+                 "kubera": kubera and bool(despues or not lista),
+                 "promos": promos["promos"], "promos_leido": promos["leido"],
+                 "leido": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        _hechos = (time.monotonic(), datos)
+        return datos

@@ -239,5 +239,81 @@ class Preparar(unittest.TestCase):
             self.assertEqual(pm.validar((raiz / "foto" / "monitor.json.gz").read_bytes())["generado"], "x")
 
 
+class Hechos(Base):
+    """«Hecho» y «Promoción hoy» (v0.654.0): admin, sin archivos = nada movido, y kubera solo suma lo de después."""
+
+    HECHO = {"id": "MLM1", "cuenta": "BEKURA", "sku": "A", "antes": 200.0, "nuevo": 180, "normal": 400.0,
+             "promo": "PRICE_DISCOUNT", "hasta": "2026-11-11", "desde": "2026-10-15T17:00:00-06:00", "se_ve": True}
+
+    def test_exige_admin_y_no_lee_nada_sin_sesion(self):
+        anonimo = SimpleNamespace(autenticado=False, tipo="", rol="", actor="?")
+        with _como(anonimo), mock.patch.object(pm, "hechos") as h:
+            self.assertEqual(_cliente().get("/api/pricing/hechos").status_code, 401)
+            h.assert_not_called()
+        self.assertEqual(__import__("core.rbac", fromlist=["x"]).rol_requerido("GET", "/api/pricing/hechos"), "admin")
+
+    def test_sin_archivos_no_hay_movidos(self):
+        with _como(ADMIN), mock.patch.object(pm, "_despues", return_value={}) as d:
+            r = _cliente().get("/api/pricing/hechos")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual((r.json()["hechos"], r.json()["promos"], r.json()["promos_leido"]), ([], {}, None))
+        d.assert_called_once_with([])
+
+    def test_suma_lo_de_despues_y_aguanta_kubera_caida(self):
+        (self.dir / "hechos.json").write_text(json.dumps({"hechos": [self.HECHO, {"id": "", "desde": "x"}]}), encoding="utf-8")
+        (self.dir / "promos.json").write_text(json.dumps({"leido": "2026-10-15T19:11-06:00", "promos": {"MLM1": {"cobra": 180}}}),
+                                              encoding="utf-8")
+        despues = {"MLM1": {"pzs": 2, "ordenes": 2, "pesos": 360.0, "cobra_hoy": 180.0}}
+        with _como(ADMIN), mock.patch.object(pm, "_despues", return_value=despues):
+            d = _cliente().get("/api/pricing/hechos").json()
+        self.assertEqual(len(d["hechos"]), 1)                 # el renglón sin id no entra
+        self.assertEqual(d["hechos"][0]["despues"]["pzs"], 2)
+        self.assertTrue(d["kubera"])
+        self.assertEqual(d["promos"]["MLM1"]["cobra"], 180)
+        pm.olvidar()
+        with _como(ADMIN), mock.patch.object(pm, "_despues", side_effect=RuntimeError("kubera caída")):
+            d = _cliente().get("/api/pricing/hechos").json()
+        self.assertFalse(d["kubera"])
+        self.assertIsNone(d["hechos"][0]["despues"])           # el movimiento se ve igual, sin lo de después
+
+
+class ScriptsHechoYPromos(unittest.TestCase):
+    def test_bitacora_a_hechos_sin_lo_revertido_ni_lo_fallido(self):
+        from scripts import pricing_hechos as ph
+        base = {"cuenta": "BEKURA", "sku": "A", "cobraba": 200.0, "normal": 400.0, "nuevo": 180, "regla": "sv_extra",
+                "cuerpo": {"promotion_type": "PRICE_DISCOUNT", "finish_date": "2026-11-11T23:59:59"}, "cuando": "2026-10-15T17:00:00-06:00"}
+        bit = [{**base, "id": "M1", "accion": "aplicar", "ok": True},
+               {**base, "id": "M2", "accion": "aplicar", "ok": False},
+               {**base, "id": "M3", "accion": "aplicar", "ok": True},
+               {"id": "M3", "accion": "revertir", "ok": True},
+               {"accion": "hecho_manual", "id": "M4", "cuenta": "BEKURA", "sku": "B", "antes": 10, "nuevo": 9, "desde": "2026-10-15T18:00:00-06:00"}]
+        hs = ph.armar(bit, [{"id": "M1", "se_ve_descuento": False}])
+        self.assertEqual([h["id"] for h in hs], ["M1", "M4"])
+        self.assertEqual((hs[0]["antes"], hs[0]["nuevo"], hs[0]["hasta"], hs[0]["se_ve"]), (200.0, 180, "2026-11-11", False))
+
+    def test_resumir_dice_que_promocion_cobra(self):
+        from datetime import datetime
+        from scripts import pricing_promos as pp
+        ahora = datetime.fromisoformat("2026-10-15T19:00:00-06:00")
+        promos = [
+            {"id": "LGH-MLM1000", "type": "LIGHTNING", "status": "started", "price": 90},
+            {"type": "PRICE_DISCOUNT", "status": "started", "price": 166},
+            {"id": "C-1", "type": "SELLER_COUPON_CAMPAIGN", "status": "candidate", "fixed_amount": 39,
+             "start_date": "2026-09-24T00:00:00", "finish_date": "2026-10-24T23:59:59", "name": "Seguidores"},
+            {"id": "C-2", "type": "SELLER_COUPON_CAMPAIGN", "status": "candidate", "fixed_amount": 29,
+             "start_date": "2026-09-01T00:00:00", "finish_date": "2026-10-01T23:59:59", "name": "Vencido"},
+            {"id": "V-1", "type": "VOLUME", "status": "started", "buy_quantity": 2, "discount_percentage": 10, "name": "MAYOREO"},
+            {"id": "P-BF", "type": "DEAL", "status": "pending", "price": 150, "name": "Buen Fin 26", "start_date": "2026-11-12T22:00:00-06:00"},
+        ]
+        r = pp.resumir({"amount": 90, "regular_amount": 175.75, "metadata": {"promotion_type": "lightning"}}, promos, ahora)
+        self.assertEqual(r["por"]["etiqueta"], "Oferta relámpago")
+        self.assertEqual([c["monto"] for c in r["cupones"]], [39])            # el cupón vencido no cuenta
+        self.assertEqual((r["volumen"]["lleva"], r["volumen"]["pct"]), (2, 10))
+        self.assertEqual(r["programadas"][0]["nombre"], "Buen Fin 26")
+        r = pp.resumir({"amount": 166, "regular_amount": 175.75, "metadata": {"promotion_id": "OFFER-X", "promotion_type": "custom"}},
+                       promos[1:], ahora)
+        self.assertEqual(r["por"]["etiqueta"], "Descuento individual")
+
+
 if __name__ == "__main__":
     unittest.main()

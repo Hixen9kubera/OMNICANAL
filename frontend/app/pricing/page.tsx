@@ -23,7 +23,7 @@ import AppNavbar from "@/components/AppNavbar";
 import { ProveedorHojas } from "@/components/pricing/Miniaturas";
 import Monitor from "@/components/pricing/Monitor";
 import { quienSoy } from "@/lib/sesion";
-import { ApiError, mensajeDeError, pricingMonitor, type PricingFoto } from "@/lib/api";
+import { ApiError, mensajeDeError, pricingHechos, pricingMonitor, type PricingFoto, type PricingHechos } from "@/lib/api";
 
 import "./pricing.css";
 
@@ -59,6 +59,9 @@ export default function PricingPage() {
 
 function Pricing() {
   const [foto, setFoto] = useState<PricingFoto | null>(null);
+  // «Hecho» y «Promoción hoy» llegan aparte: si fallan, la tabla se ve igual
+  // y esas dos columnas lo dicen.
+  const [hechos, setHechos] = useState<PricingHechos | null | "error">(null);
   const [error, setError] = useState<string | null>(null);
   const [noDisponible, setNoDisponible] = useState(false);
   const [intento, setIntento] = useState(0);
@@ -81,6 +84,13 @@ function Pricing() {
           return;
         }
         setError(mensajeDeError(e, "No se pudo leer el monitor de precios. Revisa que el backend esté arriba."));
+      });
+    pricingHechos(ctl.signal)
+      .then((d) => {
+        if (!ctl.signal.aborted) setHechos(d);
+      })
+      .catch(() => {
+        if (!ctl.signal.aborted) setHechos("error");
       });
     return () => ctl.abort();
   }, [intento]);
@@ -107,7 +117,7 @@ function Pricing() {
         <Cargando texto="Leyendo el monitor de precios…" />
       ) : (
         <ProveedorHojas version={foto.meta.generado} celda={foto.meta.img.celda} lado={foto.meta.img.lado}>
-          <Monitor foto={foto} />
+          <Monitor foto={foto} hechos={hechos} />
         </ProveedorHojas>
       )}
     </div>

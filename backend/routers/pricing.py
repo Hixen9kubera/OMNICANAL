@@ -3,10 +3,12 @@ pricing.py — La pestaña PRICING (v0.650.0): el «Monitor de precios FULL».
 
   GET /api/pricing/monitor      → la foto completa (meta, pubs, riv), comprimida
   GET /api/pricing/img/{hoja}   → una hoja de miniaturas (`p0`, `s12`…), JPEG
+  GET /api/pricing/hechos       → los precios que sí se movieron en ML (v0.654.0)
+                                  y lo vendido desde el cambio (kubera, SELECT)
 
 SOLO LECTURA. Ninguna ruta escribe: la pantalla SUGIERE qué hacer con cada
 precio y no cambia ninguno. El servicio (`services/pricing_monitor.py`) solo
-lee la foto de su carpeta o de GitHub.
+lee la foto de su carpeta o de GitHub, y para «Hecho» lee kubera.
 
 ACCESO: sólo admin con sesión del panel (`solo_admin`, igual que el Radar al que
 reemplaza en la barra): la foto trae ventas y visitas por publicación. Además la
@@ -48,6 +50,12 @@ async def monitor(request: Request, quien=Depends(solo_admin)) -> Response:
         return Response(content=gz, media_type="application/json",
                         headers={**cab, "Content-Encoding": "gzip", "Vary": "Accept-Encoding"})
     return Response(content=gzip.decompress(gz), media_type="application/json", headers=cab)
+
+
+@router.get("/hechos")
+async def hechos(quien=Depends(solo_admin)) -> dict:
+    """Los precios que SÍ se movieron en ML (columna «Hecho») y lo vendido desde el cambio. Solo lee."""
+    return await pm.hechos()
 
 
 @router.get("/img/{hoja}")

@@ -17,3 +17,11 @@ python backend/scripts/pricing_preparar_foto.py datos.json carpeta_hojas backend
 Commit y deploy. El backend la toma en 10 minutos (su caché).
 
 Las reglas de «Qué hacer» no viven aquí: corren en `frontend/components/pricing/reglas.ts`.
+
+**«Hecho» y «Promoción hoy» (v0.654.0).**
+
+- `hechos.json`: los precios que sí se movieron en ML (precio antes, nuevo, normal, desde, hasta). Lo arma
+  `python backend/scripts/pricing_hechos.py <bitacora.jsonl> [<verificacion.json>]` con la bitácora del script
+  que aplicó los descuentos. Lo vendido después del cambio NO va aquí: el backend lo lee de kubera al servirlo.
+- `promos.json`: la promoción que tiene cada publicación al momento de leerla (`leido`). Lo arma
+  `python backend/scripts/pricing_promos.py` (solo GET a ML). Se vuelve a correr para ponerlo al día.

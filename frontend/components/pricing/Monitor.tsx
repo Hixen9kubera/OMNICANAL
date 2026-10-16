@@ -11,7 +11,7 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { EyeOff, Info } from "lucide-react";
 
-import type { PricingComp, PricingFoto } from "@/lib/api";
+import type { PricingComp, PricingFoto, PricingHecho, PricingHechos, PricingPromoHoy } from "@/lib/api";
 import { pct1, pctS, pesos, pzs, reloj, type Reloj } from "./formato";
 import Grafica from "./Grafica";
 import { Mini } from "./Miniaturas";
@@ -47,14 +47,26 @@ interface Filtros {
   accion: ClaveAccion | null;
   q: string;
   orden: string;
+  /** «Hecho»: todas, las que sí se movieron en ML o las que no. */
+  mov: "todas" | "si" | "no";
 }
 
-const F0: Filtros = { ventas: "todas", cat: "todas", comp: "todas", cuenta: "todas", accion: null, q: "", orden: "accion" };
+const F0: Filtros = { ventas: "todas", cat: "todas", comp: "todas", cuenta: "todas", accion: null, q: "", orden: "accion", mov: "todas" };
+
+/** Lo que llega de /api/pricing/hechos, ya por id de publicación. */
+interface Extra {
+  estado: "cargando" | "listo" | "error";
+  hecho: Map<string, PricingHecho>;
+  promo: Record<string, PricingPromoHoy | null>;
+  promosLeido: string | null;
+  kubera: boolean;
+}
 
 const editable = (f: Fila) => f.p.cat.v === "incorrecta" && !((f.p.sold ?? 0) > 0);
 
-function pasa(f: Fila, F: Filtros, sinAccion = false): boolean {
+function pasa(f: Fila, F: Filtros, sinAccion = false, X?: Extra): boolean {
   const { p, m, a } = f;
+  if (F.mov !== "todas" && X?.estado === "listo" && X.hecho.has(p.id) !== (F.mov === "si")) return false;
   if (F.ventas === "con" && !(m.u30 > 0)) return false;
   if (F.ventas === "sin" && m.u30 > 0) return false;
   if (F.cat === "editable" ? !editable(f) : F.cat !== "todas" && p.cat.v !== F.cat) return false;
@@ -130,7 +142,7 @@ function guardarReglas(R: Reglas) {
   }
 }
 
-export default function Monitor({ foto }: { foto: PricingFoto }) {
+export default function Monitor({ foto, hechos }: { foto: PricingFoto; hechos?: PricingHechos | null | "error" }) {
   const [R, setR] = useState<Reglas>(REGLAS);
   const [F, setF] = useState<Filtros>(F0);
   const [abiertos, setAbiertos] = useState<Set<number>>(() => new Set());
@@ -146,16 +158,29 @@ export default function Monitor({ foto }: { foto: PricingFoto }) {
   };
 
   const rel = useMemo(() => reloj(foto.meta.d0), [foto.meta.d0]);
+  const X = useMemo<Extra>(() => {
+    if (!hechos || hechos === "error")
+      return { estado: hechos === "error" ? "error" : "cargando", hecho: new Map(), promo: {}, promosLeido: null, kubera: false };
+    return {
+      estado: "listo",
+      hecho: new Map(hechos.hechos.map((h) => [h.id, h])),
+      promo: hechos.promos || {},
+      promosLeido: hechos.promos_leido,
+      kubera: hechos.kubera,
+    };
+  }, [hechos]);
   const { filas, convTipica } = useMemo(() => calcular(foto.pubs, R), [foto.pubs, R]);
   const series = { pubs: foto.meta.img.pubs || "p", riv: foto.meta.img.riv || "s" };
 
-  const base = useMemo(() => filas.filter((f) => pasa(f, F, true)), [filas, F]);
+  const base = useMemo(() => filas.filter((f) => pasa(f, F, true, X)), [filas, F, X]);
   const vista = useMemo(() => {
     const ord = F.orden.startsWith("h:")
       ? porValor(F.orden.split(":")[1], +F.orden.split(":")[2])
       : ORDENES[F.orden] ?? ORDENES.accion;
-    return filas.filter((f) => pasa(f, F)).sort(ord);
-  }, [filas, F]);
+    return filas.filter((f) => pasa(f, F, false, X)).sort(ord);
+  }, [filas, F, X]);
+  const movidas = useMemo(() => vista.filter((f) => X.hecho.has(f.p.id)), [vista, X]);
+  const pzsDespues = movidas.reduce((s, f) => s + (X.hecho.get(f.p.id)?.despues?.pzs ?? 0), 0);
 
   const conteo = useMemo(() => {
     const n: Partial<Record<ClaveAccion, number>> = {};
@@ -197,7 +222,7 @@ export default function Monitor({ foto }: { foto: PricingFoto }) {
   const fuente = Object.entries(fuentes).sort((a, b) => b[1] - a[1])[0]?.[0];
   const hoyLargo = new Date(foto.meta.hoy + "T12:00:00").toLocaleDateString("es-MX", { day: "numeric", month: "long", year: "numeric" });
 
-  const seg = <K extends "ventas" | "cat" | "comp" | "cuenta">(campo: K, opciones: [Filtros[K], string][]) => (
+  const seg = <K extends "ventas" | "cat" | "comp" | "cuenta" | "mov">(campo: K, opciones: [Filtros[K], string][]) => (
     <div className="seg">
       {opciones.map(([v, t]) => (
         <button key={String(v)} type="button" aria-pressed={F[campo] === v} onClick={() => setF((prev) => ({ ...prev, [campo]: v }))}>
@@ -216,6 +241,7 @@ export default function Monitor({ foto }: { foto: PricingFoto }) {
             {foto.pubs.length} publicaciones FULL de BEKURA y SANCORFASHION · precio con descuento y visitas de ML y ventas de
             kubera al {hoyLargo}
             {fuente ? ` · competencia: ${fuente}` : ""}
+            {X.promosLeido ? ` · promociones leídas de ML el ${fechaCorta(X.promosLeido)}` : ""}
           </p>
         </div>
         <div className="sello">
@@ -223,7 +249,7 @@ export default function Monitor({ foto }: { foto: PricingFoto }) {
             <EyeOff size={13} aria-hidden /> Oculta · solo admin
           </span>
           <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-            <Info size={14} aria-hidden /> Solo lectura: esta pantalla no cambia ningún precio
+            <Info size={14} aria-hidden /> Solo lectura: esta pantalla no cambia ningún precio; «Hecho» muestra lo ya movido en ML
           </span>
           <span>Foto del {foto.meta.generado}</span>
         </div>
@@ -265,6 +291,10 @@ export default function Monitor({ foto }: { foto: PricingFoto }) {
         <div className="grupo">
           <span>Cuenta</span>
           {seg("cuenta", [["todas", "Ambas"], ["BEKURA", "BEKURA"], ["SANCORFASHION", "SANCORFASHION"]])}
+        </div>
+        <div className="grupo">
+          <span>Hecho</span>
+          {seg("mov", [["todas", "Todas"], ["si", "Precio movido"], ["no", "Sin movimiento"]])}
         </div>
         <div className="grupo">
           <label htmlFor="pm-q" className="sm">
@@ -314,6 +344,20 @@ export default function Monitor({ foto }: { foto: PricingFoto }) {
         </b>{" "}
         ({difTot >= 0 ? "+" : ""}
         {Math.round(difTot * 100)} % en pesos).
+        {X.estado === "listo" && (
+          <>
+            {" "}
+            Precio movido en ML: <b>{movidas.length}</b> de ellas
+            {X.kubera ? (
+              <>
+                , con <b>{pzsDespues} pzs</b> vendidas desde el cambio
+              </>
+            ) : (
+              " (no se pudo leer lo vendido después)"
+            )}
+            .
+          </>
+        )}
       </p>
 
       <div className="tabla-wrap">
@@ -323,6 +367,9 @@ export default function Monitor({ foto }: { foto: PricingFoto }) {
               <th>Publicación</th>
               <th className="n orden" aria-sort={ariaSort("precio")} onClick={() => ordenarPor("precio")}>
                 Precio hoy
+              </th>
+              <th title="La promoción que pone el precio que se cobra hoy en ML, más cupones, «lleva más» y lo programado">
+                Promoción hoy
               </th>
               <th
                 className="n orden"
@@ -357,12 +404,15 @@ export default function Monitor({ foto }: { foto: PricingFoto }) {
               </th>
               <th>Categoría</th>
               <th className="que">Qué hacer</th>
+              <th className="hecho" title="Lo que ya se movió en ML: precio antes → precio nuevo, y lo vendido desde el cambio">
+                Hecho
+              </th>
             </tr>
           </thead>
           <tbody>
             {vista.length === 0 ? (
               <tr>
-                <td colSpan={11} className="vacio">
+                <td colSpan={13} className="vacio">
                   Ninguna publicación cumple estos filtros.
                 </td>
               </tr>
@@ -370,10 +420,10 @@ export default function Monitor({ foto }: { foto: PricingFoto }) {
               vista.map((f) => (
                 <Fragment key={f.p.id}>
                   <FilaPub f={f} R={R} rel={rel} abierta={abiertos.has(f.i)} tieneRiv={!!(f.p.sku && foto.riv[f.p.sku])}
-                    serie={series.pubs} onAlternar={() => alternar(f.i)} onRivales={setRivSku} />
+                    serie={series.pubs} onAlternar={() => alternar(f.i)} onRivales={setRivSku} X={X} />
                   {abiertos.has(f.i) && (
                     <tr className="det">
-                      <td colSpan={11}>
+                      <td colSpan={13}>
                         <Detalle f={f} R={R} rel={rel} nRiv={f.p.sku ? foto.riv[f.p.sku]?.r.length ?? 0 : 0} onRivales={setRivSku} />
                       </td>
                     </tr>
@@ -401,7 +451,9 @@ function FilaPub({
   serie,
   onAlternar,
   onRivales,
+  X,
 }: {
+  X: Extra;
   f: Fila;
   R: Reglas;
   rel: Reloj;
@@ -451,6 +503,9 @@ function FilaPub({
         ) : (
           <div className="sm">sin descuento</div>
         )}
+      </td>
+      <td className="promo-hoy">
+        <CeldaPromoHoy X={X} id={p.id} />
       </td>
       <td className="n">
         {m.ref != null ? (
@@ -532,7 +587,105 @@ function FilaPub({
       <td className="que">
         <CeldaAccion f={f} R={R} />
       </td>
+      <td className="hecho">
+        <CeldaHecho X={X} id={p.id} />
+      </td>
     </tr>
+  );
+}
+
+const fechaCorta = (iso: string) =>
+  new Date(iso).toLocaleString("es-MX", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "America/Mexico_City" });
+const diaCorto = (s: string) => new Date(s.length <= 10 ? s + "T12:00:00" : s).toLocaleDateString("es-MX", { day: "numeric", month: "short" });
+
+// Color por tipo de promoción: relámpago resalta (dura horas); la nuestra, verde.
+const TONO_PROMO: Record<string, string> = {
+  LIGHTNING: "p-warn", DOD: "p-warn", SMART_LIGHTNING: "p-warn",
+  PRICE_DISCOUNT: "p-ok", SELLER_CAMPAIGN: "p-acc", DEAL: "p-hold", SMART: "p-hold", UNHEALTHY_STOCK: "p-hold", PRICE_MATCHING: "p-hold",
+};
+
+/** «Promoción hoy»: qué pone el precio que se cobra, y encima cupones, «lleva más» y lo programado. */
+function CeldaPromoHoy({ X, id }: { X: Extra; id: string }) {
+  if (X.estado === "cargando") return <span className="sm">…</span>;
+  if (X.estado === "error") return <span className="sm" title="No se pudo leer /api/pricing/hechos">sin dato</span>;
+  const pr = X.promo[id];
+  if (!pr) return <span className="sm" title="ML no devolvió el precio de esta publicación al leer las promociones">sin dato</span>;
+  const montos = pr.cupones.map((c) => (c.monto ? `$${c.monto}` : `${c.pct} %`));
+  const cupon = montos.length ? Array.from(new Set(montos)).join(" / ") : null;
+  const otraNombre = pr.por?.nombre && pr.por.nombre !== pr.por.etiqueta ? pr.por.nombre : null;
+  return (
+    <div className="ph">
+      {pr.por ? (
+        <span className={`pill ${TONO_PROMO[pr.por.tipo] ?? "p-none"}`} title={pr.por.nombre ?? pr.por.etiqueta}>
+          {pr.por.etiqueta}
+        </span>
+      ) : (
+        <span className="pill p-none">Sin promoción</span>
+      )}
+      {otraNombre && <div className="sm ph-nom" title={otraNombre}>{otraNombre}</div>}
+      {pr.cobra != null && (
+        <div className="sm mono">
+          cobra {pesos(pr.cobra)}
+          {pr.normal && pr.normal > pr.cobra ? (
+            <>
+              {" "}
+              <s>{pesos(pr.normal)}</s>
+            </>
+          ) : null}
+        </div>
+      )}
+      <div className="ph-chips">
+        {cupon && (
+          <span className="chip" title={pr.cupones.map((c) => c.nombre).join(" · ")}>
+            Cupón {cupon}
+          </span>
+        )}
+        {pr.volumen && (
+          <span className="chip" title={pr.volumen.nombre}>
+            Lleva {pr.volumen.lleva ?? 2}: −{pr.volumen.pct ?? 0} %
+          </span>
+        )}
+        {pr.programadas.slice(0, 2).map((x, k) => (
+          <span key={k} className="chip prog" title={`${x.etiqueta}${x.precio ? " a " + pesos(x.precio) : ""}`}>
+            {x.nombre} {x.desde ? diaCorto(x.desde) : ""}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** «Hecho»: el precio que sí se movió en ML, o SIN MOVIMIENTO DE PRECIO. */
+function CeldaHecho({ X, id }: { X: Extra; id: string }) {
+  if (X.estado === "cargando") return <span className="sm">…</span>;
+  if (X.estado === "error") return <span className="sm" title="No se pudo leer /api/pricing/hechos">sin dato</span>;
+  const h = X.hecho.get(id);
+  if (!h) return <span className="sin-mov">SIN MOVIMIENTO DE PRECIO</span>;
+  const baja = h.antes > 0 ? 1 - h.nuevo / h.antes : 0;
+  const desc = h.normal && h.normal > h.nuevo ? 1 - h.nuevo / h.normal : null;
+  const d = h.despues;
+  const otroPrecio = d?.cobra_hoy != null && Math.abs(d.cobra_hoy - h.nuevo) >= 0.01;
+  return (
+    <div className="hc">
+      <span className="pill p-ok">Hecho {diaCorto(h.desde)}</span>
+      <div className="hc-precio">
+        {pesos(h.antes)} → <b>{pesos(h.nuevo)}</b> <span className="pct">−{(baja * 100).toFixed(1).replace(".0", "")} %</span>
+      </div>
+      {desc != null && (
+        <div className="sm">
+          se ve <s>{pesos(h.normal)}</s> −{Math.round(desc * 100)} %{h.hasta ? ` · hasta ${diaCorto(h.hasta)}` : ""}
+        </div>
+      )}
+      {h.se_ve === false && <div className="hc-aviso">ML no lo muestra como descuento</div>}
+      {d ? (
+        <div className={d.pzs > 0 ? "hc-vende" : "sm"}>
+          después: {d.pzs > 0 ? `${d.pzs} pzs · ${pesos(d.pesos)}` : "sin ventas aún"}
+          {otroPrecio ? ` · cobra ${pesos(d.cobra_hoy)}` : ""}
+        </div>
+      ) : (
+        <div className="sm">sin lectura de ventas</div>
+      )}
+    </div>
   );
 }
 

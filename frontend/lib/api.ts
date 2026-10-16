@@ -2557,6 +2557,63 @@ export function pricingMonitor(signal?: AbortSignal): Promise<PricingFoto> {
   return getJSON<PricingFoto>("/api/pricing/monitor", signal);
 }
 
+/** Un precio que SÍ se movió en ML desde PRICING (columna «Hecho», v0.654.0). */
+export interface PricingHecho {
+  id: string;
+  cuenta: string;
+  sku: string | null;
+  /** Lo que se cobraba antes del cambio. */
+  antes: number;
+  /** El precio nuevo (lo que paga el comprador con la promoción). */
+  nuevo: number;
+  /** El precio normal, el que se ve tachado. */
+  normal: number | null;
+  promo: string;
+  /** Desde cuándo (ISO, hora de México) y hasta qué día dura la promoción. */
+  desde: string;
+  hasta: string | null;
+  regla?: string | null;
+  nota?: string | null;
+  /** false = ML aceptó la promoción pero no la muestra (precio sin tachado). */
+  se_ve?: boolean;
+  /** Lo que pasó después del cambio (kubera); null si no se pudo leer. */
+  despues: {
+    pzs: number;
+    ordenes: number;
+    pesos: number;
+    cobra_hoy?: number | null;
+    stock_hoy?: number | null;
+    situacion?: string | null;
+    leido?: string | null;
+  } | null;
+}
+
+/** La promoción que tiene HOY una publicación (foto de ML con su hora). */
+export interface PricingPromoHoy {
+  cobra: number | null;
+  normal: number | null;
+  /** La promoción que pone el precio que se cobra. */
+  por: { tipo: string; etiqueta: string; nombre: string | null } | null;
+  vivas: { tipo: string; etiqueta: string; nombre: string; precio: number | null; hasta: string | null }[];
+  programadas: { tipo: string; etiqueta: string; nombre: string; precio: number | null; desde: string | null }[];
+  cupones: { nombre: string; monto: number | null; pct: number | null }[];
+  volumen: { lleva: number | null; pct: number | null; nombre: string } | null;
+}
+
+export interface PricingHechos {
+  hechos: PricingHecho[];
+  /** false = no se pudo leer kubera: se ven los movimientos sin lo vendido después. */
+  kubera: boolean;
+  leido: string;
+  promos: Record<string, PricingPromoHoy | null>;
+  promos_leido: string | null;
+}
+
+/** Los precios movidos y la promoción de hoy. Solo lee. */
+export function pricingHechos(signal?: AbortSignal): Promise<PricingHechos> {
+  return getJSON<PricingHechos>("/api/pricing/hechos", signal);
+}
+
 /**
  * Una hoja de miniaturas como URL de objeto. Va por `fetchSesion` porque un
  * `background-image: url(…)` directo al backend no lleva el token. `version`

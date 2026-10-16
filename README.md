@@ -1001,6 +1001,45 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.654.0 — PRICING: columna «Hecho» (lo que ya se movió en ML) y «Promoción hoy» (cupón, campaña, relámpago…)
+
+**Qué pidió Brandon (15-oct-2026).** Después de aplicar en ML el «Qué hacer» de las publicaciones SIN VENTAS
+(252 descuentos individuales `PRICE_DISCOUNT`, vigentes al 11-nov; ver abajo), pidió verlo en la pestaña:
+una columna **HECHO** con el precio movido y cuánto bajó, **SIN MOVIMIENTO DE PRECIO** en las demás, ver los
+movimientos que tienen después del cambio, y la **promoción que tiene hoy** cada publicación (cupón,
+promoción, oferta relámpago).
+
+**Lo que se aplicó en ML (fuera del repo, a mano y con su sí, 3 → 10 → 50 → todas).** A las 307 sin ventas en
+30 días se les calculó la regla de `reglas.ts` y se puso como descuento individual
+(`POST /seller-promotions/items/{id}?app_version=v2`, `PRICE_DISCOUNT`, `deal_price`, fin 11-nov 23:59), que ML
+combina con las demás promos cobrando la más baja: no tumbó campañas ni el Buen Fin inscrito. **252 movidas**
+(229 + 19 que estaban en relámpago, calculadas sobre su precio SIN relámpago + 4 cambiadas a mano antes, con
+la regla sobre su precio de ese momento) y una más cubierta por otra publicación del mismo producto; **250 se ven
+con el precio normal tachado** (verificado por API y en el navegador). Dos aceptadas que ML no refleja:
+ORG-0418-GRI (catálogo) y VAR-0059-EST-NEG, las dos solo con «lleva 2 −10 %». No entraron: 36 sin descuento
+individual disponible (solo bajando el precio de la publicación) y 18 pausadas, en revisión o fuera de rango.
+
+**La pantalla.**
+- **Hecho** (columna fija a la derecha, junto a «Qué hacer»): `$antes → $nuevo −X %`, el tachado que se ve y
+  hasta cuándo, y **después**: piezas y pesos vendidos desde el momento del cambio (kubera, `channel.orders`
+  no canceladas) y, si ya no cobra el precio puesto, cuánto cobra (`channel.listings`, sync de 15 min). Las
+  demás: **SIN MOVIMIENTO DE PRECIO**. Filtro nuevo «Hecho: Todas / Precio movido / Sin movimiento» y, en el
+  renglón de totales, cuántas de la vista se movieron y cuántas piezas vendieron desde el cambio.
+- **Promoción hoy** (después de «Precio hoy»): qué promoción pone el precio que se cobra (relámpago en ámbar,
+  descuento individual en verde, campaña propia, de ML o co-fondeada), cuánto cobra con el normal tachado, y
+  chips de cupón vigente, «lleva N −X %» y lo programado (p. ej. Buen Fin 12-nov).
+
+**De dónde sale.** `GET /api/pricing/hechos` (solo admin, solo lectura): `backend/data/pricing/hechos.json` +
+lo de después (kubera, SELECT en `asyncio.to_thread`, caché 5 min; si kubera falla, los movimientos se ven
+igual sin lo de después) + `backend/data/pricing/promos.json`. Los dos JSON son fotos con su hora:
+`scripts/pricing_hechos.py <bitácora> [<verificación>]` y `scripts/pricing_promos.py` (solo GET a ML; el token
+lo da `meli._access_token`, que nunca renueva). Para ponerlos al día: correrlos, commit y deploy.
+
+**Pruebas.** `tests/test_pricing_monitor.py` +5 (14): la ruta exige admin y no lee nada sin sesión; sin
+archivos no hay movidos; suma lo de después y aguanta kubera caída; la bitácora deja fuera lo fallido y lo
+revertido; `resumir` dice qué promoción cobra (relámpago, descuento individual) y descarta cupones vencidos.
+`tsc --noEmit` limpio.
+
 ### v0.653.0 — PRICING con datos: la foto del Monitor viaja en el repo y «Qué hacer» muestra la PROMOCIÓN de los productos sin ventas
 
 **Qué pidió Brandon (15-oct-2026).** La pestaña PRICING de v0.650.0 salió a producción diciendo «No hay foto del
