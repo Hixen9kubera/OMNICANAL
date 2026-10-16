@@ -28,9 +28,11 @@ import {
   mensajeDeError,
   pricingHechos,
   pricingMonitor,
+  pricingSalud,
   pricingVivo,
   type PricingFoto,
   type PricingHechos,
+  type PricingSalud,
   type PricingVivo,
 } from "@/lib/api";
 
@@ -73,6 +75,8 @@ function Pricing() {
   const [hechos, setHechos] = useState<PricingHechos | null | "error">(null);
   // Stock y ventas de AHORA (filtro «Se agota» y low stock); si falla, se usa la foto.
   const [vivo, setVivo] = useState<PricingVivo | null | "error">(null);
+  // Calidad y experiencia de ML (v0.659.0): si falla, la columna lo dice y lo demás sigue.
+  const [salud, setSalud] = useState<PricingSalud | null | "error">(null);
   const [error, setError] = useState<string | null>(null);
   const [noDisponible, setNoDisponible] = useState(false);
   const [intento, setIntento] = useState(0);
@@ -110,6 +114,13 @@ function Pricing() {
       .catch(() => {
         if (!ctl.signal.aborted) setHechos("error");
       });
+    pricingSalud(ctl.signal)
+      .then((d) => {
+        if (!ctl.signal.aborted) setSalud(d);
+      })
+      .catch(() => {
+        if (!ctl.signal.aborted) setSalud("error");
+      });
     return () => ctl.abort();
   }, [intento]);
 
@@ -132,6 +143,12 @@ function Pricing() {
       pricingHechos()
         .then((d) => {
           if (vivoOk) setHechos(d);
+        })
+        .catch(() => {});
+      // La calidad se mide cada hora (11 a 23 UTC): con releerla junto a las promociones basta.
+      pricingSalud()
+        .then((d) => {
+          if (vivoOk) setSalud(d);
         })
         .catch(() => {});
     }, 300_000);
@@ -164,7 +181,7 @@ function Pricing() {
         <Cargando texto="Leyendo el monitor de precios…" />
       ) : (
         <ProveedorHojas version={foto.meta.generado} celda={foto.meta.img.celda} lado={foto.meta.img.lado}>
-          <Monitor foto={foto} hechos={hechos} vivo={vivo} />
+          <Monitor foto={foto} hechos={hechos} vivo={vivo} salud={salud} />
         </ProveedorHojas>
       )}
     </div>

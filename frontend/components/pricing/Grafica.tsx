@@ -8,6 +8,8 @@
 
 import { useRef, useState, type ReactNode } from "react";
 
+import type { PricingMotivo, PricingMotivos } from "@/lib/api";
+
 import { pct1, pesos, type Reloj } from "./formato";
 import { SENTIDO, hoyDe, type Fila, type Reglas, type Sentido } from "./reglas";
 
@@ -17,12 +19,69 @@ interface Tip {
   x: number;
   y: number;
   dia: string;
+  /** El día de la burbuja como "YYYY-MM-DD" (para juntarla con sus motivos). */
+  clave: string;
   n: number;
   precio: number;
   cancelada: boolean;
 }
 
-export default function Grafica({ f, R, rel }: { f: Fila; R: Reglas; rel: Reloj }) {
+const dosDig = (n: number) => String(n).padStart(2, "0");
+const claveDia = (d: Date) => `${d.getFullYear()}-${dosDig(d.getMonth() + 1)}-${dosDig(d.getDate())}`;
+
+/**
+ * Los motivos de una burbuja: las órdenes de ese día (y ese precio, si lo trae)
+ * canceladas —si la burbuja es cancelada— o con devolución —si es una venta—.
+ * Se agrupan por motivo con cuántas piezas.
+ */
+function motivosDe(eventos: PricingMotivo[], tip: Tip): { texto: string; piezas: number; devolucion: boolean }[] {
+  const delDia = eventos.filter((e) => e.dia === tip.clave && (tip.cancelada ? e.cancelada : !e.cancelada && e.tipo === "devolucion"));
+  const conPrecio = delDia.filter((e) => e.precio == null || Math.abs(e.precio - tip.precio) < 0.5);
+  const usar = conPrecio.length ? conPrecio : delDia;
+  const grupos = new Map<string, { texto: string; piezas: number; devolucion: boolean }>();
+  usar.forEach((e) => {
+    const base = e.motivo ?? "ML no dio el motivo";
+    const texto =
+      e.tipo === "devolucion"
+        ? `Devolución: ${base}${e.estado ? ` · ${e.estado}` : ""}`
+        : `${base}${e.quien ? ` (la pidió ${e.quien})` : ""}`;
+    const g = grupos.get(texto) ?? { texto, piezas: 0, devolucion: e.tipo === "devolucion" };
+    g.piezas += e.piezas || 1;
+    grupos.set(texto, g);
+  });
+  return Array.from(grupos.values()).sort((a, b) => b.piezas - a.piezas);
+}
+
+/** El porqué en el tooltip de una burbuja cancelada o con devolución. */
+function MotivosTip({ motivos, tip }: { motivos?: PricingMotivos | "cargando" | "error" | null; tip: Tip }) {
+  if (!motivos) return null;
+  if (motivos === "cargando") return tip.cancelada ? <div className="sm motivo">buscando el motivo…</div> : null;
+  if (motivos === "error" || !motivos.kubera) return tip.cancelada ? <div className="sm motivo">no se pudo leer el motivo</div> : null;
+  const lista = motivosDe(motivos.eventos, tip);
+  if (!lista.length) return tip.cancelada ? <div className="sm motivo">sin motivo registrado</div> : null;
+  return (
+    <div className="motivo">
+      {lista.map((g) => (
+        <div key={g.texto} className={g.devolucion ? "dev" : ""}>
+          {g.piezas > 1 || lista.length > 1 ? <b>{g.piezas} pz · </b> : null}
+          {g.texto}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export default function Grafica({
+  f,
+  R,
+  rel,
+  motivos,
+}: {
+  f: Fila;
+  R: Reglas;
+  rel: Reloj;
+  motivos?: PricingMotivos | "cargando" | "error" | null;
+}) {
   const { p, m, a } = f;
   const caja = useRef<HTMLDivElement>(null);
   const [tip, setTip] = useState<Tip | null>(null);
@@ -126,7 +185,7 @@ export default function Grafica({ f, R, rel }: { f: Fila; R: Reglas; rel: Reloj 
           const c = caja.current;
           let lx = gb.right - bx.left + c.scrollLeft + 8;
           if (lx + 240 > c.clientWidth + c.scrollLeft) lx = gb.left - bx.left + c.scrollLeft - 248;
-          setTip({ x: Math.max(0, lx), y: Math.max(0, gb.top - bx.top - 10), dia: fFecha(+d), n, precio: +pr, cancelada });
+          setTip({ x: Math.max(0, lx), y: Math.max(0, gb.top - bx.top - 10), dia: fFecha(+d), clave: claveDia(fecha(+d)), n, precio: +pr, cancelada });
         }}
         onMouseLeave={() => setTip(null)}
       >
@@ -213,6 +272,7 @@ export default function Grafica({ f, R, rel }: { f: Fila; R: Reglas; rel: Reloj 
               {tip.precio < m.ref ? "abajo" : "arriba"} del precio de mercado ({pesos(m.ref)})
             </div>
           ) : null}
+          <MotivosTip motivos={motivos} tip={tip} />
         </div>
       )}
     </div>

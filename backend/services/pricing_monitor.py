@@ -163,11 +163,14 @@ async def hoja(nombre: str) -> bytes:
 
 def olvidar() -> None:
     """Vacía la caché (pruebas, o tras dejar una foto nueva en la carpeta)."""
-    global _foto, _hechos, _vivo, _promos
+    global _foto, _hechos, _vivo, _promos, _salud
     _foto = None
     _hechos = None
     _vivo = None
     _promos = None
+    _salud = None
+    _motivos.clear()
+    _cancel_ml.clear()
     _cache.clear()
 
 
@@ -427,6 +430,231 @@ async def vivo() -> dict:
                  "con_stock": sum(1 for x in res.values() if x["stock"] is not None), "total": len(ids), "kubera": kubera}
         _vivo = (time.monotonic(), datos)
         return datos
+
+
+# ── CALIDAD Y EXPERIENCIA DE COMPRA (v0.659.0) ───────────────────────────────
+#
+# Las mide el barrido de `services/calidad_ml.py` (cada 60 min de 11 a 23 UTC,
+# CALIDAD_ML_ENABLED) y las guarda en `enrich.listing_health`: métrica
+# `calidad` (`/item/{id}/performance`: puntaje 0–100 y Profesional/Estándar/
+# Básica) y `experiencia` (`/reputation/items/{id}/purchase_experience`: Buena/
+# Media/Mala, o «sin datos» si ML no la calcula). Aquí solo se LEEN (SELECT):
+# esta ruta no le pregunta nada a ML.
+
+TTL_SALUD_S = 600
+_salud: tuple[float, dict] | None = None
+_candado_salud = asyncio.Lock()
+
+
+def _salud_kubera(ids: list[str]) -> dict[str, dict]:
+    """BLOQUEANTE (kubera, solo SELECT). Por publicación: su calidad y su experiencia de compra en ML."""
+    from services import supabase_db as sdb
+
+    if not ids:
+        return {}
+    if not sdb.disponible():
+        raise FalloFuente("kubera no está disponible")
+    filas = sdb.fetch_all(
+        """
+        select distinct on (listing_id, metrica) listing_id, metrica, estado, valor, nivel, nivel_canal,
+               n_pendientes, detalle, motivo, medido_en, capturado_en
+          from enrich.listing_health
+         where canal = 'mercado_libre' and metrica in ('calidad', 'experiencia') and listing_id = any(%(ids)s)
+         order by listing_id, metrica, capturado_en desc nulls last
+        """,
+        {"ids": ids},
+    )
+    out: dict[str, dict] = {}
+    for f in filas:
+        det = f["detalle"] if isinstance(f["detalle"], dict) else {}
+        cuando = f["medido_en"] or f["capturado_en"]
+        base = {"estado": f["estado"], "nivel": f["nivel"], "texto": f["nivel_canal"],
+                "puntaje": float(f["valor"]) if f["valor"] is not None else None,
+                "medido": cuando.isoformat() if cuando else None}
+        if f["metrica"] == "calidad":
+            out.setdefault(f["listing_id"], {})["c"] = {**base, "pendientes": f["n_pendientes"], "motivo": f["motivo"]}
+        else:
+            razon = det.get("razon") or []
+            out.setdefault(f["listing_id"], {})["e"] = {
+                **base, "color": det.get("color"), "razon": razon[0] if razon else None,
+                "consecuencia": det.get("consecuencia"), "por_categoria": bool(det.get("por_categoria")),
+            }
+    return out
+
+
+async def salud() -> dict:
+    """{"leido", "kubera", "pubs": {id: {"c": calidad, "e": experiencia}}} de las publicaciones de la foto. Caché de 10 min."""
+    global _salud
+    async with _candado_salud:
+        if _salud and time.monotonic() - _salud[0] <= TTL_SALUD_S:
+            return _salud[1]
+        gz, _ = await foto()
+        ids = [i for i, _ in await asyncio.to_thread(_pubs_de_foto, gz)]
+        kubera = True
+        try:
+            pubs = await asyncio.to_thread(_salud_kubera, ids)
+        except Exception as exc:  # kubera caída o lenta: la tabla se ve igual, sin esta columna
+            log.warning("pricing salud: no se pudo leer calidad/experiencia: %s", exc)
+            pubs, kubera = {}, False
+        datos = {"leido": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "kubera": kubera, "pubs": pubs, "total": len(ids)}
+        if kubera:
+            _salud = (time.monotonic(), datos)
+        return datos
+
+
+# ── MOTIVOS DE CANCELACIONES Y DEVOLUCIONES (v0.659.0) ───────────────────────
+#
+# Para la gráfica del detalle: el porqué de cada burbuja cancelada (o devuelta)
+# de UNA publicación, que se pide al abrirla. Devoluciones: lo que ya guarda
+# kubera en `channel.returns` (motivo del comprador y estado). Cancelaciones:
+# kubera no guarda el porqué; se le pregunta a ML `GET /orders/{id}`
+# (`cancel_detail`), solo GET, con el token que ya tiene el backend (sin
+# renovarlo aquí). El porqué de una orden ya cancelada no cambia: se recuerda
+# mientras viva el proceso.
+
+ITEM_ML = re.compile(r"^MLM\d{6,14}$")
+MAX_ML_MOTIVOS = 120          # órdenes que se le preguntan a ML por publicación (las más recientes)
+TTL_MOTIVOS_S = 600
+_motivos: dict[str, tuple[float, dict]] = {}
+_cancel_ml: dict[str, dict] = {}
+
+# Lo que dice ML en `cancel_detail.code`, en palabras de la pantalla. Lo que no
+# esté aquí se muestra con su grupo y la descripción de ML tal cual.
+CANCEL_ES = {
+    "pack_splitted": "ML separó el carrito en otra orden (no es venta perdida)",
+    "expired_order": "Venció el plazo de pago",
+    "shipment_not_delivered": "El envío no se entregó",
+    "item_status_closed": "La publicación estaba cerrada o pausada",
+    "buyer_cancel_express": "El comprador canceló la compra",
+    "buyer_cancel_after_shipping": "El comprador canceló después del envío",
+    "out_of_stock": "Sin stock",
+    "fraud": "Riesgo de fraude",
+    "payment_rejected": "Pago rechazado",
+}
+# Si el código no está arriba, el grupo de ML dice lo esencial.
+GRUPO_ES = {
+    "mediations": "Cancelada por una mediación (reclamo del comprador)",
+    "buyer": "La canceló el comprador",
+    "shipment": "Problema con el envío",
+    "item": "Problema con la publicación",
+    "internal": "La canceló Mercado Libre",
+    "fraud": "Riesgo de fraude",
+    "payment": "Problema con el pago",
+}
+QUIEN_ES = {"buyer": "comprador", "meli": "Mercado Libre", "seller": "vendedor"}
+
+
+def _motivos_kubera(item_id: str) -> tuple[list[dict], dict[str, dict]]:
+    """BLOQUEANTE (kubera, solo SELECT). Órdenes de la publicación canceladas o con devolución, y sus devoluciones."""
+    from services import supabase_db as sdb
+
+    if not sdb.disponible():
+        raise FalloFuente("kubera no está disponible")
+    ordenes = sdb.fetch_all(
+        """
+        select o.external_order_id as orden, o.cuenta,
+               to_char(o.creado_at at time zone 'America/Mexico_City', 'YYYY-MM-DD') as dia,
+               lower(coalesce(o.estado_canal, '')) = 'cancelled' as cancelada,
+               sum(oi.cantidad)::int as piezas, max(oi.precio_unitario) as precio
+          from channel.order_items oi
+          join channel.orders o on o.canal = oi.canal and o.cuenta = oi.cuenta and o.external_order_id = oi.external_order_id
+         where oi.canal = 'mercado_libre' and oi.item_id = %(id)s and o.creado_at >= now() - interval '130 days'
+           and (lower(coalesce(o.estado_canal, '')) = 'cancelled'
+                or exists (select 1 from channel.returns r where r.canal = o.canal and r.external_order_id = o.external_order_id))
+         group by o.external_order_id, o.cuenta, o.creado_at, o.estado_canal
+         order by o.creado_at desc
+        """,
+        {"id": item_id},
+    )
+    devs: dict[str, dict] = {}
+    if ordenes:
+        for r in sdb.fetch_all(
+            """
+            select distinct on (external_order_id) external_order_id, motivo_texto, estado_titulo, motivo, tipo
+              from channel.returns
+             where canal = 'mercado_libre' and external_order_id = any(%(ords)s)
+             order by external_order_id, creado_at desc nulls last
+            """,
+            {"ords": [o["orden"] for o in ordenes]},
+        ):
+            devs[r["external_order_id"]] = r
+    return ordenes, devs
+
+
+def _texto_cancelacion(cd: dict | None) -> tuple[str, str | None]:
+    """PURA. `cancel_detail` de ML → (motivo en palabras, quién la pidió)."""
+    if not cd:
+        return "ML no dio el motivo", None
+    codigo = cd.get("code") or ""
+    texto = (CANCEL_ES.get(codigo) or GRUPO_ES.get(cd.get("group") or "")
+             or " · ".join(x for x in (cd.get("group"), cd.get("description")) if x) or codigo or "sin motivo")
+    return texto, QUIEN_ES.get(cd.get("requested_by") or "", cd.get("requested_by"))
+
+
+async def _cancelaciones_ml(pares: list[tuple[str, str]]) -> dict[str, dict]:
+    """Solo GET a ML. `cancel_detail` de cada orden (orden, cuenta); lo que falla se queda sin dato (no inventa)."""
+    from services import meli
+
+    faltan = [(o, c) for o, c in pares if o not in _cancel_ml]
+    if faltan:
+        tokens = {c: await meli.access_token_async(c) for c in {c for _, c in faltan}}
+        sem = asyncio.Semaphore(4)
+        async with httpx.AsyncClient(base_url="https://api.mercadolibre.com", timeout=20) as cli:
+            async def una(orden: str, cuenta: str) -> None:
+                tk = tokens.get(cuenta)
+                if not tk:
+                    return
+                async with sem:
+                    try:
+                        r = await cli.get(f"/orders/{orden}", headers={"Authorization": f"Bearer {tk}"})
+                    except httpx.HTTPError as exc:
+                        log.warning("pricing motivos: ML no contestó %s: %s", orden, type(exc).__name__)
+                        return
+                if r.status_code == 200:
+                    _cancel_ml[orden] = r.json().get("cancel_detail") or {}
+
+            await asyncio.gather(*(una(o, c) for o, c in faltan))
+    return {o: _cancel_ml[o] for o, _ in pares if o in _cancel_ml}
+
+
+async def motivos(item_id: str) -> dict:
+    """{"item", "leido", "kubera", "ml", "sin_consultar", "eventos": [{orden, dia, piezas, precio, tipo, motivo, quien, estado}]}."""
+    if not ITEM_ML.match(item_id or ""):
+        raise SinFoto("publicación no válida")
+    guardado = _motivos.get(item_id)
+    if guardado and time.monotonic() - guardado[0] <= TTL_MOTIVOS_S:
+        return guardado[1]
+    try:
+        ordenes, devs = await asyncio.to_thread(_motivos_kubera, item_id)
+    except Exception as exc:  # kubera caída: la gráfica se ve igual, sin motivos
+        log.warning("pricing motivos: no se pudo leer kubera: %s", exc)
+        return {"item": item_id, "leido": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "kubera": False, "ml": False,
+                "sin_consultar": 0, "eventos": []}
+    a_ml = [(o["orden"], o["cuenta"]) for o in ordenes if o["cancelada"] and o["orden"] not in devs]
+    sin_consultar = max(0, len(a_ml) - MAX_ML_MOTIVOS)
+    ml_ok = True
+    try:
+        cancel = await _cancelaciones_ml(a_ml[:MAX_ML_MOTIVOS])
+    except Exception as exc:  # noqa: BLE001 — ML caído: las devoluciones de kubera se ven igual
+        log.warning("pricing motivos: ML falló: %s", exc)
+        cancel, ml_ok = {}, False
+    eventos = []
+    for o in ordenes:
+        base = {"orden": o["orden"], "dia": o["dia"], "piezas": o["piezas"],
+                "precio": float(o["precio"]) if o["precio"] is not None else None, "cancelada": o["cancelada"]}
+        d = devs.get(o["orden"])
+        if d:
+            eventos.append({**base, "tipo": "devolucion", "motivo": d["motivo_texto"] or "sin motivo del comprador",
+                            "estado": d["estado_titulo"], "quien": "comprador"})
+        elif o["orden"] in cancel:
+            texto, quien = _texto_cancelacion(cancel[o["orden"]])
+            eventos.append({**base, "tipo": "cancelacion", "motivo": texto, "quien": quien, "estado": None})
+        else:
+            eventos.append({**base, "tipo": "cancelacion", "motivo": None, "quien": None, "estado": None})
+    datos = {"item": item_id, "leido": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "kubera": True, "ml": ml_ok,
+             "sin_consultar": sin_consultar, "eventos": eventos}
+    _motivos[item_id] = (time.monotonic(), datos)
+    return datos
 
 # ── PROMOCIONES EN VIVO (v0.656.0) ───────────────────────────────────────────
 #

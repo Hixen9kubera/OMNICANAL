@@ -2666,6 +2666,64 @@ export function pricingHechos(signal?: AbortSignal): Promise<PricingHechos> {
   return getJSON<PricingHechos>("/api/pricing/hechos", signal);
 }
 
+/** Una métrica de ML guardada por calidad_ml: nivel normalizado (bueno/medio/malo) y el texto de ML. */
+export interface PricingMetricaML {
+  /** "medida" | "no_calculada" (calidad) | "sin_datos" (experiencia). */
+  estado: string | null;
+  nivel: "bueno" | "medio" | "malo" | null;
+  /** El texto de ML: Profesional/Estándar/Básica o Buena/Media/Mala. */
+  texto: string | null;
+  puntaje: number | null;
+  medido: string | null;
+}
+
+/** Calidad y experiencia de compra de ML por publicación (v0.659.0). */
+export interface PricingSalud {
+  leido: string;
+  /** false = no se pudo leer kubera: la columna dice «sin lectura». */
+  kubera: boolean;
+  total: number;
+  pubs: Record<string, {
+    c?: PricingMetricaML & { pendientes: number | null; motivo: string | null };
+    e?: PricingMetricaML & { color: string | null; razon: string | null; consecuencia: string | null; por_categoria: boolean };
+  }>;
+}
+
+/** Una venta cancelada o devuelta de una publicación, con su porqué (v0.659.0). */
+export interface PricingMotivo {
+  orden: string;
+  /** Día de la orden en CDMX, "YYYY-MM-DD" (el mismo día de su burbuja). */
+  dia: string;
+  piezas: number;
+  precio: number | null;
+  cancelada: boolean;
+  tipo: "cancelacion" | "devolucion";
+  /** null = ML no contestó: no se inventa un motivo. */
+  motivo: string | null;
+  quien: string | null;
+  estado: string | null;
+}
+
+export interface PricingMotivos {
+  item: string;
+  leido: string;
+  kubera: boolean;
+  ml: boolean;
+  /** Cancelaciones más viejas que no se le preguntaron a ML (tope por publicación). */
+  sin_consultar: number;
+  eventos: PricingMotivo[];
+}
+
+/** Por qué se canceló o se devolvió cada venta de UNA publicación. Solo lee (kubera y GET a ML). */
+export function pricingMotivos(itemId: string, signal?: AbortSignal): Promise<PricingMotivos> {
+  return getJSON<PricingMotivos>(`/api/pricing/motivos/${encodeURIComponent(itemId)}`, signal);
+}
+
+/** Calidad y experiencia de compra de ML (lo que guarda el barrido de calidad). Solo lee. */
+export function pricingSalud(signal?: AbortSignal): Promise<PricingSalud> {
+  return getJSON<PricingSalud>("/api/pricing/salud", signal);
+}
+
 /**
  * Una hoja de miniaturas como URL de objeto. Va por `fetchSesion` porque un
  * `background-image: url(…)` directo al backend no lleva el token. `version`

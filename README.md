@@ -1001,6 +1001,34 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.659.0 — PRICING: columna «Calidad · Experiencia» y el motivo de cada cancelación y devolución en la gráfica
+
+**Qué pidió Eduardo (16-oct-2026).** Ver en la tabla de Pricing la calidad y la experiencia de compra de cada
+publicación, y en la gráfica del detalle el porqué de cada venta cancelada o devuelta.
+
+**Columna «Calidad · Experiencia».** `GET /api/pricing/salud` (solo admin) lee lo que ya guarda el barrido de
+calidad (`services/calidad_ml.py` → `enrich.listing_health`, cada hora de 11 a 23 UTC): calidad
+Profesional/Estándar/Básica con su puntaje 0–100, y experiencia Buena/Media/Mala o «sin datos» (ML no la calcula sin
+ventas suficientes). Solo SELECT, sin llamar a ML; caché de 10 min. En el tooltip: cuándo se midió, las mejoras
+pendientes, la razón y la consecuencia que da ML. Al subir: 650 de 658 con dato (experiencia: 113 Buena, 35 Media,
+77 Mala, 425 sin datos).
+
+**Motivos en la gráfica.** `GET /api/pricing/motivos/{id}` (solo admin) se pide al abrir el detalle de una
+publicación:
+- devoluciones: `channel.returns` (motivo del comprador y estado; kubera las guarda desde el 9-sep);
+- cancelaciones: kubera no guarda el porqué, así que se le pregunta a ML `GET /orders/{id}` (`cancel_detail`), solo
+  GET, máximo 120 órdenes por publicación, recordado en memoria (el porqué de una orden cancelada no cambia).
+  Los códigos de ML van en palabras: `pack_splitted` = «ML separó el carrito en otra orden (no es venta perdida)»,
+  `expired_order` = «Venció el plazo de pago», mediaciones, envío no entregado, publicación cerrada…; lo
+  desconocido, por su grupo o con el texto de ML tal cual. Sin respuesta de ML: «ML no dio el motivo».
+
+El tooltip de cada burbuja junta las órdenes de ese día y precio y muestra los motivos con cuántas piezas. En la
+publicación con más cancelaciones al subir (78), 56 eran carritos separados por ML.
+
+**Pruebas.** +7 (26): acceso admin, id validado, devoluciones y cancelaciones juntas sin inventar, tope de consultas
+a ML, kubera caída sin 500, y que las consultas a kubera solo leen. `tsc` limpio. Revisado en navegador con un backend
+de prueba y datos reales de lectura (enrich.listing_health y los motivos de 3 publicaciones).
+
 ### v0.658.0 — Cron de visitas: ya no pierde a SANCORFASHION por la renovación del token (corre a las 12:30 UTC y repite lo que falló con el token nuevo)
 
 **Qué pasaba (medido el 16-oct-2026).** El cron `competencia-visitas` corría a las 12:00 UTC y lee los tokens de ML

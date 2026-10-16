@@ -301,6 +301,118 @@ class Vivo(Base):
         self.assertEqual((d["pubs"], d["kubera"]), ({}, False))                          # todo falló: vacío, sin 500
 
 
+class Salud(Base):
+    """Calidad y experiencia (v0.659.0): admin, solo lo que guardó calidad_ml, y kubera caída no tumba la pantalla."""
+
+    def test_exige_admin(self):
+        anonimo = SimpleNamespace(autenticado=False, tipo="", rol="", actor="?")
+        with _como(anonimo), mock.patch.object(pm, "salud") as s:
+            self.assertEqual(_cliente().get("/api/pricing/salud").status_code, 401)
+            s.assert_not_called()
+
+    def test_lee_lo_guardado_y_aguanta_kubera_caida(self):
+        self.poner_foto({**FOTO, "pubs": [{"id": "MLM1", "c": "BEKURA"}, {"id": "MLM2", "c": "SANCORFASHION"}]})
+        guardado = {"MLM1": {"c": {"nivel": "bueno", "texto": "Profesional", "puntaje": 76.0},
+                             "e": {"nivel": "malo", "texto": "Mala", "color": "red"}}}
+        with _como(ADMIN), mock.patch.object(pm, "_salud_kubera", return_value=guardado) as k:
+            d = _cliente().get("/api/pricing/salud").json()
+        k.assert_called_once_with(["MLM1", "MLM2"])               # solo las publicaciones de la foto
+        self.assertEqual((d["pubs"], d["kubera"], d["total"]), (guardado, True, 2))
+        pm.olvidar()
+        with _como(ADMIN), mock.patch.object(pm, "_salud_kubera", side_effect=pm.FalloFuente("kubera caída")):
+            r = _cliente().get("/api/pricing/salud")
+        self.assertEqual(r.status_code, 200)                       # sin 500: la tabla se ve igual
+        self.assertEqual((r.json()["pubs"], r.json()["kubera"]), ({}, False))
+
+    def test_arma_calidad_y_experiencia_de_las_filas(self):
+        ahora = __import__("datetime").datetime(2026, 10, 16, 11, 42, tzinfo=__import__("datetime").timezone.utc)
+        filas = [
+            {"listing_id": "MLM1", "metrica": "calidad", "estado": "medida", "valor": 76, "nivel": "bueno",
+             "nivel_canal": "Profesional", "n_pendientes": 2, "detalle": {}, "motivo": None, "medido_en": ahora, "capturado_en": ahora},
+            {"listing_id": "MLM1", "metrica": "experiencia", "estado": "medida", "valor": 30, "nivel": "malo",
+             "nivel_canal": "Mala", "n_pendientes": None, "motivo": None, "medido_en": None, "capturado_en": ahora,
+             "detalle": {"color": "red", "razon": ["Kits incompletos"], "consecuencia": "Muy baja exposición", "por_categoria": False}},
+        ]
+        sdb = SimpleNamespace(disponible=lambda: True, fetch_all=mock.Mock(return_value=filas))
+        with mock.patch.dict(sys.modules, {"services.supabase_db": sdb}), \
+             mock.patch("services.supabase_db", sdb, create=True):
+            d = pm._salud_kubera(["MLM1"])
+        sql = sdb.fetch_all.call_args[0][0].lower()
+        self.assertIn("enrich.listing_health", sql)
+        self.assertNotIn("insert", sql)
+        self.assertNotIn("update", sql)
+        self.assertEqual(d["MLM1"]["c"], {"estado": "medida", "nivel": "bueno", "texto": "Profesional", "puntaje": 76.0,
+                                          "medido": ahora.isoformat(), "pendientes": 2, "motivo": None})
+        self.assertEqual((d["MLM1"]["e"]["texto"], d["MLM1"]["e"]["color"], d["MLM1"]["e"]["razon"]), ("Mala", "red", "Kits incompletos"))
+
+
+class Motivos(Base):
+    """Motivos de cancelaciones y devoluciones (v0.659.0): devolución de kubera, cancelación de ML, y nada se inventa."""
+
+    ORDENES = [
+        {"orden": "2001", "cuenta": "BEKURA", "dia": "2026-09-07", "cancelada": True, "piezas": 1, "precio": 1368},
+        {"orden": "2002", "cuenta": "BEKURA", "dia": "2026-09-07", "cancelada": True, "piezas": 2, "precio": 1368},
+        {"orden": "2003", "cuenta": "SANCORFASHION", "dia": "2026-09-08", "cancelada": False, "piezas": 1, "precio": 1305},
+        {"orden": "2004", "cuenta": "BEKURA", "dia": "2026-09-09", "cancelada": True, "piezas": 1, "precio": 1305},
+    ]
+    DEVS = {"2003": {"external_order_id": "2003", "motivo_texto": "No es el color que elegí", "estado_titulo": "Devolución finalizada",
+                     "motivo": "warehouse_decision", "tipo": "return"}}
+
+    def test_exige_admin_y_valida_la_publicacion(self):
+        anonimo = SimpleNamespace(autenticado=False, tipo="", rol="", actor="?")
+        with _como(anonimo), mock.patch.object(pm, "motivos") as m:
+            self.assertEqual(_cliente().get("/api/pricing/motivos/MLM123456789").status_code, 401)
+            m.assert_not_called()
+        with _como(ADMIN), mock.patch.object(pm, "_motivos_kubera") as k:
+            self.assertEqual(_cliente().get("/api/pricing/motivos/..%2Fx").status_code, 404)
+            self.assertEqual(_cliente().get("/api/pricing/motivos/MLM1;drop").status_code, 404)
+            k.assert_not_called()
+
+    def test_junta_devoluciones_y_cancelaciones_sin_inventar(self):
+        cancel = {"2001": {"group": "internal", "code": "pack_splitted", "requested_by": "meli"},
+                  "2002": {"group": "otro_grupo", "code": "algo_nuevo", "description": "Something new", "requested_by": "buyer"}}
+        ml = mock.AsyncMock(return_value=cancel)               # 2004: ML no contestó
+        with _como(ADMIN), mock.patch.object(pm, "_motivos_kubera", return_value=(self.ORDENES, self.DEVS)), \
+             mock.patch.object(pm, "_cancelaciones_ml", new=ml):
+            d = _cliente().get("/api/pricing/motivos/MLM123456789").json()
+        ml.assert_awaited_once_with([("2001", "BEKURA"), ("2002", "BEKURA"), ("2004", "BEKURA")])   # la devuelta no va a ML
+        ev = {e["orden"]: e for e in d["eventos"]}
+        self.assertEqual((ev["2001"]["tipo"], ev["2001"]["quien"]), ("cancelacion", "Mercado Libre"))
+        self.assertIn("separó el carrito", ev["2001"]["motivo"])
+        self.assertEqual(ev["2002"]["motivo"], "otro_grupo · Something new")    # código y grupo desconocidos: el texto de ML tal cual
+        self.assertEqual(pm._texto_cancelacion({"group": "mediations", "code": "x", "requested_by": "buyer"}),
+                         ("Cancelada por una mediación (reclamo del comprador)", "comprador"))
+        self.assertEqual((ev["2003"]["tipo"], ev["2003"]["motivo"], ev["2003"]["estado"]),
+                         ("devolucion", "No es el color que elegí", "Devolución finalizada"))
+        self.assertIsNone(ev["2004"]["motivo"])                                  # sin dato de ML: no se inventa
+        self.assertEqual((d["kubera"], d["ml"], d["sin_consultar"]), (True, True, 0))
+
+    def test_tope_de_consultas_y_kubera_caida(self):
+        muchas = [{"orden": str(9000 + i), "cuenta": "BEKURA", "dia": "2026-09-01", "cancelada": True, "piezas": 1, "precio": 10}
+                  for i in range(pm.MAX_ML_MOTIVOS + 5)]
+        ml = mock.AsyncMock(return_value={})
+        with _como(ADMIN), mock.patch.object(pm, "_motivos_kubera", return_value=(muchas, {})), \
+             mock.patch.object(pm, "_cancelaciones_ml", new=ml):
+            d = _cliente().get("/api/pricing/motivos/MLM123456789").json()
+        self.assertEqual(len(ml.await_args[0][0]), pm.MAX_ML_MOTIVOS)
+        self.assertEqual(d["sin_consultar"], 5)
+        pm.olvidar()
+        with _como(ADMIN), mock.patch.object(pm, "_motivos_kubera", side_effect=pm.FalloFuente("kubera caída")):
+            r = _cliente().get("/api/pricing/motivos/MLM123456789")
+        self.assertEqual((r.status_code, r.json()["kubera"], r.json()["eventos"]), (200, False, []))
+
+    def test_la_consulta_a_kubera_solo_lee(self):
+        sdb = SimpleNamespace(disponible=lambda: True, fetch_all=mock.Mock(side_effect=[self.ORDENES, list(self.DEVS.values())]))
+        with mock.patch.dict(sys.modules, {"services.supabase_db": sdb}), mock.patch("services.supabase_db", sdb, create=True):
+            ordenes, devs = pm._motivos_kubera("MLM123456789")
+        for llamada in sdb.fetch_all.call_args_list:
+            sql = llamada[0][0].lower()
+            self.assertNotIn("insert", sql)
+            self.assertNotIn("update ", sql)
+            self.assertNotIn("delete", sql)
+        self.assertEqual((len(ordenes), list(devs)), (4, ["2003"]))
+
+
 class Fresco(Base):
     """v0.656.0: «en vivo» se recalcula SOLO cuando entra una venta (o a los 5 min); promociones en segundo plano."""
 

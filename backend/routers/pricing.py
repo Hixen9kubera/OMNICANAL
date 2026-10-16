@@ -7,6 +7,10 @@ pricing.py — La pestaña PRICING (v0.650.0): el «Monitor de precios FULL».
                                   y lo vendido desde el cambio (kubera, SELECT)
   GET /api/pricing/vivo         → stock FULL de ML y ventas de 14/30 días de AHORA
                                   (v0.655.0; solo GET a ML, solo SELECT a kubera)
+  GET /api/pricing/salud        → calidad y experiencia de compra de ML por publicación
+                                  (v0.659.0; SELECT a enrich.listing_health, sin ML)
+  GET /api/pricing/motivos/{id} → por qué se canceló o se devolvió cada venta de UNA
+                                  publicación (v0.659.0; SELECT a kubera y GET /orders a ML)
 
 SOLO LECTURA. Ninguna ruta escribe: la pantalla SUGIERE qué hacer con cada
 precio y no cambia ninguno. El servicio (`services/pricing_monitor.py`) solo
@@ -65,6 +69,24 @@ async def vivo(quien=Depends(solo_admin)) -> dict:
     """Stock FULL de ML y ventas de 14/30 días de AHORA, para «Se agota» y low stock (v0.655.0). Solo lee."""
     try:
         return await pm.vivo()
+    except (pm.SinFoto, pm.FalloFuente) as exc:
+        raise _http(exc) from exc
+
+
+@router.get("/salud")
+async def salud(quien=Depends(solo_admin)) -> dict:
+    """Calidad y experiencia de compra de ML por publicación (v0.659.0), de lo que guarda calidad_ml. Solo lee."""
+    try:
+        return await pm.salud()
+    except (pm.SinFoto, pm.FalloFuente) as exc:
+        raise _http(exc) from exc
+
+
+@router.get("/motivos/{item_id}")
+async def motivos(item_id: str, quien=Depends(solo_admin)) -> dict:
+    """Por qué se canceló o se devolvió cada venta de una publicación (v0.659.0). Solo SELECT a kubera y GET a ML."""
+    try:
+        return await pm.motivos(item_id)
     except (pm.SinFoto, pm.FalloFuente) as exc:
         raise _http(exc) from exc
 

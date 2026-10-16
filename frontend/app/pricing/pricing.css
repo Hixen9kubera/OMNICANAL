@@ -193,3 +193,13 @@
 .pm .aviso { border: 1px solid var(--warn); background: var(--warn-wash); color: var(--fg); border-radius: 12px; padding: 12px 14px; font-size: 13.5px; }
 @media (max-width: 640px) { .pm .riv { grid-template-columns: 60px 1fr; } .pm .riv .num { text-align: left; } .pm .riv a, .pm .riv .sm { grid-column: 2; text-align: left; } }
 @media (prefers-reduced-motion: reduce) { .pm * { transition: none !important; } }
+
+/* Calidad · Experiencia (v0.659.0): dos fichas apiladas, el detalle en el tooltip. */
+.pm th.salud, .pm td.salud { min-width: 150px; }
+.pm .salud-cel { display: flex; flex-direction: column; gap: 4px; }
+.pm .salud-cel > div { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.pm .salud-cel .pill { cursor: help; }
+/* Motivo de la cancelación o devolución en el tooltip de la gráfica (v0.659.0). */
+.pm .tip .motivo { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--line); max-width: 260px; white-space: normal; }
+.pm .tip .motivo > div { line-height: 1.35; }
+.pm .tip .motivo .dev { color: var(--warn); }

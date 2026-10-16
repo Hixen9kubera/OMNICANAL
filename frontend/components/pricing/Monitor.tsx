@@ -11,7 +11,11 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { EyeOff, Info } from "lucide-react";
 
-import type { PricingComp, PricingFoto, PricingHecho, PricingHechos, PricingPromoHoy, PricingVivo, PricingVivoPub } from "@/lib/api";
+import type {
+  PricingComp, PricingFoto, PricingHecho, PricingHechos, PricingMetricaML, PricingMotivos, PricingPromoHoy, PricingSalud, PricingVivo,
+  PricingVivoPub,
+} from "@/lib/api";
+import { pricingMotivos } from "@/lib/api";
 import { pct1, pctS, pesos, pzs, reloj, type Reloj } from "./formato";
 import Grafica from "./Grafica";
 import { Mini } from "./Miniaturas";
@@ -205,10 +209,12 @@ export default function Monitor({
   foto,
   hechos,
   vivo,
+  salud,
 }: {
   foto: PricingFoto;
   hechos?: PricingHechos | null | "error";
   vivo?: PricingVivo | null | "error";
+  salud?: PricingSalud | null | "error";
 }) {
   const [R, setR] = useState<Reglas>(REGLAS);
   const [F, setF] = useState<Filtros>(F0);
@@ -593,6 +599,12 @@ export default function Monitor({
               <th className="n orden" aria-sort={ariaSort("conv")} onClick={() => ordenarPor("conv")}>
                 Conversión
               </th>
+              <th
+                className="salud"
+                title="Calidad de la publicación (puntaje de ML) y experiencia de compra, como las mide el barrido de calidad cada hora"
+              >
+                Calidad · Experiencia
+              </th>
               <th className="n orden" aria-sort={ariaSort("dias")} onClick={() => ordenarPor("dias")} title="Días que dura el stock al ritmo de hoy, contados desde hoy">
                 Se agota
               </th>
@@ -614,7 +626,7 @@ export default function Monitor({
           <tbody>
             {vista.length === 0 ? (
               <tr>
-                <td colSpan={13} className="vacio">
+                <td colSpan={14} className="vacio">
                   Ninguna publicación cumple estos filtros.
                 </td>
               </tr>
@@ -622,10 +634,11 @@ export default function Monitor({
               vista.map((f) => (
                 <Fragment key={f.p.id}>
                   <FilaPub f={f} R={R} rel={rel} abierta={abiertos.has(f.i)} tieneRiv={!!(f.p.sku && foto.riv[f.p.sku])}
-                    serie={series.pubs} onAlternar={() => alternar(f.i)} onRivales={setRivSku} X={X} movido={movidos.has(f.p.id)} />
+                    serie={series.pubs} onAlternar={() => alternar(f.i)} onRivales={setRivSku} X={X} movido={movidos.has(f.p.id)}
+                    salud={salud} />
                   {abiertos.has(f.i) && (
                     <tr className="det">
-                      <td colSpan={13}>
+                      <td colSpan={14}>
                         <Detalle f={f} R={R} rel={rel} nRiv={f.p.sku ? foto.riv[f.p.sku]?.r.length ?? 0 : 0} onRivales={setRivSku} />
                       </td>
                     </tr>
@@ -655,9 +668,11 @@ function FilaPub({
   onRivales,
   X,
   movido,
+  salud,
 }: {
   X: Extra;
   movido?: boolean;
+  salud?: PricingSalud | null | "error";
   f: FilaV;
   R: Reglas;
   rel: Reloj;
@@ -770,6 +785,9 @@ function FilaPub({
         {pct1(m.conv)}
         <div className="sm">{m.vis30.toLocaleString("es-MX")} visitas</div>
       </td>
+      <td className="salud">
+        <CeldaSalud salud={salud} id={p.id} />
+      </td>
       <td className="n">
         {!(f.v.stock > 0) ? (
           <span className="pill p-bad">agotada</span>
@@ -840,6 +858,46 @@ const desdeHoy = (dias: number) => {
 const fechaCorta = (iso: string) =>
   new Date(iso).toLocaleString("es-MX", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "America/Mexico_City" });
 const diaCorto = (s: string) => new Date(s.length <= 10 ? s + "T12:00:00" : s).toLocaleDateString("es-MX", { day: "numeric", month: "short" });
+
+// ── CALIDAD Y EXPERIENCIA DE ML (v0.659.0) ──────────────────────────────────
+// Lo que guarda el barrido de calidad (enrich.listing_health). El nivel viene
+// normalizado (bueno/medio/malo) y el texto es el de ML, tal cual.
+const TONO_NIVEL: Record<string, string> = { bueno: "p-ok", medio: "p-warn", malo: "p-bad" };
+const SIN_TEXTO: Record<string, string> = { no_calculada: "no la calcula ML", sin_datos: "sin datos" };
+
+function FichaML({ q, que }: { q: PricingMetricaML | undefined; que: "Calidad" | "Experiencia" }) {
+  if (!q) return <span className="pill p-none" title={`${que}: el barrido de calidad aún no mide esta publicación`}>{que}: —</span>;
+  const medida = q.nivel != null;
+  const cuando = q.medido ? ` · medida ${fechaCorta(q.medido)}` : "";
+  const texto = medida ? q.texto ?? q.nivel : SIN_TEXTO[q.estado ?? ""] ?? "sin dato";
+  const extra = q as PricingMetricaML & { pendientes?: number | null; razon?: string | null; consecuencia?: string | null; por_categoria?: boolean };
+  const detalle = [
+    `${que}: ${texto}${q.puntaje != null && que === "Calidad" ? ` (${Math.round(q.puntaje)}/100)` : ""}${cuando}`,
+    extra.pendientes ? `${extra.pendientes} mejoras pendientes en ML` : "",
+    extra.por_categoria ? "Calculada con las ventas de la categoría (la publicación tiene poca información)" : "",
+    extra.razon ?? "",
+    extra.consecuencia ?? "",
+  ].filter(Boolean).join("\n");
+  return (
+    <span className={`pill ${medida ? TONO_NIVEL[q.nivel as string] ?? "p-none" : "p-none"}`} title={detalle}>
+      {texto}
+      {medida && que === "Calidad" && q.puntaje != null ? ` ${Math.round(q.puntaje)}` : ""}
+    </span>
+  );
+}
+
+/** «Calidad · Experiencia»: calidad de la publicación arriba y experiencia de compra abajo, con el detalle en el tooltip. */
+function CeldaSalud({ salud, id }: { salud?: PricingSalud | null | "error"; id: string }) {
+  if (salud == null) return <span className="sm">…</span>;
+  if (salud === "error" || !salud.kubera) return <span className="sm" title="No se pudo leer /api/pricing/salud">sin lectura</span>;
+  const s = salud.pubs[id];
+  return (
+    <div className="salud-cel">
+      <div><span className="sm">calidad</span> <FichaML q={s?.c} que="Calidad" /></div>
+      <div><span className="sm">experiencia</span> <FichaML q={s?.e} que="Experiencia" /></div>
+    </div>
+  );
+}
 
 // Color por tipo de promoción: relámpago resalta (dura horas); la nuestra, verde.
 const TONO_PROMO: Record<string, string> = {
@@ -1052,6 +1110,21 @@ function Detalle({ f, R, rel, nRiv, onRivales }: { f: Fila; R: Reglas; rel: Relo
   const h = m.hist;
   const cat = p.cat;
   const catT = CAT_T[cat.v] ?? CAT_T.revisar;
+  // Motivos de cancelaciones y devoluciones (v0.659.0): se piden al abrir el detalle, solo si hay algo que explicar.
+  const [motivos, setMotivos] = useState<PricingMotivos | "cargando" | "error" | null>(null);
+  useEffect(() => {
+    if (!p.o.length) return;
+    const ctl = new AbortController();
+    setMotivos("cargando");
+    pricingMotivos(p.id, ctl.signal)
+      .then((d) => {
+        if (!ctl.signal.aborted) setMotivos(d);
+      })
+      .catch(() => {
+        if (!ctl.signal.aborted) setMotivos("error");
+      });
+    return () => ctl.abort();
+  }, [p.id, p.o.length]);
   return (
     <div className="det-caja">
       <div className="det-top">
@@ -1141,7 +1214,7 @@ function Detalle({ f, R, rel, nRiv, onRivales }: { f: Fila; R: Reglas; rel: Relo
           proyección para agotar
         </span>
       </div>
-      <Grafica f={f} R={R} rel={rel} />
+      <Grafica f={f} R={R} rel={rel} motivos={motivos} />
     </div>
   );
 }
