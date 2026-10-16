@@ -55,11 +55,13 @@ interface Filtros {
   low: boolean;
   /** Promoción: sin ninguna que ponga precio, o que puede entrar a relámpago. */
   promo: "todas" | "sin" | "relampago";
+  /** Visitas de ML en los 30 días de la foto (las mismas de «Conversión»). */
+  vis: "todas" | "con" | "sin";
 }
 
 const F0: Filtros = {
   ventas: "todas", cat: "todas", comp: "todas", cuenta: "todas", accion: null, q: "", orden: "accion", mov: "todas",
-  agota: "todas", low: false, promo: "todas",
+  agota: "todas", low: false, promo: "todas", vis: "todas",
 };
 
 // ── SE AGOTA y LOW STOCK (Brandon, 16-oct-2026) ──────────────────────────────
@@ -124,6 +126,8 @@ function pasa(f: FilaV, F: Filtros, sinAccion = false, X?: Extra, sinAgota = fal
   if (F.mov !== "todas" && X?.estado === "listo" && X.hecho.has(p.id) !== (F.mov === "si")) return false;
   if (F.ventas === "con" && !(m.u30 > 0)) return false;
   if (F.ventas === "sin" && m.u30 > 0) return false;
+  if (F.vis === "con" && !(m.vis30 > 0)) return false;
+  if (F.vis === "sin" && m.vis30 > 0) return false;
   if (F.cat === "editable" ? !editable(f) : F.cat !== "todas" && p.cat.v !== F.cat) return false;
   if (F.comp === "con" && m.ref == null) return false;
   if (F.comp === "sin" && m.ref != null) return false;
@@ -277,6 +281,15 @@ export default function Monitor({
     });
     return n;
   }, [filasV, F, X]);
+  // Conteos de «Visitas 30 d»: con los demás filtros, sin el suyo.
+  const nVis = useMemo(() => {
+    const n = { con: 0, sin: 0 };
+    filasV.filter((f) => pasa(f, { ...F, vis: "todas" }, false, X)).forEach((f) => {
+      if (f.m.vis30 > 0) n.con += 1;
+      else n.sin += 1;
+    });
+    return n;
+  }, [filasV, F, X]);
   const nAgota = useMemo(() => {
     const n: Record<string, number> = { c1: 0, c2: 0, c3: 0, cero: 0, low: 0 };
     baseAgota.forEach((f) => {
@@ -394,6 +407,21 @@ export default function Monitor({
         <div className="grupo">
           <span>Ventas 30 d</span>
           {seg("ventas", [["todas", "Todas"], ["con", "Con ventas"], ["sin", "Sin ventas"]])}
+        </div>
+        <div className="grupo" title="Visitas de ML en los mismos 30 días de la foto que «Ventas 30 d»">
+          <span>Visitas 30 d</span>
+          <div className="seg">
+            <button type="button" aria-pressed={F.vis === "todas"} onClick={() => setF((prev) => ({ ...prev, vis: "todas" }))}>
+              Todas
+            </button>
+            <button type="button" aria-pressed={F.vis === "con"} onClick={() => setF((prev) => ({ ...prev, vis: "con" }))}>
+              Con visitas <b className="cnt">{nVis.con}</b>
+            </button>
+            <button type="button" title="Ninguna visita en 30 días" aria-pressed={F.vis === "sin"}
+              onClick={() => setF((prev) => ({ ...prev, vis: "sin" }))}>
+              Sin visitas <b className="cnt">{nVis.sin}</b>
+            </button>
+          </div>
         </div>
         <div className="grupo">
           <span>Categoría</span>

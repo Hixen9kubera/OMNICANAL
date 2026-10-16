@@ -1001,6 +1001,21 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.657.0 — PRICING: filtro «Visitas 30 d» (con visitas / sin visitas)
+
+**Qué pidió Eduardo (16-oct-2026).** Un filtro en Pricing para separar las publicaciones con visitas de las que no
+tienen ninguna, sobre todo entre las 253 de «Precio movido» que siguen sin vender.
+
+**Filtro «Visitas 30 d»:** Todas / **Con visitas** / **Sin visitas**, con conteos que respetan los demás filtros
+(como «Promoción»). Usa las mismas visitas de 30 días que muestra la columna «Conversión» (`vis30` de la foto,
+los mismos días que «Ventas 30 d» de la foto). Solo frontend (`components/pricing/Monitor.tsx`); no cambia datos ni
+backend.
+
+**Cifras al subir (foto del 14-oct):** 638 con visitas y 20 sin; con «Precio movido», 240 y 13.
+
+**Pruebas.** `tsc` limpio. Revisado en navegador con un backend de prueba que sirve los archivos de
+`backend/data/pricing/` (sin kubera ni ML): «Sin visitas» con «Precio movido» deja 13 filas, todas con 0 visitas.
+
 ### v0.656.0 — PRICING con datos frescos: se refresca con cada venta, últimas ventas, filtro «Sin promoción» y a qué promociones puede entrar cada SKU (relámpago)
 
 **Qué pidió Brandon (16-oct-2026).** Datos frescos: que la pantalla se actualice cada vez que se vende algo en
