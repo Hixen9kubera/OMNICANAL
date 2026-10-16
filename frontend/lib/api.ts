@@ -2592,11 +2592,13 @@ export interface PricingHecho {
 export interface PricingPromoHoy {
   cobra: number | null;
   normal: number | null;
+  /** Lo que paga quien tiene el mejor cupón vigente a ese precio (v0.662.0). */
+  con_cupon?: number | null;
   /** La promoción que pone el precio que se cobra. */
   por: { tipo: string; etiqueta: string; nombre: string | null } | null;
   vivas: { tipo: string; etiqueta: string; nombre: string; precio: number | null; hasta: string | null }[];
   programadas: { tipo: string; etiqueta: string; nombre: string; precio: number | null; desde: string | null }[];
-  cupones: { nombre: string; monto: number | null; pct: number | null }[];
+  cupones: { nombre: string; monto: number | null; pct: number | null; minimo?: number | null; tope?: number | null }[];
   volumen: { lleva: number | null; pct: number | null; nombre: string } | null;
   /** A qué promociones PUEDE ENTRAR (las «candidate» de ML), v0.656.0. */
   candidatas?: {
@@ -2650,6 +2652,12 @@ export interface PricingVivo {
   marca?: string | null;
   /** Las ventas más recientes de estas publicaciones (2 días). */
   ultimas?: PricingVenta[];
+  /** Lo que cobra ML ahora (sale_price), releído cada 5 min (v0.662.0). */
+  precios?: Record<string, { cobra: number | null; normal: number | null }>;
+  precios_leido?: string | null;
+  /** Visitas de ML de los últimos 30 días, releídas cada 30 min (v0.662.0). */
+  visitas?: Record<string, number>;
+  visitas_leido?: string | null;
   pubs: Record<string, PricingVivoPub>;
   con_stock: number;
   total: number;

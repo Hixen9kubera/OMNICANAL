@@ -64,6 +64,11 @@ class Base(unittest.TestCase):
             p = mock.patch.object(pm.settings, nombre, valor)
             p.start()
             self.addCleanup(p.stop)
+        # Las relecturas en segundo plano hablan con ML: en pruebas no corren (cada prueba que las necesite las simula).
+        for nombre in ("_refrescar_precios", "_refrescar_promos"):
+            p = mock.patch.object(pm, nombre, new=mock.AsyncMock())
+            p.start()
+            self.addCleanup(p.stop)
 
     def poner_foto(self, foto=FOTO):
         (self.dir / "img").mkdir(exist_ok=True)
@@ -486,6 +491,28 @@ class Fresco(Base):
         self.assertIsNone(r["por"])                                                        # sin promoción que ponga precio
         r = pm.resumir({"amount": 1000, "metadata": {}}, promos[1:], ahora)
         self.assertFalse(r["relampago"])
+
+
+class PrecioConCupon(unittest.TestCase):
+    """v0.662.0: el precio con cupón respeta compra mínima y tope (caso TEC-1804-BLN: $1,599 − $39 = $1,560)."""
+
+    def test_mejor_cupon(self):
+        cupones = [{"monto": 39, "pct": None, "minimo": 399}, {"monto": 29, "pct": None, "minimo": 299},
+                   {"monto": None, "pct": 10, "minimo": 399, "tope": 100}]
+        self.assertEqual(pm.mejor_cupon(1599, cupones), 1499)          # 10 % topado a $100 gana a $39
+        self.assertEqual(pm.mejor_cupon(1599, cupones[:2]), 1560)
+        self.assertEqual(pm.mejor_cupon(350, cupones), 321)            # a $350 solo alcanza el de $29
+        self.assertIsNone(pm.mejor_cupon(250, cupones))                # no llega a ninguna compra mínima
+        self.assertIsNone(pm.mejor_cupon(1599, []))
+
+    def test_resumir_toma_minimo_de_la_campana(self):
+        from datetime import datetime
+        ahora = datetime.fromisoformat("2026-10-16T12:00:00-06:00")
+        promos = [{"id": "C-1", "type": "SELLER_COUPON_CAMPAIGN", "status": "candidate", "fixed_amount": 39,
+                   "start_date": "2026-10-01T00:00:00", "finish_date": "2026-10-31T23:59:59"}]
+        sp = {"amount": 1599, "regular_amount": 3655.95, "metadata": {}}
+        self.assertEqual(pm.resumir(sp, promos, ahora, {"C-1": {"min_purchase_amount": 399}})["con_cupon"], 1560)
+        self.assertIsNone(pm.resumir({**sp, "amount": 300}, promos, ahora, {"C-1": {"min_purchase_amount": 399}})["con_cupon"])
 
 
 class ScriptsHechoYPromos(unittest.TestCase):

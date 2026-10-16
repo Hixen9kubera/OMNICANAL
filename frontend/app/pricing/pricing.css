@@ -98,6 +98,7 @@
 .pm .ph-chips { display: flex; flex-wrap: wrap; gap: 3px; }
 .pm .chip { font-size: 11px; padding: 0 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel-2); white-space: nowrap; }
 .pm .chip.prog { border-style: dashed; }
+.pm .cupon { color: var(--up); font-weight: 600; }
 .pm .seg .cnt { font-family: var(--font-num); font-weight: 600; margin-left: 4px; }
 /* datos frescos (v0.656.0) */
 .pm .pulso { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--up); margin-right: 3px; vertical-align: 0;

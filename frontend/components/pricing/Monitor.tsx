@@ -91,17 +91,25 @@ interface Agota {
   vivo: boolean;
   /** Piezas de 30 días de ahora (kubera); null = sin lectura en vivo. */
   u30: number | null;
+  /** Visitas de 30 días (ML, cada 30 min) y conversión = piezas ÷ visitas. */
+  vis30: number;
+  visVivo: boolean;
+  conv: number | null;
 }
 type FilaV = Fila & { v: Agota };
 
-function agotaDe(f: Fila, V: Map<string, PricingVivoPub> | null): Agota {
+function agotaDe(f: Fila, V: Map<string, PricingVivoPub> | null, visitas?: Record<string, number> | null): Agota {
   const x = V?.get(f.p.id);
   const enVivo = x != null && x.stock != null;
   const stock = enVivo ? (x!.stock as number) : f.p.stock;
   const vel = x && x.u14 != null && x.u30 != null ? (x.u14 >= 3 ? x.u14 / 14 : x.u30 / 30) : f.m.vel;
   const dias = stock > 0 ? (vel > 0 ? stock / vel : Infinity) : 0;
   const cat: CatAgota = !(stock > 0) ? "cero" : dias <= 7 ? "c1" : dias <= 30 ? "c2" : "c3";
-  return { stock, vel, dias, cat, vivo: enVivo, u30: x && x.u30 != null ? x.u30 : null };
+  const u30 = x && x.u30 != null ? x.u30 : null;
+  const visV = visitas?.[f.p.id];
+  const vis30 = visV != null ? visV : f.m.vis30;
+  const piezas = u30 ?? f.m.u30;
+  return { stock, vel, dias, cat, vivo: enVivo, u30, vis30, visVivo: visV != null, conv: vis30 > 0 ? piezas / vis30 : null };
 }
 
 /** Lo que llega de /api/pricing/hechos, ya por id de publicación. */
@@ -130,8 +138,8 @@ function pasa(f: FilaV, F: Filtros, sinAccion = false, X?: Extra, sinAgota = fal
   if (F.mov !== "todas" && X?.estado === "listo" && X.hecho.has(p.id) !== (F.mov === "si")) return false;
   if (F.ventas === "con" && !(m.u30 > 0)) return false;
   if (F.ventas === "sin" && m.u30 > 0) return false;
-  if (F.vis === "con" && !(m.vis30 > 0)) return false;
-  if (F.vis === "sin" && m.vis30 > 0) return false;
+  if (F.vis === "con" && !(f.v.vis30 > 0)) return false;
+  if (F.vis === "sin" && f.v.vis30 > 0) return false;
   if (F.cat === "editable" ? !editable(f) : F.cat !== "todas" && p.cat.v !== F.cat) return false;
   if (F.comp === "con" && m.ref == null) return false;
   if (F.comp === "sin" && m.ref != null) return false;
@@ -151,7 +159,7 @@ const VALOR: Record<string, (f: FilaV) => number | null> = {
   dif: (f) => f.m.dif,
   stock: (f) => f.v.stock,
   ventas: (f) => f.m.u30,
-  conv: (f) => f.m.conv,
+  conv: (f) => f.v.conv,
   dias: (f) => (isFinite(f.v.dias) ? f.v.dias : null),
   v7: (f) => f.x.sug ?? f.x.hoy,
   ganan: (f) => (f.x.sug ?? f.x.hoy) - f.x.hoy,
@@ -175,7 +183,7 @@ const ORDENES: Record<string, (x: FilaV, y: FilaV) => number> = {
   arriba: (x, y) => (y.m.dif ?? -9) - (x.m.dif ?? -9),
   abajo: (x, y) => (x.m.dif ?? 9) - (y.m.dif ?? 9),
   ventas: (x, y) => y.m.u30 - x.m.u30,
-  conv: (x, y) => (y.m.conv ?? -1) - (x.m.conv ?? -1),
+  conv: (x, y) => (y.v.conv ?? -1) - (x.v.conv ?? -1),
 };
 
 /** Motivo corto (el completo va en el tooltip y en el detalle). */
@@ -242,12 +250,30 @@ export default function Monitor({
       kubera: hechos.kubera,
     };
   }, [hechos]);
-  const { filas, convTipica } = useMemo(() => calcular(foto.pubs, R), [foto.pubs, R]);
+  // PRECIO DE AHORA (v0.662.0): la foto es del 14-oct y los precios cambian (campañas, descuentos). Si hay
+  // lectura de promociones de ML (cada 30 min), el precio que se cobra y el normal salen de ahí, y con ellos
+  // todo lo que se calcula: «Precio hoy», contra la competencia, venta en 7 días y «Qué hacer» del detalle.
+  const preciosVivo = vivo && vivo !== "error" ? vivo.precios ?? null : null;
+  const pubs = useMemo(
+    () =>
+      foto.pubs.map((p) => {
+        const pv = preciosVivo?.[p.id];
+        const pr = X.promo[p.id];
+        const cobra = pv?.cobra ?? pr?.cobra ?? null;
+        if (cobra == null) return p;
+        const n0 = pv ? pv.normal : pr?.normal;
+        const normal = n0 && n0 > cobra ? n0 : cobra;
+        return { ...p, p: { ...p.p, a: cobra, n: normal } };
+      }),
+    [foto.pubs, X.promo, preciosVivo],
+  );
+  const { filas, convTipica } = useMemo(() => calcular(pubs, R), [pubs, R]);
   const V = useMemo(
     () => (vivo && vivo !== "error" ? new Map(Object.entries(vivo.pubs)) : null),
     [vivo],
   );
-  const filasV = useMemo<FilaV[]>(() => filas.map((f) => ({ ...f, v: agotaDe(f, V) })), [filas, V]);
+  const visitasVivo = vivo && vivo !== "error" ? vivo.visitas ?? null : null;
+  const filasV = useMemo<FilaV[]>(() => filas.map((f) => ({ ...f, v: agotaDe(f, V, visitasVivo) })), [filas, V, visitasVivo]);
 
   // Lo que se movió desde la lectura anterior (venta o resurtido): la fila se marca 3 minutos.
   const anterior = useRef<Map<string, PricingVivoPub> | null>(null);
@@ -291,7 +317,7 @@ export default function Monitor({
   const nVis = useMemo(() => {
     const n = { con: 0, sin: 0 };
     filasV.filter((f) => pasa(f, { ...F, vis: "todas" }, false, X)).forEach((f) => {
-      if (f.m.vis30 > 0) n.con += 1;
+      if (f.v.vis30 > 0) n.con += 1;
       else n.sin += 1;
     });
     return n;
@@ -372,10 +398,9 @@ export default function Monitor({
         <div>
           <h1>Pricing · Monitor de precios FULL</h1>
           <p className="sub">
-            {foto.pubs.length} publicaciones FULL de BEKURA y SANCORFASHION · precio con descuento y visitas de ML y ventas de
-            kubera al {hoyLargo}
+            {foto.pubs.length} publicaciones FULL de BEKURA y SANCORFASHION · en vivo: stock y ventas al minuto, precio de
+            venta cada 5 min, promociones y visitas cada 30 min
             {fuente ? ` · competencia: ${fuente}` : ""}
-            {X.promosLeido ? ` · promociones leídas de ML el ${fechaCorta(X.promosLeido)}` : ""}
           </p>
         </div>
         <div className="sello">
@@ -385,7 +410,19 @@ export default function Monitor({
           <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
             <Info size={14} aria-hidden /> Solo lectura: esta pantalla no cambia ningún precio; «Hecho» muestra lo ya movido en ML
           </span>
-          <span>Foto del {foto.meta.generado}</span>
+          <span title={`Lista de publicaciones y competencia: revisión del ${hoyLargo}`}>
+            {vivo && vivo !== "error" ? (
+              <>
+                <span className="pulso" aria-hidden /> En vivo · stock {horaCorta(vivo.leido)}
+                {vivo.precios_leido ? ` · precios ${horaCorta(vivo.precios_leido)}` : " · precios …"}
+                {X.promosLeido ? ` · promos ${horaCorta(X.promosLeido)}` : ""}
+              </>
+            ) : vivo === "error" ? (
+              "Sin lectura en vivo"
+            ) : (
+              "Leyendo en vivo…"
+            )}
+          </span>
         </div>
       </header>
 
@@ -414,7 +451,7 @@ export default function Monitor({
           <span>Ventas 30 d</span>
           {seg("ventas", [["todas", "Todas"], ["con", "Con ventas"], ["sin", "Sin ventas"]])}
         </div>
-        <div className="grupo" title="Visitas de ML en los mismos 30 días de la foto que «Ventas 30 d»">
+        <div className="grupo" title="Visitas de ML de los últimos 30 días (se releen cada 30 min)">
           <span>Visitas 30 d</span>
           <div className="seg">
             <button type="button" aria-pressed={F.vis === "todas"} onClick={() => setF((prev) => ({ ...prev, vis: "todas" }))}>
@@ -441,9 +478,9 @@ export default function Monitor({
           <span>Cuenta</span>
           {seg("cuenta", [["todas", "Ambas"], ["BEKURA", "BEKURA"], ["SANCORFASHION", "SANCORFASHION"]])}
         </div>
-        <div className="grupo" title={vivo && vivo !== "error" ? `Stock de ML y ventas de kubera leídos ${fechaCorta(vivo.leido)}` : "Con la foto: no llegó la lectura en vivo"}>
+        <div className="grupo" title={vivo && vivo !== "error" ? `Stock de ML y ventas de kubera leídos ${fechaCorta(vivo.leido)}` : "No llegó la lectura en vivo"}>
           <span>
-            Se agota {vivo && vivo !== "error" ? <>· <span className="pulso" aria-hidden /> en vivo {horaCorta(vivo.leido)}</> : vivo === "error" ? "· foto" : "…"}
+            Se agota {vivo && vivo !== "error" ? <>· <span className="pulso" aria-hidden /> en vivo {horaCorta(vivo.leido)}</> : vivo === "error" ? "· sin lectura en vivo" : "…"}
           </span>
           <div className="seg">
             <button type="button" aria-pressed={F.agota === "todas"} onClick={() => setF((prev) => ({ ...prev, agota: "todas" }))}>
@@ -710,7 +747,9 @@ function FilaPub({
         </div>
       </td>
       <td className="n">
-        <div className="big">{pesos(m.precio)}</div>
+        <div className="big" title="Lo que cobra Mercado Libre hoy a cualquier comprador (precio de venta, releído cada 5 min)">
+          {pesos(m.precio)}
+        </div>
         {m.desc > 0.004 ? (
           <div className="sm">
             <s>{pesos(m.normal)}</s> −{Math.round(m.desc * 100)} %
@@ -718,6 +757,16 @@ function FilaPub({
         ) : (
           <div className="sm">sin descuento</div>
         )}
+        {(() => {
+          const cc = mejorCupon(m.precio, X.promo[p.id]?.cupones ?? []);
+          if (cc == null || !(cc < m.precio - 0.5)) return null;
+          const base = m.normal && m.normal > cc ? m.normal : m.precio;
+          return (
+            <div className="sm cupon" title="Lo que paga quien tiene un cupón vigente (seguidores, recompra, carrito): ML lo muestra como «% OFF con cupón»">
+              con cupón {pesos(cc)} · −{Math.round((1 - cc / base) * 100)} %
+            </div>
+          );
+        })()}
       </td>
       <td className="promo-hoy">
         <CeldaPromoHoy X={X} id={p.id} />
@@ -756,20 +805,22 @@ function FilaPub({
       </td>
       <td className="n">
         <div className="big">{f.v.stock}</div>
-        <div className="sm" title={f.v.vivo ? `Leído de ML ahora; en la foto del 14-oct: ${p.stock}` : "De la foto"}>
-          {f.v.vivo ? (f.v.stock !== p.stock ? `ahora · foto ${p.stock}` : "pzs ahora") : "pzs en FULL"}
+        <div className="sm" title={f.v.vivo ? "Leído de Mercado Libre ahora" : "Sin lectura en vivo"}>
+          {f.v.vivo ? "pzs ahora" : "pzs en FULL"}
         </div>
         {f.v.stock > 0 && f.v.stock <= LOW_STOCK && <span className="pill p-warn">low stock</span>}
       </td>
       <td className="n">
         <div className="mono">{f.v.u30 ?? m.u30} pzs</div>
         <div className="sm" title={f.v.u30 != null ? "Ventas de kubera, al minuto" : "De la foto"}>
-          {f.v.vel.toFixed(1)} al día{f.v.u30 != null && f.v.u30 !== m.u30 ? ` · foto ${m.u30}` : ""}
+          {f.v.vel.toFixed(1)} al día
         </div>
       </td>
       <td className="n mono">
-        {pct1(m.conv)}
-        <div className="sm">{m.vis30.toLocaleString("es-MX")} visitas</div>
+        {pct1(f.v.conv)}
+        <div className="sm" title={f.v.visVivo ? "Visitas de ML de los últimos 30 días (cada 30 min)" : "Sin lectura en vivo"}>
+          {f.v.vis30.toLocaleString("es-MX")} visitas
+        </div>
       </td>
       <td className="salud">
         <CeldaSalud salud={salud} id={p.id} />
@@ -803,6 +854,19 @@ function FilaPub({
       </td>
     </tr>
   );
+}
+
+/** El precio que deja el mejor cupón vigente a este precio (compra mínima y tope). Igual que el backend. */
+function mejorCupon(precio: number, cupones: NonNullable<PricingPromoHoy["cupones"]>): number | null {
+  let mejor = 0;
+  for (const c of cupones) {
+    if (c.minimo && precio < c.minimo) continue;
+    let d = 0;
+    if (c.monto) d = c.monto;
+    else if (c.pct) d = Math.min((precio * c.pct) / 100, c.tope ?? Infinity);
+    mejor = Math.max(mejor, d);
+  }
+  return mejor > 0 ? Math.round((precio - mejor) * 100) / 100 : null;
 }
 
 /** Hora local corta de un ISO. */

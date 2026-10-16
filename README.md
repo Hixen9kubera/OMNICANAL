@@ -1001,6 +1001,34 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.662.0 — PRICING en tiempo real: «Precio hoy» cuadra con lo que cobra ML hoy (y con cupón), visitas en vivo y sin «foto»
+
+**Qué vio Brandon (16-oct-2026).** TEC-1804-BLN en ML: tachado $3,655.95, **$1,599** por ALWAYS ON OCT y **$1,560
+«57 % OFF con cupón»**. PRICING decía «$3,656 sin descuento» y 114 % arriba de la competencia: la columna salía de la
+foto del 14-oct, que la leyó sin la campaña. Pidió que «Precio hoy» cuadre con lo que HOY se vende y quitar la foto.
+
+**Precio de venta en vivo.** El servidor relee `sale_price` de las 658 cada 5 min en segundo plano (solo GET, 8 a la
+vez, ~10 s) y lo entrega en `/api/pricing/vivo` (`precios`, `precios_leido`). La pantalla toma ese precio y su precio
+normal antes de calcular nada, así que «Precio hoy», el tachado y su %, contra la competencia, venta en 7 días y
+«Qué hacer» del detalle salen de lo de ahora (orden: precio de 5 min → el de las promociones de 30 min → la foto).
+
+**Con cupón.** La relectura de promociones (30 min) ahora lee también las campañas de cada cuenta
+(`/seller-promotions/users/{id}`) para saber la compra mínima y el tope de cada cupón; «Precio hoy» muestra
+**«con cupón $X · −Y %»** con el mejor cupón vigente a ese precio (`mejor_cupon`, igual en backend y pantalla), que
+es lo que ML enseña como «% OFF con cupón» a quien lo tiene.
+
+**Visitas en vivo.** En la misma relectura de 30 min, las visitas de 30 días de cada publicación
+(`/items/{id}/visits/time_window`; ML acepta UNA publicación por llamada): «Conversión» = piezas de 30 días (kubera)
+÷ esas visitas, y el filtro «Visitas 30 d» usa lo mismo.
+
+**Sin «foto».** Fuera «foto N» de Stock, Ventas y Precio; el encabezado dice **«En vivo · stock hh:mm · precios hh:mm
+· promos hh:mm»** en lugar de «Foto del 14-oct». Lo que sigue saliendo de la revisión del 14-oct: la lista de
+publicaciones, la competencia, la categoría y el historial de la gráfica.
+
+**Pruebas.** +2 (29): `mejor_cupon` con compra mínima y tope (caso real $1,599 → $1,560) y `resumir` tomando el mínimo
+de la campaña; las relecturas en segundo plano no corren en pruebas. `tsc` limpio. Revisado en navegador con el
+backend leyendo producción (solo GET/SELECT): TEC-1804-BLN = $1,599, tachado $3,656 −56 %, con cupón $1,560 −57 %.
+
 ### v0.661.0 — PRICING: también la ven Haim y Andrea Pardo («Andy»)
 
 **Qué pidió Brandon (16-oct-2026).** Que Andy y Haim puedan ver la pestaña PRICING. En el panel no existe «Andy»:

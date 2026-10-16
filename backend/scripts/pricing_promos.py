@@ -58,11 +58,19 @@ def main() -> int:
 
     ahora = datetime.now(CDMX)
 
+    campanas: dict = {}
+    for c, tk in tokens.items():
+        yo = get("/users/me", tk)
+        if yo and yo.get("id"):
+            for x in (get(f"/seller-promotions/users/{yo['id']}", tk, app_version="v2") or {}).get("results") or []:
+                if x.get("id"):
+                    campanas[x["id"]] = x
+
     def uno(par):
         i, c = par
         sp = get(f"/items/{i}/sale_price", tokens[c], context="channel_marketplace") or {}
         pr = get(f"/seller-promotions/items/{i}", tokens[c], app_version="v2")
-        return i, resumir(sp, pr if isinstance(pr, list) else [], ahora) if sp else None
+        return i, resumir(sp, pr if isinstance(pr, list) else [], ahora, campanas) if sp else None
 
     with ThreadPoolExecutor(a.hilos) as ex:
         res = dict(ex.map(uno, pubs))
