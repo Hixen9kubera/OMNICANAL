@@ -1001,6 +1001,21 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.660.0 — PRICING: tabla sin «Vs. comp.» ni «Qué hacer»; encabezado fijo y barra horizontal siempre a la vista
+
+**Qué pidió Eduardo (16-oct-2026).** Quitar de la tabla las columnas «Vs. comp.» y «Qué hacer»; que al bajar se quede
+el encabezado, y una barra para moverse de izquierda a derecha.
+
+- **Columnas.** Fuera «Vs. comp.» y «Qué hacer» (quedan 12). Lo sugerido sigue en los chips de acciones de arriba y
+  en el detalle de cada publicación; «Hecho» sigue pegada a la derecha. `CeldaAccion` se conserva sin uso para
+  volver a poner la columna sin reescribirla.
+- **La tabla es su propia caja de desplazamiento** (`.tabla-wrap`: `overflow: auto`, alto de la pantalla menos la
+  barra del panel). El encabezado (`position: sticky`) se queda arriba al bajar, y la barra horizontal queda al fondo
+  de la caja, siempre a la vista, en vez de al final de las 658 filas.
+
+**Pruebas.** `tsc` limpio. Revisado en navegador: 12 columnas; tras bajar 3,000 px el encabezado sigue arriba; tabla
+de 1,882 px en una caja de 1,558 px con su barra horizontal visible.
+
 ### v0.659.0 — PRICING: columna «Calidad · Experiencia» y el motivo de cada cancelación y devolución en la gráfica
 
 **Qué pidió Eduardo (16-oct-2026).** Ver en la tabla de Pricing la calidad y la experiencia de compra de cada

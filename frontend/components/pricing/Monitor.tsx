@@ -587,9 +587,6 @@ export default function Monitor({
               >
                 Competencia
               </th>
-              <th className="n orden" aria-sort={ariaSort("dif")} onClick={() => ordenarPor("dif")}>
-                Vs. comp.
-              </th>
               <th className="n orden" aria-sort={ariaSort("stock")} onClick={() => ordenarPor("stock")} title="Piezas en FULL: en vivo de ML si llegó la lectura">
                 Stock
               </th>
@@ -617,7 +614,6 @@ export default function Monitor({
                 Venta 7 d
               </th>
               <th>Categoría</th>
-              <th className="que">Qué hacer</th>
               <th className="hecho" title="Lo que ya se movió en ML: precio antes → precio nuevo, y lo vendido desde el cambio">
                 Hecho
               </th>
@@ -626,7 +622,7 @@ export default function Monitor({
           <tbody>
             {vista.length === 0 ? (
               <tr>
-                <td colSpan={14} className="vacio">
+                <td colSpan={12} className="vacio">
                   Ninguna publicación cumple estos filtros.
                 </td>
               </tr>
@@ -638,7 +634,7 @@ export default function Monitor({
                     salud={salud} />
                   {abiertos.has(f.i) && (
                     <tr className="det">
-                      <td colSpan={14}>
+                      <td colSpan={12}>
                         <Detalle f={f} R={R} rel={rel} nRiv={f.p.sku ? foto.riv[f.p.sku]?.r.length ?? 0 : 0} onRivales={setRivSku} />
                       </td>
                     </tr>
@@ -759,16 +755,6 @@ function FilaPub({
         )}
       </td>
       <td className="n">
-        {m.dif == null ? (
-          <span className="sm">—</span>
-        ) : (
-          <>
-            <span className={`pos ${m.pos}`}>{pctS(m.dif)}</span>
-            <div className="sm">{m.pos === "nivel" ? "al nivel" : m.pos}</div>
-          </>
-        )}
-      </td>
-      <td className="n">
         <div className="big">{f.v.stock}</div>
         <div className="sm" title={f.v.vivo ? `Leído de ML ahora; en la foto del 14-oct: ${p.stock}` : "De la foto"}>
           {f.v.vivo ? (f.v.stock !== p.stock ? `ahora · foto ${p.stock}` : "pzs ahora") : "pzs en FULL"}
@@ -811,9 +797,6 @@ function FilaPub({
             <span className="pill p-acc">editable</span>
           </>
         )}
-      </td>
-      <td className="que">
-        <CeldaAccion f={f} R={R} />
       </td>
       <td className="hecho">
         <CeldaHecho X={X} id={p.id} />
@@ -1036,6 +1019,8 @@ function CeldaV7({ f }: { f: Fila }) {
   );
 }
 
+// Sin columna en la tabla desde v0.660.0 (Eduardo, 16-oct): «Qué hacer» sigue en los chips de arriba y en el
+// detalle de cada publicación. Se conserva para volver a ponerla sin reescribirla.
 function CeldaAccion({ f, R }: { f: Fila; R: Reglas }) {
   const { m, a } = f;
   const texto = a.t ?? etiqueta(a.k, R);
