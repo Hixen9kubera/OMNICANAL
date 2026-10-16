@@ -301,6 +301,62 @@ class Vivo(Base):
         self.assertEqual((d["pubs"], d["kubera"]), ({}, False))                          # todo falló: vacío, sin 500
 
 
+class Fresco(Base):
+    """v0.656.0: «en vivo» se recalcula SOLO cuando entra una venta (o a los 5 min); promociones en segundo plano."""
+
+    def _poner(self):
+        self.poner_foto({**FOTO, "pubs": [{"id": "MLM1", "c": "BEKURA"}]})
+
+    def test_recalcula_solo_con_venta_nueva(self):
+        self._poner()
+        stock = mock.AsyncMock(return_value={"MLM1": {"stock": 3, "status": "active"}})
+        marcas = iter(["2026-10-16T10:00:00", "2026-10-16T10:00:00", "2026-10-16T10:05:00"])
+        with _como(ADMIN), mock.patch.object(pm, "_stock_vivo", new=stock),              mock.patch.object(pm, "_ventas_vivo", return_value={}), mock.patch.object(pm, "_ultimas", return_value=[]),              mock.patch.object(pm, "_marca_ventas", side_effect=lambda: next(marcas)):
+            cli = _cliente()
+            for _ in range(3):
+                cli.get("/api/pricing/vivo")
+        self.assertEqual(stock.await_count, 2)          # 1ª lectura + la de la venta nueva; la de en medio fue caché
+
+    def test_promos_se_releen_en_segundo_plano_y_mientras_sirve_la_foto(self):
+        import asyncio
+        self._poner()
+        (self.dir / "promos.json").write_text(json.dumps({"leido": "foto", "promos": {"MLM1": {"cobra": 10}}}), encoding="utf-8")
+        llamado = asyncio.Event()
+
+        async def refrescar():
+            pm._promos = (pm.time.monotonic(), {"leido": "ml", "promos": {"MLM1": {"cobra": 9}}, "origen": "ml"})
+            llamado.set()
+
+        async def correr():
+            with mock.patch.object(pm, "_refrescar_promos", new=refrescar):
+                primero = await pm.promos_actuales()
+                await asyncio.wait_for(llamado.wait(), 2)
+                segundo = await pm.promos_actuales()
+            return primero, segundo
+
+        primero, segundo = asyncio.run(correr())
+        self.assertEqual((primero["origen"], primero["promos"]["MLM1"]["cobra"]), ("foto", 10))
+        self.assertEqual((segundo["origen"], segundo["promos"]["MLM1"]["cobra"]), ("ml", 9))
+
+    def test_candidatas_y_relampago(self):
+        from datetime import datetime
+        ahora = datetime.fromisoformat("2026-10-16T12:00:00-06:00")
+        promos = [
+            {"id": "LGH-MLM1000", "type": "LIGHTNING", "status": "candidate", "suggested_discounted_price": 850,
+             "min_discounted_price": 200, "max_discounted_price": 900, "stock": {"min": 5, "max": 6}},
+            {"id": "P-BF", "type": "DEAL", "status": "candidate", "name": "Buen Fin 26", "suggested_discounted_price": 700},
+            {"id": "C-1", "type": "SELLER_COUPON_CAMPAIGN", "status": "candidate", "fixed_amount": 39},
+            {"id": "V-1", "type": "VOLUME", "status": "candidate"},
+        ]
+        r = pm.resumir({"amount": 1000, "regular_amount": None, "metadata": {}}, promos, ahora)
+        self.assertTrue(r["relampago"])
+        self.assertEqual([c["tipo"] for c in r["candidatas"]], ["LIGHTNING", "DEAL"])   # cupón y volumen no son «puede entrar»
+        self.assertEqual((r["candidatas"][0]["sugerido"], r["candidatas"][0]["stock_max"]), (850, 6))
+        self.assertIsNone(r["por"])                                                        # sin promoción que ponga precio
+        r = pm.resumir({"amount": 1000, "metadata": {}}, promos[1:], ahora)
+        self.assertFalse(r["relampago"])
+
+
 class ScriptsHechoYPromos(unittest.TestCase):
     def test_bitacora_a_hechos_sin_lo_revertido_ni_lo_fallido(self):
         from scripts import pricing_hechos as ph

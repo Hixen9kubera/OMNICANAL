@@ -37,6 +37,7 @@ import json
 import logging
 import re
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -162,10 +163,11 @@ async def hoja(nombre: str) -> bytes:
 
 def olvidar() -> None:
     """Vacía la caché (pruebas, o tras dejar una foto nueva en la carpeta)."""
-    global _foto, _hechos, _vivo
+    global _foto, _hechos, _vivo, _promos
     _foto = None
     _hechos = None
     _vivo = None
+    _promos = None
     _cache.clear()
 
 
@@ -254,7 +256,7 @@ async def hechos() -> dict:
         if _hechos and ahora - _hechos[0] <= TTL_HECHOS_S:
             return _hechos[1]
         lista = await asyncio.to_thread(_leer_hechos)
-        promos = await asyncio.to_thread(_leer_promos)
+        promos = await promos_actuales()
         kubera = True
         try:
             despues = await asyncio.to_thread(_despues, lista)
@@ -263,7 +265,7 @@ async def hechos() -> dict:
             despues, kubera = {}, False
         datos = {"hechos": [{**h, "despues": despues.get(h["id"])} for h in lista],
                  "kubera": kubera and bool(despues or not lista),
-                 "promos": promos["promos"], "promos_leido": promos["leido"],
+                 "promos": promos["promos"], "promos_leido": promos["leido"], "promos_origen": promos.get("origen"),
                  "leido": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
         _hechos = (time.monotonic(), datos)
         return datos
@@ -282,6 +284,38 @@ async def hechos() -> dict:
 TTL_VIVO_S = 300
 _vivo: tuple[float, dict] | None = None
 _candado_vivo = asyncio.Lock()
+
+
+def _marca_ventas() -> str | None:
+    """BLOQUEANTE (kubera, SELECT con el índice de creado_at). La hora de la última orden de ML: si cambia, hubo venta."""
+    from services import supabase_db as sdb
+
+    if not sdb.disponible():
+        return None
+    fila = sdb.fetch_one(
+        "select max(creado_at) as m from channel.orders where canal = 'mercado_libre' and creado_at > now() - interval '3 days'")
+    return fila["m"].isoformat() if fila and fila.get("m") else None
+
+
+def _ultimas(ids: list[str]) -> list[dict]:
+    """BLOQUEANTE (kubera, solo SELECT). Las 15 ventas más recientes de ML de estas publicaciones (2 días)."""
+    from services import supabase_db as sdb
+
+    if not ids or not sdb.disponible():
+        return []
+    filas = sdb.fetch_all(
+        """
+        select oi.item_id, oi.sku, oi.cuenta, oi.cantidad, o.estado_canal, o.creado_at
+          from channel.orders o
+          join channel.order_items oi on oi.canal = o.canal and oi.cuenta = o.cuenta and oi.external_order_id = o.external_order_id
+         where o.canal = 'mercado_libre' and o.creado_at > now() - interval '2 days' and oi.item_id = any(%(ids)s)
+         order by o.creado_at desc
+         limit 15
+        """,
+        {"ids": ids},
+    )
+    return [{"id": f["item_id"], "sku": f["sku"], "cuenta": f["cuenta"], "pzs": f["cantidad"],
+             "estado": f["estado_canal"], "cuando": f["creado_at"].isoformat()} for f in filas]
 
 
 def _pubs_de_foto(gz: bytes) -> list[tuple[str, str]]:
@@ -349,16 +383,31 @@ async def _stock_vivo(pubs: list[tuple[str, str]]) -> dict[str, dict]:
 
 
 async def vivo() -> dict:
-    """{"leido", "pubs": {id: {stock, status, u14, u30}}} de las publicaciones de la foto. Caché de 5 min."""
+    """
+    {"leido", "marca", "pubs": {id: {stock, status, u14, u30}}, "ultimas": [...]} de las publicaciones de la foto.
+
+    Se recalcula en cuanto entra una venta nueva de ML (cambia la hora de la última orden en kubera, que el
+    webhook escribe al momento) o, sin ventas, cada 5 min. La pantalla pregunta cada 30 s: la mayoría de las
+    veces solo cuesta ese SELECT.
+    """
     global _vivo
     async with _candado_vivo:
         ahora = time.monotonic()
-        if _vivo and ahora - _vivo[0] <= TTL_VIVO_S:
+        try:
+            marca = await asyncio.to_thread(_marca_ventas)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("pricing vivo: no se pudo leer la última venta: %s", exc)
+            marca = None
+        if _vivo and ahora - _vivo[0] <= TTL_VIVO_S and (marca is None or marca == _vivo[1].get("marca")):
             return _vivo[1]
         gz, _ = await foto()
         pubs = await asyncio.to_thread(_pubs_de_foto, gz)
         ids = [i for i, _ in pubs]
-        stock, ventas = await asyncio.gather(_stock_vivo(pubs), asyncio.to_thread(_ventas_vivo, ids), return_exceptions=True)
+        stock, ventas, ultimas = await asyncio.gather(
+            _stock_vivo(pubs), asyncio.to_thread(_ventas_vivo, ids), asyncio.to_thread(_ultimas, ids), return_exceptions=True)
+        if isinstance(ultimas, BaseException):
+            log.warning("pricing vivo: últimas ventas fallaron: %s", ultimas)
+            ultimas = []
         if isinstance(stock, BaseException):
             log.warning("pricing vivo: stock de ML falló: %s", stock)
             stock = {}
@@ -374,7 +423,160 @@ async def vivo() -> dict:
                 continue
             res[i] = {"stock": s["stock"] if s else None, "status": s["status"] if s else None,
                       "u14": v["u14"] if v else None, "u30": v["u30"] if v else None}
-        datos = {"leido": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "pubs": res,
+        datos = {"leido": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "marca": marca, "pubs": res, "ultimas": ultimas,
                  "con_stock": sum(1 for x in res.values() if x["stock"] is not None), "total": len(ids), "kubera": kubera}
         _vivo = (time.monotonic(), datos)
         return datos
+
+# ── PROMOCIONES EN VIVO (v0.656.0) ───────────────────────────────────────────
+#
+# Qué promoción pone el precio que se cobra, cupones, «lleva más», lo
+# programado y —nuevo— a qué promociones PUEDE ENTRAR cada publicación (las
+# «candidate» de ML: relámpago, oferta del día, descuento individual, Buen Fin…).
+# El servidor las relee de ML cada 30 min EN SEGUNDO PLANO (solo GET, ~1,300
+# llamadas, 6 a la vez) y mientras tanto sirve la última lectura; si nunca ha
+# leído, sirve `promos.json` (la foto que deja `scripts/pricing_promos.py`).
+
+NOMBRE_TIPO = {
+    "LIGHTNING": "Oferta relámpago", "DOD": "Oferta del día", "SMART_LIGHTNING": "Relámpago co-fondeada",
+    "PRICE_DISCOUNT": "Descuento individual", "SELLER_CAMPAIGN": "Campaña propia", "DEAL": "Campaña de ML",
+    "SMART": "Co-fondeada con ML", "UNHEALTHY_STOCK": "Acelera tus ventas de Full", "PRICE_MATCHING": "Ajuste con MeLi",
+    "VOLUME": "Lleva más, paga menos", "SELLER_COUPON_CAMPAIGN": "Cupón",
+}
+PRECIO = {"LIGHTNING", "DOD", "SMART_LIGHTNING", "PRICE_DISCOUNT", "SELLER_CAMPAIGN", "DEAL", "SMART", "UNHEALTHY_STOCK", "PRICE_MATCHING"}
+RELAMPAGO = {"LIGHTNING", "SMART_LIGHTNING"}
+CDMX = timezone(timedelta(hours=-6))
+TTL_PROMOS_S = 1800
+_promos: tuple[float, dict] | None = None
+_tarea_promos: asyncio.Task | None = None
+
+
+def _fecha(s: str | None) -> datetime | None:
+    if not s:
+        return None
+    try:
+        d = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=CDMX)
+
+
+def resumir(sp: dict, promos: list[dict], ahora: datetime) -> dict:
+    """PURA. De `sale_price` y la lista de promociones del ítem, lo que la pantalla muestra."""
+    meta = sp.get("metadata") or {}
+    vivas, programadas, cupones, candidatas, volumen = [], [], [], [], None
+    por_id = {}
+    for p in promos:
+        tipo, st = p.get("type"), p.get("status")
+        nombre = (p.get("name") or "").strip() or NOMBRE_TIPO.get(tipo, tipo)
+        if p.get("id"):
+            por_id[p["id"]] = (tipo, nombre)
+        ini, fin = _fecha(p.get("start_date")), _fecha(p.get("finish_date"))
+        if tipo == "SELLER_COUPON_CAMPAIGN":
+            # La campaña de cupón cubre a la publicación como «candidate»; vale mientras su fecha esté vigente.
+            if (not ini or ini <= ahora) and (not fin or fin >= ahora):
+                if p.get("fixed_amount"):
+                    cupones.append({"nombre": nombre, "monto": p["fixed_amount"], "pct": None})
+                elif p.get("fixed_percentage"):
+                    cupones.append({"nombre": nombre, "monto": None, "pct": p["fixed_percentage"]})
+            continue
+        if tipo == "VOLUME" and st == "started":
+            volumen = {"lleva": p.get("buy_quantity"), "pct": p.get("discount_percentage"), "nombre": nombre}
+            continue
+        if tipo not in PRECIO:
+            continue
+        if st == "started":
+            vivas.append({"tipo": tipo, "etiqueta": NOMBRE_TIPO.get(tipo, tipo), "nombre": nombre, "precio": p.get("price") or None,
+                          "hasta": (p.get("finish_date") or "")[:10] or None})
+        elif st == "pending":
+            programadas.append({"tipo": tipo, "etiqueta": NOMBRE_TIPO.get(tipo, tipo), "nombre": nombre, "precio": p.get("price") or None,
+                                "desde": ini.astimezone(CDMX).strftime("%Y-%m-%d %H:%M") if ini else None})
+        elif st == "candidate":
+            stock = p.get("stock") or {}
+            candidatas.append({
+                "tipo": tipo, "etiqueta": NOMBRE_TIPO.get(tipo, tipo), "nombre": nombre,
+                "sugerido": p.get("suggested_discounted_price") or p.get("price") or None,
+                "min": p.get("min_discounted_price"), "max": p.get("max_discounted_price"),
+                "stock_min": stock.get("min"), "stock_max": stock.get("max"),
+                "meli_pct": p.get("meli_percentage"), "seller_pct": p.get("seller_percentage"),
+                "desde": ini.astimezone(CDMX).strftime("%Y-%m-%d %H:%M") if ini else None,
+            })
+    # ¿Qué promoción pone el precio que se cobra?
+    tipo_meta = (meta.get("promotion_type") or "").lower()
+    camp = meta.get("campaign_id")
+    if tipo_meta == "lightning":
+        cobra = "LIGHTNING"
+    elif camp and camp in por_id:
+        cobra = por_id[camp][0]
+    elif meta.get("promotion_id"):
+        # Sin campaña: la oferta propia del ítem (descuento individual); si no hay, la viva de menor precio.
+        pd = next((v for v in vivas if v["tipo"] == "PRICE_DISCOUNT"), None)
+        cobra = "PRICE_DISCOUNT" if pd else (min(vivas, key=lambda v: v["precio"] or 9e9)["tipo"] if vivas else None)
+    else:
+        cobra = None
+    nombre_cobra = por_id[camp][1] if camp and camp in por_id else next((v["nombre"] for v in vivas if v["tipo"] == cobra), None)
+    return {
+        "cobra": sp.get("amount"), "normal": sp.get("regular_amount"),
+        "por": {"tipo": cobra, "etiqueta": NOMBRE_TIPO.get(cobra, cobra), "nombre": nombre_cobra} if cobra else None,
+        "vivas": vivas, "programadas": sorted(programadas, key=lambda x: x["desde"] or ""), "cupones": cupones, "volumen": volumen,
+        "candidatas": candidatas, "relampago": any(c["tipo"] in RELAMPAGO for c in candidatas),
+    }
+
+
+async def _refrescar_promos() -> None:
+    """Relee de ML las promociones de todas las publicaciones de la foto (solo GET). Corre en segundo plano."""
+    global _promos
+    from services import meli
+
+    try:
+        gz, _ = await foto()
+        pubs = await asyncio.to_thread(_pubs_de_foto, gz)
+        tokens = {c: await meli.access_token_async(c) for c in {c for _, c in pubs}}
+        ahora = datetime.now(CDMX)
+        res: dict[str, dict | None] = {}
+        sem = asyncio.Semaphore(6)
+        async with httpx.AsyncClient(base_url="https://api.mercadolibre.com", timeout=30) as cli:
+
+            async def get(ruta: str, tk: str, **params):
+                for intento in range(4):
+                    try:
+                        r = await cli.get(ruta, params=params, headers={"Authorization": f"Bearer {tk}"})
+                    except httpx.HTTPError:
+                        await asyncio.sleep(1 + intento)
+                        continue
+                    if r.status_code == 429:
+                        await asyncio.sleep(2 + 3 * intento)
+                        continue
+                    return r.json() if r.status_code == 200 else None
+                return None
+
+            async def uno(i: str, c: str) -> None:
+                tk = tokens.get(c)
+                if not tk:
+                    return
+                async with sem:
+                    sp = await get(f"/items/{i}/sale_price", tk, context="channel_marketplace")
+                    pr = await get(f"/seller-promotions/items/{i}", tk, app_version="v2")
+                if sp:
+                    res[i] = resumir(sp, pr if isinstance(pr, list) else [], ahora)
+
+            await asyncio.gather(*(uno(i, c) for i, c in pubs))
+        if res:
+            _promos = (time.monotonic(), {"leido": ahora.isoformat(timespec="minutes"), "promos": res, "origen": "ml"})
+            log.info("pricing: promociones releídas de ML: %s de %s", len(res), len(pubs))
+        else:
+            log.warning("pricing: la relectura de promociones no trajo nada; se queda la anterior")
+    except Exception as exc:  # noqa: BLE001 — en segundo plano: que nunca tumbe nada
+        log.warning("pricing: no se pudieron releer las promociones: %s", exc)
+
+
+async def promos_actuales() -> dict:
+    """La última lectura de promociones; si tiene más de 30 min, pide otra en segundo plano y sirve la que hay."""
+    global _tarea_promos
+    viejo = _promos is None or time.monotonic() - _promos[0] > TTL_PROMOS_S
+    if viejo and (_tarea_promos is None or _tarea_promos.done()):
+        _tarea_promos = asyncio.create_task(_refrescar_promos())
+    if _promos:
+        return _promos[1]
+    archivo = await asyncio.to_thread(_leer_promos)
+    return {**archivo, "origen": "foto"}

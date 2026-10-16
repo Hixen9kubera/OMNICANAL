@@ -2598,6 +2598,22 @@ export interface PricingPromoHoy {
   programadas: { tipo: string; etiqueta: string; nombre: string; precio: number | null; desde: string | null }[];
   cupones: { nombre: string; monto: number | null; pct: number | null }[];
   volumen: { lleva: number | null; pct: number | null; nombre: string } | null;
+  /** A qué promociones PUEDE ENTRAR (las «candidate» de ML), v0.656.0. */
+  candidatas?: {
+    tipo: string;
+    etiqueta: string;
+    nombre: string;
+    sugerido: number | null;
+    min: number | null;
+    max: number | null;
+    stock_min?: number | null;
+    stock_max?: number | null;
+    meli_pct?: number | null;
+    seller_pct?: number | null;
+    desde?: string | null;
+  }[];
+  /** Puede entrar a una oferta relámpago (normal o co-fondeada). */
+  relampago?: boolean;
 }
 
 export interface PricingHechos {
@@ -2607,6 +2623,8 @@ export interface PricingHechos {
   leido: string;
   promos: Record<string, PricingPromoHoy | null>;
   promos_leido: string | null;
+  /** "ml" = releídas por el servidor (cada 30 min); "foto" = el archivo del repo. */
+  promos_origen?: string | null;
 }
 
 /** Stock FULL (ML) y ventas de 14/30 días (kubera) de AHORA, por publicación (v0.655.0). */
@@ -2617,8 +2635,21 @@ export interface PricingVivoPub {
   u30: number | null;
 }
 
+export interface PricingVenta {
+  id: string;
+  sku: string | null;
+  cuenta: string;
+  pzs: number;
+  estado: string | null;
+  cuando: string;
+}
+
 export interface PricingVivo {
   leido: string;
+  /** Hora de la última orden de ML en kubera: si cambia, entró una venta. */
+  marca?: string | null;
+  /** Las ventas más recientes de estas publicaciones (2 días). */
+  ultimas?: PricingVenta[];
   pubs: Record<string, PricingVivoPub>;
   con_stock: number;
   total: number;

@@ -97,6 +97,22 @@
 .pm .chip { font-size: 11px; padding: 0 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel-2); white-space: nowrap; }
 .pm .chip.prog { border-style: dashed; }
 .pm .seg .cnt { font-family: var(--font-num); font-weight: 600; margin-left: 4px; }
+/* datos frescos (v0.656.0) */
+.pm .pulso { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--up); margin-right: 3px; vertical-align: 0;
+  animation: pm-pulso 2s ease-in-out infinite; }
+@keyframes pm-pulso { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+.pm .ultimas { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12.5px; }
+.pm .ultimas .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; margin-right: 4px; }
+.pm .ultimas .venta { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 2px 8px; white-space: nowrap; }
+.pm .ultimas .venta b { font-family: var(--font-num); font-weight: 600; }
+.pm .ultimas .venta.nueva { border-color: var(--up); background: var(--up-wash); }
+.pm .ultimas .venta.cancelada { text-decoration: line-through; color: var(--muted); }
+.pm tr.fila.movida > td:first-child { box-shadow: inset 4px 0 0 var(--up); }
+.pm tr.fila.movida > td { background: var(--up-wash); }
+.pm .ph-chips.puede { align-items: center; }
+.pm .ph-chips.puede .lbl { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-right: 2px; }
+.pm .chip.rel { border-color: var(--warn); color: var(--warn); font-weight: 600; background: var(--warn-wash); }
+@media (prefers-reduced-motion: reduce) { .pm .pulso { animation: none; } }
 .pm td.n { text-align: right; white-space: nowrap; }
 .pm tr.fila { cursor: pointer; }
 .pm tr.fila:hover > td { background: var(--panel-2); }

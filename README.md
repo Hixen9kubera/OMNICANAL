@@ -1001,6 +1001,36 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.656.0 — PRICING con datos frescos: se refresca con cada venta, últimas ventas, filtro «Sin promoción» y a qué promociones puede entrar cada SKU (relámpago)
+
+**Qué pidió Brandon (16-oct-2026).** Datos frescos: que la pantalla se actualice cada vez que se vende algo en
+Mercado Libre («tenemos el webhook»); un filtro de las que no tienen promoción; y por cada SKU, a qué promociones
+puede entrar, sobre todo si está disponible para ofertas relámpago.
+
+**Se refresca con cada venta, sin tocar el webhook.** El webhook `orders_v2` ya escribe cada venta en
+`channel.orders` al momento. `GET /api/pricing/vivo` ahora pregunta primero la hora de la última orden de ML
+(`max(creado_at)`, con su índice): si cambió, vuelve a leer el stock de ML y las ventas de kubera; si no, contesta
+de su caché (0.2 s). La pantalla pregunta cada 30 s (no cuando la pestaña está oculta). Trae además las 15 ventas
+más recientes de estas publicaciones: tira **«Últimas ventas»** arriba de la tabla, y la fila que se movió (venta
+o resurtido) se marca en verde 3 minutos. «Ventas 30 d» muestra las de ahora (y «foto N» si cambió).
+
+**Promociones en vivo.** El servidor relee de ML las promociones de las 658 cada 30 min EN SEGUNDO PLANO (solo
+GET, ~1,300 llamadas, 6 a la vez, ~1 min) y mientras tanto sirve la última lectura; si nunca ha leído, el
+`promos.json` del repo (regenerado con el formato nuevo). La lógica (`resumir`) se mudó a `services/pricing_monitor.py`;
+el script la reusa.
+
+**A qué puede entrar.** `resumir` ahora junta las «candidate» de ML que ponen precio: oferta relámpago (normal o
+co-fondeada), oferta del día, descuento individual, campañas de ML (Buen Fin, Activa tus descuentos, Liquidación
+Full), co-fondeadas, Acelera Full… con su precio sugerido, el rango que permite ML y, en relámpago, cuántas piezas
+pide. En «Promoción hoy»: fichas **«puede entrar»** (relámpago primero, en ámbar; el detalle en el tooltip).
+
+**Filtro «Promoción»:** Todas / **Sin promoción** (ninguna pone su precio hoy) / **Puede entrar a relámpago**,
+con conteos. Al subir: 117 sin promoción y 46 que pueden entrar a relámpago.
+
+**Pruebas.** +3 (19): «en vivo» solo se recalcula cuando cambia la última venta; las promociones se releen en
+segundo plano mientras se sirve la foto; candidatas y relámpago (cupón y volumen no cuentan). `tsc` limpio.
+Revisado en navegador con el backend leyendo producción (solo GET/SELECT).
+
 ### v0.655.0 — PRICING: filtro «Se agota» (1–7 / 7–30 / +30 días / agotadas) y «Low stock ≤ 7» en tiempo real
 
 **Qué pidió Brandon (16-oct-2026).** El reporte de días de stock contaba desde la foto del 14-oct y no desde hoy

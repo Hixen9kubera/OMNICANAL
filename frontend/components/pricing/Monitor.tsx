@@ -8,7 +8,7 @@
 // SOLO LECTURA: sugiere, no cambia ningún precio. Los umbrales se recuerdan en
 // este navegador (localStorage), como en el artifact.
 
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { EyeOff, Info } from "lucide-react";
 
 import type { PricingComp, PricingFoto, PricingHecho, PricingHechos, PricingPromoHoy, PricingVivo, PricingVivoPub } from "@/lib/api";
@@ -53,11 +53,13 @@ interface Filtros {
   agota: "todas" | CatAgota;
   /** Low stock: 1 a LOW_STOCK piezas en FULL. */
   low: boolean;
+  /** Promoción: sin ninguna que ponga precio, o que puede entrar a relámpago. */
+  promo: "todas" | "sin" | "relampago";
 }
 
 const F0: Filtros = {
   ventas: "todas", cat: "todas", comp: "todas", cuenta: "todas", accion: null, q: "", orden: "accion", mov: "todas",
-  agota: "todas", low: false,
+  agota: "todas", low: false, promo: "todas",
 };
 
 // ── SE AGOTA y LOW STOCK (Brandon, 16-oct-2026) ──────────────────────────────
@@ -81,6 +83,8 @@ interface Agota {
   cat: CatAgota;
   /** true = stock leído de ML ahora; false = el de la foto. */
   vivo: boolean;
+  /** Piezas de 30 días de ahora (kubera); null = sin lectura en vivo. */
+  u30: number | null;
 }
 type FilaV = Fila & { v: Agota };
 
@@ -91,7 +95,7 @@ function agotaDe(f: Fila, V: Map<string, PricingVivoPub> | null): Agota {
   const vel = x && x.u14 != null && x.u30 != null ? (x.u14 >= 3 ? x.u14 / 14 : x.u30 / 30) : f.m.vel;
   const dias = stock > 0 ? (vel > 0 ? stock / vel : Infinity) : 0;
   const cat: CatAgota = !(stock > 0) ? "cero" : dias <= 7 ? "c1" : dias <= 30 ? "c2" : "c3";
-  return { stock, vel, dias, cat, vivo: enVivo };
+  return { stock, vel, dias, cat, vivo: enVivo, u30: x && x.u30 != null ? x.u30 : null };
 }
 
 /** Lo que llega de /api/pricing/hechos, ya por id de publicación. */
@@ -110,6 +114,12 @@ function pasa(f: FilaV, F: Filtros, sinAccion = false, X?: Extra, sinAgota = fal
   if (!sinAgota) {
     if (F.agota !== "todas" && f.v.cat !== F.agota) return false;
     if (F.low && !(f.v.stock > 0 && f.v.stock <= LOW_STOCK)) return false;
+  }
+  if (F.promo !== "todas" && X?.estado === "listo") {
+    const pr = X.promo[p.id];
+    if (!pr) return false;
+    if (F.promo === "sin" && pr.por) return false;
+    if (F.promo === "relampago" && !pr.relampago) return false;
   }
   if (F.mov !== "todas" && X?.estado === "listo" && X.hecho.has(p.id) !== (F.mov === "si")) return false;
   if (F.ventas === "con" && !(m.u30 > 0)) return false;
@@ -228,11 +238,45 @@ export default function Monitor({
     [vivo],
   );
   const filasV = useMemo<FilaV[]>(() => filas.map((f) => ({ ...f, v: agotaDe(f, V) })), [filas, V]);
+
+  // Lo que se movió desde la lectura anterior (venta o resurtido): la fila se marca 3 minutos.
+  const anterior = useRef<Map<string, PricingVivoPub> | null>(null);
+  const [movidos, setMovidos] = useState<Map<string, number>>(() => new Map());
+  useEffect(() => {
+    if (!V) return;
+    const prev = anterior.current;
+    if (prev) {
+      const ahora = Date.now();
+      const nuevos = new Map(movidos);
+      V.forEach((x, id) => {
+        const y = prev.get(id);
+        if (y && (y.stock !== x.stock || y.u30 !== x.u30)) nuevos.set(id, ahora);
+      });
+      nuevos.forEach((t, id) => {
+        if (ahora - t > 180_000) nuevos.delete(id);
+      });
+      setMovidos(nuevos);
+    }
+    anterior.current = V;
+  }, [V]); // eslint-disable-line react-hooks/exhaustive-deps
+  const ultimas = vivo && vivo !== "error" ? vivo.ultimas ?? [] : [];
+  const skuDe = useMemo(() => new Map(foto.pubs.map((p) => [p.id, p.sku])), [foto.pubs]);
   const series = { pubs: foto.meta.img.pubs || "p", riv: foto.meta.img.riv || "s" };
 
   const base = useMemo(() => filasV.filter((f) => pasa(f, F, true, X)), [filasV, F, X]);
   // Conteos de «Se agota»: con los demás filtros, sin el suyo.
   const baseAgota = useMemo(() => filasV.filter((f) => pasa(f, F, false, X, true)), [filasV, F, X]);
+  // Conteos de «Promoción»: con los demás filtros, sin el suyo.
+  const nPromo = useMemo(() => {
+    const n = { sin: 0, relampago: 0 };
+    if (X.estado !== "listo") return n;
+    filasV.filter((f) => pasa(f, { ...F, promo: "todas" }, false, X)).forEach((f) => {
+      const pr = X.promo[f.p.id];
+      if (pr && !pr.por) n.sin += 1;
+      if (pr?.relampago) n.relampago += 1;
+    });
+    return n;
+  }, [filasV, F, X]);
   const nAgota = useMemo(() => {
     const n: Record<string, number> = { c1: 0, c2: 0, c3: 0, cero: 0, low: 0 };
     baseAgota.forEach((f) => {
@@ -364,7 +408,9 @@ export default function Monitor({
           {seg("cuenta", [["todas", "Ambas"], ["BEKURA", "BEKURA"], ["SANCORFASHION", "SANCORFASHION"]])}
         </div>
         <div className="grupo" title={vivo && vivo !== "error" ? `Stock de ML y ventas de kubera leídos ${fechaCorta(vivo.leido)}` : "Con la foto: no llegó la lectura en vivo"}>
-          <span>Se agota {vivo && vivo !== "error" ? "· en vivo" : vivo === "error" ? "· foto" : "…"}</span>
+          <span>
+            Se agota {vivo && vivo !== "error" ? <>· <span className="pulso" aria-hidden /> en vivo {horaCorta(vivo.leido)}</> : vivo === "error" ? "· foto" : "…"}
+          </span>
           <div className="seg">
             <button type="button" aria-pressed={F.agota === "todas"} onClick={() => setF((prev) => ({ ...prev, agota: "todas" }))}>
               Todas
@@ -383,6 +429,22 @@ export default function Monitor({
               onClick={() => setF((prev) => ({ ...prev, low: !prev.low }))}
             >
               Low stock ≤ {LOW_STOCK} pzs <b className="cnt">{nAgota.low}</b>
+            </button>
+          </div>
+        </div>
+        <div className="grupo" title={X.promosLeido ? `Promociones leídas de ML ${fechaCorta(X.promosLeido)}` : ""}>
+          <span>Promoción</span>
+          <div className="seg">
+            <button type="button" aria-pressed={F.promo === "todas"} onClick={() => setF((prev) => ({ ...prev, promo: "todas" }))}>
+              Todas
+            </button>
+            <button type="button" title="Ninguna promoción pone su precio hoy" aria-pressed={F.promo === "sin"}
+              onClick={() => setF((prev) => ({ ...prev, promo: "sin" }))}>
+              Sin promoción <b className="cnt">{nPromo.sin}</b>
+            </button>
+            <button type="button" title="ML la deja entrar a una oferta relámpago (normal o co-fondeada)" aria-pressed={F.promo === "relampago"}
+              onClick={() => setF((prev) => ({ ...prev, promo: "relampago" }))}>
+              Puede entrar a relámpago <b className="cnt">{nPromo.relampago}</b>
             </button>
           </div>
         </div>
@@ -460,6 +522,18 @@ export default function Monitor({
         )}
       </p>
 
+      {ultimas.length > 0 && (
+        <section className="ultimas" aria-label="Últimas ventas de Mercado Libre">
+          <span className="lbl">Últimas ventas</span>
+          {ultimas.slice(0, 10).map((u, k) => (
+            <span key={k} className={`venta${u.estado === "cancelled" ? " cancelada" : ""}${movidos.has(u.id) ? " nueva" : ""}`}
+              title={`${u.cuenta} · ${u.id}${u.estado === "cancelled" ? " · cancelada" : ""}`}>
+              <b>{u.sku || skuDe.get(u.id) || u.id}</b> ×{u.pzs} · {haceCuanto(u.cuando)}
+            </span>
+          ))}
+        </section>
+      )}
+
       <div className="tabla-wrap">
         <table>
           <thead>
@@ -520,7 +594,7 @@ export default function Monitor({
               vista.map((f) => (
                 <Fragment key={f.p.id}>
                   <FilaPub f={f} R={R} rel={rel} abierta={abiertos.has(f.i)} tieneRiv={!!(f.p.sku && foto.riv[f.p.sku])}
-                    serie={series.pubs} onAlternar={() => alternar(f.i)} onRivales={setRivSku} X={X} />
+                    serie={series.pubs} onAlternar={() => alternar(f.i)} onRivales={setRivSku} X={X} movido={movidos.has(f.p.id)} />
                   {abiertos.has(f.i) && (
                     <tr className="det">
                       <td colSpan={13}>
@@ -552,8 +626,10 @@ function FilaPub({
   onAlternar,
   onRivales,
   X,
+  movido,
 }: {
   X: Extra;
+  movido?: boolean;
   f: FilaV;
   R: Reglas;
   rel: Reloj;
@@ -573,7 +649,7 @@ function FilaPub({
   };
   return (
     <tr
-      className={`fila${abierta ? " abierta" : ""}`}
+      className={`fila${abierta ? " abierta" : ""}${movido ? " movida" : ""}`}
       onClick={(e) => {
         if ((e.target as Element).closest("a, button, input, select, summary")) return;
         onAlternar();
@@ -657,8 +733,10 @@ function FilaPub({
         {f.v.stock > 0 && f.v.stock <= LOW_STOCK && <span className="pill p-warn">low stock</span>}
       </td>
       <td className="n">
-        <div className="mono">{m.u30} pzs</div>
-        <div className="sm">{m.vel.toFixed(1)} al día</div>
+        <div className="mono">{f.v.u30 ?? m.u30} pzs</div>
+        <div className="sm" title={f.v.u30 != null ? "Ventas de kubera, al minuto" : "De la foto"}>
+          {f.v.vel.toFixed(1)} al día{f.v.u30 != null && f.v.u30 !== m.u30 ? ` · foto ${m.u30}` : ""}
+        </div>
       </td>
       <td className="n mono">
         {pct1(m.conv)}
@@ -696,6 +774,33 @@ function FilaPub({
       </td>
     </tr>
   );
+}
+
+/** Hora local corta de un ISO. */
+const horaCorta = (iso: string) =>
+  new Date(iso).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit", timeZone: "America/Mexico_City" });
+/** «hace 4 min» / «hace 2 h». */
+const haceCuanto = (iso: string) => {
+  const min = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60_000));
+  return min < 60 ? `hace ${min} min` : min < 1440 ? `hace ${Math.round(min / 60)} h` : `hace ${Math.round(min / 1440)} d`;
+};
+const TIPOS_RELAMPAGO = new Set(["LIGHTNING", "SMART_LIGHTNING"]);
+/** Las candidatas en pocas fichas: una por promoción (relámpago primero), con su precio sugerido en el tooltip. */
+function candidatasCortas(cs: NonNullable<PricingPromoHoy["candidatas"]>) {
+  const vistas = new Map<string, { texto: string; tip: string; relampago: boolean; orden: number }>();
+  cs.forEach((c) => {
+    const relampago = TIPOS_RELAMPAGO.has(c.tipo);
+    const texto = c.tipo === "DEAL" || c.tipo === "SMART" ? c.nombre : c.etiqueta;
+    if (vistas.has(texto)) return;
+    const rango = c.min != null && c.max != null ? ` · ML permite ${pesos(c.min)}–${pesos(c.max)}` : "";
+    const pzs = c.stock_min != null ? ` · de ${c.stock_min} a ${c.stock_max} pzs` : "";
+    const ml = c.meli_pct ? ` · ML pone ${c.meli_pct} %` : "";
+    vistas.set(texto, {
+      texto, relampago, orden: relampago ? 0 : c.tipo === "DOD" ? 1 : 2,
+      tip: `${c.etiqueta}${c.nombre !== c.etiqueta ? " · " + c.nombre : ""}${c.sugerido ? " · sugerido " + pesos(c.sugerido) : ""}${rango}${pzs}${ml}`,
+    });
+  });
+  return Array.from(vistas.values()).sort((a, b) => a.orden - b.orden);
 }
 
 /** La fecha en que se acaba, contando desde HOY. */
@@ -761,6 +866,16 @@ function CeldaPromoHoy({ X, id }: { X: Extra; id: string }) {
           </span>
         ))}
       </div>
+      {pr.candidatas && pr.candidatas.length > 0 && (
+        <div className="ph-chips puede">
+          <span className="lbl">puede entrar</span>
+          {candidatasCortas(pr.candidatas).map((c, k) => (
+            <span key={k} className={`chip ${c.relampago ? "rel" : ""}`} title={c.tip}>
+              {c.texto}
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

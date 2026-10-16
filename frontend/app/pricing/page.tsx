@@ -113,6 +113,35 @@ function Pricing() {
     return () => ctl.abort();
   }, [intento]);
 
+  // DATOS FRESCOS (v0.656.0): cada 30 s se pregunta si hubo venta. El backend
+  // solo vuelve a leer ML y kubera cuando entró una (el webhook la escribe al
+  // momento) o pasaron 5 min; si no, contesta de su caché. Las promociones, cada
+  // 5 min (el servidor las relee de ML cada 30). Un fallo deja lo último que se vio.
+  useEffect(() => {
+    let vivoOk = true;
+    const ciclo = window.setInterval(() => {
+      if (document.hidden) return;
+      pricingVivo()
+        .then((d) => {
+          if (vivoOk) setVivo(d);
+        })
+        .catch(() => {});
+    }, 30_000);
+    const promos = window.setInterval(() => {
+      if (document.hidden) return;
+      pricingHechos()
+        .then((d) => {
+          if (vivoOk) setHechos(d);
+        })
+        .catch(() => {});
+    }, 300_000);
+    return () => {
+      vivoOk = false;
+      window.clearInterval(ciclo);
+      window.clearInterval(promos);
+    };
+  }, []);
+
   if (noDisponible) return <NoDisponible />;
   return (
     <div className="pm">

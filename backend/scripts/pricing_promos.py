@@ -29,73 +29,8 @@ sys.path.insert(0, str(RAIZ))
 CDMX = timezone(timedelta(hours=-6))
 API = "https://api.mercadolibre.com"
 
-NOMBRE_TIPO = {
-    "LIGHTNING": "Oferta relámpago", "DOD": "Oferta del día", "SMART_LIGHTNING": "Relámpago co-fondeada",
-    "PRICE_DISCOUNT": "Descuento individual", "SELLER_CAMPAIGN": "Campaña propia", "DEAL": "Campaña de ML",
-    "SMART": "Co-fondeada con ML", "UNHEALTHY_STOCK": "Acelera tus ventas de Full", "PRICE_MATCHING": "Ajuste con MeLi",
-    "VOLUME": "Lleva más, paga menos", "SELLER_COUPON_CAMPAIGN": "Cupón",
-}
-PRECIO = {"LIGHTNING", "DOD", "SMART_LIGHTNING", "PRICE_DISCOUNT", "SELLER_CAMPAIGN", "DEAL", "SMART", "UNHEALTHY_STOCK", "PRICE_MATCHING"}
-
-
-def _fecha(s: str | None) -> datetime | None:
-    if not s:
-        return None
-    try:
-        d = datetime.fromisoformat(s.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return d if d.tzinfo else d.replace(tzinfo=CDMX)
-
-
-def resumir(sp: dict, promos: list[dict], ahora: datetime) -> dict:
-    """PURA. De `sale_price` y la lista de promociones del ítem, lo que la pantalla muestra."""
-    meta = sp.get("metadata") or {}
-    vivas, programadas, cupones, volumen = [], [], [], None
-    por_id = {}
-    for p in promos:
-        tipo, st = p.get("type"), p.get("status")
-        nombre = (p.get("name") or "").strip() or NOMBRE_TIPO.get(tipo, tipo)
-        if p.get("id"):
-            por_id[p["id"]] = (tipo, nombre)
-        ini, fin = _fecha(p.get("start_date")), _fecha(p.get("finish_date"))
-        if tipo == "SELLER_COUPON_CAMPAIGN":
-            # La campaña de cupón cubre a la publicación como «candidate»; vale mientras su fecha esté vigente.
-            if (not ini or ini <= ahora) and (not fin or fin >= ahora):
-                if p.get("fixed_amount"):
-                    cupones.append({"nombre": nombre, "monto": p["fixed_amount"], "pct": None})
-                elif p.get("fixed_percentage"):
-                    cupones.append({"nombre": nombre, "monto": None, "pct": p["fixed_percentage"]})
-            continue
-        if tipo == "VOLUME" and st == "started":
-            volumen = {"lleva": p.get("buy_quantity"), "pct": p.get("discount_percentage"), "nombre": nombre}
-            continue
-        if tipo in PRECIO and st == "started":
-            vivas.append({"tipo": tipo, "etiqueta": NOMBRE_TIPO.get(tipo, tipo), "nombre": nombre, "precio": p.get("price") or None,
-                          "hasta": (p.get("finish_date") or "")[:10] or None})
-        elif tipo in PRECIO and st == "pending":
-            programadas.append({"tipo": tipo, "etiqueta": NOMBRE_TIPO.get(tipo, tipo), "nombre": nombre, "precio": p.get("price") or None,
-                                "desde": ini.astimezone(CDMX).strftime("%Y-%m-%d %H:%M") if ini else None})
-    # ¿Qué promoción pone el precio que se cobra?
-    tipo_meta = (meta.get("promotion_type") or "").lower()
-    camp = meta.get("campaign_id")
-    if tipo_meta == "lightning":
-        cobra = "LIGHTNING"
-    elif camp and camp in por_id:
-        cobra = por_id[camp][0]
-    elif meta.get("promotion_id"):
-        # Sin campaña: la oferta propia del ítem (descuento individual); si no hay, la viva de menor precio.
-        pd = next((v for v in vivas if v["tipo"] == "PRICE_DISCOUNT"), None)
-        cobra = "PRICE_DISCOUNT" if pd else (min(vivas, key=lambda v: v["precio"] or 9e9)["tipo"] if vivas else None)
-    else:
-        cobra = None
-    nombre_cobra = por_id[camp][1] if camp and camp in por_id else next((v["nombre"] for v in vivas if v["tipo"] == cobra), None)
-    return {
-        "cobra": sp.get("amount"), "normal": sp.get("regular_amount"),
-        "por": {"tipo": cobra, "etiqueta": NOMBRE_TIPO.get(cobra, cobra), "nombre": nombre_cobra} if cobra else None,
-        "vivas": vivas, "programadas": sorted(programadas, key=lambda x: x["desde"] or ""), "cupones": cupones, "volumen": volumen,
-    }
-
+# La lógica vive en el servicio (el servidor la usa para releer en vivo); aquí solo se reexporta.
+from services.pricing_monitor import NOMBRE_TIPO, PRECIO, resumir  # noqa: E402,F401
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
