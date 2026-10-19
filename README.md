@@ -1001,6 +1001,79 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.665.0 — PRICING: cambiar el precio a mano desde la celda «Precio hoy», con el % de descuento (solo admin)
+
+**Qué pidió Brandon (19-oct-2026).** Un input justo donde está el precio en PRICING para cambiarlo a mano y, si se
+puede, escribir el % de descuento y publicarlo con precio de descuento (normal tachado y % OFF), para todas las
+publicaciones. Y probarlo en vivo con 3 publicaciones sin ventas, devolviéndolas a como estaban.
+
+**Cómo se usa.** Debajo del precio de cada fila hay un botón **«Cambiar precio»** (solo lo ve un admin). Abre dos
+campos en la misma celda: **Normal $** y **Desc. %**, ya llenos con lo que ML cobra hoy (el % con 4 decimales, para
+que el punto de partida dé EXACTO el precio de hoy: 30 % de $220 daría $154, no $153), y abajo «cobraría $X».
+**«Revisar en ML»** abre una ventana que lee la publicación EN VIVO y dice:
+- lo que cobra hoy y qué promociones tiene vivas (descuento individual, campañas propias, campañas de ML);
+- lo que se va a publicar («se ve ~~$220.00~~ $143.00») y lo que **pagará el comprador** — si otra promoción cobra
+  menos, lo dice, porque el comprador paga SIEMPRE la más baja;
+- los avisos (relámpago, oferta del día y co-fondeadas no se manejan por API: si cobran menos, siguen ganando).
+
+Solo ahí está **«Publicar en ML»**. El cambio corre en el servidor (de 1 a 5 minutos) y la ventana va mostrando los
+pasos; al final dice antes/ahora y ofrece **«Deshacer»**. La tabla toma el precio nuevo en su próxima lectura.
+
+**Qué hace en ML, en orden** (`services/pricing_precio.py`):
+1. Lee la publicación: `item.price`, `sale_price` y sus promociones de precio.
+2. Si cambia el precio normal: `PUT /items/{id}` con `price`.
+3. Quita el descuento individual anterior (`DELETE /seller-promotions/items/{id}?promotion_type=PRICE_DISCOUNT`):
+   ML no deja dos.
+4. Espera a que ML vuelva a ofrecer el descuento individual, revisa que el precio con descuento quede dentro del
+   rango que ML acepta HOY y lo publica (`POST /seller-promotions/items/{id}` PRICE_DISCOUNT, `deal_price`, 28 días
+   por omisión). Espera a que arranque.
+5. Solo si se marca: saca la publicación de las campañas propias y de ML que cobran menos que el precio nuevo
+   (después de que el descuento arrancó, para que nunca se vea el precio normal sin descuento).
+6. Vuelve a leer y anota todo.
+
+**Lo que aprendimos de ML, medido en vivo el 19-oct.**
+- **ML tarda de 1 a 4 minutos en volver a aceptar un descuento** después de quitar uno o de cambiar el precio
+  normal: contesta `400 No candidates found for item` aunque su propia lista diga que la publicación es candidata.
+  Por eso el descuento se reintenta cada 20 s hasta 4 min (`_poner_descuento`). Sin eso, las dos primeras pruebas
+  dejaron la publicación **sin descuento unos minutos** (ORG-0852-BLN ~3 min a $220, CALZ-0117-BLN-37 ~8 min a $390;
+  ambas se regresaron a mano a su descuento de antes). Con los reintentos, las tres pruebas cerraron exactas.
+- **La trampa del precio de referencia** (TEC-0017-MET, mismo día): ML no deja subir el precio normal y poner el
+  descuento al momento; el rango del descuento se calcula sobre el precio VIEJO. Si el precio con descuento queda
+  fuera del rango, se deshace lo ya hecho y se dice el rango que ML acepta.
+
+**Si algo falla a medio camino** se regresa la publicación a como estaba (precio normal y su descuento anterior, con
+el mismo precio y la misma fecha de fin) y se dice si de verdad quedó igual. Si no se pudo, el mensaje dice qué
+tenía antes para ponerlo en ML. Un candado por publicación evita dos cambios a la vez.
+
+**Deshacer.** Cada cambio queda en `ops.process_log` (proceso `precio`, origen `pricing`, `detail_ref`
+`pricing:{id}`, con quién lo hizo) con la foto de ANTES. «Deshacer» quita el descuento puesto, regresa el precio
+normal, vuelve a poner el descuento de antes (con los mismos reintentos) y, si se habían quitado campañas, intenta
+volver a meterla.
+
+**Sacarla de campañas: APAGADO por omisión.** Es una casilla en la ventana y la API la toma como `false` si no se
+manda. No se ha probado en vivo (ni la salida ni el regreso a una campaña al deshacer), y la ventana lo dice.
+
+**Las 3 pruebas en vivo** (19-oct, SANCORFASHION, publicaciones sin ventas; se bajó el descuento y se deshizo):
+
+| Publicación | Antes | Prueba | Después de deshacer |
+|---|---|---|---|
+| ORG-0852-BLN `MLM3160746727` | $220, descuento a $153 | 35 % → $143 | $220 / $153 ✓ |
+| CALZ-0117-BLN-37 `MLM4744044044` | $390, descuento a $351 | normal $380, 15 % → $323 | $390 / $351 ✓ |
+| SIL-0023-NEG `MLM2765246013` | $298, descuento a $268 + campaña de ML a $283.10 | 15 % → $253.30 | $298 / $268, campaña intacta ✓ |
+
+BEKURA no se probó en vivo (mismo código, otro token).
+
+**Acceso.** Las cuatro rutas nuevas (`POST /api/pricing/precio/{id}/vista`, `POST /api/pricing/precio/{id}`,
+`POST /api/pricing/precio/{id}/deshacer`, `GET /api/pricing/precio/trabajo/{tid}`) exigen rol **admin** en el
+router y en `core/rbac.py` (`POST /api/pricing` = admin). La vista previa solo hace GET a ML. Son las únicas rutas
+de PRICING que escriben, y escriben en ML: nada en kubera fuera de la bitácora. El token es el del backend (no se
+renueva aquí). Los trabajos viven en memoria: si el backend se reinicia a medio cambio, lo hecho queda en ML y en
+la bitácora.
+
+**Pruebas.** +4 (37): solo admin (incluida la consulta del trabajo), aplicar arranca un trabajo y valida antes,
+el plan no inventa (precio final, qué se quita, qué sigue ganando), y fuera de rango se regresa todo. `tsc` limpio.
+La pantalla se revisó en local con un backend que no escribe.
+
 ### v0.664.0 — Competencia: las visitas de los RIVALES son LEGACY — el panel lo dice con la fecha real de la última medición, y la captura deja de pedirlas (el 403 queda en `ops.process_log`)
 
 **Qué pidió Eduardo (19-oct-2026).** «Marcar las visitas de rivales como LEGACY.» Donde el panel muestre

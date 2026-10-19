@@ -14,8 +14,13 @@ pricing.py — La pestaña PRICING (v0.650.0): el «Monitor de precios FULL».
   GET /api/pricing/serie/{id}   → ventas y visitas por día de UNA publicación, de ahora, para
                                   su gráfica (v0.663.0; SELECT a kubera, GET /orders y visitas a ML)
 
-SOLO LECTURA. Ninguna ruta escribe: la pantalla SUGIERE qué hacer con cada
-precio y no cambia ninguno. El servicio (`services/pricing_monitor.py`) solo
+  POST /api/pricing/precio/{id}/vista    → cómo está en ML y qué pasaría con un precio y un %
+  POST /api/pricing/precio/{id}          → CAMBIA el precio en ML (normal + descuento visible)
+  POST /api/pricing/precio/{id}/deshacer → la regresa a como estaba antes del último cambio
+                                  (v0.665.0; SOLO ADMIN — son las únicas rutas que escriben, en ML)
+
+SOLO LECTURA, salvo `/precio` (v0.665.0, pedido de Brandon 19-oct-2026): cambiar a
+mano el precio de una publicación de ML, solo admin, con bitácora y «Deshacer». El servicio (`services/pricing_monitor.py`) solo
 lee la foto de su carpeta o de GitHub, y para «Hecho» lee kubera.
 
 ACCESO: admin con sesión del panel, y desde v0.661.0 también las personas de
@@ -34,9 +39,13 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 
+from pydantic import BaseModel
+
+from core import actor as core_actor
 from core import identidad as core_identidad
 from core import rbac
 from services import pricing_monitor as pm
+from services import pricing_precio as pp
 
 log = logging.getLogger("omnicanal.pricing")
 router = APIRouter(prefix="/api/pricing", tags=["pricing"])
@@ -129,3 +138,70 @@ async def imagen(hoja: str, quien=Depends(acceso_pricing)) -> Response:
     # mezcla con la hoja vieja que el navegador tenga guardada.
     return Response(content=dato, media_type="image/jpeg",
                     headers={"Cache-Control": "private, max-age=86400"})
+
+
+# ── CAMBIAR EL PRECIO A MANO (v0.665.0) ──────────────────────────────────────
+
+async def solo_admin(request: Request):
+    """Cambiar precios en ML es de admin: los invitados de PRICING solo ven."""
+    quien = await acceso_pricing(request)
+    if getattr(quien, "rol", "") != "admin":
+        log.warning("PRICING 403: %s intentó cambiar un precio sin ser admin", quien.actor)
+        raise HTTPException(status_code=403, detail="Solo un admin puede cambiar precios en Mercado Libre.")
+    return quien
+
+
+class PedidoPrecio(BaseModel):
+    cuenta: str
+    sku: str | None = None
+    precio: float = 0
+    pct: float | None = None
+    salir: bool = False   # sacarla de campañas: aún sin probar en vivo, solo si se pide
+    hasta: str | None = None
+
+
+def _quien(quien) -> str:
+    return core_actor.actual() or str(getattr(quien, "actor", "") or "")
+
+
+@router.post("/precio/{item_id}/vista")
+async def precio_vista(item_id: str, req: PedidoPrecio, quien=Depends(solo_admin)) -> dict:
+    """Solo GET a ML: cómo está la publicación y qué pasaría. No escribe nada."""
+    try:
+        return await pp.vista_previa(item_id, req.cuenta, req.precio, req.pct, req.salir)
+    except pp.ErrorPrecio as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/precio/{item_id}")
+async def precio_aplicar(item_id: str, req: PedidoPrecio, quien=Depends(solo_admin)) -> dict:
+    """ESCRIBE EN ML: precio normal y descuento individual de UNA publicación. Arranca un trabajo (1 a 5 min)
+    y devuelve su id; la pantalla pregunta por él en /precio/trabajo/{id}. Queda en la bitácora."""
+    try:
+        pp.validar_pedido(req.precio, req.pct)
+        pp._validar(item_id, req.cuenta)
+    except pp.ErrorPrecio as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    q = _quien(quien)
+    return pp.iniciar("aplicar", item_id, lambda pasos: pp.aplicar(item_id, req.cuenta, req.sku, req.precio, req.pct, req.salir,
+                                                                    req.hasta, q, pasos))
+
+
+@router.post("/precio/{item_id}/deshacer")
+async def precio_deshacer(item_id: str, req: PedidoPrecio, quien=Depends(solo_admin)) -> dict:
+    """ESCRIBE EN ML: la regresa a como estaba antes del último cambio hecho desde PRICING (trabajo, igual que aplicar)."""
+    try:
+        pp._validar(item_id, req.cuenta)
+    except pp.ErrorPrecio as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    q = _quien(quien)
+    return pp.iniciar("deshacer", item_id, lambda pasos: pp.deshacer(item_id, req.cuenta, req.sku, q, pasos))
+
+
+@router.get("/precio/trabajo/{tid}")
+async def precio_trabajo(tid: str, quien=Depends(solo_admin)) -> dict:
+    """Cómo va un cambio de precio: pasos hechos, y al final el resultado o el error."""
+    t = pp.trabajo(tid)
+    if not t:
+        raise HTTPException(status_code=404, detail="Ese cambio ya no está en memoria (¿se reinició el backend?). Revisa la publicación.")
+    return t

@@ -42,6 +42,8 @@ const SIN_LOGIN = process.env.NEXT_PUBLIC_AUTH_OFF === "true";
 
 export default function PricingPage() {
   const [acceso, setAcceso] = useState<"revisando" | "admin" | "no">(SIN_LOGIN ? "admin" : "revisando");
+  // Cambiar precios en ML (v0.665.0) es solo de admin; los invitados de PRICING solo ven.
+  const [esAdmin, setEsAdmin] = useState(SIN_LOGIN);
 
   useEffect(() => {
     if (SIN_LOGIN) return;
@@ -49,6 +51,7 @@ export default function PricingPage() {
     void quienSoy().then((u) => {
       // Admin o invitado: lo decide el backend (`puede.pricing`, ver core/rbac.py).
       if (vivo) setAcceso(u.autenticado && (u.rol === "admin" || !!u.puede?.pricing) ? "admin" : "no");
+      if (vivo) setEsAdmin(u.autenticado && u.rol === "admin");
     });
     return () => {
       vivo = false;
@@ -63,13 +66,13 @@ export default function PricingPage() {
       ) : acceso === "no" ? (
         <NoDisponible />
       ) : (
-        <Pricing />
+        <Pricing esAdmin={esAdmin} />
       )}
     </>
   );
 }
 
-function Pricing() {
+function Pricing({ esAdmin }: { esAdmin: boolean }) {
   const [foto, setFoto] = useState<PricingFoto | null>(null);
   // «Hecho» y «Promoción hoy» llegan aparte: si fallan, la tabla se ve igual
   // y esas dos columnas lo dicen.
@@ -182,7 +185,7 @@ function Pricing() {
         <Cargando texto="Leyendo el monitor de precios…" />
       ) : (
         <ProveedorHojas version={foto.meta.generado} celda={foto.meta.img.celda} lado={foto.meta.img.lado}>
-          <Monitor foto={foto} hechos={hechos} vivo={vivo} salud={salud} />
+          <Monitor foto={foto} hechos={hechos} vivo={vivo} salud={salud} esAdmin={esAdmin} />
         </ProveedorHojas>
       )}
     </div>

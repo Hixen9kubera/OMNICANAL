@@ -89,8 +89,15 @@ class Acceso(Base):
         self.assertEqual(tapan, [])
 
     def test_router_solo_get_y_exige_admin_con_sesion(self):
-        metodos = {m for r in ruta.router.routes for m in r.methods}
+        # Solo lectura, salvo las tres rutas de cambiar el precio a mano (v0.665.0, solo admin).
+        metodos = {m for r in ruta.router.routes for m in r.methods if not r.path.startswith("/api/pricing/precio/")}
+        # (el GET de /precio/trabajo también es de admin: lo cubre test_solo_admin_puede_cambiar)
         self.assertTrue(metodos <= {"GET", "HEAD"}, metodos)
+        escriben = sorted(r.path for r in ruta.router.routes if "POST" in r.methods)
+        self.assertEqual(escriben, ["/api/pricing/precio/{item_id}", "/api/pricing/precio/{item_id}/deshacer",
+                                    "/api/pricing/precio/{item_id}/vista"])
+        from core import rbac as _rbac
+        self.assertEqual(_rbac.rol_requerido("POST", "/api/pricing/precio/MLM1"), "admin")
         self.poner_foto()
         cli = _cliente()
         anonimo = SimpleNamespace(autenticado=False, tipo="", rol="", actor="?")
@@ -499,6 +506,89 @@ class Serie(Base):
         sql = sdb.fetch_all.call_args[0][0].lower()
         for palabra in ("insert", "update ", "delete"):
             self.assertNotIn(palabra, sql)
+
+
+class PrecioManual(Base):
+    """Cambiar el precio a mano (v0.665.0): solo admin, el plan no inventa, y ML siempre se lee antes."""
+
+    ESTADO = {"item": "MLM123456789", "precio": 555.55, "cobra": 399.0, "tachado": 555.55, "promos": [
+        {"tipo": "PRICE_DISCOUNT", "nombre_tipo": "Descuento individual", "id": None, "nombre": "", "estado": "started", "precio": 499.0,
+         "inicio": None, "fin": "2026-11-11T23:59:59", "min": None, "max": None},
+        {"tipo": "SELLER_CAMPAIGN", "nombre_tipo": "Campaña propia", "id": "C-1", "nombre": "ALWAYS ON OCT", "estado": "started", "precio": 399.0,
+         "inicio": None, "fin": None, "min": None, "max": None},
+        {"tipo": "LIGHTNING", "nombre_tipo": "Oferta relámpago", "id": "LGH", "nombre": "", "estado": "pending", "precio": 300.0,
+         "inicio": None, "fin": None, "min": None, "max": None},
+        {"tipo": "DEAL", "nombre_tipo": "Campaña de ML", "id": "P-BF", "nombre": "Buen Fin 26", "estado": "pending", "precio": 538.88,
+         "inicio": None, "fin": None, "min": None, "max": None},
+    ]}
+
+    def test_solo_admin_puede_cambiar(self):
+        invitado = SimpleNamespace(autenticado=True, tipo="persona", rol="operador", actor="andy@x")
+        cuerpo = {"cuenta": "BEKURA", "precio": 500, "pct": 10}
+        with _como(invitado), mock.patch("core.rbac.ve_pricing", return_value=True), mock.patch.object(ruta.pp, "aplicar") as a:
+            self.assertEqual(_cliente().post("/api/pricing/precio/MLM123456789", json=cuerpo).status_code, 403)
+            self.assertEqual(_cliente().post("/api/pricing/precio/MLM123456789/deshacer", json=cuerpo).status_code, 403)
+            self.assertEqual(_cliente().get("/api/pricing/precio/trabajo/abc").status_code, 403)
+            a.assert_not_called()
+        anonimo = SimpleNamespace(autenticado=False, tipo="", rol="", actor="?")
+        with _como(anonimo):
+            self.assertEqual(_cliente().post("/api/pricing/precio/MLM123456789/vista", json=cuerpo).status_code, 401)
+
+    def test_aplicar_arranca_un_trabajo_y_valida_antes(self):
+        cuerpo = {"cuenta": "BEKURA", "sku": "X", "precio": 500, "pct": 10}
+        with _como(ADMIN), mock.patch.object(ruta.pp, "aplicar", new=mock.AsyncMock(return_value={"ok": 1})) as a:
+            cli = _cliente()
+            r = cli.post("/api/pricing/precio/MLM123456789", json=cuerpo)
+            self.assertEqual(r.status_code, 200)
+            tid = r.json()["id"]
+            self.assertEqual(cli.post("/api/pricing/precio/MLM123456789", json={**cuerpo, "pct": 95}).status_code, 400)
+            self.assertEqual(cli.post("/api/pricing/precio/MLM1;x", json=cuerpo).status_code, 400)
+            t = cli.get(f"/api/pricing/precio/trabajo/{tid}").json()
+        self.assertIn(t["estado"], ("corriendo", "listo"))
+        self.assertEqual(a.await_args[0][:5], ("MLM123456789", "BEKURA", "X", 500, 10))
+
+    def test_plan_quita_solo_lo_que_cobra_menos_y_se_puede_quitar(self):
+        plan = ruta.pp.planear(self.ESTADO, 555.55, 19, True)
+        self.assertEqual(plan["final"], 450.0)                               # 555.55 × 0.81
+        self.assertEqual([p["id"] for p in plan["quitar"]], ["C-1"])          # ALWAYS ON $399 < $449
+        self.assertEqual([p["id"] for p in plan["quedan"]], ["LGH"])          # relámpago: no se toca, se avisa
+        self.assertTrue(any("relámpago" in a for a in plan["avisos"]))
+        self.assertEqual(plan["cobrara"], 450.0)                              # el relámpago está pendiente, no cobra hoy
+        sin_salir = ruta.pp.planear(self.ESTADO, 555.55, 19, False)
+        self.assertEqual((sin_salir["quitar"], sin_salir["cobrara"]), ([], 399.0))
+        with self.assertRaises(ruta.pp.ErrorPrecio):
+            ruta.pp.planear(self.ESTADO, 0, 10, True)
+        with self.assertRaises(ruta.pp.ErrorPrecio):
+            ruta.pp.planear(self.ESTADO, 500, 95, True)
+
+    def test_un_descuento_fuera_de_rango_regresa_todo(self):
+        candidata = {**self.ESTADO, "precio": 4083.0, "promos": [
+            {"tipo": "PRICE_DISCOUNT", "nombre_tipo": "Descuento individual", "id": None, "nombre": "", "estado": "candidate", "precio": None,
+             "inicio": None, "fin": None, "min": 816.6, "max": 1163.03}]}
+        lecturas = [{**self.ESTADO, "precio": 1199.0, "promos": []}, candidata]  # antes; luego la candidata (sin esperar)
+        llamadas = []
+
+        class Cli:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def put(self, url, json=None):
+                llamadas.append(("PUT", json["price"]))
+                return httpx.Response(200, json={})
+
+        async def leer(cli, item):
+            return lecturas.pop(0) if lecturas else candidata
+        with mock.patch.object(ruta.pp, "_cliente", new=mock.AsyncMock(return_value=Cli())), \
+             mock.patch.object(ruta.pp, "leer_estado", new=leer), mock.patch.object(ruta.pp, "_anotar") as anotar:
+            import asyncio as _a
+            with self.assertRaises(ruta.pp.ErrorPrecio) as e:
+                _a.run(ruta.pp.aplicar("MLM123456789", "BEKURA", "TEC-0017-MET", 4083, 10, True))
+        self.assertIn("$816.60 y $1,163.03", str(e.exception))
+        self.assertEqual(llamadas, [("PUT", 4083.0), ("PUT", 1199.0)])          # subió y regresó
+        self.assertEqual(anotar.call_args[0][2], "error")
 
 
 class Fresco(Base):

@@ -206,3 +206,29 @@
 .pm .tip .motivo { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--line); max-width: 260px; white-space: normal; }
 .pm .tip .motivo > div { line-height: 1.35; }
 .pm .tip .motivo .dev { color: var(--warn); }
+/* Cambiar el precio a mano (v0.665.0, solo admin) */
+.pm .ed-precio { margin-top: 6px; text-align: right; }
+.pm .ed-abrir { font: inherit; font-size: 12px; font-weight: 600; color: var(--accent); background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; cursor: pointer; }
+.pm .ed-abrir:hover { border-color: var(--accent); }
+.pm .ed-form { display: grid; gap: 4px; justify-items: end; white-space: normal; }
+.pm .ed-form label { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
+.pm .ed-form input { width: 86px; font: inherit; font-size: 13px; font-family: var(--font-num); padding: 3px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--fg); text-align: right; }
+.pm .ed-form label:nth-child(2) input { width: 56px; }
+.pm .ed-final { font-size: 12px; color: var(--muted); }
+.pm .ed-final b { color: var(--fg); font-family: var(--font-num); }
+.pm .ed-botones { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.pm .ed-revisar, .pm .ed-publicar { font: inherit; font-size: 12px; font-weight: 600; color: #fff; background: var(--accent); border: 0; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+.pm .ed-revisar:disabled { opacity: .45; cursor: not-allowed; }
+.pm .ed-publicar { font-size: 14px; padding: 8px 16px; }
+.pm .ed-cancelar { font: inherit; font-size: 12px; color: var(--muted); background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+.pm .ed-dlg { text-align: left; white-space: normal; width: min(640px, calc(100vw - 32px)); }
+.pm .ed-dlg-top { position: sticky; top: 0; background: var(--panel); border-bottom: 1px solid var(--line); padding: 14px 18px 10px; }
+.pm .ed-dlg-top h3 { margin: 4px 40px 2px 0; font-size: 17px; }
+.pm .ed-cerrar { position: absolute; top: 8px; right: 10px; font: inherit; font-size: 20px; line-height: 1; border: 0; background: transparent; color: var(--muted); cursor: pointer; padding: 4px 8px; }
+.pm .ed-dlg-cuerpo { padding: 12px 18px 18px; display: grid; gap: 12px; font-size: 14px; }
+.pm .ed-dlg-cuerpo h4 { margin: 0 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.pm .ed-dlg-cuerpo p { margin: 0 0 4px; }
+.pm .ed-lista, .pm .ed-avisos, .pm .ed-pasos { margin: 4px 0 0; padding-left: 18px; font-size: 13px; }
+.pm .ed-avisos li { color: var(--warn); }
+.pm .ed-error { color: var(--bad); font-weight: 600; }
+.pm .ed-chk { display: block; font-size: 13px; margin-top: 6px; }

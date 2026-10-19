@@ -2762,6 +2762,96 @@ export function pricingSerie(itemId: string, cuenta: string, signal?: AbortSigna
   );
 }
 
+// ── PRICING: cambiar el precio a mano (v0.665.0, solo admin; ESCRIBE en ML) ──
+
+/** Una promoción de precio de la publicación, como la lee ML ahora. */
+export interface PricingPromoML {
+  tipo: string;
+  nombre_tipo: string;
+  id: string | null;
+  nombre: string;
+  /** started = cobrando; pending = programada; candidate = puede entrar. */
+  estado: string;
+  precio: number | null;
+  inicio: string | null;
+  fin: string | null;
+  /** Rango que ML acepta (solo en candidatas). */
+  min: number | null;
+  max: number | null;
+}
+
+/** La publicación en ML ahora: precio normal, lo que cobra y sus promociones de precio. */
+export interface PricingEstadoML {
+  item: string;
+  titulo: string | null;
+  precio: number | null;
+  status: string | null;
+  stock: number | null;
+  cobra: number | null;
+  tachado: number | null;
+  promos: PricingPromoML[];
+}
+
+export interface PricingPlanPrecio {
+  precio: number;
+  pct: number;
+  /** Precio con descuento que se publicaría. */
+  final: number;
+  /** Lo que pagaría el comprador (si queda una promoción más baja, esa). */
+  cobrara: number;
+  quitar: PricingPromoML[];
+  quedan: PricingPromoML[];
+  avisos: string[];
+  cambia_normal: boolean;
+}
+
+export interface PricingVistaPrecio {
+  estado: PricingEstadoML;
+  plan: PricingPlanPrecio;
+  /** El último cambio hecho desde PRICING a esta publicación (para «Deshacer»). */
+  ultimo: { id: number; cuando: string; quien: string | null } | null;
+}
+
+export interface PricingTrabajoPrecio {
+  id: string;
+  tipo: "aplicar" | "deshacer";
+  item: string;
+  estado: "corriendo" | "listo" | "error";
+  pasos: { paso: string; http?: number; ok?: boolean; ml?: string | null }[];
+  inicio: string;
+  fin?: string;
+  resultado: { antes: PricingEstadoML; despues: PricingEstadoML; avisos: string[] } | null;
+  error: string | null;
+}
+
+export interface PedidoPrecioML {
+  cuenta: string;
+  sku?: string | null;
+  precio: number;
+  pct?: number | null;
+  salir?: boolean;
+  hasta?: string | null;
+}
+
+/** Solo lee ML: cómo está la publicación y qué pasaría con ese precio y %. */
+export function pricingPrecioVista(itemId: string, pedido: PedidoPrecioML): Promise<PricingVistaPrecio> {
+  return postJSON<PricingVistaPrecio>(`/api/pricing/precio/${encodeURIComponent(itemId)}/vista`, pedido);
+}
+
+/** ESCRIBE EN ML. Arranca el cambio y devuelve el trabajo; se sigue con `pricingPrecioTrabajo`. */
+export function pricingPrecioAplicar(itemId: string, pedido: PedidoPrecioML): Promise<PricingTrabajoPrecio> {
+  return postJSON<PricingTrabajoPrecio>(`/api/pricing/precio/${encodeURIComponent(itemId)}`, pedido);
+}
+
+/** ESCRIBE EN ML. La regresa a como estaba antes del último cambio hecho desde PRICING. */
+export function pricingPrecioDeshacer(itemId: string, pedido: Pick<PedidoPrecioML, "cuenta" | "sku">): Promise<PricingTrabajoPrecio> {
+  return postJSON<PricingTrabajoPrecio>(`/api/pricing/precio/${encodeURIComponent(itemId)}/deshacer`, { ...pedido, precio: 0 });
+}
+
+export function pricingPrecioTrabajo(tid: string, signal?: AbortSignal): Promise<PricingTrabajoPrecio> {
+  return getJSON<PricingTrabajoPrecio>(`/api/pricing/precio/trabajo/${encodeURIComponent(tid)}`, signal);
+}
+
 /** Calidad y experiencia de compra de ML (lo que guarda el barrido de calidad). Solo lee. */
 export function pricingSalud(signal?: AbortSignal): Promise<PricingSalud> {
   return getJSON<PricingSalud>("/api/pricing/salud", signal);

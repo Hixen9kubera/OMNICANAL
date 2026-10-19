@@ -113,6 +113,9 @@ REGLAS: tuple[tuple[str, str, str], ...] = (
     # al operador y el router la vuelve a cerrar con `ve_pricing` (admin con
     # sesión o invitado con sesión). Un operador que no esté en la lista: 403.
     ("GET", "/api/pricing", "operador"),
+    # Cambiar el precio a mano desde PRICING (v0.665.0, 19-oct): ESCRIBE en ML. Solo admin;
+    # el router lo vuelve a exigir (`solo_admin`) por si RBAC_ENFORCED está apagado.
+    ("POST", "/api/pricing", "admin"),
     # Estas cuatro familias YA pedían admin —por omisión, no por decisión— y
     # está bien que lo pidan: sus pestañas son soloAdmin y traen datos del
     # comprador o tokens. Se listan para que el auditor pueda llegar a CERO;

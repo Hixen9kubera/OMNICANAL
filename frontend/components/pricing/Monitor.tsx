@@ -17,6 +17,7 @@ import type {
 } from "@/lib/api";
 import { pricingMotivos, pricingSerie } from "@/lib/api";
 import { pct1, pctS, pesos, pzs, reloj, type Reloj } from "./formato";
+import EditorPrecio from "./EditorPrecio";
 import Grafica from "./Grafica";
 import { Mini } from "./Miniaturas";
 import {
@@ -220,11 +221,14 @@ export default function Monitor({
   hechos,
   vivo,
   salud,
+  esAdmin = false,
 }: {
   foto: PricingFoto;
   hechos?: PricingHechos | null | "error";
   vivo?: PricingVivo | null | "error";
   salud?: PricingSalud | null | "error";
+  /** Cambiar precios en ML desde la celda «Precio hoy» (v0.665.0). */
+  esAdmin?: boolean;
 }) {
   const [R, setR] = useState<Reglas>(REGLAS);
   const [F, setF] = useState<Filtros>(F0);
@@ -670,7 +674,7 @@ export default function Monitor({
                 <Fragment key={f.p.id}>
                   <FilaPub f={f} R={R} rel={rel} abierta={abiertos.has(f.i)} tieneRiv={!!(f.p.sku && foto.riv[f.p.sku])}
                     serie={series.pubs} onAlternar={() => alternar(f.i)} onRivales={setRivSku} X={X} movido={movidos.has(f.p.id)}
-                    salud={salud} />
+                    salud={salud} esAdmin={esAdmin} />
                   {abiertos.has(f.i) && (
                     <tr className="det">
                       <td colSpan={12}>
@@ -704,10 +708,12 @@ function FilaPub({
   X,
   movido,
   salud,
+  esAdmin = false,
 }: {
   X: Extra;
   movido?: boolean;
   salud?: PricingSalud | null | "error";
+  esAdmin?: boolean;
   f: FilaV;
   R: Reglas;
   rel: Reloj;
@@ -769,6 +775,7 @@ function FilaPub({
             </div>
           );
         })()}
+        {esAdmin && <EditorPrecio id={p.id} cuenta={p.c} sku={p.sku} titulo={p.t} cobra={m.precio} normal={m.normal} />}
       </td>
       <td className="promo-hoy">
         <CeldaPromoHoy X={X} id={p.id} />
