@@ -1001,6 +1001,36 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.666.0 — PRICING: filtro «Prioridad» con tres clusters (se va a agotar, mucha visita poca venta, convierte pero nadie la ve)
+
+**Qué pidió José (19-oct-2026).** Un filtro en PRICING que deje solo las publicaciones de tres clusters de
+prioridad, salidos del análisis de clusterización del catálogo (visitas, conversión, stock y valor de venta).
+
+**Cómo se usa.** Primer grupo de la barra de filtros, «Prioridad»: Todas · Se va a agotar · Mucha visita, poca
+venta · Convierte, pero nadie la ve. Cada botón trae su conteo con los demás filtros aplicados (sin el suyo, como
+«Se agota» y «Visitas 30 d») y su regla en el tooltip. Se combina con todos los demás filtros.
+
+**Las reglas** (`frontend/components/pricing/clusters.ts`, funciones puras). Solo publicaciones con stock FULL.
+Se evalúan en orden y gana la primera:
+
+| Cluster | Regla | Qué hacer |
+|---|---|---|
+| Se va a agotar | clase A o B y menos de 21 días de stock | Reponer o embarcar a FULL |
+| Mucha visita, poca venta | 600+ visitas en 30 días y conversión < 1 % | Revisar precio, fotos y ficha |
+| Convierte, pero nadie la ve | conversión ≥ 3 % con menos de 1,200 visitas | Ads y promoción |
+
+- **Clase ABC**: las publicaciones de la pantalla ordenadas por venta de 30 días en pesos (piezas × precio de hoy);
+  A = las que suman el primer 80 %, B = hasta el 95 %. Se calcula sobre TODAS, no sobre la vista filtrada.
+- **Conversión**: piezas ÷ visitas de 30 días; solo cuenta con 100 visitas o más.
+- Stock, ritmo, días de stock y visitas son los mismos EN VIVO que ya usan «Se agota» y «Conversión»
+  (`agotaDe`): si no llegó la lectura en vivo, los de la foto.
+
+**Medido con la foto del repo (sin capa en vivo):** de 658 publicaciones FULL (654 con stock), 68 «Se va a
+agotar», 21 «Mucha visita, poca venta» y 34 «Convierte, pero nadie la ve».
+
+Solo lectura: no toca precios, ML ni kubera. Los umbrales son constantes en `clusters.ts` (`UMBRAL`), no
+editables desde «Reglas y umbrales».
+
 ### v0.665.0 — PRICING: cambiar el precio a mano desde la celda «Precio hoy», con el % de descuento (solo admin)
 
 **Qué pidió Brandon (19-oct-2026).** Un input justo donde está el precio en PRICING para cambiarlo a mano y, si se

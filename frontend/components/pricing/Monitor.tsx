@@ -36,6 +36,7 @@ import {
   type Sentido,
 } from "./reglas";
 import Rivales from "./Rivales";
+import { CLUSTERS, clusterizar, type Cluster } from "./clusters";
 
 const LLAVE_REGLAS = "pricing-reglas-v1";
 const COLOR: Record<Sentido, string> = { up: "var(--up)", down: "var(--down)", hold: "var(--hold)", none: "var(--muted)" };
@@ -64,11 +65,13 @@ interface Filtros {
   promo: "todas" | "sin" | "relampago";
   /** Visitas de ML en los 30 días de la foto (las mismas de «Conversión»). */
   vis: "todas" | "con" | "sin";
+  /** Cluster de prioridad (clusters.ts): «Se va a agotar», «Mucha visita, poca venta», «Convierte, pero nadie la ve». */
+  clu: "todas" | Cluster;
 }
 
 const F0: Filtros = {
   ventas: "todas", cat: "todas", comp: "todas", cuenta: "todas", accion: null, q: "", orden: "accion", mov: "todas",
-  agota: "todas", low: false, promo: "todas", vis: "todas",
+  agota: "todas", low: false, promo: "todas", vis: "todas", clu: "todas",
 };
 
 // ── SE AGOTA y LOW STOCK (Brandon, 16-oct-2026) ──────────────────────────────
@@ -99,7 +102,7 @@ interface Agota {
   visVivo: boolean;
   conv: number | null;
 }
-type FilaV = Fila & { v: Agota };
+type FilaV = Fila & { v: Agota; clu: Cluster | null };
 
 function agotaDe(f: Fila, V: Map<string, PricingVivoPub> | null, visitas?: Record<string, number> | null): Agota {
   const x = V?.get(f.p.id);
@@ -138,6 +141,7 @@ function pasa(f: FilaV, F: Filtros, sinAccion = false, X?: Extra, sinAgota = fal
     if (F.promo === "sin" && pr.por) return false;
     if (F.promo === "relampago" && !pr.relampago) return false;
   }
+  if (F.clu !== "todas" && f.clu !== F.clu) return false;
   if (F.mov !== "todas" && X?.estado === "listo" && X.hecho.has(p.id) !== (F.mov === "si")) return false;
   if (F.ventas === "con" && !(m.u30 > 0)) return false;
   if (F.ventas === "sin" && m.u30 > 0) return false;
@@ -279,7 +283,15 @@ export default function Monitor({
     [vivo],
   );
   const visitasVivo = vivo && vivo !== "error" ? vivo.visitas ?? null : null;
-  const filasV = useMemo<FilaV[]>(() => filas.map((f) => ({ ...f, v: agotaDe(f, V, visitasVivo) })), [filas, V, visitasVivo]);
+  const filasV = useMemo<FilaV[]>(() => {
+    const xs = filas.map((f) => ({ ...f, v: agotaDe(f, V, visitasVivo) }));
+    // Los clusters se calculan sobre TODAS las publicaciones (la clase ABC es del catálogo, no de la vista).
+    const clu = clusterizar(xs.map((f) => ({
+      stock: f.v.stock, dias: f.v.dias, vis30: f.v.vis30, conv: f.v.conv,
+      venta30: (f.v.u30 ?? f.m.u30) * f.m.precio,
+    })));
+    return xs.map((f, i) => ({ ...f, clu: clu[i] }));
+  }, [filas, V, visitasVivo]);
 
   // Lo que se movió desde la lectura anterior (venta o resurtido): la fila se marca 3 minutos.
   const anterior = useRef<Map<string, PricingVivoPub> | null>(null);
@@ -325,6 +337,14 @@ export default function Monitor({
     filasV.filter((f) => pasa(f, { ...F, vis: "todas" }, false, X)).forEach((f) => {
       if (f.v.vis30 > 0) n.con += 1;
       else n.sin += 1;
+    });
+    return n;
+  }, [filasV, F, X]);
+  // Conteos de «Prioridad»: con los demás filtros, sin el suyo.
+  const nClu = useMemo(() => {
+    const n: Record<Cluster, number> = { agota: 0, fuga: 0, joya: 0 };
+    filasV.filter((f) => pasa(f, { ...F, clu: "todas" }, false, X)).forEach((f) => {
+      if (f.clu) n[f.clu] += 1;
     });
     return n;
   }, [filasV, F, X]);
@@ -453,6 +473,19 @@ export default function Monitor({
       </section>
 
       <section className="filtros" aria-label="Filtros">
+        <div className="grupo" title="Clusters de prioridad, con stock FULL, visitas y ventas de 30 días en vivo">
+          <span>Prioridad</span>
+          <div className="seg">
+            <button type="button" aria-pressed={F.clu === "todas"} onClick={() => setF((prev) => ({ ...prev, clu: "todas" }))}>
+              Todas
+            </button>
+            {CLUSTERS.map(([k, t, tip]) => (
+              <button key={k} type="button" title={tip} aria-pressed={F.clu === k} onClick={() => setF((prev) => ({ ...prev, clu: k }))}>
+                {t} <b className="cnt">{nClu[k]}</b>
+              </button>
+            ))}
+          </div>
+        </div>
         <div className="grupo">
           <span>Ventas 30 d</span>
           {seg("ventas", [["todas", "Todas"], ["con", "Con ventas"], ["sin", "Sin ventas"]])}
