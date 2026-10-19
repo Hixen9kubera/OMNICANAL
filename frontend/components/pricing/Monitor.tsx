@@ -67,12 +67,36 @@ interface Filtros {
   vis: "todas" | "con" | "sin";
   /** Cluster de prioridad (clusters.ts): «Se va a agotar», «Mucha visita, poca venta», «Convierte, pero nadie la ve». */
   clu: "todas" | Cluster;
+  /** Calidad de la publicación y experiencia de compra de ML (enrich.listing_health), por nivel. */
+  cal: "todas" | NivelML;
+  exp: "todas" | NivelML;
 }
 
 const F0: Filtros = {
   ventas: "todas", cat: "todas", comp: "todas", cuenta: "todas", accion: null, q: "", orden: "accion", mov: "todas",
-  agota: "todas", low: false, promo: "todas", vis: "todas", clu: "todas",
+  agota: "todas", low: false, promo: "todas", vis: "todas", clu: "todas", cal: "todas", exp: "todas",
 };
+
+/** Nivel normalizado de calidad o experiencia; «nd» = ML no lo calcula o el barrido aún no la mide. */
+type NivelML = "bueno" | "medio" | "malo" | "nd";
+const nivelML = (q?: PricingMetricaML | null): NivelML => q?.nivel ?? "nd";
+const NIVELES_CAL: [NivelML, string, string][] = [
+  ["bueno", "Profesional", "Calidad Profesional en ML"],
+  ["medio", "Estándar", "Calidad Estándar en ML"],
+  ["malo", "Básica", "Calidad Básica en ML: tiene mejoras pendientes"],
+  ["nd", "Sin dato", "ML no la calcula o el barrido de calidad aún no la mide"],
+];
+const NIVELES_EXP: [NivelML, string, string][] = [
+  ["bueno", "Buena", "Experiencia de compra buena"],
+  ["medio", "Media", "Experiencia de compra media"],
+  ["malo", "Mala", "Experiencia de compra mala: reclamos, cancelaciones o demoras"],
+  ["nd", "Sin dato", "ML no tiene datos de experiencia o el barrido aún no la mide"],
+];
+function cuentaNivel(fs: FilaV[], k: "cal" | "exp"): Record<NivelML, number> {
+  const n: Record<NivelML, number> = { bueno: 0, medio: 0, malo: 0, nd: 0 };
+  fs.forEach((f) => { n[f[k]] += 1; });
+  return n;
+}
 
 // ── SE AGOTA y LOW STOCK (Brandon, 16-oct-2026) ──────────────────────────────
 // Con el stock de ML y las ventas de kubera de AHORA (/api/pricing/vivo); si
@@ -102,7 +126,7 @@ interface Agota {
   visVivo: boolean;
   conv: number | null;
 }
-type FilaV = Fila & { v: Agota; clu: Cluster | null };
+type FilaV = Fila & { v: Agota; clu: Cluster | null; cal: NivelML; exp: NivelML };
 
 function agotaDe(f: Fila, V: Map<string, PricingVivoPub> | null, visitas?: Record<string, number> | null): Agota {
   const x = V?.get(f.p.id);
@@ -142,6 +166,8 @@ function pasa(f: FilaV, F: Filtros, sinAccion = false, X?: Extra, sinAgota = fal
     if (F.promo === "relampago" && !pr.relampago) return false;
   }
   if (F.clu !== "todas" && f.clu !== F.clu) return false;
+  if (F.cal !== "todas" && f.cal !== F.cal) return false;
+  if (F.exp !== "todas" && f.exp !== F.exp) return false;
   if (F.mov !== "todas" && X?.estado === "listo" && X.hecho.has(p.id) !== (F.mov === "si")) return false;
   if (F.ventas === "con" && !(m.u30 > 0)) return false;
   if (F.ventas === "sin" && m.u30 > 0) return false;
@@ -283,6 +309,7 @@ export default function Monitor({
     [vivo],
   );
   const visitasVivo = vivo && vivo !== "error" ? vivo.visitas ?? null : null;
+  const pubsSalud = salud && salud !== "error" && salud.kubera ? salud.pubs : null;
   const filasV = useMemo<FilaV[]>(() => {
     const xs = filas.map((f) => ({ ...f, v: agotaDe(f, V, visitasVivo) }));
     // Los clusters se calculan sobre TODAS las publicaciones (la clase ABC es del catálogo, no de la vista).
@@ -290,8 +317,11 @@ export default function Monitor({
       stock: f.v.stock, dias: f.v.dias, vis30: f.v.vis30, conv: f.v.conv,
       venta30: (f.v.u30 ?? f.m.u30) * f.m.precio,
     })));
-    return xs.map((f, i) => ({ ...f, clu: clu[i] }));
-  }, [filas, V, visitasVivo]);
+    return xs.map((f, i) => ({
+      ...f, clu: clu[i],
+      cal: nivelML(pubsSalud?.[f.p.id]?.c), exp: nivelML(pubsSalud?.[f.p.id]?.e),
+    }));
+  }, [filas, V, visitasVivo, pubsSalud]);
 
   // Lo que se movió desde la lectura anterior (venta o resurtido): la fila se marca 3 minutos.
   const anterior = useRef<Map<string, PricingVivoPub> | null>(null);
@@ -340,6 +370,9 @@ export default function Monitor({
     });
     return n;
   }, [filasV, F, X]);
+  // Conteos de «Calidad ML» y «Experiencia ML»: cada uno con los demás filtros, sin el suyo.
+  const nCal = useMemo(() => cuentaNivel(filasV.filter((f) => pasa(f, { ...F, cal: "todas" }, false, X)), "cal"), [filasV, F, X]);
+  const nExp = useMemo(() => cuentaNivel(filasV.filter((f) => pasa(f, { ...F, exp: "todas" }, false, X)), "exp"), [filasV, F, X]);
   // Conteos de «Prioridad»: con los demás filtros, sin el suyo.
   const nClu = useMemo(() => {
     const n: Record<Cluster, number> = { agota: 0, fuga: 0, joya: 0 };
@@ -505,6 +538,23 @@ export default function Monitor({
             </button>
           </div>
         </div>
+        {([["cal", "Calidad ML", NIVELES_CAL, nCal], ["exp", "Experiencia ML", NIVELES_EXP, nExp]] as const).map(([campo, titulo, niveles, n]) => (
+          <div key={campo} className="grupo"
+            title={pubsSalud ? `Lo que guarda el barrido de calidad de ML (leído ${fechaCorta((salud as PricingSalud).leido)})` : salud === "error" || (salud && !salud.kubera) ? "No se pudo leer /api/pricing/salud" : "Cargando la calidad de ML…"}>
+            <span>{titulo}{pubsSalud ? "" : salud == null ? " …" : " · sin lectura"}</span>
+            <div className="seg">
+              <button type="button" aria-pressed={F[campo] === "todas"} onClick={() => setF((prev) => ({ ...prev, [campo]: "todas" }))}>
+                Todas
+              </button>
+              {niveles.map(([k, t, tip]) => (
+                <button key={k} type="button" title={tip} disabled={!pubsSalud} aria-pressed={F[campo] === k}
+                  onClick={() => setF((prev) => ({ ...prev, [campo]: k }))}>
+                  {t} {pubsSalud ? <b className="cnt">{n[k]}</b> : null}
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
         <div className="grupo">
           <span>Categoría</span>
           {seg("cat", [["todas", "Todas"], ["correcta", "Correctas"], ["incorrecta", "Incorrectas"], ["revisar", "Revisar"], ["editable", "Editables"]])}

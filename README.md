@@ -1001,6 +1001,40 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.667.0 — PRICING: filtros «Calidad ML» y «Experiencia ML»
+
+**Qué pidió Eduardo (19-oct-2026).** Poder filtrar la tabla de PRICING por la calidad de la publicación y por la
+experiencia de compra de Mercado Libre, las dos que ya se ven en la columna «Calidad · Experiencia» (v0.659.0).
+
+**Cómo se usa.** Dos grupos nuevos en la barra de filtros, después de «Visitas 30 d»:
+
+- **Calidad ML:** Todas · Profesional · Estándar · Básica · Sin dato.
+- **Experiencia ML:** Todas · Buena · Media · Mala · Sin dato.
+
+Cada botón trae su conteo con los demás filtros aplicados (sin el suyo, igual que «Visitas 30 d» y «Prioridad»), y
+los dos se combinan entre sí y con todos los demás. «Sin dato» junta lo que ML no calcula (calidad «no calculada»,
+experiencia «sin datos») y lo que el barrido de calidad aún no mide.
+
+**De dónde sale.** Del mismo `/api/pricing/salud` que pinta la columna: el nivel normalizado (bueno/medio/malo) de
+`enrich.listing_health`. No hay endpoint ni consulta nueva. Mientras `/salud` carga, o si no se pudo leer, los
+botones de nivel se ven desactivados y el título lo dice; «Todas» sigue funcionando.
+
+**Archivos.** Solo `frontend/components/pricing/Monitor.tsx`: `Filtros.cal` y `Filtros.exp`, el nivel en cada fila
+(`FilaV.cal` y `FilaV.exp`), la condición en `pasa()` y los conteos `nCal` y `nExp`. Solo lectura: no cambia
+precios ni escribe en ningún lado.
+
+**Verificado en local** (mock con la foto del repo y la calidad medida el 16-oct):
+
+| Filtro | Resultado |
+|---|---|
+| Calidad (658) | 440 Profesional · 173 Estándar · 1 Básica · 44 sin dato |
+| Experiencia (658) | 113 Buena · 35 Media · 77 Mala · 433 sin dato |
+| Experiencia «Mala» | deja 77 filas, todas «Mala» |
+| Experiencia «Mala» + Calidad «Estándar» | 21 filas |
+| Volver a «Todas» | 658 |
+
+`tsc` limpio.
+
 ### v0.666.0 — PRICING: filtro «Prioridad» con tres clusters (se va a agotar, mucha visita poca venta, convierte pero nadie la ve)
 
 **Qué pidió José (19-oct-2026).** Un filtro en PRICING que deje solo las publicaciones de tres clusters de
