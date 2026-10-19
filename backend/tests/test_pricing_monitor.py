@@ -437,6 +437,70 @@ class Motivos(Base):
         self.assertEqual((len(ordenes), list(devs)), (4, ["2003"]))
 
 
+class Serie(Base):
+    """La gráfica en vivo (v0.663.0): ventas de kubera por día con el precio que pagó el comprador, y visitas de ML."""
+
+    LINEAS = [
+        # 19-oct: dos órdenes netas (comisión 0) que ML sí devuelve con su precio, y una que no
+        {"orden": "301", "cuenta": "BEKURA", "dia": "2026-10-19", "cancelada": False, "piezas": 1, "precio": 168.10, "comision": 0},
+        {"orden": "302", "cuenta": "BEKURA", "dia": "2026-10-19", "cancelada": False, "piezas": 1, "precio": 170.00, "comision": 0},
+        {"orden": "303", "cuenta": "BEKURA", "dia": "2026-10-19", "cancelada": False, "piezas": 2, "precio": 150.00, "comision": 0},
+        # 18-oct: bruta (con comisión) y una cancelada al mismo precio
+        {"orden": "304", "cuenta": "BEKURA", "dia": "2026-10-18", "cancelada": False, "piezas": 3, "precio": 219, "comision": 120.5},
+        {"orden": "305", "cuenta": "BEKURA", "dia": "2026-10-18", "cancelada": True, "piezas": 1, "precio": 219, "comision": 40.1},
+    ]
+
+    def test_exige_admin_y_valida_publicacion_y_cuenta(self):
+        anonimo = SimpleNamespace(autenticado=False, tipo="", rol="", actor="?")
+        with _como(anonimo), mock.patch.object(pm, "serie") as s:
+            self.assertEqual(_cliente().get("/api/pricing/serie/MLM123456789?cuenta=BEKURA").status_code, 401)
+            s.assert_not_called()
+        with _como(ADMIN), mock.patch.object(pm, "_serie_kubera") as k:
+            self.assertEqual(_cliente().get("/api/pricing/serie/MLM1;drop?cuenta=BEKURA").status_code, 404)
+            self.assertEqual(_cliente().get("/api/pricing/serie/MLM123456789?cuenta=OTRA").status_code, 404)
+            k.assert_not_called()
+
+    def test_precio_del_comprador_y_lo_que_queda_neto(self):
+        brutos = {("301", "MLM123456789"): 219.0, ("302", "MLM123456789"): 219.0}
+        ventas, sin_bruto = pm.armar_ventas(self.LINEAS, brutos, "MLM123456789")
+        self.assertEqual(ventas, [
+            {"dia": "2026-10-18", "precio": 219.0, "piezas": 3, "cancelada": False},
+            {"dia": "2026-10-18", "precio": 219.0, "piezas": 1, "cancelada": True},
+            {"dia": "2026-10-19", "precio": 150.0, "piezas": 2, "cancelada": False},   # ML no la dio: queda el neto
+            {"dia": "2026-10-19", "precio": 219.0, "piezas": 2, "cancelada": False},   # dos netas → una burbuja a $219
+        ])
+        self.assertEqual(sin_bruto, 1)
+
+    def test_junta_kubera_y_ml_y_aguanta_caidas(self):
+        async def brutos(pares, item):
+            for o, _ in pares:
+                if o in ("301", "302"):
+                    pm._bruto_ml[(o, item)] = 219.0
+        brutos_ml = mock.AsyncMock(side_effect=brutos)
+        with _como(ADMIN), mock.patch.object(pm, "_serie_kubera", return_value=self.LINEAS), \
+             mock.patch.object(pm, "_brutos_ml", new=brutos_ml), \
+             mock.patch.object(pm, "_visitas_ml", new=mock.AsyncMock(return_value={"2026-10-18": 40, "2026-10-19": 12})):
+            d = _cliente().get("/api/pricing/serie/MLM123456789?cuenta=bekura").json()
+        self.assertEqual(brutos_ml.await_args[0][0], [("301", "BEKURA"), ("302", "BEKURA"), ("303", "BEKURA")])   # solo las netas
+        self.assertEqual((d["kubera"], d["visitas_ok"], d["sin_bruto"], d["cuenta"]), (True, True, 1, "BEKURA"))
+        self.assertEqual(d["visitas"], {"2026-10-18": 40, "2026-10-19": 12})
+        self.assertEqual(sum(v["piezas"] for v in d["ventas"] if not v["cancelada"]), 7)
+        pm.olvidar()
+        with _como(ADMIN), mock.patch.object(pm, "_serie_kubera", side_effect=pm.FalloFuente("kubera caída")), \
+             mock.patch.object(pm, "_brutos_ml", new=mock.AsyncMock()), \
+             mock.patch.object(pm, "_visitas_ml", new=mock.AsyncMock(return_value=None)):
+            r = _cliente().get("/api/pricing/serie/MLM123456789?cuenta=BEKURA")
+        self.assertEqual((r.status_code, r.json()["kubera"], r.json()["visitas_ok"], r.json()["ventas"]), (200, False, False, []))
+
+    def test_la_consulta_a_kubera_solo_lee(self):
+        sdb = SimpleNamespace(disponible=lambda: True, fetch_all=mock.Mock(return_value=self.LINEAS))
+        with mock.patch.dict(sys.modules, {"services.supabase_db": sdb}), mock.patch("services.supabase_db", sdb, create=True):
+            self.assertEqual(len(pm._serie_kubera("MLM123456789")), 5)
+        sql = sdb.fetch_all.call_args[0][0].lower()
+        for palabra in ("insert", "update ", "delete"):
+            self.assertNotIn(palabra, sql)
+
+
 class Fresco(Base):
     """v0.656.0: «en vivo» se recalcula SOLO cuando entra una venta (o a los 5 min); promociones en segundo plano."""
 

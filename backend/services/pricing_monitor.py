@@ -172,6 +172,8 @@ def olvidar() -> None:
     _precios = None
     _motivos.clear()
     _cancel_ml.clear()
+    _serie.clear()
+    _bruto_ml.clear()
     _cache.clear()
 
 
@@ -668,6 +670,159 @@ async def motivos(item_id: str) -> dict:
     datos = {"item": item_id, "leido": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "kubera": True, "ml": ml_ok,
              "sin_consultar": sin_consultar, "eventos": eventos}
     _motivos[item_id] = (time.monotonic(), datos)
+    return datos
+
+
+# ── LA GRÁFICA DEL DETALLE, EN VIVO (v0.663.0) ───────────────────────────────
+#
+# La gráfica pintaba las ventas (`o`) y las visitas (`vis`) de la FOTO, y la foto
+# es del 14-oct: nada de lo vendido después aparecía. Caso que lo destapó
+# (Brandon, 19-oct): ORG-1016-BLN decía «29 pzs en 30 d» en la tabla —lo vivo— y
+# su gráfica estaba vacía, porque antes del 14-oct no había vendido nada.
+#
+# Esta ruta trae la serie de AHORA de UNA publicación, al abrir su detalle:
+#   · ventas por día de kubera (las órdenes que escribe el webhook, 130 días)
+#   · visitas por día de ML (`/items/{id}/visits/time_window`, solo GET)
+#
+# EL PRECIO DE CADA VENTA es lo que pagó el comprador. Las líneas de kubera con
+# comisión 0 guardan el NETO (ver la nota de SANCORFASHION; en octubre también
+# aparecen en BEKURA): ORG-1016-BLN cobra $219 y kubera dice $168.10. Para esas
+# se le pregunta a ML `GET /orders/{id}` (`order_items[].unit_price`), las más
+# recientes primero y con tope; el precio de una orden ya hecha no cambia, así
+# que se recuerda mientras viva el proceso. Las que no se alcanzaron se pintan
+# con el neto y se cuentan en `sin_bruto`.
+
+CUENTAS_ML = ("BEKURA", "SANCORFASHION")
+MAX_ML_BRUTOS = 80
+DIAS_VISITAS = 60
+TTL_SERIE_S = 120
+_serie: dict[str, tuple[float, dict]] = {}
+_bruto_ml: dict[tuple[str, str], float] = {}
+
+
+def _serie_kubera(item_id: str) -> list[dict]:
+    """BLOQUEANTE (kubera, solo SELECT). Cada línea de venta de la publicación en 130 días, de la más nueva a la más vieja."""
+    from services import supabase_db as sdb
+
+    if not sdb.disponible():
+        raise FalloFuente("kubera no está disponible")
+    return sdb.fetch_all(
+        """
+        select o.external_order_id as orden, o.cuenta,
+               to_char(o.creado_at at time zone 'America/Mexico_City', 'YYYY-MM-DD') as dia,
+               lower(coalesce(o.estado_canal, '')) = 'cancelled' as cancelada,
+               oi.cantidad::int as piezas, oi.precio_unitario as precio, oi.comision
+          from channel.order_items oi
+          join channel.orders o on o.canal = oi.canal and o.cuenta = oi.cuenta and o.external_order_id = oi.external_order_id
+         where oi.canal = 'mercado_libre' and oi.item_id = %(id)s and o.creado_at >= now() - interval '130 days'
+         order by o.creado_at desc
+        """,
+        {"id": item_id},
+    )
+
+
+def armar_ventas(lineas: list[dict], brutos: dict[tuple[str, str], float], item_id: str) -> tuple[list[dict], int]:
+    """
+    PURA. Líneas de kubera → burbujas de la gráfica: [{dia, precio, piezas, cancelada}] por día, precio y
+    estado, más cuántas líneas se quedaron con el precio NETO (comisión 0 y sin precio de ML).
+    """
+    grupos: dict[tuple[str, float, bool], int] = {}
+    sin_bruto = 0
+    for l in lineas:
+        precio = float(l["precio"]) if l.get("precio") is not None else None
+        if precio is None or precio <= 0:
+            continue
+        if not float(l.get("comision") or 0):
+            bruto = brutos.get((str(l["orden"]), item_id))
+            if bruto:
+                precio = bruto
+            else:
+                sin_bruto += 1
+        k = (l["dia"], round(precio, 2), bool(l["cancelada"]))
+        grupos[k] = grupos.get(k, 0) + int(l["piezas"] or 0)
+    ventas = [{"dia": d, "precio": p, "piezas": n, "cancelada": c} for (d, p, c), n in sorted(grupos.items())]
+    return ventas, sin_bruto
+
+
+async def _brutos_ml(pares: list[tuple[str, str]], item_id: str) -> None:
+    """Solo GET a ML. Llena `_bruto_ml` con el `unit_price` de la publicación en cada orden (orden, cuenta)."""
+    from services import meli
+
+    faltan = [(o, c) for o, c in pares if (o, item_id) not in _bruto_ml]
+    if not faltan:
+        return
+    tokens = {c: await meli.access_token_async(c) for c in {c for _, c in faltan}}
+    sem = asyncio.Semaphore(4)
+    async with httpx.AsyncClient(base_url="https://api.mercadolibre.com", timeout=20) as cli:
+        async def una(orden: str, cuenta: str) -> None:
+            tk = tokens.get(cuenta)
+            if not tk:
+                return
+            async with sem:
+                try:
+                    r = await cli.get(f"/orders/{orden}", headers={"Authorization": f"Bearer {tk}"})
+                except httpx.HTTPError as exc:
+                    log.warning("pricing serie: ML no contestó %s: %s", orden, type(exc).__name__)
+                    return
+            if r.status_code != 200:
+                return
+            for it in r.json().get("order_items") or []:
+                if (it.get("item") or {}).get("id") == item_id and it.get("unit_price"):
+                    _bruto_ml[(orden, item_id)] = float(it["unit_price"])
+
+        await asyncio.gather(*(una(o, c) for o, c in faltan))
+
+
+async def _visitas_ml(item_id: str, cuenta: str) -> dict[str, int] | None:
+    """Solo GET a ML. {"YYYY-MM-DD": visitas} de los últimos `DIAS_VISITAS` días; None si ML no contestó."""
+    from services import meli
+
+    tk = await meli.access_token_async(cuenta)
+    if not tk:
+        return None
+    try:
+        async with httpx.AsyncClient(base_url="https://api.mercadolibre.com", timeout=20) as cli:
+            r = await cli.get(f"/items/{item_id}/visits/time_window", params={"last": DIAS_VISITAS, "unit": "day"},
+                              headers={"Authorization": f"Bearer {tk}"})
+    except httpx.HTTPError as exc:
+        log.warning("pricing serie: visitas de %s fallaron: %s", item_id, type(exc).__name__)
+        return None
+    if r.status_code != 200:
+        log.warning("pricing serie: ML %s en visitas de %s", r.status_code, item_id)
+        return None
+    return {(x.get("date") or "")[:10]: int(x.get("total") or 0) for x in r.json().get("results") or [] if x.get("date")}
+
+
+async def serie(item_id: str, cuenta: str) -> dict:
+    """{"item", "cuenta", "hoy", "leido", "kubera", "visitas_ok", "sin_bruto", "ventas": [...], "visitas": {dia: n}}."""
+    if not ITEM_ML.match(item_id or ""):
+        raise SinFoto("publicación no válida")
+    cuenta = (cuenta or "").strip().upper()
+    if cuenta not in CUENTAS_ML:
+        raise SinFoto("cuenta no válida")
+    guardado = _serie.get(item_id)
+    if guardado and time.monotonic() - guardado[0] <= TTL_SERIE_S:
+        return guardado[1]
+    hoy = datetime.now(CDMX).date().isoformat()
+    try:
+        lineas = await asyncio.to_thread(_serie_kubera, item_id)
+        kubera = True
+    except Exception as exc:  # noqa: BLE001 — kubera caída: la gráfica se queda con la foto
+        log.warning("pricing serie: no se pudo leer kubera: %s", exc)
+        lineas, kubera = [], False
+    netas = [(str(l["orden"]), l["cuenta"]) for l in lineas if not float(l.get("comision") or 0)]
+    netas = list(dict.fromkeys(netas))[:MAX_ML_BRUTOS]
+    try:
+        _, visitas = await asyncio.gather(_brutos_ml(netas, item_id), _visitas_ml(item_id, cuenta))
+    except Exception as exc:  # noqa: BLE001 — ML caído: ventas con su precio de kubera, sin visitas nuevas
+        log.warning("pricing serie: ML falló: %s", exc)
+        visitas = None
+    ventas, sin_bruto = armar_ventas(lineas, _bruto_ml, item_id)
+    datos = {"item": item_id, "cuenta": cuenta, "hoy": hoy, "leido": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+             "kubera": kubera, "visitas_ok": visitas is not None, "sin_bruto": sin_bruto,
+             "ventas": ventas, "visitas": visitas or {}}
+    if kubera:
+        _serie[item_id] = (time.monotonic(), datos)
     return datos
 
 # ── PROMOCIONES EN VIVO (v0.656.0) ───────────────────────────────────────────

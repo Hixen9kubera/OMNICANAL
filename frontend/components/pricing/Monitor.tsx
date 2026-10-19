@@ -12,10 +12,10 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { EyeOff, Info } from "lucide-react";
 
 import type {
-  PricingComp, PricingFoto, PricingHecho, PricingHechos, PricingMetricaML, PricingMotivos, PricingPromoHoy, PricingSalud, PricingVivo,
-  PricingVivoPub,
+  PricingComp, PricingFoto, PricingHecho, PricingHechos, PricingMetricaML, PricingMotivos, PricingOrden, PricingPromoHoy, PricingPub,
+  PricingSalud, PricingSerie, PricingVivo, PricingVivoPub,
 } from "@/lib/api";
-import { pricingMotivos } from "@/lib/api";
+import { pricingMotivos, pricingSerie } from "@/lib/api";
 import { pct1, pctS, pesos, pzs, reloj, type Reloj } from "./formato";
 import Grafica from "./Grafica";
 import { Mini } from "./Miniaturas";
@@ -23,7 +23,9 @@ import {
   ORDEN_ACC,
   REGLAS,
   SENTIDO,
+  accion,
   calcular,
+  metricas,
   descuentoPara,
   etiqueta,
   hoyDe,
@@ -1153,16 +1155,60 @@ function CeldaAccion({ f, R }: { f: Fila; R: Reglas }) {
   );
 }
 
-function Detalle({ f, R, rel, nRiv, onRivales }: { f: Fila; R: Reglas; rel: Reloj; nRiv: number; onRivales: (sku: string) => void }) {
-  const { p, m, a } = f;
+/**
+ * La publicación de la foto con las ventas y visitas de AHORA (v0.663.0): la gráfica llega hasta hoy.
+ * Las visitas de ML pisan las de la foto en los días que trae; los días sin dato después de la foto van en 0.
+ * Si kubera no contestó, las ventas se quedan como en la foto.
+ */
+function pubConSerie(p: PricingPub, s: PricingSerie, rel: Reloj): PricingPub {
+  const dia = (d: string) => Math.round((new Date(d + "T12:00:00").getTime() - rel.D0.getTime()) / 864e5);
+  const H = Math.max(p.vis.length - 1, dia(s.hoy));
+  const vis = Array.from({ length: H + 1 }, (_, i) => p.vis[i] ?? 0);
+  Object.entries(s.visitas).forEach(([d, n]) => {
+    const i = dia(d);
+    if (i >= 0 && i <= H) vis[i] = n;
+  });
+  const o = s.kubera
+    ? s.ventas
+        .map((v): PricingOrden => [dia(v.dia), v.precio, v.piezas, v.cancelada ? 1 : 0])
+        .filter((x) => x[0] >= 0 && x[0] <= H)
+    : p.o;
+  return { ...p, o, vis };
+}
+
+function Detalle({ f, R, rel, nRiv, onRivales }: { f: FilaV; R: Reglas; rel: Reloj; nRiv: number; onRivales: (sku: string) => void }) {
+  const { p } = f;
   const c = p.comp || {};
-  const h = m.hist;
   const cat = p.cat;
   const catT = CAT_T[cat.v] ?? CAT_T.revisar;
+  // Ventas y visitas de ahora para la gráfica (v0.663.0): la foto es del 14-oct y no veía lo vendido después.
+  const [serie, setSerie] = useState<PricingSerie | "cargando" | "error" | null>(null);
+  useEffect(() => {
+    const ctl = new AbortController();
+    setSerie("cargando");
+    pricingSerie(p.id, p.c, ctl.signal)
+      .then((d) => {
+        if (!ctl.signal.aborted) setSerie(d);
+      })
+      .catch(() => {
+        if (!ctl.signal.aborted) setSerie("error");
+      });
+    return () => ctl.abort();
+  }, [p.id, p.c]);
+  // Con la serie de ahora (y el stock de ML de ahora) se recalcula todo el detalle: «Qué hacer y por qué», lo que
+  // vendía antes y después, y la proyección para agotar. La foto sola decía «sin ventas» de lo que ya vendió.
+  const pV = useMemo(() => {
+    if (!serie || serie === "cargando" || serie === "error") return p;
+    const conSerie = pubConSerie(p, serie, rel);
+    return f.v.vivo ? { ...conSerie, stock: f.v.stock } : conSerie;
+  }, [p, serie, rel, f.v.vivo, f.v.stock]);
+  const m = useMemo(() => (pV === p ? f.m : metricas(pV, R)), [pV, p, f.m, R]);
+  const a = useMemo(() => (pV === p ? f.a : accion(pV, m, R)), [pV, p, f.a, m, R]);
+  const h = m.hist;
   // Motivos de cancelaciones y devoluciones (v0.659.0): se piden al abrir el detalle, solo si hay algo que explicar.
   const [motivos, setMotivos] = useState<PricingMotivos | "cargando" | "error" | null>(null);
   useEffect(() => {
-    if (!p.o.length) return;
+    if (!pV.o.length) return;
     const ctl = new AbortController();
     setMotivos("cargando");
     pricingMotivos(p.id, ctl.signal)
@@ -1173,7 +1219,7 @@ function Detalle({ f, R, rel, nRiv, onRivales }: { f: Fila; R: Reglas; rel: Relo
         if (!ctl.signal.aborted) setMotivos("error");
       });
     return () => ctl.abort();
-  }, [p.id, p.o.length]);
+  }, [p.id, pV.o.length]);
   return (
     <div className="det-caja">
       <div className="det-top">
@@ -1262,8 +1308,19 @@ function Detalle({ f, R, rel, nRiv, onRivales }: { f: Fila; R: Reglas; rel: Relo
           <i style={{ background: "var(--proj)", border: "1px solid var(--line)", borderRadius: 2 }} />
           proyección para agotar
         </span>
+        <span title="Ventas de kubera (las escribe el webhook al momento) y visitas por día de Mercado Libre">
+          {serie === "cargando" || serie === null
+            ? "Leyendo las ventas de hoy…"
+            : serie === "error" || !serie.kubera
+              ? "Sin lectura en vivo: ventas y visitas de la foto"
+              : `En vivo · ${horaCorta(serie.leido)}` +
+                (serie.visitas_ok ? "" : " · ML no dio las visitas nuevas (van en 0)") +
+                (serie.sin_bruto
+                  ? ` · ${serie.sin_bruto} venta${serie.sin_bruto > 1 ? "s" : ""} con precio neto (ML no dio el que pagó el comprador)`
+                  : "")}
+        </span>
       </div>
-      <Grafica f={f} R={R} rel={rel} motivos={motivos} />
+      <Grafica f={pV === p ? f : { ...f, p: pV, m, a }} R={R} rel={rel} motivos={motivos} />
     </div>
   );
 }

@@ -1001,6 +1001,39 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.663.0 — PRICING: la gráfica del detalle llega hasta hoy (ventas y visitas en vivo)
+
+**Qué vio Brandon (19-oct-2026).** ORG-1016-BLN (BEKURA) decía «29 pzs en 30 d» en la tabla —lo vivo— pero su
+gráfica «precio de cada venta» estaba vacía y el detalle recomendaba «Sin ventas: +5 % de descuento». Pidió revisar
+todos los SKUs y aplicar el arreglo.
+
+**Por qué pasaba.** La gráfica y el «Qué hacer y por qué» del detalle salían de la FOTO del 14-oct (`o` y `vis` de
+`monitor.json.gz`); lo vivo (v0.655–v0.662) solo actualizaba totales de la tabla (stock, ventas de 14/30 días,
+precio, visitas de 30 días), no la serie por día. Medido el 19-oct: **239 de las 658** publicaciones tenían ventas
+después de la foto que la gráfica no mostraba (**1,496 piezas**), y en **22** la gráfica salía vacía.
+
+**El arreglo, para todas.** Al abrir el detalle de cualquier publicación, la pantalla pide
+`GET /api/pricing/serie/{id}?cuenta=…` y la gráfica llega hasta hoy:
+- **Ventas por día** de kubera (las órdenes que escribe el webhook, 130 días; SELECT ≈ 0.8 s), agrupadas por día,
+  precio y estado (venta o cancelada), igual que las burbujas de la foto.
+- **Precio que pagó el comprador.** Las líneas de kubera con comisión 0 guardan el NETO (ORG-1016-BLN cobra $219 y
+  kubera dice $168.10). Para esas se pregunta a ML `GET /orders/{id}` (`unit_price`), las más recientes primero, tope
+  80 por publicación, y se recuerda por orden mientras viva el proceso. Las que no se alcanzan se pintan con el neto y
+  la leyenda lo dice («N ventas con precio neto»).
+- **Visitas por día** de ML (`/items/{id}/visits/time_window`, 60 días; pisan las de la foto en esos días).
+- Con eso y el **stock de ML de ahora**, el detalle recalcula `metricas` y `accion`: «Qué hacer y por qué», el antes
+  y después del precio y la proyección «se agota». Caso real: ORG-1016-BLN pasa de «Sin ventas: +3 %» a «Al mínimo de
+  competencia», 29 piezas en 30 días, última venta el 19-oct.
+- La leyenda de la gráfica dice **«En vivo · hh:mm»**, o **«Sin lectura en vivo: ventas y visitas de la foto»** si
+  kubera no contestó (la gráfica se queda como antes; nada se inventa).
+
+**Solo lectura.** SELECT a kubera y GET a ML con el token del backend (no lo renueva aquí). Caché de 2 min por
+publicación. La lista de publicaciones, la competencia y la categoría siguen saliendo de la revisión del 14-oct.
+
+**Pruebas.** +4 (33): acceso y validación de publicación y cuenta; precio del comprador en las netas y conteo de las
+que quedan netas; kubera y ML caídos; la consulta a kubera solo lee. `tsc` limpio. Simulado con datos reales de kubera
+(ORG-1016-BLN y VAR-0037-EST-40X30) corriendo las mismas `metricas`/`accion` de la pantalla.
+
 ### v0.662.0 — PRICING en tiempo real: «Precio hoy» cuadra con lo que cobra ML hoy (y con cupón), visitas en vivo y sin «foto»
 
 **Qué vio Brandon (16-oct-2026).** TEC-1804-BLN en ML: tachado $3,655.95, **$1,599** por ALWAYS ON OCT y **$1,560

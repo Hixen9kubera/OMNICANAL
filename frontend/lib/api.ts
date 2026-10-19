@@ -2727,6 +2727,41 @@ export function pricingMotivos(itemId: string, signal?: AbortSignal): Promise<Pr
   return getJSON<PricingMotivos>(`/api/pricing/motivos/${encodeURIComponent(itemId)}`, signal);
 }
 
+/** Una burbuja de la gráfica en vivo: lo vendido un día a un precio (el que pagó el comprador). */
+export interface PricingSerieVenta {
+  /** Día de la orden en CDMX, "YYYY-MM-DD". */
+  dia: string;
+  precio: number;
+  piezas: number;
+  cancelada: boolean;
+}
+
+/** Ventas (kubera) y visitas (ML) por día de UNA publicación, de ahora (v0.663.0). */
+export interface PricingSerie {
+  item: string;
+  cuenta: string;
+  /** Hoy en CDMX, "YYYY-MM-DD". */
+  hoy: string;
+  leido: string;
+  /** false = kubera no contestó: la gráfica se queda con la foto. */
+  kubera: boolean;
+  /** false = ML no dio las visitas: los días después de la foto van en 0. */
+  visitas_ok: boolean;
+  /** Líneas que se pintan con el precio NETO de kubera (ML no alcanzó a dar el que pagó el comprador). */
+  sin_bruto: number;
+  ventas: PricingSerieVenta[];
+  /** {"YYYY-MM-DD": visitas} de los últimos 60 días. */
+  visitas: Record<string, number>;
+}
+
+/** La serie en vivo de la gráfica del detalle. Solo lee (kubera y GET a ML). */
+export function pricingSerie(itemId: string, cuenta: string, signal?: AbortSignal): Promise<PricingSerie> {
+  return getJSON<PricingSerie>(
+    `/api/pricing/serie/${encodeURIComponent(itemId)}?cuenta=${encodeURIComponent(cuenta)}`,
+    signal,
+  );
+}
+
 /** Calidad y experiencia de compra de ML (lo que guarda el barrido de calidad). Solo lee. */
 export function pricingSalud(signal?: AbortSignal): Promise<PricingSalud> {
   return getJSON<PricingSalud>("/api/pricing/salud", signal);

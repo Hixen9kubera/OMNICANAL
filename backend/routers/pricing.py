@@ -11,6 +11,8 @@ pricing.py — La pestaña PRICING (v0.650.0): el «Monitor de precios FULL».
                                   (v0.659.0; SELECT a enrich.listing_health, sin ML)
   GET /api/pricing/motivos/{id} → por qué se canceló o se devolvió cada venta de UNA
                                   publicación (v0.659.0; SELECT a kubera y GET /orders a ML)
+  GET /api/pricing/serie/{id}   → ventas y visitas por día de UNA publicación, de ahora, para
+                                  su gráfica (v0.663.0; SELECT a kubera, GET /orders y visitas a ML)
 
 SOLO LECTURA. Ninguna ruta escribe: la pantalla SUGIERE qué hacer con cada
 precio y no cambia ninguno. El servicio (`services/pricing_monitor.py`) solo
@@ -104,6 +106,15 @@ async def motivos(item_id: str, quien=Depends(acceso_pricing)) -> dict:
     """Por qué se canceló o se devolvió cada venta de una publicación (v0.659.0). Solo SELECT a kubera y GET a ML."""
     try:
         return await pm.motivos(item_id)
+    except (pm.SinFoto, pm.FalloFuente) as exc:
+        raise _http(exc) from exc
+
+
+@router.get("/serie/{item_id}")
+async def serie(item_id: str, cuenta: str, quien=Depends(acceso_pricing)) -> dict:
+    """Ventas y visitas por día de UNA publicación, de ahora, para su gráfica (v0.663.0). SELECT a kubera y GET a ML."""
+    try:
+        return await pm.serie(item_id, cuenta)
     except (pm.SinFoto, pm.FalloFuente) as exc:
         raise _http(exc) from exc
 
