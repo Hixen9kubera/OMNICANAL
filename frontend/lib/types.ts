@@ -895,7 +895,9 @@ export interface VentasResumen {
 // Límites reales, que la UI muestra en vez de esconder:
 //   • `descripcion` es la CORTA derivada de atributos ("Largo: 4 m | Ancho: 6 m").
 //     ML no expone el texto largo de publicaciones ajenas.
-//   • `visitas_30d` viene de la API de ML y sí funciona para items ajenos.
+//   • `visitas_30d` de los RIVALES es LEGACY (v0.664.0): la API de ML responde
+//     403 a publicaciones ajenas desde ~oct-2026. Lo guardado es de la última
+//     medición y no se renueva; vacío no es 0. Las NUESTRAS siguen vivas.
 //   • `vendidos` viene del scraper: la API no da sold_quantity de terceros.
 //   • Un SKU sin publicar en ML sale siempre "fuera": no hay nada nuestro que
 //     encontrar en el ranking. Es información, no un error.
@@ -972,9 +974,11 @@ export interface CompetenciaResultado {
   url: string | null;
   seller: string | null;
   rating: number | null;
-  /** Visitas de 30 días de ESE resultado. La captura las pide por API (gratis);
-   *  la 0017 quitó la columna por leerla como "vacía" y la 0018 la devolvió. */
+  /** Visitas de 30 días de ESE resultado. LEGACY en los rivales (v0.664.0):
+   *  ML dejó de darlas (403) y lo guardado es de `capturado_en`. */
   visitas_30d: number | null;
+  /** Cuándo se capturó la fila (`SELECT r.*`). Es la fecha real de su visita. */
+  capturado_en?: string | null;
   es_nuestro: number;
   sku_nuestro: string | null;
   /**
@@ -1146,7 +1150,8 @@ export interface CompetenciaSubcategoria extends AvisosDelTop {
    *  COMPETENCIA_SIN_MARCAS apagada. */
   n_marcas_excluidas?: number;
   volumen_mercado: number | null;
-  /** Visitas de 30 días sumadas del top del nicho: el tamaño de la demanda. */
+  /** Visitas de 30 días sumadas del top del nicho. LEGACY (v0.664.0): son
+   *  visitas de RIVALES, que ML ya no da; no se ordena por ellas. */
   visitas_mercado: number | null;
   n_terminos: number;
   /** No lo hemos capturado. NO significa que ML no lo tenga — la vista no puede
@@ -1471,7 +1476,22 @@ export interface CompetenciaTabla {
 // CompetenciaDetalle y CompetenciaTopCategoria PODADAS (paso 6): sus
 // funciones de api.ts no tenían consumidor y GET /detalle se retiró.
 
+/** v0.664.0 — Las visitas de los RIVALES ya no se renuevan (403 de ML). Las
+ *  fechas son reales: la última captura que trajo una visita ajena, sin contar
+ *  nuestras publicaciones. `null` = no se pudo leer (el panel marca legacy igual). */
+export interface VisitasRivalesLegacy {
+  legacy: true;
+  ultima_medicion: string | null;
+  busqueda: string | null;
+  ranking: string | null;
+  /** Último 403 anotado en ops.process_log por la captura. */
+  denegado_en: string | null;
+  motivo: string;
+}
+
 export interface CompetenciaEstado {
+  /** Opcional: un backend anterior a v0.664.0 no lo manda. */
+  visitas_rivales?: VisitasRivalesLegacy;
   supabase: boolean;
   /** selenium + beautifulsoup4 presentes: el raspado del ranking corre local. */
   navegador_local: boolean;

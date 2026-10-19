@@ -75,7 +75,7 @@ Responde SOLO un JSON: {"productos": [ ... ]}"""
 def contexto(sdb_, r: dict) -> str:
     cid = r.get("categoria_id")
     tops = sdb_.fetch_all(
-        "select posicion, titulo, precio, vendidos, visitas_30d "
+        "select posicion, titulo, precio, vendidos, visitas_30d, es_nuestro "
         "  from enrich.market_bestsellers where categoria_id=%s "
         " order by posicion limit 5", (cid,))
     kws = sdb_.fetch_one(
@@ -96,8 +96,17 @@ def contexto(sdb_, r: dict) -> str:
     if tops:
         p.append("  MÁS VENDIDOS de la subcategoría:")
         for t in tops:
+            # Visitas de RIVALES: legacy desde el 403 de ML (v0.664.0). Sin dato
+            # se dice así; un 0 inventado le hacía creer al modelo que nadie entra.
+            # Una fila NUESTRA del top lleva visitas vivas y se dice que es nuestra.
+            if t.get("es_nuestro"):
+                vis = (f"{t['visitas_30d']} vis, NUESTRA" if t["visitas_30d"] is not None
+                       else "NUESTRA, vis sin dato")
+            else:
+                vis = (f"{t['visitas_30d']} vis legacy" if t["visitas_30d"]
+                       else "vis sin dato")
             p.append(f"    #{t['posicion']} ${t['precio'] or 0:.0f} "
-                     f"({t['vendidos'] or 0} vend, {t['visitas_30d'] or 0} vis) "
+                     f"({t['vendidos'] or 0} vend, {vis}) "
                      f"{(t['titulo'] or '')[:70]}")
     if kws and kws.get("terminos"):
         p.append("  keywords que ML publica: " + ", ".join(list(kws["terminos"])[:10]))

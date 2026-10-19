@@ -189,6 +189,21 @@ def frescura(canal: str = "mercado_libre") -> dict[str, Any]:
     return {}
 
 
+def visitas_rivales_legacy(canal: str = "mercado_libre") -> dict[str, Any]:
+    """
+    Las fechas de la última medición de visitas de RIVALES (legacy desde el 403
+    de ML). NO levanta: sin la fecha el panel sigue marcando legacy, solo que
+    sin decir de cuándo.
+    """
+    r = _remoto()
+    if r:
+        try:
+            return r.visitas_rivales_legacy(canal)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("visitas_rivales_legacy: %s", exc)
+    return {}
+
+
 def movimiento_del_top(canal: str = "mercado_libre") -> dict[str, dict[str, Any]]:
     """
     El sondeo de `/highlights` por categoría. NO levanta si no hay remoto: sin él
@@ -593,10 +608,14 @@ def vista(canal: str = "mercado_libre") -> list[dict[str, Any]]:
             # sumando el top. `vendidos` es cota inferior (ML redondea a "+50mil"),
             # así que sirve para ordenar nichos, no como cifra exacta.
             sub["volumen_mercado"] = sum(x["vendidos"] or 0 for x in top) or None
-            # Tráfico del NICHO: la suma de visitas de su top. Junto con la mediana
-            # es lo que permite buscar categorías de ticket alto y mucha demanda,
-            # que es distinto de "dónde tenemos más SKUs".
-            sub["visitas_mercado"] = sum(x["visitas_30d"] or 0 for x in top) or None
+            # Tráfico del NICHO: la suma de visitas de su top. Son visitas de
+            # RIVALES y desde v0.664.0 son LEGACY (ML responde 403): el panel la
+            # marca con la fecha de su medición. Las NUESTRAS no entran: siguen
+            # vivas, y en los tops capturados después del 403 eran la única cifra
+            # —una «visita del nicho» que en realidad era nuestra, fechada en una
+            # captura que no trajo ni una ajena.
+            sub["visitas_mercado"] = sum(
+                x["visitas_30d"] or 0 for x in top if not x.get("es_nuestro")) or None
             # POSICIÓN DE LA SUBCATEGORÍA EN EL TOP DEL PADRE. Es el criterio más
             # fuerte de oportunidad: si el #1 de toda la categoría vive en nuestra
             # subcategoría, ahí está la pelea que importa. Se une por la categoría

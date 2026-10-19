@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import {
   Loader2,
   AlertTriangle,
@@ -78,6 +78,69 @@ const mxn = (v: number | null | undefined) =>
 
 const num = (v: number | null | undefined) =>
   v === null || v === undefined ? "—" : new Intl.NumberFormat("es-MX").format(v);
+
+/**
+ * v0.664.0 — LAS VISITAS DE LOS RIVALES SON LEGACY. ML responde 403 a las visitas
+ * de publicaciones ajenas desde ~oct-2026 (todas las rutas, las dos cuentas).
+ * Lo guardado se sigue mostrando, pero marcado y con la fecha REAL de su
+ * medición: la de la fila si la trae, y si no la última captura que trajo una
+ * visita ajena (`/api/competencia/estado`, baja por este contexto). Vacío es
+ * «—», nunca 0, y nada se ordena por ellas.
+ *
+ * El 0 de un rival TAMBIÉN es «—»: de los 336 ceros guardados (producción,
+ * 19-oct), 322 son ids de catálogo (`/p/`, `MLMU`) a los que `/visits` contesta
+ * 0 sin fallar, y un rival del top con 0 visitas en 30 días no es un dato creíble.
+ *
+ * Las NUESTRAS siguen vivas y no pasan por aquí; una fila nuestra dentro del
+ * ranking o de la búsqueda (`nuestro`) se pinta como siempre.
+ */
+const UltimaVisitaRival = createContext<string | null>(null);
+
+function textoLegacy(fecha: string | null): string {
+  return `Legacy · última medición ${fecha ? diaYMes(fecha) : "sin fecha"} · ML dejó de darlas`;
+}
+
+function VisitasRival({
+  v,
+  capturado,
+  sufijo = "",
+  nuestro = false,
+}: {
+  v: number | null | undefined;
+  /** Cuándo se capturó la fila: es la fecha real de ESA visita. */
+  capturado?: string | null;
+  sufijo?: string;
+  nuestro?: boolean;
+}) {
+  const ultima = useContext(UltimaVisitaRival);
+  if (nuestro) {
+    return (
+      <span title="Visitas de 30 días (API de Mercado Libre)">
+        {v != null ? `${num(v)}${sufijo}` : "—"}
+      </span>
+    );
+  }
+  const conDato = v != null && v > 0;
+  const fecha = conDato && capturado ? capturado : ultima;
+  return (
+    <span title={textoLegacy(fecha)} className="whitespace-nowrap text-slate-400">
+      {conDato ? `${num(v)}${sufijo}` : "—"}
+      <span className="ml-0.5 align-super text-[7px] font-semibold uppercase tracking-wide">
+        legacy
+      </span>
+    </span>
+  );
+}
+
+/** La captura más reciente del top que trajo visitas de RIVALES: la fecha de
+ *  `visitas_mercado`, que tampoco suma las nuestras. */
+function ultimaConVisitas(top: RankingCategoria[]): string | null {
+  const fechas = top
+    .filter((x) => !x.es_nuestro && (x.visitas_30d ?? 0) > 0 && x.capturado_en)
+    .map((x) => x.capturado_en as string)
+    .sort();
+  return fechas.length ? fechas[fechas.length - 1] : null;
+}
 
 /**
  * Los "+50mil vendidos" de ML son una COTA INFERIOR: la plataforma redondea, así
@@ -250,9 +313,9 @@ function Tarjeta({ r }: { r: RankingCategoria }) {
         ) : null}
       </div>
       <div className="flex flex-wrap items-center gap-x-2 text-[10px] text-slate-500">
-        <span title="Visitas en 30 días (API de Mercado Libre)">
+        <span>
           <Eye size={9} className="mr-0.5 inline" />
-          {num(r.visitas_30d)}
+          <VisitasRival v={r.visitas_30d} capturado={r.capturado_en} nuestro={!!r.es_nuestro} />
         </span>
         <span title="Unidades vendidas: ML redondea, es una cota inferior">
           {cota(r.vendidos)} vend.
@@ -398,8 +461,6 @@ type OrdenSub =
   | "defecto"
   | "mediana_desc"
   | "mediana_asc"
-  | "visitas_desc"
-  | "visitas_asc"
   | "volumen_desc"
   | "skus_desc";
 
@@ -407,8 +468,6 @@ const ORDENES_SUB: { id: OrdenSub; label: string }[] = [
   { id: "defecto", label: "Orden por oportunidad" },
   { id: "mediana_desc", label: "Ticket más alto" },
   { id: "mediana_asc", label: "Ticket más bajo" },
-  { id: "visitas_desc", label: "Más visitas del nicho" },
-  { id: "visitas_asc", label: "Menos visitas del nicho" },
   { id: "volumen_desc", label: "Más unidades vendidas" },
   { id: "skus_desc", label: "Donde más SKUs tenemos" },
 ];
@@ -423,11 +482,11 @@ function ordenarSubs(
   orden: OrdenSub,
 ): CompetenciaSubcategoria[] {
   if (orden === "defecto") return subs;
+  // «Más/menos visitas del nicho» se quitó en v0.664.0: son visitas de RIVALES
+  // (legacy) y ordenar por ellas trataría como vivo lo que ML ya no da.
   const campo: Record<string, keyof CompetenciaSubcategoria> = {
     mediana_desc: "mediana",
     mediana_asc: "mediana",
-    visitas_desc: "visitas_mercado",
-    visitas_asc: "visitas_mercado",
     volumen_desc: "volumen_mercado",
     skus_desc: "n_skus",
   };
@@ -879,14 +938,15 @@ function ResultadosBusqueda({
             <EtiquetaMarca marca={r.marca_renombre} />
             {veredicto ? <InsigniaVeredicto r={r} /> : null}
             {r.es_nuestro ? <Crown size={11} className="shrink-0 text-amber-600" /> : null}
-            {/* Las VISITAS de cada resultado: sin ellas la lista dice a qué precio
-                compite cada uno pero no cuánto tráfico se lleva, que es la mitad
-                de la decisión. Se piden por API al capturar (gratis). */}
-            <span
-              className="w-16 shrink-0 text-right text-[11px] tabular-nums text-slate-500"
-              title="Visitas de 30 días de esa publicación"
-            >
-              {r.visitas_30d != null ? `${num(r.visitas_30d)} vis` : "—"}
+            {/* Las VISITAS de cada resultado. LEGACY en los rivales (v0.664.0): ML
+                dejó de darlas y lo que se ve es de la fecha de la captura. */}
+            <span className="w-20 shrink-0 text-right text-[11px] tabular-nums text-slate-500">
+              <VisitasRival
+                v={r.visitas_30d}
+                capturado={r.capturado_en}
+                sufijo=" vis"
+                nuestro={!!r.es_nuestro}
+              />
             </span>
             <span className="w-16 text-right text-xs font-medium tabular-nums text-slate-900">
               {mxn(r.precio)}
@@ -2122,7 +2182,11 @@ function FilaNicho({ n }: { n: CompetenciaNicho }) {
           <div className="font-medium text-slate-900">{mxn(n.lider.precio)}</div>
           <div>
             <Eye size={9} className="mr-0.5 inline" />
-            {num(n.lider.visitas_30d)}
+            <VisitasRival
+              v={n.lider.visitas_30d}
+              capturado={n.lider.capturado_en}
+              nuestro={!!n.lider.es_nuestro}
+            />
           </div>
         </div>
         <div className="w-[210px] shrink-0">
@@ -2695,11 +2759,11 @@ function BloqueSubcategoria({
               </>
             ) : null}
           </span>
-          {/* Visitas del nicho: la DEMANDA. Junto con la mediana es lo que
-              permite buscar categorías de ticket alto y mucho tráfico. */}
-          <span title="Visitas de 30 días sumadas del top: el tamaño de la demanda">
+          {/* Visitas del nicho: la suma del top. Son visitas de RIVALES, así que
+              desde v0.664.0 son LEGACY y ya no hay orden por ellas. */}
+          <span>
             <Eye size={10} className="mr-0.5 inline" />
-            {num(sub.visitas_mercado)}
+            <VisitasRival v={sub.visitas_mercado} capturado={ultimaConVisitas(sub.top)} />
           </span>
           <span title="Unidades del top: cuánto se vende en el nicho (cota inferior)">
             <TrendingUp size={10} className="mr-0.5 inline" />
@@ -3533,7 +3597,7 @@ export default function CompetenciaPage() {
     .flatMap((r) => r.subcategorias);
 
   return (
-    <>
+    <UltimaVisitaRival.Provider value={estado?.visitas_rivales?.ultima_medicion ?? null}>
       <AppNavbar />
       <main className="mx-auto max-w-[1400px] px-4 py-6">
         {/* BANNER — el mismo molde que Crear Productos, Costos y Omnicanal:
@@ -3872,7 +3936,7 @@ export default function CompetenciaPage() {
             <div>
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
                 <Frescura
-                  etiqueta="Visitas"
+                  etiqueta="Nuestras visitas"
                   verbo="medidas"
                   iso={visitasMedidas}
                   viejoEnDias={2}
@@ -3902,6 +3966,16 @@ export default function CompetenciaPage() {
                       : null
                   }
                 />
+                <span className="text-slate-300">·</span>
+                <span
+                  className="text-slate-500"
+                  title={estado?.visitas_rivales?.motivo ?? undefined}
+                >
+                  Visitas de rivales:{" "}
+                  <span className="font-medium text-slate-700">
+                    {textoLegacy(estado?.visitas_rivales?.ultima_medicion ?? null)}
+                  </span>
+                </span>
               </div>
               {!puedeRefrescar ? (
                 <div className="mt-1">
@@ -3967,6 +4041,6 @@ export default function CompetenciaPage() {
       {comoAbierto && (
         <ComoLeerCompetenciaModal onCerrar={() => setComoAbierto(false)} />
       )}
-    </>
+    </UltimaVisitaRival.Provider>
   );
 }

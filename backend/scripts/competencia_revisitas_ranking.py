@@ -37,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 logging.basicConfig(level=logging.WARNING,
                     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
-from services import competencia_ml, supabase_db  # noqa: E402
+from services import competencia_captura, competencia_ml, supabase_db  # noqa: E402
 
 LOTE = 40
 
@@ -59,7 +59,7 @@ async def main() -> int:
                  "WHERE v.categoria_id = b.categoria_id AND v.raiz_id = %s)")
         params.append(args.raiz)
     filas = supabase_db.fetch_all(
-        f"SELECT b.canal, b.categoria_id, b.nivel, b.posicion, b.externo_id "
+        f"SELECT b.canal, b.categoria_id, b.nivel, b.posicion, b.externo_id, b.es_nuestro "
         f"  FROM enrich.market_bestsellers b WHERE {cond} "
         f" ORDER BY b.categoria_id, b.posicion", tuple(params))
     if args.limite:
@@ -88,9 +88,11 @@ async def main() -> int:
     t0 = time.time()
     for i in range(0, len(filas), LOTE):
         trozo = filas[i:i + LOTE]
-        vis = await asyncio.gather(
-            *(asyncio.to_thread(competencia_ml.visitas_30d, f["externo_id"])
-              for f in trozo), return_exceptions=True)
+        # Las nuestras van como `propias`: sin la puerta de las ajenas. Un 200
+        # de una nuestra no debe abrirla ni una nuestra quedarse sin visitas.
+        vis = await competencia_captura.visitas_rivales(
+            [f["externo_id"] for f in trozo],
+            {f["externo_id"]: None for f in trozo if f.get("es_nuestro")})
         for f, v in zip(trozo, vis):
             if not isinstance(v, int):
                 fallos += 1
@@ -102,6 +104,11 @@ async def main() -> int:
             ok += 1
         print(f"  {min(i + LOTE, len(filas)):>4}/{len(filas)} · rellenadas={ok} "
               f"· sin dato={fallos} · {time.time() - t0:.0f}s", flush=True)
+        if competencia_ml.puerta_visitas_ajenas() == "cerrada":
+            # 403 de ML para visitas de rivales: ya quedó en ops.process_log, y
+            # seguir sólo repetiría vacíos.
+            print("✗ ML niega las visitas de publicaciones ajenas (403). Se corta aquí.")
+            return 4
 
     fin = supabase_db.fetch_one(
         "SELECT count(*) n, count(visitas_30d) v FROM enrich.market_bestsellers")

@@ -75,6 +75,11 @@ class BusquedaReq(BaseModel):
 def estado():
     """Diagnóstico honesto: qué fuentes hay y qué NO se puede medir, con el motivo."""
     return {
+        # v0.664.0: las visitas de los RIVALES son LEGACY. ML responde 403 desde
+        # ~oct-2026 y lo guardado ya no se renueva; el panel lo marca con la
+        # fecha REAL de la última medición (sin contar nuestras publicaciones,
+        # cuyas visitas siguen vivas). Vacío no es 0.
+        "visitas_rivales": _visitas_rivales(),
         "supabase": competencia_store.disponible(),
         # TODO el raspado va por ACTOR de Apify: el ranking de más vendidos y la
         # búsqueda por término. El navegador local se retiró — ML corta la IP a
@@ -95,11 +100,34 @@ def estado():
                            "vendedor: ML no expone ese texto de publicaciones ajenas.",
             "categoria_del_scraper": "El actor devuelve categoryId nulo; la categoría "
                                      "sale de nuestra taxonomía (categorias_ml).",
-            "visitas": "API de ML, funcionan para cualquier publicación, de a UN id "
-                       "por llamada (dos ids → HTTP 400).",
+            "visitas": "Las NUESTRAS, por API de ML, a diario. Las de los RIVALES son "
+                       "legacy: la API responde 403 a publicaciones ajenas desde "
+                       "~oct-2026 (todas las rutas, las dos cuentas); lo guardado "
+                       "es de la última medición y no se renueva.",
             "vendidos": "Del scraper. La API no expone sold_quantity de items ajenos.",
             "historico": "NO se guarda: cada corrida borra la anterior y reescribe.",
         },
+    }
+
+
+def _visitas_rivales() -> dict[str, Any]:
+    """Las fechas de `competencia_store.visitas_rivales_legacy`, en ISO.
+
+    `ultima_medicion` es la más reciente de las dos tablas: la que el panel pone
+    junto a «Legacy» cuando la fila no trae su propia fecha.
+    """
+    f = competencia_store.visitas_rivales_legacy()
+    fechas = [f.get("busqueda"), f.get("ranking")]
+    ultima = max((x for x in fechas if x), default=None)
+    iso = lambda x: x.isoformat() if hasattr(x, "isoformat") else x  # noqa: E731
+    return {
+        "legacy": True,
+        "ultima_medicion": iso(ultima),
+        "busqueda": iso(f.get("busqueda")),
+        "ranking": iso(f.get("ranking")),
+        "denegado_en": iso(f.get("denegado_en")),
+        "motivo": "ML dejó de darlas: la API responde 403 a las visitas de "
+                  "publicaciones ajenas.",
     }
 
 

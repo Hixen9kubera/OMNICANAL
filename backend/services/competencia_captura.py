@@ -11,8 +11,9 @@ Las tres preguntas del módulo, cada una con su fuente:
   3. CATEGORÍA — "¿quiénes son los mejores de mi categoría?"
                  Fuente: API `/highlights`, que da el ranking OFICIAL con posición.
 
-Y sobre todas ellas se pegan las VISITAS de la API (`/visits/items`), que sí
-funcionan para publicaciones ajenas y son el dato más confiable del módulo.
+Y sobre todas ellas se pegan las VISITAS de la API (`/visits/items`), que eran
+el dato más confiable del módulo hasta que ML las cerró para publicaciones
+ajenas (403 desde ~oct-2026, ver `visitas_rivales`).
 
 Sin histórico: cada corrida borra la medición anterior del SKU y la reescribe
 (ver `competencia_store.reemplazar_resultados`).
@@ -101,15 +102,54 @@ async def _visitas(filas: list[dict[str, Any]], tope: int = TOPE_VISITAS) -> int
                 and not (f.get("externo_id") or "").startswith("MLMU")]
     if not objetivo:
         return 0
-    res = await asyncio.gather(
-        *(asyncio.to_thread(competencia_ml.visitas_30d, f["externo_id"]) for f in objetivo),
-        return_exceptions=True)
+    res = await visitas_rivales([f["externo_id"] for f in objetivo])
     ok = 0
     for fila, v in zip(objetivo, res):
         if isinstance(v, int):
             fila["visitas_30d"] = v
             ok += 1
     return ok
+
+
+async def visitas_rivales(ids: list[str],
+                          propias: dict[str, str | None] | None = None) -> list[int | None]:
+    """
+    Visitas de 30 días de una tanda de publicaciones, alineadas con `ids`.
+
+    Las de `propias` ({item_id: cuenta}, None = la cuenta por omisión) van
+    directo con `visitas_30d`: ML las sigue dando. El resto son RIVALES y pasan
+    por la puerta de `competencia_ml.visitas_30d_ajena`, que con el primer 403
+    lo anota en `ops.process_log` y deja de preguntar.
+
+    LA SONDA. Las llamadas salen juntas en hilos, así que la puerta sola llega
+    tarde: cuando vuelve el primer 403 la tanda entera ya salió. Por eso, si el
+    proceso todavía no sabe si ML deja ver las ajenas, la primera rival va SOLA
+    y las demás esperan su respuesta. Ya medida, la tanda sale entera (abierta)
+    o no sale (cerrada).
+    """
+    propias = propias or {}
+    res: list[int | None] = [None] * len(ids)
+
+    async def _una(i: int) -> None:
+        ident = ids[i]
+        try:
+            if ident in propias:
+                cuenta = propias[ident]
+                args = (ident, cuenta) if cuenta else (ident,)
+                v = await asyncio.to_thread(competencia_ml.visitas_30d, *args)
+            else:
+                v = await asyncio.to_thread(competencia_ml.visitas_30d_ajena, ident)
+        except Exception:  # noqa: BLE001 — como el gather con return_exceptions
+            v = None
+        res[i] = v if isinstance(v, int) else None
+
+    pendientes = list(range(len(ids)))
+    rivales = [i for i in pendientes if ids[i] not in propias]
+    if rivales and competencia_ml.puerta_visitas_ajenas() is None:
+        await _una(rivales[0])
+        pendientes.remove(rivales[0])
+    await asyncio.gather(*(_una(i) for i in pendientes))
+    return res
 
 
 # Las cuentas de ML y cómo se llaman en nuestras tablas.
@@ -1338,16 +1378,21 @@ async def medir_busquedas(terminos: list[str], limite: int = 10,
             if isinstance(r, dict):
                 f["reviews"] = r.get("reviews")
                 f["rating"] = f.get("rating") or r.get("rating")
-        await enriquecer_visitas(filas)
+        await enriquecer_visitas(filas, nuestras)
         _marcar(filas, nuestras)
         guardadas[termino] = await asyncio.to_thread(
             competencia_store.reemplazar_busqueda, termino, periodo, filas)
     return guardadas
 
 
-async def enriquecer_visitas(filas: list[dict[str, Any]]) -> int:
+async def enriquecer_visitas(filas: list[dict[str, Any]],
+                             nuestras: dict[str, dict[str, str]] | None = None) -> int:
     """
     Visitas de 30 días para los resultados de una búsqueda. → cuántas se llenaron.
+
+    Las filas que son NUESTRAS (por `nuestras`, el mapa de
+    `_nuestras_publicaciones`, o por `es_nuestro`) se piden con el token de su
+    cuenta y sin la puerta de las ajenas; las demás, por `visitas_rivales`.
 
     DOS clases de id hay que resolver antes de pedir visitas, y ninguna es un
     error de captura:
@@ -1404,9 +1449,13 @@ async def enriquecer_visitas(filas: list[dict[str, Any]]) -> int:
     if not objetivo:
         return 0
 
-    vis = await asyncio.gather(
-        *(asyncio.to_thread(competencia_ml.visitas_30d, i) for _, i in objetivo),
-        return_exceptions=True)
+    nuestras = nuestras or {}
+    propias: dict[str, str | None] = {}
+    for f, ident in objetivo:
+        mio = nuestras.get(ident) or nuestras.get(f.get("externo_id") or "")
+        if mio or f.get("es_nuestro"):
+            propias[ident] = (mio or {}).get("cuenta") or None
+    vis = await visitas_rivales([i for _, i in objetivo], propias)
     ok = 0
     for (f, _), v in zip(objetivo, vis):
         if isinstance(v, int):
@@ -1441,9 +1490,12 @@ async def _enriquecer_ranking(categoria_id: str, filas: list[dict[str, Any]],
                 and not (f.get("externo_id") or "").startswith("MLMU")]
     if not objetivo:
         return
+    # Las nuestras ya vienen marcadas (`_marcar` corre antes) y se piden sin la
+    # puerta de las ajenas, con la cuenta por omisión, como siempre.
+    propias: dict[str, str | None] = {f["externo_id"]: None
+                                      for f in objetivo if f.get("es_nuestro")}
     vis, rev = await asyncio.gather(
-        asyncio.gather(*(asyncio.to_thread(competencia_ml.visitas_30d, f["externo_id"])
-                         for f in objetivo), return_exceptions=True),
+        visitas_rivales([f["externo_id"] for f in objetivo], propias),
         asyncio.gather(*(asyncio.to_thread(competencia_ml.reviews, f["externo_id"])
                          for f in objetivo), return_exceptions=True))
     for f, v, r in zip(objetivo, vis, rev):

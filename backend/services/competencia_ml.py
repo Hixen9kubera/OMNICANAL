@@ -6,39 +6,45 @@ sondeo, que es la razón de que este módulo exista y de que además haga falta 
 scraper:
 
   FUNCIONA para publicaciones AJENAS
-    GET /visits/items?ids={id}                  → visitas totales (UN id por llamada)
-    GET /items/{id}/visits/time_window          → serie diaria de visitas
     GET /highlights/MLM/category/{cat}          → top 20 más vendidos con `position`
     GET /products/search?site_id=MLM&q=…        → productos de catálogo por título
     GET /products/{cpid}/items                  → competidores del mismo producto
     GET /user-products/{MLMU…}                  → nombre/marca/atributos
-    GET /reviews/item/{id}                      → reseñas y rating
 
   BLOQUEADO (403 aun con token válido, en las DOS apps: BEKURA y SANCORFASHION)
     GET /sites/MLM/search                       → NO hay posición orgánica por API
     GET /items/{id} de un competidor            → NO da título, precio ni imagen
     GET /items/bulk?ids=… (multiget)            → 403 por cada item ajeno
     GET /users/{id}/items/search de otro seller
+    GET /visits/items?ids={id}, /items/visits y
+        /items/{id}/visits/time_window          → 403 desde ~oct-2026 (funcionaba
+                                                  hasta el 29-sep; ver la puerta
+                                                  de `visitas_30d_ajena`)
+    GET /reviews/item/{id}                      → 403 desde ~16-sep-2026
 
-O sea: **la API da la MÉTRICA (visitas) pero no la FICHA (título/imagen/precio/
-posición) del competidor**. La ficha la trae ``competencia_scraper.py``; el
-pegamento entre ambos es el `item_id`, que se extrae del URL raspado.
+Las visitas de NUESTRAS publicaciones siguen dando 200 con el token de su cuenta.
+
+O sea: **la API ya no da ni la MÉTRICA (visitas) ni la FICHA (título/imagen/
+precio/posición) del competidor**. La ficha la trae ``competencia_scraper.py``;
+el pegamento entre ambos es el `item_id`, que se extrae del URL raspado.
 
 Los 403 de arriba NO son errores transitorios: no hay que reintentarlos ni
 "arreglarlos" cambiando de cuenta. Se devuelven como vacío y ya.
 """
 from __future__ import annotations
 
+import json
 import logging
 import random
 import re
+import threading
 import time
 from typing import Any
 
 import requests
 
 from config import settings
-from services import meli, ml_multiget
+from services import meli, ml_multiget, supabase_db
 
 log = logging.getLogger("omnicanal.competencia.ml")
 
@@ -171,7 +177,10 @@ def _get(ruta: str, params: dict[str, Any] | None = None,
     falta porque `None` colapsa tres cosas distintas —404, 403 y «no se pudo
     preguntar»— y hay al menos un caso donde la diferencia es todo: `tendencias`
     debe escribir «ML no publica términos aquí» ante un 404 y NO TOCAR NADA ante
-    un fallo. Quien no lo pase no cambia en nada.
+    un fallo. Quien no lo pase no cambia en nada. Ante un 403 trae además el
+    principio de la respuesta en `cuerpo`, que dice QUÉ negó ML. El código es
+    el de la ÚLTIMA respuesta: los reintentos (401, 429) escriben en el mismo
+    buzón.
 
     Un 429 SÍ se reintenta con espera creciente (ver `_ESPERAS_429`): es el
     límite de ritmo de la API, compartido por toda la aplicación, y es la causa
@@ -200,15 +209,18 @@ def _get(ruta: str, params: dict[str, Any] | None = None,
     if r.status_code == 401 and not _reintentado:
         _olvidar_token(cuenta)          # el cacheado ya no sirve
         if meli.refrescar_token(cuenta):
-            return _get(ruta, params, cuenta, _reintentado=True)
+            return _get(ruta, params, cuenta, _reintentado=True, estado=estado)
     if r.status_code == 403:
         # Esperado para items ajenos. Que no ensucie los logs de producción.
         log.debug("ML GET %s → 403 (recurso ajeno, sin permiso)", ruta)
+        if estado is not None:
+            estado["cuerpo"] = str(r.text or "")[:200]
         return None
     if r.status_code == 429:
         if _intento_429 < len(_ESPERAS_429):
             time.sleep(_espera_429(r, _intento_429))
-            return _get(ruta, params, cuenta, _reintentado, _intento_429 + 1)
+            return _get(ruta, params, cuenta, _reintentado, _intento_429 + 1,
+                        estado=estado)
         # WARNING, no INFO: si se abandona una llamada por límite de ritmo, eso
         # tiene que verse en los logs de producción. Ver `_ESPERAS_429`.
         log.warning("ML GET %s → 429 tras %d esperas; se abandona",
@@ -346,7 +358,7 @@ def unidades_vendidas_30d(cuenta: str = _CUENTA_DEFAULT, dias: int = 30,
 
 def visitas(item_id: str, cuenta: str = _CUENTA_DEFAULT) -> int | None:
     """
-    Visitas totales acumuladas de CUALQUIER publicación, propia o ajena.
+    Visitas totales acumuladas de una publicación (ajenas: 403 desde ~oct-2026).
 
     OJO: `/visits/items` acepta **un solo id por llamada** — mandar dos devuelve
     HTTP 400 "maximum amount of items to query is 1". Nada de multiget aquí.
@@ -359,13 +371,16 @@ def visitas(item_id: str, cuenta: str = _CUENTA_DEFAULT) -> int | None:
 
 
 def visitas_serie(item_id: str, dias: int = 30,
-                  cuenta: str = _CUENTA_DEFAULT) -> dict[str, Any] | None:
+                  cuenta: str = _CUENTA_DEFAULT,
+                  estado: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """
-    Serie diaria de visitas de cualquier publicación.
+    Serie diaria de visitas de una publicación (ajenas: 403 desde ~oct-2026).
     → { total, dias: [{fecha, visitas}] }
+
+    `estado` es el buzón de `_get`.
     """
     d = _get(f"/items/{item_id}/visits/time_window",
-             {"last": dias, "unit": "day"}, cuenta)
+             {"last": dias, "unit": "day"}, cuenta, estado=estado)
     if not isinstance(d, dict):
         return None
     puntos = [
@@ -376,10 +391,119 @@ def visitas_serie(item_id: str, dias: int = 30,
     return {"total": d.get("total_visits") or 0, "dias": puntos}
 
 
-def visitas_30d(item_id: str, cuenta: str = _CUENTA_DEFAULT) -> int | None:
-    """Visitas de los últimos 30 días — la métrica que se guarda cada mes."""
-    s = visitas_serie(item_id, 30, cuenta)
+def visitas_30d(item_id: str, cuenta: str = _CUENTA_DEFAULT,
+                estado: dict[str, Any] | None = None) -> int | None:
+    """
+    Visitas de los últimos 30 días — la métrica que se guarda cada mes.
+
+    Para publicaciones PROPIAS. Las de un rival van por `visitas_30d_ajena`.
+    """
+    s = visitas_serie(item_id, 30, cuenta, estado=estado)
     return None if s is None else int(s["total"])
+
+
+# ── Visitas de publicaciones AJENAS: la puerta ──────────────────────────────
+#
+# ML CERRÓ LAS VISITAS DE LOS RIVALES. Medido el 14-oct-2026 con GET y los
+# tokens de las DOS cuentas (BEKURA y SANCORFASHION): `/visits/items`,
+# `/items/visits` y `/items/{id}/visits/time_window` responden 403 «The caller
+# is not authorized to access this resource» para cualquier publicación ajena,
+# incluso rivales que el 29-sep sí tenían visitas guardadas. Las NUESTRAS
+# siguen dando 200.
+#
+# Y NO SE VEÍA. `_get` deja el 403 en DEBUG (para fichas ajenas es lo
+# esperado), `visitas_30d` devuelve None y la captura guarda la fila sin
+# visitas: `enrich.market_search_results.visitas_30d` se llenó 80 de 80 hasta
+# la semana del 28-sep y la medición del 12-oct guardó 0 de 10, sin un aviso.
+#
+# Con el PRIMER 403 de una ajena la puerta hace dos cosas:
+#   · lo deja escrito UNA vez en `ops.process_log` (proceso 'competencia',
+#     acción 'visitas_ajenas', estado 'denegado') y en un WARNING;
+#   · deja de preguntar: las demás ajenas devuelven None sin llamar a la API.
+#     Un barrido son cientos de llamadas que ya se sabe que no traen nada, y
+#     comparten el cupo de la aplicación con todo lo demás (ver `_ESPERAS_429`).
+#
+# Vive en el PROCESO y no en una corrida porque las corridas no tienen un borde
+# común: el barrido abre un event loop por tanda y el backend atiende el botón
+# del panel cuando sea. Cerrada, se vuelve a sondear tras `_TTL_PUERTA_AJENAS`;
+# si ML reabre, el primer 200 la abre sola.
+#
+# SÓLO para ajenas. Las propias van por `visitas_30d` a secas, que no mira la
+# puerta: el 403 de un rival no puede apagar las visitas de lo nuestro.
+_TTL_PUERTA_AJENAS = 6 * 3600.0      # segundos
+_puerta_ajenas: dict[str, Any] = {"estado": None, "desde": 0.0}
+_candado_puerta = threading.Lock()
+
+
+def _puerta_cerrada_vigente() -> bool:
+    """Con `_candado_puerta` tomado."""
+    return (_puerta_ajenas["estado"] == "cerrada"
+            and time.monotonic() - _puerta_ajenas["desde"] < _TTL_PUERTA_AJENAS)
+
+
+def puerta_visitas_ajenas() -> str | None:
+    """'abierta', 'cerrada' o None: sin medir en este proceso, o el cierre caducó."""
+    with _candado_puerta:
+        if _puerta_ajenas["estado"] == "cerrada" and not _puerta_cerrada_vigente():
+            return None
+        return _puerta_ajenas["estado"]
+
+
+def reiniciar_puerta_visitas_ajenas() -> None:
+    """Olvida lo medido: la siguiente ajena vuelve a ser la sonda."""
+    with _candado_puerta:
+        _puerta_ajenas.update(estado=None, desde=0.0)
+
+
+def visitas_30d_ajena(item_id: str, cuenta: str = _CUENTA_DEFAULT) -> int | None:
+    """
+    `visitas_30d` de una publicación AJENA, a través de la puerta.
+
+    Con la puerta cerrada devuelve None SIN llamar a la API. El primer 403 la
+    cierra y lo anota; un 200 la abre.
+    """
+    if puerta_visitas_ajenas() == "cerrada":
+        return None
+    est: dict[str, Any] = {}
+    v = visitas_30d(item_id, cuenta, estado=est)
+    if est.get("code") == 403:
+        _cerrar_puerta(item_id, cuenta, est.get("cuerpo"))
+        return None
+    if v is not None:
+        with _candado_puerta:
+            _puerta_ajenas.update(estado="abierta", desde=time.monotonic())
+    return v
+
+
+def _cerrar_puerta(item_id: str, cuenta: str, cuerpo: str | None) -> None:
+    """
+    Cierra la puerta y lo anota. Sólo anota quien la CIERRA: las llamadas que
+    ya iban en vuelo chocan con el mismo 403 y no repiten la fila.
+
+    Nunca revienta: una bitácora que tumba la captura es peor que no tenerla.
+    """
+    with _candado_puerta:
+        if _puerta_cerrada_vigente():
+            return
+        _puerta_ajenas.update(estado="cerrada", desde=time.monotonic())
+    horas = _TTL_PUERTA_AJENAS / 3600
+    log.warning("ML niega las visitas de publicaciones AJENAS (403 en %s, cuenta %s): "
+                "se dejan de pedir %.0f h y visitas_30d de los rivales queda vacío. %s",
+                item_id, cuenta, horas, (cuerpo or "")[:150])
+    try:
+        supabase_db.execute(
+            "INSERT INTO ops.process_log (proceso, origen, accion, estado, detalle) "
+            "VALUES ('competencia', 'ml_api', 'visitas_ajenas', 'denegado', %s::jsonb)",
+            (json.dumps({
+                "http": 403,
+                "endpoint": "/items/{id}/visits/time_window",
+                "item_id": item_id,
+                "cuenta": (cuenta or "").upper(),
+                "respuesta": cuerpo or None,
+                "reintento_en_h": horas,
+            }),))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("no se pudo anotar el cierre de las visitas ajenas: %s", exc)
 
 
 TOPE_MULTIGET = 20      # el máximo que ML acepta en /items/bulk?ids=

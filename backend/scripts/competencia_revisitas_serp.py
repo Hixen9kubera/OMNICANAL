@@ -65,7 +65,7 @@ async def main() -> int:
     if args.tope_posicion:
         cond += f" AND posicion <= {int(args.tope_posicion)}"
     filas = supabase_db.fetch_all(
-        f"SELECT termino_id, externo_id, posicion, url FROM enrich.market_search_results "
+        f"SELECT termino_id, externo_id, posicion, url, es_nuestro FROM enrich.market_search_results "
         f" WHERE {cond} ORDER BY posicion, termino_id")
     if args.limite:
         filas = filas[:args.limite]
@@ -106,6 +106,11 @@ async def main() -> int:
             ok += 1
         print(f"  {min(i + LOTE, len(filas)):>5}/{len(filas)} · rellenadas={ok} "
               f"· sin dato={sin} · {time.time() - t0:.0f}s", flush=True)
+        if competencia_ml.puerta_visitas_ajenas() == "cerrada":
+            # 403 de ML para visitas de rivales: ya quedó en ops.process_log, y
+            # seguir sólo repetiría vacíos.
+            print("✗ ML niega las visitas de publicaciones ajenas (403). Se corta aquí.")
+            return 4
 
     fin = supabase_db.fetch_one(
         "SELECT count(*) n, count(visitas_30d) v FROM enrich.market_search_results")

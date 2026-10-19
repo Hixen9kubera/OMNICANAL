@@ -1001,6 +1001,115 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.664.0 — Competencia: las visitas de los RIVALES son LEGACY — el panel lo dice con la fecha real de la última medición, y la captura deja de pedirlas (el 403 queda en `ops.process_log`)
+
+**Qué pidió Eduardo (19-oct-2026).** «Marcar las visitas de rivales como LEGACY.» Donde el panel muestre
+visitas de rivales debe decir «Legacy · última medición <fecha real> · ML dejó de darlas». Vacío no es 0: no
+pintar 0 ni ordenar por ese campo como si estuviera vivo. **Nuestras visitas siguen vivas y no se tocan.** Viaja
+junto el arreglo de la captura que nació como v0.651.0 (rama `fix/visitas-rivales-403`, nunca empujada).
+
+**Medido en producción (solo SELECT, 19-oct).** ML responde 403 a las visitas de publicaciones ajenas con las dos
+cuentas (`/items/{id}/visits/time_window`, `/visits/items`, `/users/{rival}/items_visits`); las nuestras dan 200.
+La última captura con visitas de rivales es:
+- `enrich.market_search_results`: **29-sep** (60 de 60). La del 14-oct trae 10,665 filas y ninguna visita.
+- `enrich.market_bestsellers`: **1-oct** (1,260 de 1,261). La del 16-oct trae 6,988 filas y solo 4 visitas, y las
+  4 son NUESTRAS. Por eso la fecha se calcula sin `es_nuestro`: con ellas diría «16-oct», una captura que no
+  trajo ni una visita ajena.
+
+**1. El panel.**
+- `GET /api/competencia/estado` trae `visitas_rivales`: `legacy: true`, `ultima_medicion` (la más reciente de
+  las dos tablas), `busqueda`, `ranking`, `denegado_en` (el último 403 que anotó la captura) y `motivo`. Si la
+  base no contesta, las fechas llegan vacías y el panel marca legacy igual: nunca inventa una fecha.
+  `limites.visitas` ya no dice que las visitas «funcionan para cualquier publicación».
+- **Competencia** (`VisitasRival`): la cifra va atenuada con la marca LEGACY y, al pasar el mouse, «Legacy ·
+  última medición 1 de octubre · ML dejó de darlas». La fecha es la de la FILA (`capturado_en`, cuándo se midió
+  ESA visita); la fila sin visita toma la última medición general. Vacío = «—», nunca 0. Va en las tarjetas del
+  ranking, las filas de la búsqueda, el líder del nicho y las visitas del nicho. Una fila NUESTRA dentro del
+  ranking o de la búsqueda se pinta como siempre.
+- **El 0 de un rival también es «—».** De los 336 ceros guardados en búsquedas, 322 son ids de catálogo (`/p/` y
+  `MLMU`), a los que `/visits` contesta 0 sin fallar. Un rival del top con 0 visitas en 30 días no es un dato
+  creíble. En el ranking no hay ceros.
+- **«Visitas del nicho» suma SOLO rivales** (`competencia_store`: antes sumaba también las filas `es_nuestro`).
+  Su fecha es la captura más reciente del top que trajo una visita AJENA. Lo encontró la verificación del acta: en
+  producción había 4 subcategorías (MLM421294, MLM120139, MLM194667 y MLM184821) cuyo top del 16-oct solo traía
+  visitas nuestras (1,420, 202, 2,058 y 351). El panel las habría pintado como «visitas del nicho», legacy y
+  fechadas el 16-oct, una captura que no trajo ni una visita ajena.
+- **Orden.** Se quitan «Más visitas del nicho» y «Menos visitas del nicho» del orden de subcategorías. El orden
+  vive solo en memoria (empieza en «oportunidad»), así que no queda ninguno guardado que apunte a ellos. El orden
+  de NUESTROS SKUs por visitas sigue: son las nuestras.
+- **Encabezado.** «Visitas medidas…» pasa a «Nuestras visitas medidas…» y se suma la línea «Visitas de rivales:
+  Legacy · última medición … · ML dejó de darlas».
+- **Radar** (`/radar/[sku]`, «Mismo producto en el mercado»): la columna pasa a «Visitas 30 d LEGACY», con las
+  cifras atenuadas y la fecha de su captura; las filas nuestras siguen igual.
+- **Tipos:** `VisitasRivalesLegacy`, `CompetenciaResultado.capturado_en` (el backend ya lo mandaba con
+  `SELECT r.*`) y los comentarios que daban por buenas las visitas ajenas.
+
+**`enrich.market_categoria_prioridad_v.visitas_mercado` también es legacy** (suma `market_bestsellers.visitas_30d`
+por categoría). Revisado quién la lee: nadie decide ni ordena con ella. `prioridad()` es la lista blanca del botón
+de refresco (usa `categoria_id`, `tiene_ranking_ml` y `dias_sin_captura`), y `competencia_highlights.py` y
+`competencia_barrido.py` ordenan por pesos y unidades. La vista **no se toca**: cambiarla es una migración en
+producción y no tiene consumidor que la lea como viva. La cifra del panel no sale de ahí sino de
+`competencia_store` (`sub.visitas_mercado`), y esa ya va marcada.
+
+**2. La captura** (lo de v0.651.0).
+- **La puerta** (`competencia_ml.visitas_30d_ajena`). El PRIMER 403 de una ajena escribe UNA fila en
+  `ops.process_log` (`proceso='competencia'`, `origen='ml_api'`, `accion='visitas_ajenas'`, `estado='denegado'`;
+  en `detalle` el item, la cuenta y la respuesta de ML) y un WARNING. Desde ahí, las demás ajenas devuelven None
+  sin llamar a la API. La puerta vive en el proceso y se vuelve a sondear a las 6 h (`_TTL_PUERTA_AJENAS`): si ML
+  reabre, el primer 200 la abre sola. Antes el 403 quedaba en DEBUG y la fila se guardaba vacía sin aviso.
+- **La sonda** (`competencia_captura.visitas_rivales`). Si el proceso aún no sabe si ML deja ver las ajenas, la
+  primera rival va SOLA y las demás esperan su respuesta. Una tanda de 25 negada cuesta 1 llamada, no 25. La usan
+  `enriquecer_visitas` (búsquedas), `_enriquecer_ranking` (rankings) y `_visitas`.
+- **Lo nuestro no pasa por la puerta.** `visitas_30d` a secas (`refrescar_visitas_propias` y el cron
+  `competencia_visitas.py`) no cambia. En las búsquedas, las filas nuestras se piden con el token de SU cuenta
+  (antes todas iban con el de BEKURA y las de SANCORFASHION daban 403).
+- `_get` conserva el buzón `estado` entre reintentos (tras un 401 o un 429 quedaba el código viejo) y ante un 403
+  trae `cuerpo`.
+- `competencia_revisitas_ranking.py` y `competencia_revisitas_serp.py` terminan con salida 4 en cuanto la puerta
+  se cierra, en vez de seguir guardando vacíos. Además leen `es_nuestro` y mandan lo nuestro por fuera de la
+  puerta. Antes, una sonda que caía en un item nuestro (200) abría la puerta y dejaba salir la tanda entera.
+- `competencia_analisis_ia.py` ya no le dice al modelo «0 vis» de un rival sin dato: dice «vis sin dato», o
+  «N vis legacy». Las filas NUESTRAS del top van como «N vis, NUESTRA» (son visitas vivas).
+
+**Qué NO cambia.** Ninguna variable, ninguna migración, ninguna escritura nueva más allá de esa fila de
+`ops.process_log`, que anota la propia captura. Las visitas propias (`market_listing_metrics`, cron de las 12:30
+UTC) no se tocan. Las reseñas (`/reviews/item`, 403 desde ~16-sep) siguen pendientes aparte. El índice de demanda
+de rivales con `market_highlights_hist` no se construye: espera el sí de Eduardo.
+
+**Quedan como estaban (notas de la verificación).**
+- `competencia_analisis.py` (reporte manual) calcula `vis_lider` y `vis_vs_lider_pct` con lo guardado.
+- `competencia_revisitas.py` ya no corre: usa `competencia_store.RUTA_DB`, que no existe desde el retiro del SQLite.
+- En el ranking, nuestras publicaciones de SANCORFASHION se piden con la cuenta por omisión (no es regresión).
+
+**Pruebas.** `tests/test_competencia_visitas_legacy.py` (6, nuevas):
+- la última medición es la más reciente de las dos;
+- sin fechas sigue siendo legacy;
+- `limites.visitas` ya no promete visitas ajenas;
+- la consulta excluye `es_nuestro` en las dos tablas;
+- «visitas del nicho» suma solo rivales, y si la única visita del top es nuestra queda vacía. Estas dos fallan
+  con el código anterior.
+
+`tests/test_competencia_visitas_ajenas.py` (13, de v0.651.0):
+- el primer 403 cierra y anota una sola vez;
+- cerrada no llama;
+- las propias siguen;
+- un 200 abre;
+- el cierre caduca;
+- una tanda de 25 cuesta una llamada.
+
+Competencia + Radar: **577 en verde** con `PYTHONUTF8=1`. Sin esa variable falla
+`test_httpx_no_escribe_la_url_con_la_llave`, por el entorno Windows: su subproceso escribe en cp1252. `tsc` limpio.
+
+**Verificado en el sandbox (19-oct).** Backend local contra el sandbox, sin MySQL, Woo ni Odoo y con los procesos
+programados apagados.
+- `/estado`: búsqueda 29-sep y ranking 1-sep. El clon es más viejo que producción, donde el ranking da 1-oct.
+- Competencia: 1,661 cifras marcadas con la fecha de su fila (5-ago, 12-ago, 1-sep…), 542 «—» y ningún 0. El orden
+  ya no ofrece visitas del nicho, y las visitas de nuestros SKUs se ven sin marca.
+- Radar `TEC-0977-NEG-800W`: columna LEGACY con la fecha 5-ago. En `MUE-0308-GRI-27CM`, los 3 ceros guardados
+  salen «—».
+- `/vista`: de 1,281 subcategorías, 4 traen una visita nuestra en el top y ninguna la suma.
+- Consola sin errores.
+
 ### v0.663.0 — PRICING: la gráfica del detalle llega hasta hoy (ventas y visitas en vivo)
 
 **Qué vio Brandon (19-oct-2026).** ORG-1016-BLN (BEKURA) decía «29 pzs en 30 d» en la tabla —lo vivo— pero su

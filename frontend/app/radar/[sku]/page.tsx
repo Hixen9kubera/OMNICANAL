@@ -534,7 +534,23 @@ function Comparables({ d }: { d: RadarDetalle }) {
   // La búsqueda de ML no guarda reseñas (y a veces tampoco visitas): una columna
   // entera de "sin dato" no dice nada, así que sólo se pinta si trae algo.
   const conResenas = filas.some((r) => typeof r.reviews === "number");
-  const conVisitas = filas.some((r) => typeof r.visitas_30d === "number");
+  const conVisitas = filas.some((r) =>
+    r.es_nuestro ? typeof r.visitas_30d === "number" : typeof r.visitas_30d === "number" && r.visitas_30d > 0,
+  );
+  // v0.664.0: las visitas de los RIVALES son LEGACY —ML responde 403 desde
+  // ~oct-2026— y cada una es de la captura de su fila. La fila sin visita toma
+  // la última medición de esta búsqueda. Las nuestras siguen como siempre.
+  // El 0 de un rival es «—»: casi todos son ids de catálogo a los que ML
+  // contesta 0 sin fallar (322 de 336 en producción, 19-oct).
+  const conDato = (v: number | null) => typeof v === "number" && v > 0;
+  const ultimaRival =
+    filas
+      .filter((r) => !r.es_nuestro && conDato(r.visitas_30d) && r.capturado_en)
+      .map((r) => r.capturado_en as string)
+      .sort()
+      .pop() ?? null;
+  const legacy = (iso: string | null | undefined) =>
+    `Legacy · última medición ${iso ? fechaCorta(iso) : "sin fecha"} · ML dejó de darlas`;
   return (
     <div className="flex flex-col gap-3">
       {filas.length === 0 ? (
@@ -549,7 +565,12 @@ function Comparables({ d }: { d: RadarDetalle }) {
                 <th scope="col" className="py-2 pr-3 text-right">Precio</th>
                 <th scope="col" className="py-2 pr-3 text-right">Calificación</th>
                 {conResenas && <th scope="col" className="py-2 pr-3 text-right">Reseñas</th>}
-                {conVisitas && <th scope="col" className="py-2 pr-3 text-right">Visitas 30 d</th>}
+                {conVisitas && (
+                  <th scope="col" className="py-2 pr-3 text-right" title={legacy(ultimaRival)}>
+                    Visitas 30 d{" "}
+                    <span className="text-[10px] font-semibold uppercase tracking-wide text-[#8A90A0]">legacy</span>
+                  </th>
+                )}
               </tr>
             </thead>
             <tbody>
@@ -582,7 +603,18 @@ function Comparables({ d }: { d: RadarDetalle }) {
                     )}
                   </td>
                   {conResenas && <td className="py-2 pr-3 text-right tabular-nums"><Valor texto={entero(r.reviews)} /></td>}
-                  {conVisitas && <td className="py-2 pr-3 text-right tabular-nums"><Valor texto={entero(r.visitas_30d)} /></td>}
+                  {conVisitas && (
+                    r.es_nuestro ? (
+                      <td className="py-2 pr-3 text-right tabular-nums"><Valor texto={entero(r.visitas_30d)} /></td>
+                    ) : (
+                      <td
+                        className="py-2 pr-3 text-right tabular-nums text-[#8A90A0]"
+                        title={legacy(conDato(r.visitas_30d) ? r.capturado_en : ultimaRival)}
+                      >
+                        {conDato(r.visitas_30d) ? entero(r.visitas_30d) : "—"}
+                      </td>
+                    )
+                  )}
                 </tr>
               ))}
             </tbody>

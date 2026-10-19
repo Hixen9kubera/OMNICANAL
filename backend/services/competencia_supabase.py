@@ -160,6 +160,37 @@ def frescura(canal: str = "mercado_libre") -> dict[str, Any]:
     return dict(filas[0]) if filas else {}
 
 
+def visitas_rivales_legacy(canal: str = "mercado_libre") -> dict[str, Any]:
+    """
+    v0.664.0 — Cuándo se midieron por ÚLTIMA vez las visitas de los RIVALES.
+
+    ML responde 403 a las visitas de publicaciones ajenas desde ~oct-2026 (todas
+    las rutas, las dos cuentas). Lo guardado sigue en las tablas, pero ya no se
+    renueva: es LEGACY y el panel lo dice con esta fecha.
+
+    · `es_nuestro` se excluye: nuestras visitas siguen vivas, y las 4 filas
+      nuestras de la captura del 16-oct moverían la fecha a una medición que no
+      trajo ni una visita ajena.
+    · `denegado_en` es el último 403 anotado por la puerta de esta versión
+      (`competencia_ml.visitas_30d_ajena`; nació como v0.651.0 y nunca se
+      empujó sola). Vacío hasta que corra una captura con esa puerta.
+    """
+    sql = """
+        SELECT
+          (SELECT max(capturado_en) FROM enrich.market_search_results
+            WHERE visitas_30d IS NOT NULL
+              AND NOT coalesce(es_nuestro, false))             AS busqueda,
+          (SELECT max(capturado_en) FROM enrich.market_bestsellers
+            WHERE canal = %s AND visitas_30d IS NOT NULL
+              AND NOT coalesce(es_nuestro, false))             AS ranking,
+          (SELECT max(created_at) FROM ops.process_log
+            WHERE proceso = 'competencia' AND accion = 'visitas_ajenas'
+              AND estado = 'denegado')                         AS denegado_en
+    """
+    filas = supabase_db.fetch_all(sql, (canal,))
+    return dict(filas[0]) if filas else {}
+
+
 def movimiento_del_top(canal: str = "mercado_libre") -> dict[str, dict[str, Any]]:
     """
     `enrich.market_highlights` entera, indexada por categoría. Una sola consulta
