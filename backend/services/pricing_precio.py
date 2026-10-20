@@ -204,8 +204,14 @@ async def _poner_descuento(cli, item_id: str, precio: float, fin: str, pasos: li
 
 
 async def _volver_a_campana(cli, item_id: str, p: dict) -> httpx.Response:
-    cuerpo = {"promotion_id": p["id"], "promotion_type": p["tipo"], "deal_price": p["precio"]}
-    return await cli.post(f"/seller-promotions/items/{item_id}", params={"app_version": "v2"}, json=cuerpo)
+    """Re-inscribe en una campaña; reintenta como el descuento si ML todavía no la ofrece tras un cambio."""
+    limite = time.monotonic() + REINTENTO_DESCUENTO_S
+    while True:
+        cuerpo = {"promotion_id": p["id"], "promotion_type": p["tipo"], "deal_price": p["precio"]}
+        r = await cli.post(f"/seller-promotions/items/{item_id}", params={"app_version": "v2"}, json=cuerpo)
+        if r.status_code in (200, 201) or _NO_CANDIDATA not in r.text.lower() or time.monotonic() >= limite:
+            return r
+        await asyncio.sleep(20)
 
 
 async def _esperar_descuento(cli, item_id: str) -> dict | None:
@@ -249,17 +255,23 @@ def _txt(r: httpx.Response) -> str:
 # ── BITÁCORA ─────────────────────────────────────────────────────────────────
 
 def _anotar(sku: str | None, accion: str, estado: str, detalle: dict, quien: str) -> None:
-    """BLOQUEANTE (kubera). Se espera a propósito: «Deshacer» lee de aquí la foto de antes."""
+    """
+    BLOQUEANTE (kubera). Se espera a propósito: «Deshacer» lee de aquí la foto de antes. Desde v0.673.0 la
+    misma fila pasa a la bitácora del esquema `pricing` (services/pricing_bitacora.py).
+    """
+    from services import pricing_bitacora
     from services import supabase_db as sdb
 
     try:
-        sdb.execute(
+        fila = sdb.execute_returning(
             "INSERT INTO ops.process_log (proceso, origen, sku, accion, estado, detalle, detail_ref, actor) "
-            "VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s)",
+            "VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s) RETURNING *",
             (PROCESO, ORIGEN, sku, accion, estado, json.dumps(detalle, ensure_ascii=False, default=str),
              f"pricing:{detalle.get('item')}", quien or None))
     except Exception as exc:  # noqa: BLE001 — la bitácora nunca tumba el cambio ya hecho en ML
         log.warning("pricing precio: no se pudo anotar %s de %s: %s", accion, detalle.get("item"), exc)
+        return
+    pricing_bitacora.tras_anotar(fila)
 
 
 def _ultimo_cambio(item_id: str) -> dict | None:
@@ -317,8 +329,10 @@ def _fin_vigente(pd: dict) -> str:
 
 
 async def aplicar(item_id: str, cuenta: str, sku: str | None, precio: float, pct: float | None, salir: bool = True,
-                  hasta: str | None = None, quien: str = "", pasos: list | None = None) -> dict:
+                  hasta: str | None = None, quien: str = "", pasos: list | None = None, bitacora: dict | None = None) -> dict:
+    """`bitacora` = motivo, contexto de la pantalla, recomendación y umbrales (v0.673.0): van a la bitácora de pricing."""
     cuenta = _validar(item_id, cuenta)
+    iniciada = datetime.now(CDMX).isoformat()
     pasos = pasos if pasos is not None else []
     candado = _candados.setdefault(item_id, asyncio.Lock())
     if candado.locked():
@@ -328,7 +342,7 @@ async def aplicar(item_id: str, cuenta: str, sku: str | None, precio: float, pct
         plan = planear(antes, precio, pct, salir)
         pd_antes = next((p for p in antes["promos"] if p["tipo"] == "PRICE_DISCOUNT" and p["estado"] in ("started", "pending")), None)
         detalle = {"item": item_id, "cuenta": cuenta, "pedido": {"precio": plan["precio"], "pct": plan["pct"], "salir": salir, "hasta": hasta},
-                   "antes": antes, "pasos": pasos, "quitadas": []}
+                   "antes": antes, "pasos": pasos, "quitadas": [], "bitacora": {**(bitacora or {}), "iniciada": iniciada}}
 
         async def regresar(motivo: str) -> None:
             """Deja la publicación como estaba ANTES de este intento y dice si de verdad quedó igual."""
@@ -346,6 +360,7 @@ async def aplicar(item_id: str, cuenta: str, sku: str | None, precio: float, pct
                 pasos.append({"paso": "regresar descuento anterior", "http": r.status_code, "ml": _txt(r) if r.status_code >= 300 else None})
                 quedo_bien &= r.status_code in (200, 201)
             detalle["error"] = motivo
+            detalle["resultado"] = "regresada" if quedo_bien else "parcial"   # para la bitácora de pricing
             await asyncio.to_thread(_anotar, sku, "aplicar", "error", detalle, quien)
             if quedo_bien:
                 raise ErrorPrecio(motivo + " Se regresó la publicación a como estaba.")
@@ -358,6 +373,7 @@ async def aplicar(item_id: str, cuenta: str, sku: str | None, precio: float, pct
             pasos.append({"paso": "precio normal", "http": r.status_code})
             if r.status_code != 200:
                 detalle["error"] = f"ML no aceptó el precio normal: {_txt(r)}"
+                detalle["resultado"] = "error"   # no se cambió nada
                 await asyncio.to_thread(_anotar, sku, "aplicar", "error", detalle, quien)
                 raise ErrorPrecio(f"Mercado Libre no aceptó el precio normal ({r.status_code}): {_txt(r)}. No se cambió nada.")
 
@@ -406,9 +422,11 @@ async def aplicar(item_id: str, cuenta: str, sku: str | None, precio: float, pct
         return {"antes": antes, "despues": despues, "pasos": pasos, "avisos": avisos, "quitadas": detalle["quitadas"]}
 
 
-async def deshacer(item_id: str, cuenta: str, sku: str | None, quien: str = "", pasos: list | None = None) -> dict:
+async def deshacer(item_id: str, cuenta: str, sku: str | None, quien: str = "", pasos: list | None = None,
+                   bitacora: dict | None = None) -> dict:
     """Devuelve la publicación a la foto de ANTES del último cambio hecho desde PRICING."""
     cuenta = _validar(item_id, cuenta)
+    iniciada = datetime.now(CDMX).isoformat()
     pasos = pasos if pasos is not None else []
     ultimo = await asyncio.to_thread(_ultimo_cambio, item_id)
     if not ultimo:
@@ -433,6 +451,17 @@ async def deshacer(item_id: str, cuenta: str, sku: str | None, quien: str = "", 
             pasos.append({"paso": "precio normal de antes", "http": r.status_code})
             if r.status_code != 200:
                 avisos.append(f"ML no aceptó regresar el precio normal: {_txt(r)}.")
+        # Las campañas ANTES que el descuento individual: ML no deja entrar a una campaña propia con un
+        # descuento individual activo (medido el 20-oct, «No candidates found for item»).
+        vueltas = []
+        for p in d.get("quitadas") or []:
+            r = await _volver_a_campana(cli, item_id, p)
+            pasos.append({"paso": f"volver a {p['nombre_tipo']} «{p['nombre'] or p['id']}»", "http": r.status_code,
+                          "ml": _txt(r) if r.status_code >= 300 else None})
+            if r.status_code in (200, 201):
+                vueltas.append(p)
+            else:
+                avisos.append(f"No se pudo volver a «{p['nombre'] or p['id']}»: {_txt(r)}. Hay que hacerlo en Mercado Libre.")
         if pd_antes:
             if quitado:
                 await _esperar_candidata(cli, item_id, pasos)
@@ -456,18 +485,13 @@ async def deshacer(item_id: str, cuenta: str, sku: str | None, quien: str = "", 
             else:
                 pasos.append({"paso": "esperando a que arranque el descuento (1 min)"})
                 await _esperar_descuento(cli, item_id)
-        for p in d.get("quitadas") or []:
-            r = await _volver_a_campana(cli, item_id, p)
-            pasos.append({"paso": f"volver a {p['nombre_tipo']} «{p['nombre'] or p['id']}»", "http": r.status_code,
-                          "ml": _txt(r) if r.status_code >= 300 else None})
-            if r.status_code not in (200, 201):
-                avisos.append(f"No se pudo volver a «{p['nombre'] or p['id']}»: {_txt(r)}. Hay que hacerlo en Mercado Libre.")
         await asyncio.sleep(3)
         despues = await leer_estado(cli, item_id)
         if antes.get("cobra") and despues.get("cobra") and abs(despues["cobra"] - antes["cobra"]) >= 0.5:
             avisos.append(f"Antes cobraba ${antes['cobra']:,.2f} y ahora cobra ${despues['cobra']:,.2f}.")
-        detalle = {"item": item_id, "cuenta": cuenta, "deshace": ultimo["id"], "antes_del_cambio": antes, "despues": despues,
-                   "pasos": pasos, "avisos": avisos}
+        detalle = {"item": item_id, "cuenta": cuenta, "deshace": ultimo["id"], "antes_del_cambio": antes, "ahora": ahora,
+                   "despues": despues, "vueltas": vueltas, "pasos": pasos, "avisos": avisos,
+                   "bitacora": {**(bitacora or {}), "iniciada": iniciada}}
         await asyncio.to_thread(_anotar, sku, "deshacer", "ok" if not avisos else "parcial", detalle, quien)
         return {"antes": ahora, "despues": despues, "objetivo": antes, "pasos": pasos, "avisos": avisos}
 

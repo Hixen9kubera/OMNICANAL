@@ -2824,7 +2824,35 @@ export interface PricingTrabajoPrecio {
   error: string | null;
 }
 
-export interface PedidoPrecioML {
+/** Lo que va a la bitácora del esquema `pricing` (v0.673.0): por qué, y qué veía la pantalla al decidir. */
+export interface DatosBitacoraML {
+  /** Código de `pricing.motivo` (obligatorio al aplicar, tomar o quitar; «otro» pide texto). */
+  motivo?: string | null;
+  motivo_texto?: string | null;
+  /** Lo que mostraba la pantalla, PLANO: solo números, textos, booleanos o null. */
+  contexto?: Record<string, number | string | boolean | null> | null;
+  /** La clave de «Qué hacer» (reglas.ts) y su precio. */
+  recomendacion?: string | null;
+  precio_recomendado?: number | null;
+  /** Los umbrales con que la pantalla recomendaba (las reglas de cada quien). */
+  umbrales?: Record<string, unknown> | null;
+  /** De qué foto de PRICING salían los datos (meta.generado). */
+  foto?: string | null;
+}
+
+/** Un motivo del catálogo de la bitácora (pricing.motivo). No confundir con PricingMotivos: cancelaciones. */
+export interface PricingMotivoCambio {
+  codigo: string;
+  nombre: string;
+  descripcion: string | null;
+}
+
+/** Solo lee: el catálogo de motivos de un movimiento de precio u oferta (pricing.motivo). */
+export function pricingMotivosCambio(signal?: AbortSignal): Promise<{ motivos: PricingMotivoCambio[] }> {
+  return getJSON<{ motivos: PricingMotivoCambio[] }>("/api/pricing/bitacora/motivos", signal);
+}
+
+export interface PedidoPrecioML extends DatosBitacoraML {
   cuenta: string;
   sku?: string | null;
   precio: number;
@@ -2844,7 +2872,10 @@ export function pricingPrecioAplicar(itemId: string, pedido: PedidoPrecioML): Pr
 }
 
 /** ESCRIBE EN ML. La regresa a como estaba antes del último cambio hecho desde PRICING. */
-export function pricingPrecioDeshacer(itemId: string, pedido: Pick<PedidoPrecioML, "cuenta" | "sku">): Promise<PricingTrabajoPrecio> {
+export function pricingPrecioDeshacer(
+  itemId: string,
+  pedido: Pick<PedidoPrecioML, "cuenta" | "sku"> & DatosBitacoraML,
+): Promise<PricingTrabajoPrecio> {
   return postJSON<PricingTrabajoPrecio>(`/api/pricing/precio/${encodeURIComponent(itemId)}/deshacer`, { ...pedido, precio: 0 });
 }
 
@@ -2915,7 +2946,7 @@ export interface PricingOfertas {
   kubera: boolean;
 }
 
-export interface PedidoOfertaML {
+export interface PedidoOfertaML extends DatosBitacoraML {
   item: string;
   cuenta: string;
   tipo: TipoOfertaML;

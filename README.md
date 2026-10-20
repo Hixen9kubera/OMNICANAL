@@ -1001,6 +1001,81 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.673.0 — PRICING: cada movimiento del panel queda en la bitácora del esquema `pricing`, con su motivo y lo que veía la pantalla
+
+**Qué pidió Brandon (20-oct-2026).** El esquema `pricing` (v0.671.0, migración 0074) existe en producción para guardar
+los movimientos, pero nacía vacío y nada del panel escribía ahí. Pidió conectar el editor de precio y «Ofertas de ML»
+a la bitácora (`accion`, `accion_publicacion`, `precio_obs`, `oferta`), agregar un selector de motivo y rellenar el
+cambio del 19-oct.
+
+**Qué queda guardado de cada movimiento** (`services/pricing_bitacora.py`):
+
+| Tabla | Qué guarda |
+|---|---|
+| `pricing.accion` | Quién (el correo de la sesión, que firma la base sola), cuándo empezó y terminó, desde dónde (`panel`, pantalla `pricing` o `pricing_ofertas`), qué (`editar_precio`, `deshacer`, `entrar_campana`, `salir_campana`), **por qué** (motivo del catálogo + texto), con qué umbrales y de qué foto salían los datos, y cómo terminó (aplicada, parcial, error, deshecha). `process_log_id` apunta a la fila técnica de `ops.process_log` y es único: la misma fila nunca se escribe dos veces. |
+| `pricing.accion_publicacion` | Cómo estaba (precio base y cobrado, y sus promociones), qué se pidió (base, % y cobrado; o la oferta y su precio), **qué recomendaba la pantalla** (clave de «Qué hacer» y su precio), **qué veía** (contexto plano: cobra hoy, normal, descuento, ventas 7/14/30 d, visitas, conversión, stock, días para agotarse, competencia, posición, prioridad, calidad y experiencia de ML, el «por qué» de la regla) y cómo quedó. |
+| `pricing.precio_obs` | El precio antes (si la última observación no lo tenía) y el después, con fuente `panel` y la acción que lo produjo. |
+| `pricing.oferta` (+ `promocion`) | El descuento individual que terminó y el nuevo; las campañas, Buen Fin y relámpagos que se tomaron o quitaron, con la acción que los abrió y la que los cerró. Una oferta programada que se quita antes de empezar se cierra en su propio inicio: duró cero. |
+
+**El precio base es el TACHADO de ML** (`sale_price.regular_amount`), no `item.price`. Con un descuento activo, ML deja
+`price` en el valor viejo: ORG-0448-VER tiene `price` $108 con tachado $350 y cobra $90.
+
+**Motivo obligatorio.** «Cambiar precio» no deja publicar y Ofertas no deja tomar ni quitar sin escoger «¿Por qué?».
+El catálogo es `pricing.motivo` (14 motivos; crece sin migración) y se lee de `GET /api/pricing/bitacora/motivos`.
+Si no se puede leer, la pantalla usa la lista de la 0074 y el backend valida solo la forma; la base rechaza un código
+que no exista. «Otro» pide texto. Ofertas propone el más común: «Temporada o evento» en Buen Fin y «Campaña del
+canal» en lo demás. «Deshacer» no lo exige. La ruta va bajo `/bitacora/`: `GET /api/pricing/motivos/{id}` ya existía
+y son los motivos de CANCELACIÓN de una venta.
+
+**Cómo se escribe sin romper nada.**
+- La fila técnica de `ops.process_log` sigue siendo lo primero; ahora devuelve su id (`RETURNING *`) y se pasa en el
+  mismo hilo a la bitácora (`tras_anotar`). Si kubera o una regla del esquema la rechazan, el movimiento en ML ya
+  está hecho: solo se avisa en el log.
+- La acción y su publicación nacen en **una sola sentencia** (CTE). El pool de kubera puede cambiar de conexión
+  entre sentencias de una misma transacción (memoria steadydb-reconecta-a-media-transaccion); así quedan las dos o
+  ninguna. Lo demás (deshecha, precios, ofertas) son sentencias que se pueden repetir sin duplicar.
+- `rellenar()` pasa lo que falte: corre tras cada movimiento y **una vez al arrancar el backend en producción** (60 s
+  después, en un hilo). Así entra el cambio del 19-oct, ORG-0448-VER: cobraba $97 y quedó en $90 con tachado $350,
+  `brandon@kubera.mx`. Sin motivo, porque entonces no se pedía.
+- Un «deshacer» apunta a la acción que regresa (`deshace_id`). Al quedar aplicado, la original pasa a «deshecha» y su
+  publicación a «regresada». Si la original ya estaba deshecha, se guarda como corrección para no perderla.
+
+**De paso, en el editor de precio:** al deshacer, las campañas de las que se había sacado la publicación se vuelven
+a meter **antes** de reponer el descuento individual. ML no deja entrar a una campaña propia con un descuento
+activo (medido el 20-oct). Ahora también reintenta mientras ML contesta «No candidates found», igual que el
+descuento. La casilla «Sacarla de campañas» sigue apagada y sin probar en vivo.
+
+**Probado contra un Postgres desechable con las tablas y reglas REALES de la 0074** (las vistas no, porque dependen
+de medio kubera; scripts en `Documents\omnicanal_pg_bitacora\`):
+- el cambio real del 19-oct, leído de producción solo con SELECT;
+- un deshacer;
+- un cambio que falló y se regresó;
+- tomar y quitar una relámpago programada;
+- tomar y quitar la campaña propia;
+- el camino en vivo (`_anotar` del editor y de Ofertas con la sesión fijada), que firmó `registrada_por` con el
+  correo.
+
+Repetir el relleno no duplica nada. Kubera de producción no recibió ninguna escritura de prueba.
+
+**Pantalla.** Se revisó en local con un backend que lee ML y kubera (solo GET y SELECT) y no escribe. El selector sale
+con el catálogo real; «Publicar» se activa al escoger el motivo (con «Otro», hasta escribir el texto); y lo que
+manda la pantalla llega completo: motivo, recomendación `sv_agresivo` a $169, foto del 14-oct, 20 umbrales y el
+contexto plano de la fila.
+
+**Pruebas.** +17 en `tests/test_pricing_bitacora.py` (70 con las de PRICING y Ofertas):
+- qué se guarda de cada tipo de movimiento;
+- el precio base es el tachado;
+- contexto plano;
+- motivo obligatorio y del catálogo, en las rutas y en la función;
+- una fila ya pasada no se reescribe;
+- `tras_anotar` nunca lanza;
+- el catálogo responde 503 si kubera no contesta.
+
+`tsc` limpio.
+
+**Sigue pendiente:** el escritor DIARIO del esquema (`listing_dia`, `oferta_dia`, `resultado_dia`, rivales…), que es
+lo que contesta la elasticidad y las demás preguntas de la regresión. Lo de esta versión cubre lo que hace el panel.
+
 ### v0.672.0 — PRICING: «Ofertas de ML» — ver y tomar relámpago, Buen Fin y campaña propia desde el panel (tomar y quitar, solo admin)
 
 **Qué pidió Brandon (20-oct-2026).** Primero, investigar si se puede tomar por código la oferta relámpago, la campaña

@@ -26,6 +26,11 @@ pricing.py — La pestaña PRICING (v0.650.0): el «Monitor de precios FULL».
   POST /api/pricing/ofertas/quitar       → la SACA de la oferta, en ML
                                   (v0.672.0; SOLO ADMIN)
 
+  GET  /api/pricing/bitacora/motivos     → el catálogo de motivos de un movimiento (pricing.motivo,
+                                  SELECT). Desde v0.673.0 cambiar precio, tomar y quitar ofertas EXIGEN
+                                  motivo, y cada movimiento pasa a la bitácora del esquema `pricing`
+                                  (services/pricing_bitacora.py) con lo que la pantalla veía.
+
 SOLO LECTURA, salvo `/precio` (v0.665.0, pedido de Brandon 19-oct-2026: cambiar a
 mano el precio de una publicación de ML, con bitácora y «Deshacer») y
 `/ofertas/tomar|quitar` (v0.672.0, pedido de Brandon 20-oct-2026: tomar y quitar
@@ -43,6 +48,7 @@ el navegador la descomprime solo. Un cliente que no acepte gzip la recibe plana.
 """
 from __future__ import annotations
 
+import asyncio
 import gzip
 import logging
 
@@ -54,6 +60,7 @@ from pydantic import BaseModel
 from core import actor as core_actor
 from core import identidad as core_identidad
 from core import rbac
+from services import pricing_bitacora as pb
 from services import pricing_monitor as pm
 from services import pricing_ofertas as po
 from services import pricing_precio as pp
@@ -162,7 +169,48 @@ async def solo_admin(request: Request):
     return quien
 
 
-class PedidoPrecio(BaseModel):
+class DatosBitacora(BaseModel):
+    """Lo que va a la bitácora de pricing (v0.673.0): por qué, y qué veía la pantalla al decidir."""
+    motivo: str | None = None
+    motivo_texto: str | None = None
+    contexto: dict | None = None
+    recomendacion: str | None = None
+    precio_recomendado: float | None = None
+    umbrales: dict | None = None
+    foto: str | None = None
+
+
+def _bitacora(req: DatosBitacora, motivo: str | None, texto: str | None, pantalla: str) -> dict:
+    return {"motivo": motivo, "motivo_texto": texto, "contexto": req.contexto, "recomendacion": req.recomendacion,
+            "precio_recomendado": req.precio_recomendado, "umbrales": req.umbrales, "foto": req.foto, "pantalla": pantalla}
+
+
+async def _motivo(req: DatosBitacora, obligatorio: bool = True) -> tuple[str | None, str | None]:
+    """El motivo, revisado contra el catálogo (si kubera no contesta, solo la forma). 400 si falta o no existe."""
+    if not obligatorio and not (req.motivo or "").strip():
+        return None, None
+    try:
+        codigos = {m["codigo"] for m in await asyncio.to_thread(pb.motivos_vigentes)}
+    except Exception as exc:  # noqa: BLE001 — sin catálogo se valida la forma; la base hace el resto
+        log.warning("PRICING: no se pudo leer el catálogo de motivos: %s", exc)
+        codigos = None
+    try:
+        return pb.validar_motivo(req.motivo, req.motivo_texto, codigos)
+    except pp.ErrorPrecio as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/bitacora/motivos")
+async def motivos(quien=Depends(acceso_pricing)) -> dict:
+    """Solo lee: el catálogo de motivos (pricing.motivo, activos)."""
+    try:
+        return {"motivos": await asyncio.to_thread(pb.motivos_vigentes)}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("PRICING: no se pudo leer el catálogo de motivos: %s", exc)
+        raise HTTPException(status_code=503, detail="No se pudo leer el catálogo de motivos.") from exc
+
+
+class PedidoPrecio(DatosBitacora):
     cuenta: str
     sku: str | None = None
     precio: float = 0
@@ -193,9 +241,11 @@ async def precio_aplicar(item_id: str, req: PedidoPrecio, quien=Depends(solo_adm
         pp._validar(item_id, req.cuenta)
     except pp.ErrorPrecio as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    m, t = await _motivo(req)
     q = _quien(quien)
+    b = _bitacora(req, m, t, "pricing")
     return pp.iniciar("aplicar", item_id, lambda pasos: pp.aplicar(item_id, req.cuenta, req.sku, req.precio, req.pct, req.salir,
-                                                                    req.hasta, q, pasos))
+                                                                    req.hasta, q, pasos, bitacora=b))
 
 
 @router.post("/precio/{item_id}/deshacer")
@@ -205,8 +255,10 @@ async def precio_deshacer(item_id: str, req: PedidoPrecio, quien=Depends(solo_ad
         pp._validar(item_id, req.cuenta)
     except pp.ErrorPrecio as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    m, t = await _motivo(req, obligatorio=False)
     q = _quien(quien)
-    return pp.iniciar("deshacer", item_id, lambda pasos: pp.deshacer(item_id, req.cuenta, req.sku, q, pasos))
+    b = _bitacora(req, m, t, "pricing")
+    return pp.iniciar("deshacer", item_id, lambda pasos: pp.deshacer(item_id, req.cuenta, req.sku, q, pasos, bitacora=b))
 
 
 @router.get("/precio/trabajo/{tid}")
@@ -229,7 +281,7 @@ async def ofertas(cuenta: str, fresco: bool = False, quien=Depends(acceso_pricin
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-class PedidoOferta(BaseModel):
+class PedidoOferta(DatosBitacora):
     item: str
     cuenta: str
     tipo: str
@@ -242,8 +294,10 @@ class PedidoOferta(BaseModel):
 @router.post("/ofertas/tomar")
 async def ofertas_tomar(req: PedidoOferta, quien=Depends(solo_admin)) -> dict:
     """ESCRIBE EN ML: inscribe la publicación en la oferta (relee antes, comprueba después, bitácora)."""
+    m, t = await _motivo(req)
     try:
-        return await po.tomar(req.item, req.cuenta, req.tipo, req.promo_id, req.precio, req.stock, req.sku, _quien(quien))
+        return await po.tomar(req.item, req.cuenta, req.tipo, req.promo_id, req.precio, req.stock, req.sku, _quien(quien),
+                              bitacora=_bitacora(req, m, t, "pricing_ofertas"))
     except po.ErrorOferta as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -251,7 +305,9 @@ async def ofertas_tomar(req: PedidoOferta, quien=Depends(solo_admin)) -> dict:
 @router.post("/ofertas/quitar")
 async def ofertas_quitar(req: PedidoOferta, quien=Depends(solo_admin)) -> dict:
     """ESCRIBE EN ML: saca la publicación de la oferta (relámpago: solo si no ha empezado)."""
+    m, t = await _motivo(req)
     try:
-        return await po.quitar(req.item, req.cuenta, req.tipo, req.promo_id, req.sku, _quien(quien))
+        return await po.quitar(req.item, req.cuenta, req.tipo, req.promo_id, req.sku, _quien(quien),
+                               bitacora=_bitacora(req, m, t, "pricing_ofertas"))
     except po.ErrorOferta as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

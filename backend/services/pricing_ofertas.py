@@ -372,7 +372,9 @@ async def _leer_item(cli: httpx.AsyncClient, item_id: str) -> tuple[dict, list[d
         raise ErrorOferta(f"Mercado Libre no devolvió la publicación ({s1}).")
     if s2 != 200 or not isinstance(pr, list):
         raise ErrorOferta(f"Mercado Libre no devolvió las promociones de la publicación ({s2}).")
-    return it, pr, _f((sp or {}).get("amount")) if s3 == 200 and isinstance(sp, dict) else None
+    ok_sp = s3 == 200 and isinstance(sp, dict)
+    it["tachado"] = _f(sp.get("regular_amount")) if ok_sp else None   # el precio base que ve el comprador
+    return it, pr, _f(sp.get("amount")) if ok_sp else None
 
 
 def _validar(item_id: str, cuenta: str, tipo: str, promo_id: str) -> tuple[str, str]:
@@ -386,17 +388,23 @@ def _validar(item_id: str, cuenta: str, tipo: str, promo_id: str) -> tuple[str, 
 
 
 def _anotar(sku: str | None, accion: str, estado: str, detalle: dict, quien: str) -> None:
-    """BLOQUEANTE (kubera). La bitácora nunca tumba lo ya hecho en ML."""
+    """
+    BLOQUEANTE (kubera). La bitácora nunca tumba lo ya hecho en ML. Desde v0.673.0 la misma fila pasa a la
+    bitácora del esquema `pricing` (services/pricing_bitacora.py).
+    """
+    from services import pricing_bitacora
     from services import supabase_db as sdb
 
     try:
-        sdb.execute(
+        fila = sdb.execute_returning(
             "INSERT INTO ops.process_log (proceso, origen, sku, accion, estado, detalle, detail_ref, actor) "
-            "VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s)",
+            "VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s) RETURNING *",
             (PROCESO, ORIGEN, sku, accion, estado, json.dumps(detalle, ensure_ascii=False, default=str),
              f"ofertas:{detalle.get('item')}", quien or None))
     except Exception as exc:  # noqa: BLE001
         log.warning("ofertas: no se pudo anotar %s de %s: %s", accion, detalle.get("item"), exc)
+        return
+    pricing_bitacora.tras_anotar(fila)
 
 
 async def _horario(cli: httpx.AsyncClient, item_id: str) -> tuple[str | None, str | None]:
@@ -408,9 +416,13 @@ async def _horario(cli: httpx.AsyncClient, item_id: str) -> tuple[str | None, st
 
 
 async def tomar(item_id: str, cuenta: str, tipo: str, promo_id: str, precio: float, stock: int | None = None,
-                sku: str | None = None, quien: str = "") -> dict:
-    """ESCRIBE EN ML: inscribe la publicación en la oferta. Relee antes, comprueba después y lo anota."""
+                sku: str | None = None, quien: str = "", bitacora: dict | None = None) -> dict:
+    """
+    ESCRIBE EN ML: inscribe la publicación en la oferta. Relee antes, comprueba después y lo anota.
+    `bitacora` = motivo y contexto de la pantalla (v0.673.0): van a la bitácora de pricing.
+    """
     cuenta, tipo = _validar(item_id, cuenta, tipo, promo_id)
+    iniciada = datetime.now(CDMX).isoformat()
     precio = _f(precio)
     candado = pp._candados.setdefault(item_id, asyncio.Lock())
     if candado.locked():
@@ -432,7 +444,8 @@ async def tomar(item_id: str, cuenta: str, tipo: str, promo_id: str, precio: flo
         validar_toma(fila, precio, stock, it.get("available_quantity"))
         cuerpo = cuerpo_toma(tipo, promo_id, precio, stock)
         detalle = {"item": item_id, "cuenta": cuenta, "tipo": tipo, "promo_id": promo_id, "cuerpo": cuerpo,
-                   "antes": {"cobra": cobra_antes, "entrada": e}}
+                   "antes": {"cobra": cobra_antes, "tachado": it.get("tachado"), "normal": _f(it.get("price")), "entrada": e},
+                   "bitacora": {**(bitacora or {}), "iniciada": iniciada}}
         r = await cli.post(f"/seller-promotions/items/{item_id}", params={"app_version": "v2"}, json=cuerpo)
         detalle["http"] = r.status_code
         if r.status_code not in (200, 201):
@@ -444,11 +457,11 @@ async def tomar(item_id: str, cuenta: str, tipo: str, promo_id: str, precio: flo
         except ValueError:
             detalle["respuesta"] = r.text[:300]
         # Comprobar en ML que quedó.
-        quedo, cobra_despues, limite = None, None, time.monotonic() + ESPERA_COMPROBAR_S
+        quedo, cobra_despues, it2, limite = None, None, it, time.monotonic() + ESPERA_COMPROBAR_S
         while time.monotonic() < limite:
             await asyncio.sleep(3)
             try:
-                _, pr2, cobra_despues = await _leer_item(cli, item_id)
+                it2, pr2, cobra_despues = await _leer_item(cli, item_id)
             except ErrorOferta:
                 continue
             ins = _entrada(pr2, tipo, promo_id, ("pending", "started"))
@@ -459,7 +472,8 @@ async def tomar(item_id: str, cuenta: str, tipo: str, promo_id: str, precio: flo
         if tipo == "LIGHTNING" and quedo:
             inicio, fin = await _horario(cli, item_id)
     estado = (quedo or {}).get("status")
-    detalle.update(despues={"cobra": cobra_despues, "entrada": quedo, "inicio": inicio, "fin": fin})
+    detalle.update(despues={"cobra": cobra_despues, "tachado": it2.get("tachado"), "normal": _f(it2.get("price")),
+                            "entrada": quedo, "inicio": inicio, "fin": fin})
     await asyncio.to_thread(_anotar, sku, "tomar", "ok" if quedo else "sin_confirmar", detalle, quien)
     if quedo:
         _recordar(cuenta, item_id, tipo, promo_id, {"de": "candidate", "estado": estado, "precio": _f(quedo.get("price")) or precio,
@@ -474,14 +488,16 @@ async def tomar(item_id: str, cuenta: str, tipo: str, promo_id: str, precio: flo
             "cobra_antes": cobra_antes, "cobra_despues": cobra_despues, "avisos": avisos}
 
 
-async def quitar(item_id: str, cuenta: str, tipo: str, promo_id: str, sku: str | None = None, quien: str = "") -> dict:
+async def quitar(item_id: str, cuenta: str, tipo: str, promo_id: str, sku: str | None = None, quien: str = "",
+                 bitacora: dict | None = None) -> dict:
     """ESCRIBE EN ML: saca la publicación de la oferta. Relee antes, comprueba después y lo anota."""
     cuenta, tipo = _validar(item_id, cuenta, tipo, promo_id)
+    iniciada = datetime.now(CDMX).isoformat()
     candado = pp._candados.setdefault(item_id, asyncio.Lock())
     if candado.locked():
         raise ErrorOferta("Ya se está cambiando esta publicación. Espera a que termine.")
     async with candado, await pp._cliente(cuenta) as cli:
-        _, pr, cobra_antes = await _leer_item(cli, item_id)
+        it, pr, cobra_antes = await _leer_item(cli, item_id)
         ins = _entrada(pr, tipo, promo_id, ("pending", "started"))
         if not ins:
             raise ErrorOferta("No está inscrita en esta oferta (ya se quitó o terminó). Vuelve a leer la lista.")
@@ -495,24 +511,25 @@ async def quitar(item_id: str, cuenta: str, tipo: str, promo_id: str, sku: str |
         if tipo != "LIGHTNING":
             params["promotion_id"] = promo_id
         detalle = {"item": item_id, "cuenta": cuenta, "tipo": tipo, "promo_id": promo_id, "params": params,
-                   "antes": {"cobra": cobra_antes, "entrada": ins[0]}}
+                   "antes": {"cobra": cobra_antes, "tachado": it.get("tachado"), "normal": _f(it.get("price")), "entrada": ins[0]},
+                   "bitacora": {**(bitacora or {}), "iniciada": iniciada}}
         r = await cli.delete(f"/seller-promotions/items/{item_id}", params=params)
         detalle["http"] = r.status_code
         if r.status_code not in (200, 204):
             detalle["error"] = pp._txt(r)
             await asyncio.to_thread(_anotar, sku, "quitar", "error", detalle, quien)
             raise ErrorOferta(f"Mercado Libre no la quitó ({r.status_code}): {pp._txt(r)}")
-        salio, cobra_despues, limite = False, None, time.monotonic() + ESPERA_COMPROBAR_S
+        salio, cobra_despues, it2, limite = False, None, it, time.monotonic() + ESPERA_COMPROBAR_S
         while time.monotonic() < limite:
             await asyncio.sleep(3)
             try:
-                _, pr2, cobra_despues = await _leer_item(cli, item_id)
+                it2, pr2, cobra_despues = await _leer_item(cli, item_id)
             except ErrorOferta:
                 continue
             if not _entrada(pr2, tipo, promo_id, ("pending", "started")):
                 salio = True
                 break
-    detalle.update(despues={"cobra": cobra_despues, "salio": salio})
+    detalle.update(despues={"cobra": cobra_despues, "tachado": it2.get("tachado"), "normal": _f(it2.get("price")), "salio": salio})
     await asyncio.to_thread(_anotar, sku, "quitar", "ok" if salio else "sin_confirmar", detalle, quien)
     if salio:
         _recordar(cuenta, item_id, tipo, promo_id, {"de": ins[0].get("status"), "estado": "candidate", "precio": None,

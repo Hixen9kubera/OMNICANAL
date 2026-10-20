@@ -15,6 +15,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import {
+  type DatosBitacoraML,
   pricingPrecioAplicar,
   pricingPrecioDeshacer,
   pricingPrecioTrabajo,
@@ -25,6 +26,7 @@ import {
 } from "@/lib/api";
 
 import { pesos } from "./formato";
+import MotivoSelect, { motivoListo } from "./MotivoSelect";
 
 const fmt2 = (x: number | null | undefined) =>
   x == null ? "—" : "$" + x.toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -42,6 +44,7 @@ export default function EditorPrecio({
   titulo,
   cobra,
   normal,
+  bitacora,
 }: {
   id: string;
   cuenta: string;
@@ -49,6 +52,8 @@ export default function EditorPrecio({
   titulo: string;
   cobra: number | null;
   normal: number | null;
+  /** Lo que la pantalla veía (contexto, recomendación, umbrales, foto): va a la bitácora de pricing (v0.673.0). */
+  bitacora?: DatosBitacoraML;
 }) {
   const [abierto, setAbierto] = useState(false);
   const [precio, setPrecio] = useState<string>("");
@@ -62,6 +67,9 @@ export default function EditorPrecio({
     setAbierto(true);
   };
   const [salir, setSalir] = useState(false);
+  // Por qué se mueve (v0.673.0): obligatorio para publicar; va a pricing.accion.motivo.
+  const [motivo, setMotivo] = useState("");
+  const [motivoTexto, setMotivoTexto] = useState("");
   const [vista, setVista] = useState<PricingVistaPrecio | null>(null);
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -106,7 +114,18 @@ export default function EditorPrecio({
   const publicar = async () => {
     setError(null);
     try {
-      setTrabajo(await pricingPrecioAplicar(id, { cuenta, sku, precio: nPrecio, pct: nPct || null, salir }));
+      setTrabajo(
+        await pricingPrecioAplicar(id, {
+          cuenta,
+          sku,
+          precio: nPrecio,
+          pct: nPct || null,
+          salir,
+          ...bitacora,
+          motivo,
+          motivo_texto: motivoTexto.trim() || null,
+        }),
+      );
     } catch (e) {
       setError((e as Error).message);
     }
@@ -115,7 +134,7 @@ export default function EditorPrecio({
   const deshacer = async () => {
     setError(null);
     try {
-      setTrabajo(await pricingPrecioDeshacer(id, { cuenta, sku }));
+      setTrabajo(await pricingPrecioDeshacer(id, { cuenta, sku, ...bitacora, motivo: motivo || null, motivo_texto: motivoTexto.trim() || null }));
     } catch (e) {
       setError((e as Error).message);
     }
@@ -229,8 +248,15 @@ export default function EditorPrecio({
                 Tarda de 1 a 5 minutos: Mercado Libre tarda en aceptar un descuento nuevo. Mientras tanto la publicación puede verse unos
                 minutos con su descuento anterior o sin descuento. Queda en la bitácora y se puede deshacer.
               </p>
+              <MotivoSelect motivo={motivo} texto={motivoTexto} onMotivo={setMotivo} onTexto={setMotivoTexto} />
               <div className="ed-botones">
-                <button type="button" className="ed-publicar" onClick={() => void publicar()}>
+                <button
+                  type="button"
+                  className="ed-publicar"
+                  disabled={!motivoListo(motivo, motivoTexto)}
+                  title={motivoListo(motivo, motivoTexto) ? undefined : "Escoge el motivo del cambio"}
+                  onClick={() => void publicar()}
+                >
                   Publicar en ML
                 </button>
                 {vista.ultimo && (

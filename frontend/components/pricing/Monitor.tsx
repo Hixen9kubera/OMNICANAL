@@ -12,7 +12,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { EyeOff, Info } from "lucide-react";
 
 import type {
-  PricingComp, PricingFoto, PricingHecho, PricingHechos, PricingMetricaML, PricingMotivos, PricingOrden, PricingPromoHoy, PricingPub,
+  DatosBitacoraML, PricingComp, PricingFoto, PricingHecho, PricingHechos, PricingMetricaML, PricingMotivos, PricingOrden, PricingPromoHoy, PricingPub,
   PricingSalud, PricingSerie, PricingVivo, PricingVivoPub,
 } from "@/lib/api";
 import { pricingMotivos, pricingSerie } from "@/lib/api";
@@ -774,7 +774,7 @@ export default function Monitor({
                 <Fragment key={f.p.id}>
                   <FilaPub f={f} R={R} rel={rel} abierta={abiertos.has(f.i)} tieneRiv={!!(f.p.sku && foto.riv[f.p.sku])}
                     serie={series.pubs} onAlternar={() => alternar(f.i)} onRivales={setRivSku} X={X} movido={movidos.has(f.p.id)}
-                    salud={salud} esAdmin={esAdmin} />
+                    salud={salud} esAdmin={esAdmin} fotoGen={foto.meta.generado} />
                   {abiertos.has(f.i) && (
                     <tr className="det">
                       <td colSpan={12}>
@@ -797,6 +797,43 @@ export default function Monitor({
   );
 }
 
+/**
+ * Lo que la pantalla veía de la fila al cambiar el precio (v0.673.0): va a la bitácora del esquema `pricing`
+ * (accion_publicacion.contexto, PLANO: solo números, textos o null) junto con la recomendación de «Qué hacer»,
+ * los umbrales con que se calculó y de qué foto salían los datos. Sin eso, la recomendación no se puede reproducir.
+ */
+function bitacoraDe(f: FilaV, R: Reglas, foto?: string): DatosBitacoraML {
+  const n = (x: number | null | undefined) => (x == null || !Number.isFinite(x) ? null : Math.round(x * 10000) / 10000);
+  const { m, a, v, p } = f;
+  return {
+    contexto: {
+      cobra_hoy: n(m.precio),
+      normal: n(m.normal),
+      descuento: n(m.desc),
+      ventas_7d: n(m.u7),
+      ventas_14d: n(m.u14),
+      ventas_30d: n(v.u30 ?? m.u30),
+      visitas_30d: n(v.vis30),
+      conversion: n(v.conv),
+      stock_full: n(v.stock),
+      dias_agota: n(v.dias),
+      comp_referencia: n(m.ref),
+      dif_competencia: n(m.dif),
+      posicion: m.pos ?? null,
+      prioridad: f.clu ?? null,
+      calidad_ml: f.cal,
+      experiencia_ml: f.exp,
+      categoria: p.cat.v ?? null,
+      que_hacer: a.t || null,
+      por_que: a.por || null,
+    },
+    recomendacion: a.k,
+    precio_recomendado: a.precio ?? null,
+    umbrales: { ...R },
+    foto: foto ?? null,
+  };
+}
+
 function FilaPub({
   f,
   R,
@@ -810,11 +847,14 @@ function FilaPub({
   movido,
   salud,
   esAdmin = false,
+  fotoGen,
 }: {
   X: Extra;
   movido?: boolean;
   salud?: PricingSalud | null | "error";
   esAdmin?: boolean;
+  /** De qué foto salen los datos de la fila (va a la bitácora de pricing con cada cambio). */
+  fotoGen?: string;
   f: FilaV;
   R: Reglas;
   rel: Reloj;
@@ -876,7 +916,9 @@ function FilaPub({
             </div>
           );
         })()}
-        {esAdmin && <EditorPrecio id={p.id} cuenta={p.c} sku={p.sku} titulo={p.t} cobra={m.precio} normal={m.normal} />}
+        {esAdmin && (
+          <EditorPrecio id={p.id} cuenta={p.c} sku={p.sku} titulo={p.t} cobra={m.precio} normal={m.normal} bitacora={bitacoraDe(f, R, fotoGen)} />
+        )}
       </td>
       <td className="promo-hoy">
         <CeldaPromoHoy X={X} id={p.id} />

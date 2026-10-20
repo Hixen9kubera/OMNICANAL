@@ -99,6 +99,19 @@ async def lifespan(app: FastAPI):
             await asyncio.sleep(90)
             await asyncio.to_thread(checklist.precalentar_sync, None)
         app.state.checklist_warmup = asyncio.create_task(_checklist_warmup())
+    # Bitácora de PRICING (v0.673.0): lo que el panel movió en ML y todavía no está en el
+    # esquema `pricing` (el cambio del 19-oct, o un movimiento cuyo registro falló al
+    # momento) se pasa una vez al arrancar. Idempotente: `process_log_id` es único. En un
+    # hilo (regla 11) y 60 s después de arrancar, para no competir por el pool de kubera.
+    if settings.app_env == "production" and settings.supabase_db_url:
+        async def _bitacora_pricing():
+            from services import pricing_bitacora
+            await asyncio.sleep(60)
+            try:
+                await asyncio.to_thread(pricing_bitacora.rellenar)
+            except Exception as exc:  # noqa: BLE001 — la bitácora nunca tumba el arranque
+                log.warning("Bitácora de pricing: el relleno al arrancar falló: %s", exc)
+        app.state.bitacora_pricing = asyncio.create_task(_bitacora_pricing())
     # Contenido de Amazon al crear productos: se declara en el arranque porque
     # es la ÚNICA forma honesta de saber si está encendido. Leer el `.env` local
     # ya llevó a reportar el fan-out como apagado cuando llevaba dos semanas
@@ -220,7 +233,7 @@ app = FastAPI(
         "Temu, Shein)."
     ),
 
-    version="0.672.0",
+    version="0.673.0",
     lifespan=lifespan,
     # /docs, /redoc y /openapi.json publican el mapa COMPLETO de los 84
     # endpoints: rutas, parámetros y esquemas. Con la API abierta eso es un
@@ -339,7 +352,7 @@ def raiz():
     return {
         "app": "OMNICANAL Â· Kubera",
 
-        "version": "0.672.0",
+        "version": "0.673.0",
         "docs": "/docs",
         "canales": [c["id"] for c in lista_canales()],
     }
