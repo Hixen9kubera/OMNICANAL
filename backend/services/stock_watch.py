@@ -89,6 +89,33 @@ CANDADOS (nace apagado; encenderlo MUEVE INVENTARIO REAL — regla 3):
 
 Todo queda anotado en `fanout_log` (misma bitácora del panel; TABLA TEMPORAL,
 ver docs/TABLAS_TEMPORALES.md).
+
+LA FUENTE (`STOCK_WATCH_FUENTE`, 15-oct — salida total de Odoo)
+---------------------------------------------------------------
+Desde las 18:34 UTC del 15-oct Odoo rechaza la cuenta API, y con `odoo` cada
+pasada aborta en silencio. La salida de Woo tomó la RUTA DIRECTA (20-oct): en T0
+el inventario sale del libro de kubera y Woo deja el camino del stock. El modo
+puente `woo` (v0.654.0) nunca se desplegó y se quitó. La bandera elige:
+
+  · `odoo` (por omisión) — todo lo de arriba, idéntico.
+  · `libro` — `_pasada_libro`: SÓLO el segundo tramo, con el vendible del libro
+    de kubera (`stock_libro.todos()`) en lugar del `_stock` de Woo. Compara
+    contra el `stock_kubera` de la foto y, por cada diferencia, anota
+    `vendible_cambio` y encola «cambio de vendible en kubera» SÓLO si el fan-out
+    también lee el libro (`FANOUT_FUENTE=kubera`); si no, sólo registra (la
+    sombra). La primera pasada mide contra el último `stock_woo`. Lo que el libro
+    no trae vale 0 (D4): su `stock_kubera` se siembra en 0 y, si tenía un número
+    distinto, es un cambio que se reparte como cualquier otro. Todo cuenta para el
+    tope. El piso se mide en SKUs con piezas. NUNCA lee ni escribe Woo. La foto es
+    `ops.stock_watch_photo` y nada más (sin MySQL): avanza `stock_kubera` y
+    `actualizado`; `stock_odoo` se queda CONGELADO al 15-oct 18:34 (y está
+    incompleto). Falla cerrada: el libro ilegible (`stock_libro.LibroNoDisponible`)
+    o muy por debajo de la pasada anterior aborta la pasada entera; dos pasadas
+    seguidas sin repartir avisan por Slack.
+  · Cualquier otro valor (`woo` incluido) se NIEGA: log, aviso y nada más.
+
+LA REVERSA de `libro` es `STOCK_WATCH_ENABLED=false` (o `STOCK_WATCH_SOLO_REGISTRO=
+true`), NUNCA `STOCK_WATCH_FUENTE=odoo`: ver `kubera_decide`.
 """
 from __future__ import annotations
 
@@ -117,8 +144,54 @@ _lock = asyncio.Lock()
 _pasada_desde: float | None = None
 
 
+# La última pasada que leyó Odoo: desde ahí la columna `stock_odoo` de la foto no
+# se mueve. Y NO es una foto completa: Odoo negó el acceso en el offset 5500 y
+# esa pasada dejó NULL en 9,270 de 14,771 filas (medido en producción, 15-oct
+# 21:35 UTC). Por eso el rótulo dice «incompleto»: nadie debe tomar esa columna
+# como «el último número de Odoo» (ni como base del libro de kubera).
+ODOO_CONGELADO = "15-oct 18:34"
+# Las fuentes que NO son Odoo y que existen de verdad. Los lectores (rótulo,
+# `kubera_decide`, la resta) deciden con esta lista y no con `!= "odoo"`: una
+# errata en la variable hace que la pasada se niegue, pero no mueve a nadie más.
+_SIN_ODOO = ("libro",)
+# Las acciones de `ops.fanout_log` (canal 'woocommerce') que son «el stock cambió,
+# repártelo»: una por fuente. La lista es UNA para que el recuperador, la matriz y
+# el panel no se queden contando dos de tres (acuerdo con INVENTARIO FANOUT, 17-oct).
+ACCIONES_CAMBIO = ("odoo_delta", "woo_cambio", "vendible_cambio")
+# FUENTE=libro: si el libro trae menos de esta fracción de los SKUs que la última
+# pasada vio con número, no se le cree (tablas a medias, una bodega que dejó de
+# contar): la pasada se frena.
+_PISO = 0.9
+# FUENTE≠odoo: dos pasadas SEGUIDAS que no repartieron (libro ilegible o parcial,
+# foto ilegible, freno, fuente desconocida) avisan por Slack, a lo más una vez por
+# hora (el enfriamiento por omisión de `alertas.avisar`). Una sola puede ser un
+# parpadeo; dos ya son 40 min sin que un cambio llegue a los canales.
+_AVISO_TRAS = 2
+_racha_sin_repartir = 0
+
+
 def habilitado() -> bool:
     return bool(getattr(settings, "stock_watch_enabled", False))
+
+
+def fuente() -> str:
+    """`odoo` | `woo` | `libro` (`STOCK_WATCH_FUENTE`). Sin la variable —o vacía, o
+    sólo espacios—, `odoo`. Un valor que no se conoce NO cae a Odoo: `revisar` se
+    niega a correr con él (y lo avisa)."""
+    return str(getattr(settings, "stock_watch_fuente", "odoo") or "").strip().lower() or "odoo"
+
+
+def odoo_vivo() -> bool:
+    """¿El Odoo de la foto se sigue moviendo? Falso sólo con una fuente conocida que
+    no es Odoo (`_SIN_ODOO`); con una errata la pasada no corre, pero los lectores
+    siguen como con Odoo."""
+    return fuente() not in _SIN_ODOO
+
+
+def odoo_rotulo() -> str:
+    """Cómo se rotula la columna «Odoo» de la foto en el panel (matriz, Bodegas):
+    con otra fuente ese número ya no se mueve y nadie debe leerlo como vivo."""
+    return "Odoo" if odoo_vivo() else f"Odoo (congelado al {ODOO_CONGELADO}, incompleto)"
 
 
 def solo_registro() -> bool:
@@ -137,9 +210,13 @@ def resta_pendientes() -> bool:
     DELTA la venta ya bajó Woo por su cuenta y restar otra vez la descontaría
     dos veces, así que la bandera se ignora (ver `_deltas_odoo`). Se comprueba
     aquí además de allí para que `estado()` diga la verdad en el panel.
+
+    Y sólo con FUENTE=odoo: con `woo` nada se copia de Odoo, la venta ya bajó Woo
+    por su cuenta (igual que en DELTA) y no hay a qué restarle.
     """
     return (bool(getattr(settings, "stock_watch_resta_pendientes", False))
-            and bool(getattr(settings, "stock_watch_absoluto", False)))
+            and bool(getattr(settings, "stock_watch_absoluto", False))
+            and odoo_vivo())
 
 
 def _ventana_pendientes() -> int:
@@ -165,10 +242,19 @@ def _ventana_pendientes() -> int:
 
 
 def estado() -> dict[str, Any]:
+    f = fuente()
+    if f == "libro":
+        modo = "libro (reparte los cambios del vendible de kubera; ni Woo ni Odoo)"
+    elif f != "odoo":
+        modo = f"{f} (no existe: no corre)"
+    elif getattr(settings, "stock_watch_absoluto", False):
+        modo = "absoluto (Odoo master)"
+    else:
+        modo = "delta (Woo conserva su base)"
     return {**_ultimo, "habilitado": habilitado(),
             "solo_registro": solo_registro(), "tope": tope(),
-            "modo": "absoluto (Odoo master)" if getattr(settings, "stock_watch_absoluto", False)
-                    else "delta (Woo conserva su base)",
+            "fuente": f, "odoo_rotulo": odoo_rotulo(),
+            "odoo_congelado": None if odoo_vivo() else ODOO_CONGELADO, "modo": modo,
             "resta_pendientes": resta_pendientes(),
             "resta_pendientes_pedida": bool(
                 getattr(settings, "stock_watch_resta_pendientes", False)),
@@ -195,9 +281,19 @@ def kubera_escribe() -> bool:
 
 
 def kubera_decide() -> bool:
-    """¿La foto que se LEE —la que decide los deltas— sale ya de kubera?"""
+    """¿La foto que se LEE —la que decide los deltas— sale ya de kubera?
+
+    Con una fuente que no es Odoo (`woo`, `libro`), siempre: esas pasadas sólo
+    escriben `ops.stock_watch_photo`, y el espejo del DROP (`channel_mirror`) sigue
+    a esta misma función para no leer una foto de MySQL que ya nadie mueve.
+
+    ⚠️ Por eso `STOCK_WATCH_FUENTE=odoo` NO es la reversa de `woo`: devuelve esta
+    decisión a `SUPABASE_READ_STOCK_WATCH` (no está puesta en Railway) y el espejo
+    del DROP volvería a la foto de MySQL, parada en la última pasada de Odoo. La
+    reversa es `STOCK_WATCH_ENABLED=false` o `STOCK_WATCH_SOLO_REGISTRO=true`."""
     from services import supabase_db as sdb
-    return bool(getattr(settings, "supabase_read_stock_watch", False)) and sdb.disponible()
+    return ((bool(getattr(settings, "supabase_read_stock_watch", False)) or not odoo_vivo())
+            and sdb.disponible())
 
 
 def _foto() -> dict[str, dict[str, int | None]]:
@@ -377,14 +473,23 @@ def _vincular_capturadas() -> dict[str, int]:
     return fuera
 
 
-def _anotar(sku: str, accion: str, motivo: str, resultado: str) -> None:
-    """Bitácora en `fanout_log` (la que ya pinta el Dashboard)."""
+def _anotar(sku: str, accion: str, motivo: str, resultado: str, mysql: bool = True,
+            dry_run: bool | None = None) -> None:
+    """Bitácora en `fanout_log` (la que ya pinta el Dashboard).
+
+    `mysql=False` (FUENTE≠odoo): sólo `ops.fanout_log` en kubera, sin la copia
+    local de MySQL ni su `_asegurar_schema`. `dry_run` None → `solo_registro()`;
+    la pasada del libro lo pasa explícito (también registra cuando el fan-out
+    todavía lee Woo)."""
     from services import fanout_read
     _ahora = datetime.now(timezone.utc).replace(tzinfo=None)
     fanout_read.espejar(ts=_ahora, sku=sku[:64], motivo=motivo[:255],
-                        dry_run=bool(solo_registro()), canal="woocommerce",
+                        dry_run=bool(solo_registro() if dry_run is None else dry_run),
+                        canal="woocommerce",
                         cuenta="ODOO", accion=accion, resultado=resultado[:255],
                         ms=0)
+    if not mysql:
+        return
     try:
         from services import fanout_stock
         fanout_stock._asegurar_schema()
@@ -400,15 +505,21 @@ def _anotar(sku: str, accion: str, motivo: str, resultado: str) -> None:
         log.warning("stock_watch: no se pudo anotar %s: %s", sku, exc)
 
 
-def _leer_woo() -> dict[str, dict[str, Any]]:
-    """Stock actual de TODO el catálogo de Woo (una sola consulta)."""
+class LecturaWooIncompleta(RuntimeError):
+    """Woo contestó menos de lo que tiene (o nada). La comparación de T0 no decide con eso."""
+
+
+def _leer_woo(estricto: bool = False) -> dict[str, dict[str, Any]]:
+    """Stock actual de TODO el catálogo de Woo (una sola consulta).
+
+    `estricto=True` (la comparación de T0, `--woo vivo`) cuenta ANTES las filas que la consulta debe
+    traer y LANZA `LecturaWooIncompleta` si llegan menos, o ninguna: un Woo vacío
+    no es «todo en cero». Un producto que se manda a la papelera entre las dos
+    consultas da un falso aborto — inofensivo: la pasada siguiente lo vuelve a
+    leer. Sin `estricto` es la consulta de siempre."""
     from services import wp_db
     P = wp_db._prefix()
-    fuera: dict[str, dict[str, Any]] = {}
-    for r in wp_db._fetch_all(
-        f"""SELECT sk.meta_value sku, st.meta_value stock, p.ID, p.post_type, p.post_parent,
-                   pt.slug ptype
-            FROM {P}postmeta sk
+    desde = f"""FROM {P}postmeta sk
             JOIN {P}posts p ON p.ID = sk.post_id
                  AND p.post_type IN ('product','product_variation')
                  AND p.post_status <> 'trash'
@@ -418,7 +529,17 @@ def _leer_woo() -> dict[str, dict[str, Any]]:
                          JOIN {P}term_taxonomy tt ON tt.term_taxonomy_id = tr.term_taxonomy_id
                               AND tt.taxonomy = 'product_type'
                          JOIN {P}terms t ON t.term_id = tt.term_id) pt ON pt.object_id = p.ID
-            WHERE sk.meta_key = '_sku' AND sk.meta_value <> ''"""):
+            WHERE sk.meta_key = '_sku' AND sk.meta_value <> ''"""
+    esperadas = (int((wp_db._fetch_all(f"SELECT COUNT(*) n {desde}") or [{}])[0].get("n") or 0)
+                 if estricto else 0)
+    filas = wp_db._fetch_all(
+        f"""SELECT sk.meta_value sku, st.meta_value stock, p.ID, p.post_type, p.post_parent,
+                   pt.slug ptype
+            {desde}""")
+    if estricto and (not filas or len(filas) < esperadas):
+        raise LecturaWooIncompleta(f"Woo devolvió {len(filas)} de {esperadas} filas")
+    fuera: dict[str, dict[str, Any]] = {}
+    for r in filas:
         s = (r["sku"] or "").strip()
         if not s:
             continue
@@ -560,9 +681,27 @@ def _deltas_odoo(od: dict[str, int], wo: dict[str, dict[str, Any]],
     return deltas
 
 
+def _cambios_woo(wo: dict[str, dict[str, Any]],
+                 foto: dict[str, dict[str, int | None]]) -> list[tuple[str, int, int]]:
+    """[(sku, antes, ahora)]: el `_stock` de Woo que se movió contra la foto. Un
+    número contra otro número; un SKU sin foto o sin número no es un cambio (la
+    foto lo absorbe y su próximo movimiento ya se ve)."""
+    movidos: list[tuple[str, int, int]] = []
+    for sku, w in wo.items():
+        ant = foto.get(sku, {}).get("woo")
+        if ant is not None and w["stock"] is not None and w["stock"] != ant:
+            movidos.append((sku, ant, w["stock"]))
+    return movidos
+
+
 async def revisar(forzar: bool = False) -> dict[str, Any]:
-    """Una pasada completa. La corre el scheduler; también sirve a mano."""
-    if not habilitado() and not forzar:
+    """Una pasada completa. La corre el scheduler; también sirve a mano.
+
+    `forzar` se salta el tope y el piso, pero NO el apagado: con
+    `STOCK_WATCH_ENABLED=false` sólo corre una pasada forzada que no puede mover
+    nada (`STOCK_WATCH_SOLO_REGISTRO=true`). Apagarlo (el acta P2) no se deshace
+    con un botón."""
+    if not habilitado() and not (forzar and solo_registro()):
         return {"estado": "apagado"}
     if _lock.locked():
         return {"estado": "ya_corriendo"}
@@ -570,6 +709,12 @@ async def revisar(forzar: bool = False) -> dict[str, Any]:
     async with _lock:
         global _pasada_desde
         t0 = _pasada_desde = time.time()
+        # ── LA FUENTE: cada una en su propia función, antes de tocar MySQL ──
+        f = fuente()
+        if f == "libro":
+            return await _pasada_libro(forzar, t0)
+        if f != "odoo":
+            return await _fuente_sin_construir(f)
         await asyncio.to_thread(_asegurar_schema)
         from services import odoo, fanout_stock
 
@@ -652,7 +797,16 @@ async def revisar(forzar: bool = False) -> dict[str, Any]:
         else:
             resta_ciega = False
 
-        catalogo = await asyncio.to_thread(odoo.listar_catalogo)
+        try:
+            catalogo = await asyncio.to_thread(odoo.listar_catalogo, estricto=True)
+        except odoo.CatalogoIncompleto as exc:
+            # Odoo cortó A MEDIA lectura (15-oct 18:34: negó el acceso en el
+            # offset 5500). Un catálogo parcial no es el catálogo: copiarlo o
+            # guardarlo en la foto borra el `stock_odoo` del resto. Se aborta.
+            log.error("stock_watch: lectura de Odoo incompleta, pasada abortada: %s", exc)
+            _ultimo.update(estado="odoo_lectura_parcial", ts=time.time(),
+                           nota=f"{exc}. Pasada abortada; nada se escribió.")
+            return dict(_ultimo)
         if not catalogo:
             # Odoo mudo: NO se interpreta como "todo en cero" (eso vaciaría el
             # catálogo entero). Se aborta la pasada.
@@ -714,11 +868,7 @@ async def revisar(forzar: bool = False) -> dict[str, Any]:
         deltas = [] if resta_ciega else _deltas_odoo(od, wo, foto, absoluto, pend)
 
         # ── 2) CAMBIOS DE WOO (venga de donde venga) → canales ────────────
-        movidos_woo: list[tuple[str, int | None, int | None]] = []
-        for sku, w in wo.items():
-            ant = foto.get(sku, {}).get("woo")
-            if ant is not None and w["stock"] is not None and w["stock"] != ant:
-                movidos_woo.append((sku, ant, w["stock"]))
+        movidos_woo = _cambios_woo(wo, foto)
 
         total = len(deltas) + len(movidos_woo)
         # ── CORTACIRCUITOS ────────────────────────────────────────────────
@@ -812,6 +962,8 @@ async def revisar(forzar: bool = False) -> dict[str, Any]:
         # exactamente el tipo de número que después nadie logra cuadrar.
         aplicados = {s: pend[s] for s, _d, _w in deltas if s in pend}
         huerfanos = sorted(set(pend) - set(od))
+        # `cambios` sólo lo pone el freno: no debe quedarse pegado en las pasadas buenas.
+        _ultimo.pop("cambios", None)
         _ultimo.update(
             estado="ok", ts=time.time(), segundos=round(time.time() - t0, 1),
             skus_odoo=len(od), skus_woo=len(wo),
@@ -856,3 +1008,198 @@ async def revisar(forzar: bool = False) -> dict[str, Any]:
                      "(%d encolados)%s", len(deltas), escritos, len(movidos_woo), encolados,
                      " [SOLO REGISTRO]" if solo_registro() else "")
         return dict(_ultimo)
+
+
+async def _sin_repartir(estado_: str, msg: str, fuente_: str) -> dict[str, Any]:
+    """Una pasada con FUENTE≠odoo que termina SIN repartir (Woo mudo o parcial, foto
+    ilegible, freno, bitácora apagada, libro ilegible, fuente desconocida): log, estado y, desde
+    la segunda SEGUIDA (`_AVISO_TRAS`), aviso por Slack (`alertas.avisar`, a lo más
+    uno por hora). Sólo con el log es justo como falló Odoo el 15-oct: cada pasada
+    abortó sin ruido desde las 18:34 y la foto pasó 3 h quieta sin que nadie lo
+    supiera. La racha vuelve a cero con la primera pasada que sí reparte."""
+    global _racha_sin_repartir
+    _racha_sin_repartir += 1
+    log.error("stock_watch[%s]: %s", fuente_, msg)
+    _ultimo.update(estado=estado_, ts=time.time(), fuente=fuente_, nota=msg,
+                   seguidas_sin_repartir=_racha_sin_repartir)
+    if _racha_sin_repartir >= _AVISO_TRAS:
+        from services import alertas
+        # Regla 11: el candado del aviso lee y escribe su tabla → a un hilo. Nunca lanza.
+        await asyncio.to_thread(
+            alertas.avisar, "stock_watch_sin_repartir",
+            f"*stock_watch ({fuente_})*: {_racha_sin_repartir} pasadas seguidas sin repartir los "
+            f"cambios de Woo a los canales. Última: `{estado_}` — {msg}")
+    return dict(_ultimo)
+
+
+async def _fuente_sin_construir(f: str) -> dict[str, Any]:
+    """Un valor que no se conoce (una errata): la pasada se NIEGA y no toca nada
+    —ni Odoo, ni Woo, ni la foto, ni el fan-out—; lo dice en el log, en el estado
+    y, si se repite, por Slack."""
+    msg = (f"STOCK_WATCH_FUENTE={f!r} no existe (odoo | woo | libro): la pasada no hizo "
+           f"nada. Corregir la variable (o apagar STOCK_WATCH_ENABLED).")
+    return await _sin_repartir("fuente_no_disponible", msg, f)
+
+
+def _txt(v: int | None) -> str:
+    """Un número en la bitácora: «sin número» cuando no lo hay."""
+    return "sin número" if v is None else str(v)
+
+
+def _movidos_libro(libro: dict[str, int], foto: dict[str, dict[str, Any]]
+                   ) -> tuple[list[tuple[str, int | None, int]], set[str]]:
+    """FUENTE=libro: lo que se movió en el vendible contra la foto → `(cambios, fuera)`.
+
+    · `cambios` [(sku, antes, ahora)]: el vendible del libro es distinto de `antes`.
+      `antes` es el `stock_kubera` de la foto; si el libro nunca había dado número
+      para ese SKU (la primera pasada tras T0, o un SKU que entra al libro), el
+      último `stock_woo`: lo que el fan-out repartió hasta T0. Así la primera
+      pasada encola justo los SKUs en que el libro no coincide con Woo, y el tope
+      la frena si son muchos: forzarla es un acto deliberado, después de la
+      comparación de T0 (`scripts/comparar_libro_vs_woo.py`).
+    · `fuera` {sku}: TODO SKU de la foto que el libro no trae —el que salió (su
+      bodega dejó de contar, el renglón desapareció) y el que nunca estuvo—. Lo que
+      el libro no trae vale 0 (D4) y su `stock_kubera` se SIEMBRA en 0: así el
+      seguro y los excedentes, que leen esa columna, también lo ven. Entra a
+      `cambios` como (sku, antes, 0) cuando `antes` —`stock_kubera`, o el último
+      `stock_woo` si nunca tuvo— era un número distinto de 0: el canal puede tener
+      piezas que ya no hay. Si `antes` era 0 o nada, sólo se siembra: el canal no
+      tenía de dónde sacar un número (el seguro, la alineación de T0 y el
+      recuperador cubren lo demás).
+
+    Sin distinguir mayúsculas: la llave de la foto es `citext` y el libro ya viene
+    en mayúsculas.
+    """
+    por_mayus = {str(s).upper(): v for s, v in foto.items()}
+    cambios: list[tuple[str, int | None, int]] = []
+    for sku, ahora in libro.items():
+        f = por_mayus.get(sku.upper()) or {}
+        ant = f.get("kubera") if f.get("kubera") is not None else f.get("woo")
+        if ahora != ant:
+            cambios.append((sku, ant, ahora))
+    en_libro = {s.upper() for s in libro}
+    fuera: set[str] = set()
+    for s, v in foto.items():
+        k = str(s).upper()
+        if k in en_libro:
+            continue
+        fuera.add(k)
+        ant = v.get("kubera") if v.get("kubera") is not None else v.get("woo")
+        if ant is not None and ant != 0:
+            cambios.append((k, ant, 0))
+    return cambios, fuera
+
+
+def _vistos_con_piezas(foto: dict[str, dict[str, Any]]) -> list[str]:
+    """Los SKUs que la ÚLTIMA pasada del libro vio CON PIEZAS (`stock_kubera > 0` y el
+    `actualizado` más reciente). El piso del libro se mide con piezas y no con
+    «número»: la pasada siembra 0 a todo lo de la foto que el libro no trae, así
+    que «con número» sería casi toda la foto y frenaría cada pasada."""
+    ultima = max((v["act"] for v in foto.values() if v.get("act") is not None), default=None)
+    return [s for s, v in foto.items()
+            if (v.get("kubera") or 0) > 0 and (ultima is None or v.get("act") == ultima)]
+
+
+async def _pasada_libro(forzar: bool, t0: float) -> dict[str, Any]:
+    """FUENTE=libro: reparte a los canales los cambios del VENDIBLE del libro de
+    kubera (`stock_libro.todos()`: Σ libre_vendible − ventas DROP sin OV). Corre
+    bajo `_lock`. Es el segundo tramo de la pasada de Odoo con otra lectura: sin
+    Odoo, sin MySQL y sin Woo —ni para escribir ni para leer—. Qué cuenta como cambio: `_movidos_libro`.
+
+    Cada cambio deja una fila `vendible_cambio` (motivo «vendible X -> Y (libro)»,
+    resultado «X -> Y (replicar a canales)», `ACCIONES_CAMBIO`) y se encola con el
+    motivo «cambio de vendible en kubera». SÓLO se encola si el fan-out lee el libro
+    (`FANOUT_FUENTE=kubera`): con el fan-out todavía en Woo, encolar repartiría el
+    número de Woo por un cambio del libro. Con el fan-out en Woo, o con
+    `STOCK_WATCH_SOLO_REGISTRO`, la pasada sólo registra (`vendible_registro`)
+    y lo no repartido conserva su número viejo en la foto: sigue pendiente al
+    pasar a vivo.
+
+    FALLA CERRADA: bitácora de kubera apagada, `FANOUT_FUENTE`
+    con errata, el libro ilegible (`stock_libro.LibroNoDisponible`: sin vista, sin
+    T0, sin bodegas que cuenten, la base caída), el libro con muchos menos SKUs que
+    los que vio la pasada anterior (`_PISO`), la foto ilegible o más cambios
+    que el tope → la pasada aborta sin guardar ni encolar nada, y la segunda
+    seguida avisa por Slack (`_sin_repartir`).
+    """
+    global _racha_sin_repartir
+    from services import fanout_stock, stock_libro, stock_watch_read
+
+    if not getattr(settings, "supabase_write_fanout_log", False):
+        return await _sin_repartir(
+            "bitacora_apagada", "SUPABASE_WRITE_FANOUT_LOG está apagada: sin `ops.fanout_log` los "
+            "cambios del libro se repartirían sin rastro y el recuperador no tendría con qué "
+            "comparar. La pasada no hizo nada.", "libro")
+    try:
+        fanout_libro = stock_libro.fuente_fanout() == "kubera"
+    except stock_libro.LibroNoDisponible as exc:
+        return await _sin_repartir("fanout_fuente_invalida", f"{exc}. La pasada no hizo nada.", "libro")
+    try:
+        libro = await asyncio.to_thread(stock_libro.todos)
+    except stock_libro.LibroNoDisponible as exc:
+        return await _sin_repartir("libro_no_disponible", f"{exc}. Pasada abortada: no se guardó "
+                                                          f"ni se encoló nada.", "libro")
+    try:
+        foto = await asyncio.to_thread(stock_watch_read.foto_leer, True)
+    except Exception as exc:  # noqa: BLE001 — ver `_foto`: «no sé» no es «no había nada»
+        return await _sin_repartir("foto_no_disponible", f"No se pudo leer la foto anterior ({exc}). "
+                                                         f"Pasada abortada; nada se encoló.", "libro")
+
+    vistos = _vistos_con_piezas(foto)
+    con_piezas = sum(1 for n in libro.values() if n > 0)
+    if not forzar and con_piezas < len(vistos) * _PISO:
+        msg = (f"El libro trae {con_piezas:,} SKUs con piezas y la pasada anterior vio {len(vistos):,}: "
+               f"no se le cree. NO se encoló nada. Revisar y forzar si es real.")
+        await asyncio.to_thread(_anotar, "*", "stock_watch_freno", "lectura del libro incompleta",
+                                msg, False)
+        return await _sin_repartir("libro_parcial", msg, "libro")
+
+    cambios, fuera = _movidos_libro(libro, foto)
+    a_cero = sum(1 for s, _a, _b in cambios if s.upper() in fuera)
+    total = len(cambios)
+    if total > tope() and not forzar:
+        msg = (f"{total} cambios del libro en una pasada (tope {tope()})"
+               + (f", {a_cero} de ellos a 0 porque el libro ya no los trae" if a_cero else "")
+               + ". NO se encoló nada. Revisar y forzar si es real.")
+        await asyncio.to_thread(_anotar, "*", "stock_watch_freno", "cortacircuitos", msg, False)
+        _ultimo.update(cambios=total, odoo_deltas=0, woo_cambios=0, vendible_cambios=len(cambios),
+                       vendible_sin_numero=a_cero)
+        return await _sin_repartir("frenado", msg, "libro")
+
+    registro = solo_registro() or not fanout_libro
+    encolados = 0
+    for sku, ant, ahora in cambios:
+        sale = sku.upper() in fuera
+        await asyncio.to_thread(
+            _anotar, sku, "vendible_registro" if registro else "vendible_cambio",
+            f"vendible {_txt(ant)} -> {ahora} (libro{': no lo trae' if sale else ''})",
+            f"{_txt(ant)} -> {ahora} (replicar a canales)", False, registro)
+        if not registro:
+            fanout_stock.encolar(sku, motivo="cambio de vendible en kubera")
+            encolados += 1
+
+    # FOTO: lo leído. Sin repartir (registro), cada cambio conserva el `stock_kubera`
+    # que tenía —NULL incluido: nunca se guarda un número de Woo en la columna del
+    # libro—. Lo que el libro ya no trae queda en 0 (D4).
+    kub = {str(s).upper(): v.get("kubera") for s, v in foto.items()}
+    viejo = {s: kub.get(s.upper()) for s, _a, _b in cambios} if registro else {}
+    await asyncio.to_thread(stock_watch_read.foto_guardar_libro,
+                            [(s, viejo[s] if s in viejo else n) for s, n in libro.items()]
+                            + [(s, viejo[s] if s in viejo else 0) for s in sorted(fuera)])
+
+    _racha_sin_repartir = 0
+    for k in ("cambios", "nota", "skus", "seguidas_sin_repartir"):
+        _ultimo.pop(k, None)
+    _ultimo.update(estado="ok", ts=time.time(), fuente="libro", segundos=round(time.time() - t0, 1),
+                   skus_libro=len(libro), odoo_deltas=0, woo_escritos=0, woo_cambios=0,
+                   # `vendible_sin_numero` (nombre del contrato con INVENTARIO FANOUT): los
+                   # SKUs que salieron del libro y fueron a 0 en esta pasada.
+                   vendible_cambios=len(cambios), vendible_sin_numero=a_cero,
+                   encolados=encolados, fanout_lee_libro=fanout_libro, solo_registra=registro,
+                   muestra=[f"{s}: libro {_txt(a)}→{b} → canales" for s, a, b in cambios[:12]])
+    if total:
+        log.info("stock_watch[libro]: %d cambios del vendible (%d encolados) · %d salieron del libro (a 0)%s",
+                 len(cambios), encolados, a_cero,
+                 "" if not registro else (" [SOLO REGISTRO]" if fanout_libro
+                                          else " [SOLO REGISTRO: el fan-out todavía lee Woo]"))
+    return dict(_ultimo)

@@ -899,5 +899,55 @@ class Ruta(unittest.TestCase):
         self.assertIsNone(fb._cache["b"])
 
 
+
+# ── STOCK_WATCH_FUENTE=woo (15-oct): sin copia de Odoo y sin preguntarle ──────
+
+CFG_WOO = {**CFG, "modo": "woo (reparte los cambios de Woo; Odoo congelado)", "resta": False,
+           "fuente": "woo", "odoo_rotulo": "Odoo (congelado al 15-oct 18:34, incompleto)",
+           "odoo_congelado": "15-oct 18:34", "odoo_vivo": False}
+
+
+class FuenteWoo(ConMocks):
+    """Con `STOCK_WATCH_FUENTE=woo` stock_watch ya no copia Odoo: no hay «Woo esperado»,
+    el Odoo congelado de la foto no se pinta bajo el esperado como si fuera su base, y la
+    pestaña NO le pregunta a Odoo (bloqueado a propósito desde el 15-oct; antes reintentaba
+    el login cada minuto con la página abierta)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        p = mock.patch.object(fb, "_config_stock_watch", side_effect=lambda: dict(CFG_WOO))
+        p.start()
+        self._parches.append(p)
+
+    def test_woo_esperado_y_coincide_sin_copia(self):
+        v, motivo, texto = fb.woo_esperado(12, 2, absoluto=True, resta=True, copia_odoo=False)
+        self.assertEqual((v, motivo), (None, "sin_copia"))
+        self.assertIn("ya no copia Odoo", texto)
+        self.assertEqual(fb.coincide(None, 8, "sin_copia"), ("no_toca", None, "stock_watch ya no copia Odoo"))
+
+    def test_la_tabla_no_le_pregunta_a_odoo(self):
+        d = fb.resumen()
+        self.assertEqual(self.odoo.llamadas, [])
+        self.assertEqual((d["odoo"]["ok"], d["odoo"]["motivo"]), (False, fb._SIN_ODOO))
+        self.assertTrue(d["universo_parcial"])
+        self.assertEqual((d["formula"]["fuente"], d["formula"]["odoo_congelado"]), ("woo", "15-oct 18:34"))
+        self.assertIn("ya no copia Odoo", d["formula"]["texto"])
+        self.assertEqual(d["stock_watch"]["odoo_rotulo"], "Odoo (congelado al 15-oct 18:34, incompleto)")
+
+    def test_el_cajon_no_pinta_el_odoo_congelado_como_base(self):
+        f = fb.detalle_sku("SKU-A")["fila"]
+        self.assertEqual(self.odoo.llamadas, [])
+        # La foto dice Odoo 10 / Woo 8: el 10 queda como dato (`odoo_total`), no como base.
+        self.assertEqual((f["odoo_total"], f["odoo_base"], f["esperado"], f["esperado_motivo"]),
+                         (10, None, None, "sin_copia"))
+        self.assertEqual((f["coincide"], f["woo"]), ("no_toca", 8))
+
+    def test_con_odoo_la_base_sigue_siendo_la_foto(self):
+        with mock.patch.object(fb, "_config_stock_watch", side_effect=lambda: dict(CFG)):
+            f = fb.detalle_sku("SKU-A")["fila"]
+        self.assertEqual((f["odoo_total"], f["odoo_base"]), (10, 10))
+        self.assertNotEqual(self.odoo.llamadas, [])
+
+
 if __name__ == "__main__":
     unittest.main()

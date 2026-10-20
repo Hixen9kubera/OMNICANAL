@@ -199,7 +199,16 @@ export default function MatrizCoincidencia() {
                 <div className="flex min-w-[1100px] flex-col">
                   <div className="grid items-end gap-2 border-b border-slate-200 px-6 py-2" style={{ gridTemplateColumns: plantilla }}>
                     <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">SKU</span>
-                    <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Odoo</span>
+                    {/* La columna mide 76 px: el rótulo largo («Odoo (congelado al …, incompleto)»)
+                        va en dos renglones, como el subtítulo de los canales, y completo en el title. */}
+                    {m.odoo_rotulo && m.odoo_rotulo !== "Odoo" ? (
+                      <span className="flex flex-col" title={m.odoo_rotulo}>
+                        <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Odoo</span>
+                        <span className="text-[11px] text-slate-500">congelado, incompleto</span>
+                      </span>
+                    ) : (
+                      <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Odoo</span>
+                    )}
                     <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Woo</span>
                     {m.columnas.map((c) => (
                       <span key={c.id} className="flex flex-col">

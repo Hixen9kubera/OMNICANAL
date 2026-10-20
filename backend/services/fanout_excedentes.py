@@ -57,15 +57,17 @@ def _tope() -> int:
 def candidatos(canal: str, limite: int) -> list[dict[str, Any]]:
     """Publicaciones de `canal` cuyo stock (el que leyó el censo) supera la foto de
     Woo. Primero las de poco stock (Woo ≤ 2), después las de mayor excedente."""
-    from services import supabase_db as sdb
+    from services import supabase_db as sdb, stock_watch_read
+    # Con FANOUT_FUENTE=kubera la foto que manda es la del libro (`stock_kubera`).
+    col = stock_watch_read.columna_vendible()
     return sdb.fetch_all(
-        """select l.sku::text as sku, l.stock_own::int as canal_stock, p.stock_woo
+        f"""select l.sku::text as sku, l.stock_own::int as canal_stock, p.{col} as stock_woo
              from channel.listings l
              join ops.stock_watch_photo p on p.sku = l.sku
             where l.canal = %(c)s and not coalesce(l.is_fulfillment, false)
-              and l.stock_own is not null and p.stock_woo is not null
-              and l.stock_own > greatest(p.stock_woo, 0)
-            order by (p.stock_woo <= 2) desc, l.stock_own - greatest(p.stock_woo, 0) desc, l.sku
+              and l.stock_own is not null and p.{col} is not null
+              and l.stock_own > greatest(p.{col}, 0)
+            order by (p.{col} <= 2) desc, l.stock_own - greatest(p.{col}, 0) desc, l.sku
             limit %(n)s""",
         {"c": canal, "n": int(limite)})
 

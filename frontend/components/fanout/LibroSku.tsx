@@ -168,9 +168,14 @@ export default function LibroSku({ sku, onCerrar, onTrazabilidad }: {
                           : `físico ${n(o?.fisico ?? 0)} · reservado ${n(o?.reservado ?? 0)}`} />
                     );
                   })}
-                  <Cifra titulo="Odoo total (foto)" valor={n(f.odoo_total)}
-                    linea={[f.odoo_hoy != null && f.odoo_hoy !== f.odoo_total ? `hoy ${n(f.odoo_hoy)}` : null,
-                      f.otras ? `fuera de las 3: ${conSigno(f.otras)}` : null].filter(Boolean).join(" · ") || "lo que leyó stock_watch"} />
+                  {/* Con STOCK_WATCH_FUENTE woo/libro ese número ya no se mueve (y la última
+                      lectura fue parcial): que nadie lo lea como el Odoo de hoy. */}
+                  <Cifra titulo={d.formula?.odoo_congelado ? "Odoo total (foto congelada)" : "Odoo total (foto)"}
+                    valor={n(f.odoo_total)}
+                    linea={d.formula?.odoo_congelado
+                      ? `congelado al ${d.formula.odoo_congelado}; lectura incompleta`
+                      : [f.odoo_hoy != null && f.odoo_hoy !== f.odoo_total ? `hoy ${n(f.odoo_hoy)}` : null,
+                        f.otras ? `fuera de las 3: ${conSigno(f.otras)}` : null].filter(Boolean).join(" · ") || "lo que leyó stock_watch"} />
                   {cBodegas.map((c) => (
                     <Cifra key={c} titulo={`kubera ${c}`} valor={n(f.kubera[c].libre)} cls="bg-indigo-50 text-indigo-950"
                       linea={`físico ${n(f.kubera[c].fisico)} · apartado ${n(f.kubera[c].apartado)}`} />

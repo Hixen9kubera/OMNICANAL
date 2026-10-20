@@ -58,7 +58,11 @@ def stock_por_sku(skus: list[str]) -> dict[str, float]:
         return {}
 
 
-def listar_catalogo() -> list[dict[str, Any]]:
+class CatalogoIncompleto(RuntimeError):
+    """Odoo dejó de contestar A MEDIA lectura del catálogo (`listar_catalogo(estricto=True)`)."""
+
+
+def listar_catalogo(estricto: bool = False) -> list[dict[str, Any]]:
     """
     Devuelve TODO el catálogo activo de Odoo que tiene SKU (default_code):
     [{sku, nombre, precio, stock}]. Pagina de 500 en 500 para no cargar Odoo.
@@ -88,6 +92,15 @@ def listar_catalogo() -> list[dict[str, Any]]:
     Se pide `free_qty` Y `qty_available`: si Odoo no devolviera `free_qty` (no
     existe antes de la v13), se cae a `qty_available` en vez de mandar 0 y vaciar
     el catálogo entero.
+
+    `estricto=True` (lo usa `stock_watch`): si Odoo deja de contestar a media
+    paginación, LANZA `CatalogoIncompleto` en vez de devolver la lista parcial
+    como si fuera el catálogo completo. Pasó el 15-oct a las 18:34 UTC: Odoo negó
+    el acceso en el offset 5500, esto devolvió 5,500 de ~14,700 y la foto de
+    stock_watch guardó NULL en el `stock_odoo` de los otros 9,267. Si falla en la
+    PRIMERA página no hay nada parcial que esconder: devuelve `[]` como siempre
+    (stock_watch lo lee como «Odoo mudo»). Sin `estricto` todo sigue igual (los
+    demás llamadores no cambian).
     """
     uid = _uid()
     if not uid:
@@ -128,6 +141,10 @@ def listar_catalogo() -> list[dict[str, Any]]:
             offset += lote
     except Exception as exc:  # noqa: BLE001
         log.warning("Odoo listar_catalogo falló (offset %d): %s", offset, exc)
+        if estricto and salida:
+            raise CatalogoIncompleto(
+                f"Odoo dejó de contestar en el offset {offset} con {len(salida)} "
+                f"productos leídos ({exc})") from exc
     return salida
 
 

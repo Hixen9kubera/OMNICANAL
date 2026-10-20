@@ -445,8 +445,10 @@ def sincronizar_drop(limite: int = 0) -> dict[str, Any]:
     # y no a uno propio, a propósito: si los dos lectores de la foto pudieran
     # apuntar a lados distintos, el panel mostraría un stock y el vigilante
     # decidiría con otro. Un solo interruptor, un solo momento de la verdad.
-    from services import stock_watch
-    if stock_watch.kubera_decide():
+    from services import stock_watch, stock_libro
+    # Con FANOUT_FUENTE=kubera el espejo sale de la foto del libro (`drop_leer` elige
+    # `stock_kubera`), nunca de la foto de MySQL.
+    if stock_watch.kubera_decide() or stock_libro.lee_libro():
         from services import stock_watch_read
         crudas = stock_watch_read.drop_leer()
         if limite:

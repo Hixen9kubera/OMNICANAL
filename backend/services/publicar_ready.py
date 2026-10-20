@@ -68,6 +68,13 @@ MSG_SIN_INVENTARIO_WOO = (
     "WooCommerce no lleva el inventario de este producto (\"Gestionar inventario\" "
     "apagado): no hay número de piezas que publicar. Si Odoo tiene piezas, el "
     "vigilante de stock lo corrige solo en su siguiente pasada (cada 20 min).")
+# FANOUT_FUENTE=kubera: el número sale del libro de kubera (`stock_libro`), no de Woo.
+MSG_SIN_INVENTARIO_LIBRO = (
+    "El libro de inventario de kubera no tiene este SKU en ninguna bodega que surta "
+    "la venta: no hay número de piezas que publicar.")
+MSG_SIN_STOCK_LIBRO = ("Sin piezas vendibles en el libro de kubera (libre de las bodegas "
+                       "menos ventas DROP sin OV = 0): no se publica.")
+MSG_LIBRO_NO_DISPONIBLE = "No se pudo leer el libro de inventario de kubera: no se publica"
 
 _configurado = False
 
@@ -719,6 +726,20 @@ def construir_prod(sku: str, wc_id: int, campos: dict[str, Any]) -> dict[str, An
         stock = int(float(stock)) if stock not in (None, "") else 0
     except (TypeError, ValueError):
         stock = 0
+    # FANOUT_FUENTE=kubera (ruta directa, desde T0): el número que el fan-out
+    # reparte es el del libro, y una publicación nueva nace con ESE número —no con
+    # el `_stock` de Woo, que dejó de moverse—. «No sé» publica 0 y lo dice.
+    from services import stock_libro
+    sin_libro: str | None = None
+    if stock_libro.lee_libro():
+        try:
+            n = stock_libro.numero(sku)
+        except stock_libro.LibroNoDisponible as exc:
+            n, sin_libro = None, f"{MSG_LIBRO_NO_DISPONIBLE} ({exc})."
+        else:
+            sin_libro = (MSG_SIN_INVENTARIO_LIBRO if n is None
+                         else MSG_SIN_STOCK_LIBRO if n < 1 else None)
+        stock = n or 0
 
     def _dim(campo: str, clave: str) -> str:
         v = campos.get(campo)
@@ -763,7 +784,9 @@ def construir_prod(sku: str, wc_id: int, campos: dict[str, Any]) -> dict[str, An
         "width":            _dim("ancho", "_width"),
         "height":           _dim("alto", "_height"),
         "stock":            stock,
-        "sin_inventario_woo": meta.get("_stock") in (None, ""),
+        "sin_inventario_woo": sin_libro is None and not stock_libro.lee_libro()
+                              and meta.get("_stock") in (None, ""),
+        "sin_inventario_libro": sin_libro,
         "ml_category_id":   cat_id,
         "ml_category_name": cat_nombre,
         # Con categoría elegida en el panel NO se pasan las categorías WC:
@@ -794,7 +817,8 @@ def construir_prod(sku: str, wc_id: int, campos: dict[str, Any]) -> dict[str, An
 # ── Candados de ALTA (ML) ────────────────────────────────────────────────────
 
 def _stock_real(prod: dict[str, Any]) -> int:
-    """El stock que `construir_prod` leyó (`_stock` = max(0, free_qty) de Odoo)."""
+    """El stock que `construir_prod` leyó: el `_stock` de Woo o, con
+    `FANOUT_FUENTE=kubera`, el vendible del libro."""
     try:
         return int(float(prod.get("stock") or 0))
     except (TypeError, ValueError):
@@ -803,6 +827,8 @@ def _stock_real(prod: dict[str, Any]) -> int:
 
 def _motivo_sin_stock(prod: dict[str, Any]) -> str:
     """Por qué no se publica un producto con stock < 1."""
+    if prod.get("sin_inventario_libro"):
+        return str(prod["sin_inventario_libro"])
     return MSG_SIN_INVENTARIO_WOO if prod.get("sin_inventario_woo") else MSG_SIN_STOCK_ML
 
 

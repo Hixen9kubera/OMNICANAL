@@ -348,12 +348,17 @@ def libre_kubera(saldos: Iterable[dict[str, Any]], almacenes: dict[str, dict[str
 
 def woo_esperado(stock_odoo: int | None, pend: int, *, absoluto: bool, resta: bool,
                  ciega: bool = False, lee_kubera: bool = False,
-                 libre_kub: int = 0) -> tuple[int | None, str, str]:
+                 libre_kub: int = 0, copia_odoo: bool = True) -> tuple[int | None, str, str]:
     """(valor, motivo, desglose). Mismo cálculo que `stock_watch._deltas_odoo`.
 
-    `motivo`: `calculado` | `delta` | `ciega` | `sin_odoo`. Con `valor` None la
-    pestaña no compara (stock_watch no tiene un número que copiar).
+    `motivo`: `calculado` | `delta` | `ciega` | `sin_odoo` | `sin_copia`. Con
+    `valor` None la pestaña no compara (stock_watch no tiene un número que copiar).
+    `copia_odoo=False` es `STOCK_WATCH_FUENTE` distinta de odoo: stock_watch ya no
+    copia Odoo y el Odoo de la foto está congelado.
     """
+    if not copia_odoo:
+        return None, "sin_copia", ("stock_watch ya no copia Odoo a Woo (STOCK_WATCH_FUENTE): el Odoo de "
+                                   "la foto está congelado y no hay un número que esperar.")
     if not absoluto:
         return None, "delta", ("Modo delta: Woo conserva su propia base y Odoo sólo aporta su variación; "
                                "no hay un número absoluto que esperar.")
@@ -385,7 +390,8 @@ def coincide(esperado: int | None, woo: int | None, motivo: str) -> tuple[str, i
     cambiarlo después a `por_copiar` (algo se movió desde la foto)."""
     if esperado is None:
         return "no_toca", None, {"delta": "Modo delta", "ciega": "Pendientes sin medir",
-                                 "sin_odoo": "stock_watch no lo toca"}.get(motivo, "Sin esperado")
+                                 "sin_odoo": "stock_watch no lo toca",
+                                 "sin_copia": "stock_watch ya no copia Odoo"}.get(motivo, "Sin esperado")
     if woo is None:
         if esperado == 0:
             return "no_toca", None, "Woo sin número y nada que ofrecer: stock_watch no lo prende"
@@ -484,11 +490,13 @@ def armar_fila(k: str, *, od: dict[str, Any] | None, odoo_ok: bool, foto: dict[s
     # pasada (comment de la 0065). Sin ella —pasada anterior a la columna—, la de hoy.
     lk_base = int(k_foto) if (lee and k_foto is not None) else lk
     kw_esp = {"absoluto": modo["absoluto"], "resta": modo["resta"], "ciega": modo.get("ciega", False),
-              "lee_kubera": lee}
+              "lee_kubera": lee, "copia_odoo": modo.get("copia_odoo", True)}
     esperado, motivo, desglose = woo_esperado(stock_odoo, pend, libre_kub=lk_base, **kw_esp)
     woo = f.get("stock_woo")
     k_c, dif, texto_c = coincide(esperado, woo, motivo)
-    odoo_base: int | None = stock_odoo
+    # Sin copia de Odoo no hay esperado y el Odoo de la foto está congelado: pintarlo
+    # como «Odoo N» bajo el esperado vacío lo haría pasar por vivo. Queda en `odoo_total`.
+    odoo_base: int | None = stock_odoo if modo.get("copia_odoo", True) else None
     kubera_base: int | None = lk_base if lee else None
 
     # Odoo HOY, de la misma lectura que las tres bodegas, y sólo del producto que
@@ -623,6 +631,11 @@ def _config_stock_watch() -> dict[str, Any]:
     return {
         "habilitado": bool(est.get("habilitado")), "solo_registro": bool(est.get("solo_registro")),
         "tope": est.get("tope"), "modo": est.get("modo"),
+        "fuente": est.get("fuente", "odoo"), "odoo_rotulo": est.get("odoo_rotulo", "Odoo"),
+        "odoo_congelado": est.get("odoo_congelado"),
+        # ¿stock_watch copia Odoo? Falso con `STOCK_WATCH_FUENTE` woo/libro: no hay «Woo
+        # esperado» y la pestaña ya no le pregunta a Odoo (`_resumen`, `detalle_sku`).
+        "odoo_vivo": bool(getattr(sw, "odoo_vivo", lambda: True)()),
         "absoluto": bool(getattr(settings, "stock_watch_absoluto", False)),
         "resta": bool(sw.resta_pendientes()), "dias": est.get("resta_pendientes_dias"),
         "estado_memoria": est.get("estado") if est.get("ts") else None,
@@ -812,6 +825,10 @@ def _en_freno(c: dict[str, Any], ahora: float, pasada_edad_s: int | None) -> dic
     return None
 
 
+# El motivo que pinta la pestaña cuando no se le pregunta a Odoo (`STOCK_WATCH_FUENTE` woo/libro).
+_SIN_ODOO = "Sin Odoo: salió de la operación el 15-oct y stock_watch ya no lo lee (STOCK_WATCH_FUENTE)"
+
+
 def leer_odoo(skus_kubera: Iterable[str], pasada_edad_s: int | None = None) -> dict[str, Any]:
     """Odoo por bodega con caché de 10 min. Nunca lanza.
 
@@ -917,7 +934,7 @@ def _contexto(tablas: dict[str, Any]) -> dict[str, Any]:
     bandera_kub = next(b["encendida"] for b in flags if b["flag"] == "stock_watch_lee_kubera")
     pend, pend_info = _pendientes(cfg["absoluto"] and cfg["resta"])
     modo = {"absoluto": cfg["absoluto"], "resta": cfg["resta"], "ciega": bool(pend_info.get("ciega")),
-            "lee_kubera": bool(suma) and tablas["ok"]}
+            "lee_kubera": bool(suma) and tablas["ok"], "copia_odoo": bool(cfg.get("odoo_vivo", True))}
     recientes, rec_error = _recientes(pasada, bool(pend_info.get("aplica")) and not modo["ciega"])
     pend_info = {**pend_info, "recientes": len(recientes), "recientes_error": rec_error}
     return {"pasada": pasada, "almacenes": almacenes, "banderas": flags, "cfg": cfg, "suma": suma,
@@ -938,7 +955,11 @@ def _fila(k: str, ctx: dict[str, Any], *, od: dict[str, Any] | None, odoo_ok: bo
 def _formula(ctx: dict[str, Any]) -> dict[str, Any]:
     """El aviso de cómo se calcula «Woo esperado» hoy (lo pinta el encabezado)."""
     m, cfg = ctx["modo"], ctx["cfg"]
-    if not m["absoluto"]:
+    if not m.get("copia_odoo", True):
+        texto = (f"stock_watch ya no copia Odoo a Woo (fuente «{cfg.get('fuente')}»): Woo es la fuente y sus "
+                 f"cambios se reparten a los canales. El Odoo de la foto está congelado, así que no hay un "
+                 f"«Woo esperado» con qué comparar.")
+    elif not m["absoluto"]:
         texto = ("stock_watch está en modo DELTA: Woo conserva su base y Odoo sólo aporta su variación, así que "
                  "no hay un «Woo esperado» absoluto con qué comparar.")
     elif m["lee_kubera"]:
@@ -958,7 +979,8 @@ def _formula(ctx: dict[str, Any]) -> dict[str, Any]:
                  + ("max(0, libre de Odoo − vendidas sin orden)" if m["resta"] else "libre de Odoo")
                  + ", lo mismo que copia stock_watch.")
     return {"texto": texto, "suma_kubera": m["lee_kubera"], "absoluto": m["absoluto"], "resta": m["resta"],
-            "solo_registro": cfg["solo_registro"], "habilitado": cfg["habilitado"]}
+            "solo_registro": cfg["solo_registro"], "habilitado": cfg["habilitado"],
+            "fuente": cfg.get("fuente", "odoo"), "odoo_congelado": cfg.get("odoo_congelado")}
 
 
 def _resumen() -> dict[str, Any]:
@@ -974,7 +996,13 @@ def _resumen() -> dict[str, Any]:
         conteos, vigia = _lentos(tablas)
     skus_kubera = {s["sku"] for s in saldos if _cuenta_kubera(s)}
 
-    odoo = leer_odoo(skus_kubera, pasada.get("edad_s"))
+    # Con `STOCK_WATCH_FUENTE` woo/libro, Odoo salió de la operación (bloqueado a
+    # propósito desde el 15-oct): no se le pregunta. Antes la página reintentaba el
+    # login cada minuto mientras estuviera abierta —la foto avanza cada 20 min e
+    # invalida la caché— para terminar en «Odoo no contestó». Mismo resultado
+    # (`por_sku` None, sólo entra kubera), sin tocar Odoo.
+    odoo = (leer_odoo(skus_kubera, pasada.get("edad_s")) if ctx["modo"].get("copia_odoo", True)
+            else {"ok": False, "motivo": _SIN_ODOO})
     por_sku = odoo.get("por_sku") if odoo.get("ok") else None
     llaves = universo(por_sku, saldos)
     foto = _leer_foto(llaves, tablas["stock_kubera"])
@@ -1092,7 +1120,8 @@ def detalle_sku(sku: str) -> dict[str, Any]:
         return {"ok": False, "sku": s, "motivo": f"kubera no contestó ({str(exc)[:160]})"}
 
     pasada = ctx["pasada"]
-    o = _odoo_de_un_sku(s, pasada.get("edad_s"))
+    o = (_odoo_de_un_sku(s, pasada.get("edad_s")) if ctx["modo"].get("copia_odoo", True)
+         else {"ok": False, "motivo": _SIN_ODOO})
     fila = _fila(k, ctx, od=o.get("od"), odoo_ok=bool(o.get("ok")), odoo_tras_pasada=bool(o.get("tras_pasada")),
                  foto=foto, saldos=saldos)
     fila.pop("peso", None)

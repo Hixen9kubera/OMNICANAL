@@ -16,7 +16,7 @@ después MUE-0293-AZL seguía a la venta en Temu con 37 piezas y Woo en 0.
 CÓMO LO RESUELVE
 ----------------
 Sin guardar la cola en otra parte: `ops.fanout_log` YA es el registro durable de
-lo que stock_watch escribió (`odoo_delta` / `woo_cambio`) y de lo que el fan-out
+lo que stock_watch escribió (`odoo_delta` / `woo_cambio` / `vendible_cambio`) y de lo que el fan-out
 repartió. Al arrancar y luego cada `fanout_recuperar_min`, se buscan los SKUs
 cuyo ÚLTIMO cambio no tiene después ningún evento del fan-out, y se vuelven a
 encolar. Es idempotente: el fan-out relee Woo en vivo y, si el canal ya coincide,
@@ -78,11 +78,12 @@ def candidatos(horas: int, gracia_min: int, limite: int) -> list[dict[str, Any]]
     El cambio que falló al escribirse en Woo («ESCRITURA FALLÓ») no cuenta:
     stock_watch no lo encola y lo reintenta en su siguiente pasada.
     """
+    from services import stock_watch
     from services import supabase_db as sdb
     return sdb.fetch_all(
         """with c as (
              select distinct on (sku) sku::text as sku, ts from ops.fanout_log
-              where canal = 'woocommerce' and accion in ('odoo_delta', 'woo_cambio')
+              where canal = 'woocommerce' and accion = any(%(c)s)
                 and resultado not like '%%FALLÓ%%'
                 and ts > now() - make_interval(hours => %(h)s)
               order by sku, ts desc, id desc),
@@ -96,7 +97,8 @@ def candidatos(horas: int, gracia_min: int, limite: int) -> list[dict[str, Any]]
               and (e.t is null or e.t < c.ts)
             order by c.ts
             limit %(n)s""",
-        {"h": int(horas), "g": int(gracia_min), "a": _ACC_FANOUT, "n": int(limite)})
+        {"h": int(horas), "g": int(gracia_min), "a": _ACC_FANOUT, "n": int(limite),
+         "c": list(stock_watch.ACCIONES_CAMBIO)})
 
 
 def diferidas_recientes() -> list[str]:

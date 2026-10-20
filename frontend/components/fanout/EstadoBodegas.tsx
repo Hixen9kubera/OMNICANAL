@@ -111,13 +111,13 @@ function TarjetaSalud({ d }: { d: ResumenBodegas }) {
     <section aria-labelledby="t-salud-bodegas" className="flex flex-col gap-3 rounded-2xl bg-white p-5 shadow-sm">
       <div className="flex items-baseline justify-between gap-2">
         <h2 id="t-salud-bodegas" className="text-[15px] font-bold text-slate-900">Sincronización</h2>
-        <span className="text-xs text-slate-600">Odoo → Woo</span>
+        <span className="text-xs text-slate-600">{sw.odoo_congelado ? "Woo → canales" : "Odoo → Woo"}</span>
       </div>
       <ul className="flex flex-col gap-2.5">
         <Renglon punto={puntoSw}
           titulo={`Última pasada de stock_watch: ${sw.ultima ? horaCorta(sw.ultima, d.hoy) : "nunca"}`}
           texto={<>
-            {haceSegundos(edad)} · pasa cada 20 min · {sw.absoluto ? "modo absoluto (Woo copia a Odoo)" : "modo delta"}
+            {haceSegundos(edad)} · pasa cada 20 min · {sw.odoo_congelado ? sw.modo : sw.absoluto ? "modo absoluto (Woo copia a Odoo)" : "modo delta"}
             {sw.solo_registro ? " · solo registro: anota sin escribir" : ""}
             {!sw.habilitado ? " · este proceso no lo corre" : ""}
             {puntoSw !== "bien" ? ". Una foto vieja es un freno (más de 300 cambios) o una pasada abortada." : ""}

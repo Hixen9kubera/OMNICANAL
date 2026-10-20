@@ -77,7 +77,9 @@ def movimientos_full(horas: int) -> list[dict[str, Any]]:
 
 # Las acciones del vigilante de inventario, tal cual las lista el router.
 _ACCIONES_INVENTARIO = ("odoo_delta", "odoo_delta_registro", "woo_cambio",
-                        "woo_cambio_registro", "stock_watch_freno")
+                        "woo_cambio_registro", "stock_watch_freno",
+                        # FUENTE=libro: el vendible del libro de kubera.
+                        "vendible_cambio", "vendible_registro", "vendible_sin_numero")
 
 
 def pendientes_inventario(limite: int) -> list[dict[str, Any]]:

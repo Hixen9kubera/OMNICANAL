@@ -556,6 +556,12 @@ def _explicado(odoo: Any, woo: Any, so: dict | None) -> bool:
     return stock_watch.resta_pendientes() and int(woo) == max(0, int(odoo) - int(so["piezas"]))
 
 
+def _odoo_rotulo() -> str:
+    """«Odoo», o «Odoo (congelado al …)» cuando stock_watch ya no lee Odoo."""
+    from services import stock_watch
+    return stock_watch.odoo_rotulo()
+
+
 def _woo_leido(skus: list[str]) -> dict[str, dict[str, Any]]:
     """Por SKU: lo último que el fan-out leyó de Woo (en vivo, en cada venta o cambio;
     `stock_drop` en la bitácora), de los últimos 3 días. Solo lee."""
@@ -581,7 +587,15 @@ def _woo_vigente(ft: dict, leido: dict | None, hoy: str) -> tuple[Any, str]:
     return ft.get("stock_woo"), (f"foto {_fecha(ft['foto_hora'], hoy)}" if ft.get("foto_hora") else "foto")
 
 
-def _foto() -> dict[str, Any]:
+def _foto(odoo_vivo: bool = True) -> dict[str, Any]:
+    """Los conteos de la foto de stock_watch para el Dashboard (CadenaViva).
+
+    Con `odoo_vivo=False` (`STOCK_WATCH_FUENTE` woo/libro) el Odoo de la foto está
+    congelado al 15-oct 18:34 —y a medias—: comparar Woo contra él ya no dice nada.
+    Cada `woo_cambio` sumaría un «distinto de Odoo» falso (el 15-oct había 5,498 SKUs
+    con los dos números), así que `distintos` y lo que de ahí sale van en 0 y el
+    rótulo lo dice. `skus_odoo` se queda: es lo que hay congelado."""
+    from services import stock_watch
     f = sdb.fetch_one(
         """select count(*) filter (where stock_odoo is not null) as skus_odoo,
                   count(*) filter (where stock_woo is not null) as skus_woo,
@@ -593,6 +607,13 @@ def _foto() -> dict[str, Any]:
                     as piezas_sin_odoo,
                   to_char(max(actualizado) at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as ultima
              from ops.stock_watch_photo""", {"z": _ZONA}) or {}
+    rotulo = {"odoo_rotulo": stock_watch.odoo_rotulo(),
+              "odoo_congelado": None if odoo_vivo else stock_watch.ODOO_CONGELADO}
+    if not odoo_vivo:
+        return {**{k: (int(v) if isinstance(v, (int, float)) or (isinstance(v, str) and v.isdigit()) else v)
+                   for k, v in f.items()},
+                "distintos": 0, "distintos_por_ventas": 0, "sin_odoo_con_piezas": 0, "piezas_sin_odoo": 0,
+                "peor": None, **rotulo}
     # Lo que explican las ventas sin orden se separa de lo que no; `peor` es el
     # mayor SIN explicar (el que de verdad hay que mirar).
     dif = sdb.fetch_all(
@@ -603,7 +624,8 @@ def _foto() -> dict[str, Any]:
     sin_explicar = [d for d in dif if not _explicado(d["stock_odoo"], d["stock_woo"], so.get(d["sku"]))]
     peor = max(sin_explicar, key=lambda d: abs(int(d["stock_woo"]) - int(d["stock_odoo"])), default=None)
     return {**{k: (int(v) if isinstance(v, (int, float)) or (isinstance(v, str) and v.isdigit()) else v)
-               for k, v in f.items()}, "peor": peor, "distintos_por_ventas": len(dif) - len(sin_explicar)}
+               for k, v in f.items()}, "peor": peor, "distintos_por_ventas": len(dif) - len(sin_explicar),
+            **rotulo}
 
 
 def _stock_watch(hoy: str) -> dict[str, Any]:
@@ -623,6 +645,7 @@ def _stock_watch(hoy: str) -> dict[str, Any]:
     en_memoria = bool(est.get("ts"))
     return {
         "habilitado": bool(est.get("habilitado")), "modo": est.get("modo"),
+        "fuente": est.get("fuente", "odoo"),
         "en_memoria": en_memoria,
         "segundos": est.get("segundos") if en_memoria else None,
         "cambios": (int(est.get("odoo_deltas") or 0) + int(est.get("woo_cambios") or 0))
@@ -769,6 +792,7 @@ def _pulso_24h(rep: list[str]) -> list[dict]:
 
 
 def _resumen() -> dict[str, Any]:
+    from services import stock_watch
     rep = reparto()
     ahora = _ahora_local().get("ahora") or ""
     hoy = ahora[:10]
@@ -778,7 +802,11 @@ def _resumen() -> dict[str, Any]:
     por_coinc = {c["canal"]: c for c in coinc}
     for c in canales:
         c["coincidencia"] = por_coinc.get(c["canal"])
-    foto = _foto()
+    # Con otra fuente (`STOCK_WATCH_FUENTE`) el Odoo de la foto está congelado:
+    # compararlo contra Woo ya no dice nada y no se pinta como pendiente (ni aquí
+    # ni en la CadenaViva, que lee `foto` tal cual: ver `_foto`).
+    odoo_vivo = stock_watch.odoo_vivo()
+    foto = _foto(odoo_vivo)
     sw = _stock_watch(hoy)
     full = _full_sin_regla()
     rechazan = [c for c in canales if c["estado"] == "rechaza"]
@@ -823,7 +851,7 @@ def _resumen() -> dict[str, Any]:
     atender.extend(_atender_seguro(seguro))
     por_ventas = int(foto.get("distintos_por_ventas") or 0)
     sin_explicar = int(foto.get("distintos") or 0) - por_ventas
-    if sin_explicar > 0:
+    if sin_explicar > 0 and odoo_vivo:
         p = foto.get("peor") or {}
         atender.append({"nivel": "semana", "titulo": f"{sin_explicar:,} SKUs con Odoo distinto de Woo",
                         "texto": ("No lo explican ventas sin orden. "
@@ -838,7 +866,7 @@ def _resumen() -> dict[str, Any]:
                                   + (f" (son toda la diferencia Odoo↔Woo de {por_ventas} SKUs)" if por_ventas else "")
                                   + f". La más vieja lleva {h:.0f} h."),
                         "matriz": bool(por_ventas)})
-    if foto.get("sin_odoo_con_piezas"):
+    if foto.get("sin_odoo_con_piezas") and odoo_vivo:
         atender.append({"nivel": "despues",
                         "titulo": f"{foto['sin_odoo_con_piezas']} SKUs con piezas en Woo y sin producto en Odoo",
                         "texto": f"Son {foto['piezas_sin_odoo']:,} piezas que nada actualiza."})
@@ -854,13 +882,13 @@ def _resumen() -> dict[str, Any]:
         n = sum(c["ok_24h"] for c in sanos)
         nombres = " y ".join(c["nombre"] for c in sanos)
         bien.append(f"{nombres} recibieron {n:,} cambios en 24 h sin un solo rechazo.")
-    if foto.get("ambos"):
+    if foto.get("ambos") and odoo_vivo:
         bien.append(f"Odoo y Woo coinciden en {foto['ambos'] - foto.get('distintos', 0):,} "
                     f"de {foto['ambos']:,} productos"
                     + (f"; en otros {por_ventas} la diferencia son ventas que esperan su orden en Odoo"
                        if por_ventas else "") + ".")
     if sw.get("ultima") and sw.get("ultima") != "—":
-        bien.append(f"Última pasada de Odoo con cambios: {sw['ultima']}"
+        bien.append(f"Última pasada {'de Odoo' if odoo_vivo else 'de stock_watch'} con cambios: {sw['ultima']}"
                     + (f", {sw['cambios']} cambios." if sw.get("cambios") else "."))
 
     return {
@@ -1202,6 +1230,7 @@ def _skus_perdidos(dias: int = 14, limite: int = 60) -> list[str]:
 
 
 def matriz() -> dict[str, Any]:
+    from services import stock_watch
     rep = reparto()
     ahora = _ahora_local().get("ahora") or ""
     hoy = ahora[:10]
@@ -1227,8 +1256,11 @@ def matriz() -> dict[str, Any]:
     # que piden revisión aunque no estén a la venta: rechazados en 24 h, con un
     # cambio perdido, distintos entre Odoo y Woo y movidos hace poco. Los topes son
     # holgados a propósito: con 20 se escondían SKUs sin avisar (1-oct: 42
-    # rechazados y 86 movidos en 6 h).
-    dif = sdb.fetch_all(
+    # rechazados y 86 movidos en 6 h). Odoo≠Woo sólo cuenta con Odoo vivo
+    # (`STOCK_WATCH_FUENTE=odoo`): con otra fuente su columna está congelada.
+    odoo_vivo = stock_watch.odoo_vivo()
+    rotulo = stock_watch.odoo_rotulo()
+    dif = [] if not odoo_vivo else sdb.fetch_all(
         """select sku::text as sku from ops.stock_watch_photo
             where stock_odoo is not null and stock_woo is not null and stock_odoo <> stock_woo
             order by abs(stock_woo - stock_odoo) desc limit 300""")
@@ -1249,7 +1281,8 @@ def matriz() -> dict[str, Any]:
     skus = list(dict.fromkeys([f["sku"] for f in distintas] + [f["sku"] for f in rech] + perdidos
                               + [f["sku"] for f in dif] + [f["sku"] for f in rec] + vivos))[:2000]
     if not skus:
-        return {"ahora": _fecha(ahora, hoy), "columnas": cols, "barras": barras, "filas": []}
+        return {"ahora": _fecha(ahora, hoy), "columnas": cols, "barras": barras, "filas": [],
+                "odoo_rotulo": rotulo}
 
     foto = {f["sku"]: f for f in sdb.fetch_all(
         """select sku::text as sku, stock_odoo, stock_woo, actualizado,
@@ -1331,7 +1364,7 @@ def matriz() -> dict[str, Any]:
         # resta de stock_watch haciendo su trabajo. Solo lo que no cuadra es «distinto».
         sx = sin_orden.get(s)
         explicado = odoo is not None and woo is not None and odoo != woo and _explicado(odoo, woo, sx)
-        dif_ow = odoo is not None and woo is not None and odoo != woo and not explicado
+        dif_ow = odoo_vivo and odoo is not None and woo is not None and odoo != woo and not explicado
         if dif_ow:
             tags.add("distinto")
             peso = max(peso, 40 + min(abs(int(woo) - int(odoo)), 50) / 5)
@@ -1353,7 +1386,8 @@ def matriz() -> dict[str, Any]:
                       "dif": dif_ow, "sin_orden": ({**sx, "explica": explicado} if sx else None),
                       "celdas": celdas, "tags": sorted(tags), "peso": peso})
     filas.sort(key=lambda f: -f["peso"])
-    return {"ahora": _fecha(ahora, hoy), "columnas": cols, "barras": barras, "filas": filas}
+    return {"ahora": _fecha(ahora, hoy), "columnas": cols, "barras": barras, "filas": filas,
+            "odoo_rotulo": rotulo}
 
 
 # ── Rastro de un cambio ───────────────────────────────────────────────────────
@@ -2238,7 +2272,8 @@ def historia(sku: str, dias: int = 14, limite: int = 400, liga_dias: int | None 
             "devoluciones_ok": not devs_fallas, "devoluciones_fallas": devs_fallas, "odoo": _n(foto.get("stock_odoo")), "woo": _n(woo), "woo_de": woo_de,
             "sin_orden": ({**sx, "explica": _explicado(foto.get("stock_odoo"), woo, sx)} if sx else None),
             "columnas": cols, "celdas": celdas, "resumen": resumen, "full": full,
-            "items": items[:limite], "total": total, "truncado": total > limite}
+            "items": items[:limite], "total": total, "truncado": total > limite,
+            "odoo_rotulo": _odoo_rotulo()}
 
 
 def _full_de(sku: str, filas: list[dict], avisos: list[dict]) -> dict[str, Any] | None:

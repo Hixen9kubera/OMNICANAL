@@ -44,12 +44,22 @@ from typing import Any
 from services import supabase_db as sdb
 
 
-def foto_leer() -> dict[str, dict[str, int | None]]:
+def foto_leer(con_fecha: bool = False) -> dict[str, dict[str, Any]]:
     """{ sku: {"woo": n, "odoo": n} } — gemela de `stock_watch._foto`.
 
     Devuelve `{}` SOLO si la tabla está vacía de verdad. Si la base falla, la
     excepción sube (ver punto 1 del encabezado).
+
+    `con_fecha=True` (FUENTE=libro) agrega `"act"` = `actualizado`: con él la pasada
+    sabe qué SKUs vio la pasada ANTERIOR (los del sello más reciente) para medir su
+    piso. Sin él, la consulta de siempre.
     """
+    if con_fecha:
+        return {r["sku"]: {"woo": r["stock_woo"], "odoo": r["stock_odoo"], "act": r["actualizado"],
+                           "kubera": r["stock_kubera"]}
+                for r in sdb.fetch_all(
+                    "select sku, stock_woo, stock_odoo, stock_kubera, actualizado "
+                    "from ops.stock_watch_photo")}
     return {r["sku"]: {"woo": r["stock_woo"], "odoo": r["stock_odoo"]}
             for r in sdb.fetch_all(
                 "select sku, stock_woo, stock_odoo from ops.stock_watch_photo")}
@@ -92,15 +102,52 @@ def foto_guardar(filas: list[tuple[str, int | None, int | None]],
     return len(filas)
 
 
+def columna_vendible() -> str:
+    """La columna de la foto con el número que el fan-out REPARTE: `stock_kubera`
+    (el libro, que escribe `stock_watch` en modo libro) con `FANOUT_FUENTE=kubera`;
+    `stock_woo` con `woo`. Los lectores que eligen candidatos con la foto (seguro
+    stock 0, excedentes, el espejo del DROP) la siguen para no decidir con un Woo
+    que ya nadie mueve. Nombre fijo: se interpola en SQL."""
+    from services import stock_libro
+    return "stock_kubera" if stock_libro.lee_libro() else "stock_woo"
+
+
+def foto_guardar_libro(filas: list[tuple[str, int | None]],
+                       ahora: datetime | None = None) -> int:
+    """(sku, vendible del libro) → upsert de SOLO `stock_kubera` y `actualizado`
+    (`STOCK_WATCH_FUENTE=libro`). `stock_woo` y `stock_odoo` no se nombran: Woo ya
+    no está en el camino del stock y Odoo quedó congelado. Un SKU nuevo nace con
+    las otras columnas en NULL. Mismo lote y mismo `actualizado` que las demás."""
+    if not filas:
+        return 0
+    from psycopg2.extras import execute_values
+
+    ts = ahora or datetime.now(timezone.utc)
+    with sdb.get_cursor() as cur:
+        for i in range(0, len(filas), 1000):
+            execute_values(
+                cur,
+                """insert into ops.stock_watch_photo (sku, stock_kubera, actualizado) values %s
+                   on conflict (sku) do update set
+                     stock_kubera = excluded.stock_kubera,
+                     actualizado  = excluded.actualizado""",
+                [(s, k, ts) for s, k in filas[i:i + 1000]],
+                template="(%s, %s, %s)", page_size=1000)
+    return len(filas)
+
+
 def drop_leer() -> list[dict[str, Any]]:
     """[{sku, stock_woo}] con stock — gemela del SELECT de `sincronizar_drop`.
 
     El filtro `is not null` es el mismo de allá y por la misma razón: un SKU
-    cuyo stock Woo no gestiona no se publica como 0 inventado.
+    cuyo stock Woo no gestiona no se publica como 0 inventado. Con
+    `FANOUT_FUENTE=kubera` el número sale de `stock_kubera` (el libro); la llave
+    del resultado sigue llamándose `stock_woo` para no tocar al espejo.
     """
+    col = columna_vendible()
     return sdb.fetch_all(
-        "select sku::text as sku, stock_woo from ops.stock_watch_photo "
-        "where stock_woo is not null")
+        f"select sku::text as sku, {col} as stock_woo from ops.stock_watch_photo "
+        f"where {col} is not null")
 
 
 def senal_de_vida() -> dict[str, Any]:

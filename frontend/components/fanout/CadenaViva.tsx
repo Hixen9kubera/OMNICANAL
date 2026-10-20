@@ -216,6 +216,8 @@ export default function CadenaViva({ datos, nuevos, tanda, ultimaHora, conectado
 
   const sw = datos.stock_watch;
   const f = datos.foto;
+  // «15-oct 18:34» con STOCK_WATCH_FUENTE woo/libro; null/ausente (backend anterior) = Odoo vivo.
+  const odooCongelado = f.odoo_congelado ?? null;
   const fo = datos.fanout;
   const ml = canales.find((c) => c.estado === "rechaza");
   const mlIdx = ml ? canales.indexOf(ml) : -1;
@@ -266,16 +268,21 @@ export default function CadenaViva({ datos, nuevos, tanda, ultimaHora, conectado
             } as CSSProperties} />
         ))}
 
-        <Nodo x={NODOS[0].x} w={NODOS[0].w} top={filaTop} eyebrow="Maestro" nombre="Odoo"
-          l1={`${f.skus_odoo.toLocaleString("es-MX")} SKUs`} l2="menos ventas sin orden" />
+        {/* Con STOCK_WATCH_FUENTE woo/libro el Odoo de la foto está congelado: no es el
+            maestro, stock_watch no le copia nada a Woo y «distintos de Odoo» no dice nada. */}
+        <Nodo x={NODOS[0].x} w={NODOS[0].w} top={filaTop} eyebrow={odooCongelado ? "Ya no es la fuente" : "Maestro"}
+          nombre="Odoo"
+          l1={`${f.skus_odoo.toLocaleString("es-MX")} SKUs`}
+          l2={odooCongelado ? `congelado al ${odooCongelado}` : "menos ventas sin orden"} />
         <Nodo x={NODOS[1].x} w={NODOS[1].w} top={filaTop} eyebrow="Cada 20 min" nombre="stock_watch"
           l1={sw.en_memoria && sw.segundos != null ? `Pasada ${sw.ultima} · ${Math.round(sw.segundos)} s` : `Último cambio ${sw.ultima}`}
-          l2={`${sw.cambios} cambios a Woo`} />
+          l2={odooCongelado ? `${sw.cambios} cambios de Woo` : `${sw.cambios} cambios a Woo`} />
         <Nodo x={NODOS[2].x} w={NODOS[2].w} top={filaTop} eyebrow="Fuente de los canales" nombre="WooCommerce"
           l1={`${f.skus_woo.toLocaleString("es-MX")} SKUs`}
-          l2={f.distintos - (f.distintos_por_ventas ?? 0) > 0 ? `${f.distintos - (f.distintos_por_ventas ?? 0)} distintos de Odoo`
+          l2={odooCongelado ? "su stock es el que se reparte"
+            : f.distintos - (f.distintos_por_ventas ?? 0) > 0 ? `${f.distintos - (f.distintos_por_ventas ?? 0)} distintos de Odoo`
             : f.distintos ? `${f.distintos} con ventas sin orden` : "igual a Odoo"}
-          l2Aviso={f.distintos - (f.distintos_por_ventas ?? 0) > 0} />
+          l2Aviso={!odooCongelado && f.distintos - (f.distintos_por_ventas ?? 0) > 0} />
         <Nodo x={NODOS[3].x} w={NODOS[3].w} top={filaTop} eyebrow="Por cambio" nombre="Fan-out"
           l1={`Cola ${fo.cola} · espera ${fo.debounce_s} s`}
           l2={ultimaHora ? `último cambio ${ultimaHora}` : `a ${canales.length} canales`} />

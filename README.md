@@ -1001,6 +1001,67 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.693.0 — Stock desde el libro de kubera (ruta directa, tarea 1.7): el fan-out puede leer el vendible del libro (`FANOUT_FUENTE=kubera`) y `stock_watch` vigilarlo (`STOCK_WATCH_FUENTE=libro`). **Nace inerte**
+
+**Por qué (15–20-oct-2026).** Odoo salió de la operación el 15-oct (API bloqueada desde las 18:34 UTC) y la
+salida de Woo tomó la RUTA DIRECTA: en T0 el físico de TEXCO, TEX2 y DROP pasa al libro de kubera
+(`almacen.*`, desprendimiento de MAESTRO) y Woo deja el camino del stock en el mismo acto. Esta versión
+trae la lectura; T0 la enciende con su acta (PLAN MAESTRO 1.12–1.13).
+
+**El número** (`services/stock_libro.py`):
+`vendible(SKU) = max(0, Σ libre_vendible − ventas DROP sin OV)`.
+- `Σ libre_vendible` de `almacen.existencias_bodega_v` (contrato de la migración A de MAESTRO; una fila por
+  sku, bodega, fuente y grupo), sólo bodegas `fuente = 'kubera'` con `cuenta_para_woo`. Nunca `fisico`,
+  `libre` ni `stock_almacen.libre`.
+- Ventas DROP: renglones no FULL de `channel.order_items` desde `STOCK_LIBRO_DESDE`, no canceladas
+  (`estado_wc`), sin OV confirmada o entregada ligada por `mp_canal + mp_cuenta + mp_orden`.
+  `STOCK_LIBRO_DESDE` = **el corte (2026-10-15T16:48:47Z)**: el diario de arranque de T0 asienta las
+  ventas posteriores como OV espejo con esa liga, así que no se restan dos veces.
+- SKU que el libro no trae → **0** (D4, 21-oct: sale en 0 salvo lista aprobada; lo demás con piezas
+  entra al libro en `por_verificar`). «No lo conozco» nunca deja en el canal el número viejo.
+- **Falla cerrada** (`LibroNoDisponible`), nunca cae a Woo ni inventa un 0: errata en la fuente, sin
+  `STOCK_LIBRO_DESDE`, sin la vista, ninguna bodega del libro que cuente (T0 no ha ocurrido: así está hoy
+  producción), alguna de esas bodegas sin ninguna fila en la vista (dos bodegas completas pasan solas el
+  piso global y la tercera mandaría sus SKUs a 0), menos de `STOCK_LIBRO_MIN_SKUS` (4,000) SKUs con
+  piezas, o la base caída.
+
+**Quién lo lee con `FANOUT_FUENTE=kubera`:** el fan-out (`_stock_drop`, `_stock_drop_varios`, `plan`), el
+seguro (barrido y lista de apagadas), los excedentes, el espejo `general` (`drop_leer` →
+`stock_kubera`), el alta de publicaciones (`construir_prod`: ML, Amazon, TikTok y Temu) y `stock_full`, que
+con el libro siempre queda en solo registro (un envío a FULL es una OV tipo 'full', no una resta a Woo).
+
+**`stock_watch`, fuente `libro`** (`_pasada_libro`):
+- `STOCK_WATCH_FUENTE` acepta `odoo | libro`; cualquier otro valor se niega (log, estado y aviso). El modo
+  puente `woo` de la v0.654.0 nunca se desplegó y **se quitó**; de él queda lo que sirve al libro: el Odoo
+  de la foto rotulado «congelado al 15-oct 18:34, incompleto», la matriz y el Dashboard sin «distinto de
+  Odoo», Bodegas sin preguntarle a Odoo, el job sin MySQL, la lectura parcial de Odoo que aborta la pasada
+  (`odoo_lectura_parcial`) y el aviso por Slack tras dos pasadas sin repartir.
+- Compara el vendible contra `stock_kubera` de la foto (la primera pasada, contra el último `stock_woo`) y
+  anota `vendible_cambio` («vendible X -> Y (libro)» / «X -> Y (replicar a canales)»); encola «cambio de
+  vendible en kubera» **sólo si el fan-out también lee el libro**. Si no, o con `SOLO_REGISTRO`, sólo
+  registra (`vendible_registro`). Lo que el libro no trae siembra 0 en `stock_kubera` (así el seguro y los
+  excedentes lo ven) y, si tenía un número distinto, es un cambio a 0 que se reparte igual.
+- Nunca lee ni escribe Woo. Frenos: tope de 300, piso del 90 % de SKUs con piezas contra la pasada anterior, bitácora apagada,
+  libro ilegible.
+- `forzar` se salta el tope y el piso, **ya no el apagado**: con `STOCK_WATCH_ENABLED=false` sólo corre una
+  pasada forzada en solo registro.
+- `ACCIONES_CAMBIO = ('odoo_delta', 'woo_cambio', 'vendible_cambio')`: el recuperador y la bitácora del
+  panel ya ven `vendible_cambio`.
+
+**Comparación de T0** (`scripts/comparar_libro_vs_woo.py`, sólo lectura): libro contra Woo (`--woo vivo`, o
+la foto), por SKU, con `--explicados` que exige la magnitud exacta. Sus categorías «distinto» y «solo
+libro» son exactamente los cambios de la primera pasada.
+
+**Por omisión no cambia nada**: `FANOUT_FUENTE=woo`, `STOCK_WATCH_FUENTE=odoo`. El acto de T0 enciende
+juntos `STOCK_WATCH_ENABLED=true`, `STOCK_WATCH_SOLO_REGISTRO=false`, `STOCK_WATCH_FUENTE=libro`,
+`FANOUT_FUENTE=kubera` y `STOCK_LIBRO_DESDE=2026-10-15T16:48:47Z`. Reversa: `FANOUT_FUENTE=woo` y
+`STOCK_WATCH_ENABLED=false`.
+
+**Verificado.** 3,173 pruebas (fallan las 2 que ya fallaban en main: `test_regla_11_productos` y
+`test_competencia_juez_rutas`). En el sandbox, en una transacción con ROLLBACK y una vista de reemplazo
+(la de MAESTRO no existía aún): 13,261 SKUs, tres pasadas (27 cambios encolados, 0, +7 y un «sin
+número»), los lectores de la foto contra las tablas reales, y nada quedó.
+
 ### v0.692.0 — Lo que ya pasó por Crear no se vuelve a enseñar en Crear: ni la variante creada, ni el padre con todas sus variantes hechas
 
 **El pedido (Brandon, 27-oct-2026):** *"siguen quedando muchos… todos los que han sido creados ya no deben estar en
@@ -2805,7 +2866,6 @@ lo da `meli._access_token`, que nunca renueva). Para ponerlos al día: correrlos
 archivos no hay movidos; suma lo de después y aguanta kubera caída; la bitácora deja fuera lo fallido y lo
 revertido; `resumir` dice qué promoción cobra (relámpago, descuento individual) y descarta cupones vencidos.
 `tsc --noEmit` limpio.
-
 ### v0.653.0 — PRICING con datos: la foto del Monitor viaja en el repo y «Qué hacer» muestra la PROMOCIÓN de los productos sin ventas
 
 **Qué pidió Brandon (15-oct-2026).** La pestaña PRICING de v0.650.0 salió a producción diciendo «No hay foto del

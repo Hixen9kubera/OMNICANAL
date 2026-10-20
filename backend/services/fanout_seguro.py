@@ -1839,7 +1839,10 @@ def candidatos(canal: str, limite: int = _BARRIDO_MAX) -> list[dict[str, Any]]:
     from services import supabase_db as sdb
     canal = (canal or "").lower()
     apagables = sorted(estados_temu()) if canal == "temu" else ["ACTIVATE"]
-    return sdb.fetch_all(_SQL_BARRIDO, {"c": canal, "apagables": apagables, "n": int(limite)})
+    from services import stock_watch_read
+    # Con FANOUT_FUENTE=kubera el 0 sale del libro (`stock_kubera`), no de un Woo quieto.
+    sql = _SQL_BARRIDO.replace("p.stock_woo", "p." + stock_watch_read.columna_vendible())
+    return sdb.fetch_all(sql, {"c": canal, "apagables": apagables, "n": int(limite)})
 
 
 def barrer(canal: str) -> dict[str, Any]:
@@ -2237,6 +2240,13 @@ def aviso_venta(cuenta: str, skus: list[str], fecha_compra: str | None,
 
 # ── Para el panel y la ruta de estado (sólo lee) ─────────────────────────────
 
+def _col_foto() -> str:
+    """La columna de la foto con el número que se reparte (ver
+    `stock_watch_read.columna_vendible`)."""
+    from services import stock_watch_read
+    return stock_watch_read.columna_vendible()
+
+
 _SQL_ULTIMAS = """)
     select m.canal, m.sku, m.cuenta, m.item_id, m.ts, m.accion, m.resultado,
            l.status, l.stock_own, p.stock_woo, (l.listing_id is null) as huerfana,
@@ -2261,7 +2271,8 @@ def _ultimas(canal: str | None = None) -> list[dict[str, Any]]:
     from services import supabase_db as sdb
     filas = sdb.fetch_all(
         "with m as (" + _SQL_MARCA.format(filtro="and canal = %(canal)s" if canal else "")
-        + _SQL_ULTIMAS, {"canal": canal, "z": _ZONA})
+        + _SQL_ULTIMAS.replace("p.stock_woo,", f"p.{_col_foto()} as stock_woo,"),
+        {"canal": canal, "z": _ZONA})
     for f in filas:
         f["fuera"] = not a_la_venta(f["canal"], f.get("status"))
     return filas

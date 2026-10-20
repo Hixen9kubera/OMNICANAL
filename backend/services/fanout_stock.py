@@ -188,12 +188,23 @@ def cola_rapida() -> bool:
 
 def _stock_drop(sku: str) -> int | None:
     """
-    Stock DROP del SKU = `_stock` en WooCommerce (que ya trae el de Odoo).
+    Stock DROP del SKU: el número que el fan-out reparte. Lo elige `FANOUT_FUENTE`:
 
-    Se lee por MySQL directo (wp_db) a propósito: la REST de Woo devuelve 403
-    intermitente por el CDN de Hostinger (pendiente #1) y un fallo de lectura
-    NUNCA debe convertirse en un stock inventado.
+    · `woo` (por omisión) — `_stock` en WooCommerce. Se lee por MySQL directo
+      (wp_db) a propósito: la REST de Woo devuelve 403 intermitente por el CDN de
+      Hostinger (pendiente #1) y un fallo de lectura NUNCA debe convertirse en un
+      stock inventado.
+    · `kubera` — el libro de kubera (`services/stock_libro.py`): libre vendible de
+      las bodegas del libro menos las ventas DROP sin OV; un SKU que el libro no
+      trae da 0 (D4). Si el libro no se puede leer LANZA `LibroNoDisponible`
+      —igual que una caída de WPDB—: nunca cae a Woo ni devuelve un 0 inventado.
+      Una errata en la variable también lanza.
+
+    `None` = «sin número» (sólo con Woo): el fan-out no toca ese SKU.
     """
+    from services import stock_libro
+    if stock_libro.fuente_fanout() == "kubera":
+        return stock_libro.numero(sku)
     from services import wp_db
     P = wp_db._prefix()
     rows = wp_db._fetch_all(
@@ -1225,7 +1236,9 @@ def plan(sku: str) -> dict[str, Any]:
     """
     stock = _stock_drop(sku)
     if stock is None:
-        return {"sku": sku, "ok": False, "motivo": "sin stock legible en WooCommerce",
+        from services import stock_libro
+        donde = "el libro de kubera" if stock_libro.lee_libro() else "WooCommerce"
+        return {"sku": sku, "ok": False, "motivo": f"sin stock legible en {donde}",
                 "acciones": []}
     objetivo = max(0, stock - _reserva())
     acciones: list[dict[str, Any]] = []
@@ -1848,10 +1861,14 @@ def _drenar_lote() -> None:
 
 def _stock_drop_varios(skus: list[str]) -> dict[str, int | None]:
     """`_stock_drop` de una tanda en UNA consulta (para la prioridad): {SKU en
-    mayúsculas: stock}. Lo que no aparece no está en Woo; None = ilegible."""
-    from services import wp_db
+    mayúsculas: stock}. Lo que no aparece no está en Woo; None = ilegible. Con
+    `FANOUT_FUENTE=kubera`, del libro (dos consultas; lanza si no se puede leer)."""
     if not skus:
         return {}
+    from services import stock_libro
+    if stock_libro.fuente_fanout() == "kubera":
+        return {s: n for s, n in stock_libro.numeros(skus).items() if n is not None}
+    from services import wp_db
     P = wp_db._prefix()
     marcas = ", ".join(["%s"] * len(skus))
     rows = wp_db._fetch_all(

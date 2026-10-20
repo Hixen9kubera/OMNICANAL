@@ -100,10 +100,16 @@ export interface Vivo {
     piezas_sin_odoo: number;
     ultima: string | null;
     peor: { sku: string; stock_odoo: number; stock_woo: number } | null;
+    /** «Odoo», o «Odoo (congelado al 15-oct 18:34, incompleto)» con `STOCK_WATCH_FUENTE` woo/libro. */
+    odoo_rotulo?: string;
+    /** Desde cuándo el Odoo de la foto no se mueve; null/ausente = Odoo vivo (y `distintos` cuenta). */
+    odoo_congelado?: string | null;
   };
   stock_watch: {
     habilitado: boolean;
     modo: string | null;
+    /** `odoo` | `woo` | `libro` (`STOCK_WATCH_FUENTE`). Un backend anterior no la manda: odoo. */
+    fuente?: string;
     en_memoria: boolean;
     segundos: number | null;
     cambios: number;
@@ -200,6 +206,8 @@ export interface Matriz {
   columnas: Columna[];
   barras: Coincidencia[];
   filas: FilaMatriz[];
+  /** «Odoo», o «Odoo (congelado al 15-oct 18:34, incompleto)» cuando stock_watch ya no lee Odoo (`STOCK_WATCH_FUENTE`). */
+  odoo_rotulo?: string;
 }
 
 /** Color de cada resultado en el horario y el rastro (contraste ≥ 4.5:1). */
@@ -346,6 +354,8 @@ export interface Historia {
   ahora: string;
   existe: boolean;
   odoo: string;
+  /** «Odoo», o «Odoo (congelado al 15-oct 18:34, incompleto)» cuando stock_watch ya no lee Odoo (`STOCK_WATCH_FUENTE`). */
+  odoo_rotulo?: string;
   woo: string;
   woo_de?: string;
   sin_orden?: SinOrden | null;
@@ -726,7 +736,7 @@ export interface FilaBodega {
   /** Vendidas sin orden en Odoo (lo que resta stock_watch). */
   pend: number;
   esperado: number | null;
-  esperado_motivo: "calculado" | "delta" | "ciega" | "sin_odoo";
+  esperado_motivo: "calculado" | "delta" | "ciega" | "sin_odoo" | "sin_copia";
   esperado_d: string;
   /** El Odoo y el kubera que entran en «Woo esperado» (kubera null = no suma). */
   odoo_base: number | null;
@@ -780,6 +790,11 @@ export interface ResumenBodegas {
     solo_registro: boolean;
     tope: number | null;
     modo: string | null;
+    /** `odoo` | `woo` | `libro` (`STOCK_WATCH_FUENTE`). Un backend anterior no la manda: odoo. */
+    fuente?: string;
+    odoo_rotulo?: string;
+    /** Desde cuándo el Odoo de la foto no se mueve; null con fuente odoo. */
+    odoo_congelado?: string | null;
     absoluto: boolean;
     resta: boolean;
     dias: number | null;
@@ -795,7 +810,12 @@ export interface ResumenBodegas {
       recientes?: number; recientes_error?: string | null;
     };
   };
-  formula: { texto: string; suma_kubera: boolean; absoluto: boolean; resta: boolean; solo_registro: boolean; habilitado: boolean };
+  formula: {
+    texto: string; suma_kubera: boolean; absoluto: boolean; resta: boolean; solo_registro: boolean; habilitado: boolean;
+    fuente?: string;
+    /** «15-oct 18:34» con `STOCK_WATCH_FUENTE` woo/libro: el Odoo de la foto ya no se mueve. */
+    odoo_congelado?: string | null;
+  };
   /**
    * Movimientos del libro y OV abiertas (caché de 5 min). Opcional: un backend anterior a la
    * limpieza de la Fase 1 no lo manda (mandaba `formatos`, que ya no se lee).

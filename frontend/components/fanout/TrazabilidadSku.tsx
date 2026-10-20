@@ -320,7 +320,7 @@ export default function TrazabilidadSku({ sku, onCerrar, onRastro, carrilInicial
               <span className="break-all font-mono text-base font-bold text-slate-900">{sku}</span>
               {h && (
                 <span className="text-sm text-slate-700">
-                  Odoo {h.odoo} · Woo <span className="font-bold">{h.woo}</span>
+                  {h.odoo_rotulo ?? "Odoo"} {h.odoo} · Woo <span className="font-bold">{h.woo}</span>
                   {h.woo_de && <span className="text-[12px] text-slate-500"> ({h.woo_de})</span>}
                   {h.full?.cuentas.map((c) => (c.de_otro ? (
                     <span key={c.cuenta}> · FULL {c.nombre}: <span className="text-[12px] text-amber-800">es de {c.de_otro.sku}</span></span>

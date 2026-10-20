@@ -114,8 +114,19 @@ def solo_registro() -> bool:
     validar la tabla de decisión con tráfico de producción antes de mover una
     sola pieza. Default True a propósito — encender el vigilante nunca debe
     escribir por accidente.
+
+    Con `FANOUT_FUENTE=kubera` también es True, diga lo que diga la variable: Woo
+    ya no está en el camino del stock y un envío a FULL/FBA es una SALIDA del
+    libro (una OV tipo 'full' entregada; MAESTRO, 20-oct), no una resta a Woo.
     """
-    return bool(getattr(settings, "full_watch_solo_registro", True))
+    from services import stock_libro
+    return bool(getattr(settings, "full_watch_solo_registro", True)) or stock_libro.lee_libro()
+
+
+def _destino() -> str:
+    """A quién se le «restaría» en la bitácora del modo registro."""
+    from services import stock_libro
+    return "el libro (no se escribe: lo asienta su OV 'full')" if stock_libro.lee_libro() else "Woo"
 
 
 # ── Bitácora / idempotencia (reutiliza fanout_log: NO se crea tabla nueva) ────
@@ -392,7 +403,7 @@ async def procesar_operacion(operacion_id: str, cuenta: str) -> dict[str, Any]:
         actual = await asyncio.to_thread(fanout_stock._stock_drop, sku)
         propuesto = max(0, (actual or 0) + delta) if actual is not None else None
         await _registrar_async(sku, operacion_id, cuenta, f"{accion}_sim", actual, propuesto,
-                               f"{tipo} x{cantidad}: SOLO-REGISTRO — restaría a Woo "
+                               f"{tipo} x{cantidad}: SOLO-REGISTRO — restaría a {_destino()} "
                                f"{actual}→{propuesto} (no se escribió)")
         log.info("FULL [solo-registro] %s %s: %s x%s → Woo %s→%s",
                  cuenta, sku, tipo, cantidad, actual, propuesto)
@@ -521,7 +532,7 @@ async def revisar_fba() -> dict[str, Any]:
             await _registrar_async(sku, f"fba:{sku}:{ahora}", "AMAZON", "fba_ingreso_sim",
                                    actual, propuesto,
                                    f"FBA subió {antes_fba}→{ahora} (+{subio}): SOLO-REGISTRO — "
-                                   f"restaría a Woo {actual}→{propuesto} (no se escribió)")
+                                   f"restaría a {_destino()} {actual}→{propuesto} (no se escribió)")
             await asyncio.to_thread(_marcar_agua_fba, sku, ahora)
             aplicados.append({"sku": sku, "piezas": subio, "woo": f"{actual}→{propuesto}",
                               "solo_registro": True})

@@ -543,8 +543,11 @@ def iniciar() -> None:
 
     # Vigilante de inventario: Odoo --(delta)--> Woo --(cualquier cambio)-->
     # canales. Ver services/stock_watch.py. Nace apagado y en solo-registro.
-    if getattr(settings, "stock_watch_enabled", False) and settings.mysql_enabled:
-        from services import stock_watch
+    # FUENTE=odoo necesita MySQL (su foto y su `_asegurar_schema`); libro
+    # viven sólo en kubera y no dependen de él.
+    from services import stock_watch
+    if getattr(settings, "stock_watch_enabled", False) and (settings.mysql_enabled
+                                                           or stock_watch.fuente() != "odoo"):
         _scheduler.add_job(
             stock_watch.revisar,
             "interval",
@@ -554,8 +557,8 @@ def iniciar() -> None:
             max_instances=1,
             coalesce=True,
         )
-        log.info("Vigilante de inventario cada %s min (solo_registro=%s, tope=%s).",
-                 settings.stock_watch_min, settings.stock_watch_solo_registro,
+        log.info("Vigilante de inventario cada %s min (fuente=%s, solo_registro=%s, tope=%s).",
+                 settings.stock_watch_min, stock_watch.fuente(), settings.stock_watch_solo_registro,
                  settings.stock_watch_tope)
     # Recuperador del fan-out (services/fanout_recuperar.py): vuelve a encolar los
     # cambios de stock_watch que nunca se repartieron. La cola vive en memoria y un

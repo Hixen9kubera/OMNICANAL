@@ -1361,6 +1361,24 @@ class Settings(BaseSettings):
     fanout_canales: str = ""
     # Piezas de colchón que NO se publican (cubre la ventana venta→escritura).
     fanout_reserva: int = 0
+    # DE DÓNDE sale el número que el fan-out reparte (services/stock_libro.py):
+    #   · `woo` (por omisión) — el `_stock` de Woo por WPDB, como siempre.
+    #   · `kubera` — el libro de kubera (almacen.*): libre vendible de las bodegas
+    #     con fuente kubera y `cuenta_para_woo`, menos las ventas DROP desde
+    #     `STOCK_LIBRO_DESDE` que todavía no tienen OV. Ruta directa del plan de
+    #     salida de Woo (20-oct): en T0 Woo sale del camino del stock.
+    # Un valor que no se conoce NO cae a Woo: el fan-out se niega a leer.
+    fanout_fuente: str = "woo"
+    # Hasta dónde el libro YA refleja las ventas (ISO 8601 con zona): desde ahí
+    # cuentan las ventas DROP sin OV. NO es T0 si T0 siembra el saldo del corte
+    # (15-oct 16:48:47 UTC) sin asentar lo vendido después: entonces es el corte.
+    # Lo fija MAESTRO con el desprendimiento. Sin él, FANOUT_FUENTE=kubera no lee.
+    stock_libro_desde: str = ""
+    # Piso de cobertura: con menos SKUs con piezas que esto el libro está vacío o a
+    # medio cargar y NO se lee (20-oct: Woo tiene 8,149 SKUs con piezas). 0 = sin piso.
+    stock_libro_min_skus: int = 4000
+    # La vista del libro por SKU y bodega (contrato de MAESTRO, migración A).
+    stock_libro_vista: str = "almacen.existencias_bodega_v"
     # Cola rápida del fan-out (services/fanout_stock.py, «Cola con debounce»). Medido el
     # 12-oct-2026 con la venta S41906 de Odoo (183 SKUs apartados): el único hilo
     # repartía 5.5 SKUs/min, Temu se llevaba ~9 s de cada uno (duerme 8 s y relee después
@@ -1716,6 +1734,17 @@ class Settings(BaseSettings):
     # Nace APAGADO: encenderlo MUEVE INVENTARIO REAL (regla 3 de CLAUDE.md).
     stock_watch_enabled: bool = False
     stock_watch_min: int = 20
+    # ¿DE DÓNDE sale el inventario que vigila? (15-oct, salida total de Odoo)
+    #   odoo  — lo de siempre: copia `free_qty` de Odoo a Woo y reparte los
+    #           cambios de Woo. Por omisión: sin la variable (o vacía), nada cambia.
+    #   libro — el vendible del libro de kubera (`stock_libro`): anota cada
+    #           cambio como `vendible_cambio` y lo encola SÓLO si el fan-out lee el
+    #           libro (`FANOUT_FUENTE=kubera`); si no, sólo registra (la sombra).
+    #           NUNCA escribe en Woo. Foto: `stock_kubera`.
+    # Cualquier otro valor se niega. `STOCK_WATCH_ENABLED` sigue siendo el
+    # interruptor general, y la REVERSA de `libro` es apagarlo (o SOLO_REGISTRO=true),
+    # NUNCA volver a `odoo` (ver `stock_watch.kubera_decide`).
+    stock_watch_fuente: str = "odoo"
     # MODO OBSERVACIÓN (default True): anota lo que haría sin tocar nada.
     stock_watch_solo_registro: bool = True
     # CORTACIRCUITOS: si una pasada ve más cambios que esto, NO aplica nada y

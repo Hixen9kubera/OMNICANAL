@@ -75,7 +75,18 @@ hace que valga la pena leer el reporte: si algo suena, es real.
 
 Retiro: nunca mientras kubera sea la fuente de verdad.
 
-### `comparar_stock_watch_foto.py` — el del paso 2
+### `comparar_stock_watch_foto.py` — el del paso 2 (RETIRADO el 15-oct-2026)
+
+> **Ya no va al chequeo diario** (ver «Retirados» y el manifiesto). Desde el
+> 15-oct a las 18:34 UTC Odoo rechaza la cuenta API (salida total de Odoo): la
+> pasada de Odoo de stock_watch no vuelve a correr, así que la foto de MySQL
+> (`stock_watch_foto`) quedó parada en esa hora para siempre. Con
+> `STOCK_WATCH_FUENTE=libro` (v0.693.0, ruta directa; el modo puente `woo` nunca se
+> desplegó) la foto vive SÓLO en kubera (`ops.stock_watch_photo`) y la lectura ya es
+> de kubera (`kubera_decide`), que es justo la condición de retiro de abajo; con
+> stock_watch apagado (P2), ninguna de las dos se mueve. En cualquiera de los dos caminos este arnés sale rojo todos los
+> días sin que nada esté mal. La vida de la foto de kubera la vigila ahora la propia
+> pasada: dos seguidas sin repartir avisan por Slack (`stock_watch_sin_repartir`).
 
 ```bash
 python backend/scripts/comparar_stock_watch_foto.py
@@ -168,7 +179,8 @@ daba por muertos a los siete de abajo, y uno resultó estar vivo.
   congelado a propósito y la diferencia crece sola cada día.
 - `vigilar_congelacion.py` sobrevive por otra vía: no compara igualdad, mide
   **movimiento**.
-- `comparar_stock_watch_foto.py` sobrevive porque sus dos lados están vivos.
+- `comparar_stock_watch_foto.py` sobrevivió mientras sus dos lados estuvieron
+  vivos; murió el 15-oct, cuando Odoo salió y MySQL dejó de ser la foto.
 
 **Todo arnés nuevo se diseña con esa regla.** Un arnés que solo sabe comparar
 dos tablas caduca el día del corte; uno que sabe a quién preguntarle, no.
@@ -187,6 +199,7 @@ supuestos** (y ojo: no son uniformes — `orders` sale con 2, no con 1).
 | `comparar_lecturas_costing.py` | `CON DIFERENCIAS`, exit **1** | Compara contra MySQL congelado. Alarma garantizada, todos los días |
 | `comparar_lecturas_channel.py` | `CON DIFERENCIAS`, exit **1** | Ídem |
 | `comparar_lecturas_orders.py` | `CON DIFERENCIAS (15)`, exit **2** | Ídem. Las diferencias son el corte: kubera trae 1,702 `completed` de BEKURA contra 1,004 de MySQL — kubera siguió, MySQL no |
+| `comparar_stock_watch_foto.py` | rojo desde el 15-oct 18:34 (las dos fotos paradas) | Retirado el 15-oct-2026: Odoo salió y la pasada de Odoo no vuelve a correr. Con `STOCK_WATCH_FUENTE=libro` sólo se mueve la foto de kubera (MySQL dejó de ser foto); con stock_watch apagado, ninguna. Rojo garantizado en los dos caminos |
 
 ### Caso aparte: `comparar_lecturas_core.py`
 
@@ -230,20 +243,20 @@ commit que lo crea.
 ## Cómo lo corre el agente
 
 - Desde la raíz del repo (`OMNICANAL`); necesita el `.env`.
-- Los dos activos son **SOLO LECTURA** sobre producción. Se pueden correr sin
+- Los activos son **SOLO LECTURA** sobre producción. Se pueden correr sin
   riesgo y sin avisar a nadie.
-- Duración: `comparar_stock_watch_foto` segundos; `vigilar_congelacion` cerca de
-  un minuto.
+- Duración: `vigilar_congelacion` cerca de un minuto.
 - Lo que ya avisa solo por Slack cada 15 min (`services/alertas.py`) es OTRA
   cosa: actas de los ETLs, silencio de ventas, tokens rancios y pedidos
-  duplicados. Ni la foto ni los latidos están ahí — por eso este chequeo diario
-  tiene sentido y no duplica nada.
+  duplicados (y, desde v0.693.0, `stock_watch_sin_repartir`: la foto de kubera
+  que deja de avanzar con `STOCK_WATCH_FUENTE=libro`). Los latidos no están ahí —
+  por eso este chequeo diario tiene sentido y no duplica nada.
 
 ### Manifiesto
 
 ```json
 {
-  "version": "2026-08-16b",
+  "version": "2026-10-15",
   "cwd": "OMNICANAL",
   "activos": [
     {
@@ -257,16 +270,6 @@ commit que lo crea.
       "ignorar_si_solo": ["[ALTO] costos", "[ n/d] turno_sync", "[ n/d] padron"],
       "nota": "El codigo 1 es rutinario. Decide el latido, no el exit code.",
       "retiro": "nunca mientras kubera sea la fuente de verdad"
-    },
-    {
-      "id": "paso2_foto_vigilante",
-      "cmd": "python backend/scripts/comparar_stock_watch_foto.py",
-      "cadencia": "diaria",
-      "solo_lectura": true,
-      "codigo_salida_confiable": true,
-      "leer_salida": false,
-      "nota": "Autoriza encender SUPABASE_READ_STOCK_WATCH. Verde varios dias seguidos o no se avanza.",
-      "retiro": "cuando la lectura pase a kubera y stock_watch_foto se archive"
     },
     {
       "id": "paso3_seam_publicar",
@@ -295,7 +298,8 @@ commit que lo crea.
     {"script": "comparar_orders.py",           "motivo": "escribe acta; cron retirado"},
     {"script": "comparar_lecturas_costing.py", "motivo": "compara contra MySQL congelado", "medido_exit": 1},
     {"script": "comparar_lecturas_channel.py", "motivo": "compara contra MySQL congelado", "medido_exit": 1},
-    {"script": "comparar_lecturas_orders.py",  "motivo": "compara contra MySQL congelado", "medido_exit": 2}
+    {"script": "comparar_lecturas_orders.py",  "motivo": "compara contra MySQL congelado", "medido_exit": 2},
+    {"script": "comparar_stock_watch_foto.py", "motivo": "Odoo salio el 15-oct: la foto de MySQL no se mueve mas (FUENTE=libro escribe solo kubera; P2 apaga todo)", "desde": "2026-10-15"}
   ],
   "pasa_pero_fuera": [
     {"script": "comparar_lecturas_core.py", "medido_exit": 0, "veredicto": "EQUIVALENTE",
