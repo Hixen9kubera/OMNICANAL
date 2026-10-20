@@ -1001,6 +1001,47 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.669.0 — Resolver de costos: la comparación de fotos del packing list pasa por OpenRouter (la clave de Gemini está muerta)
+
+**Qué pasaba.** Al desplegar v0.668.0 apareció que `GEMINI_API_KEY` de producción contesta «API key not valid»
+desde el **16-oct-2026 02:55 UTC**: el editor de imágenes estuvo cuatro días caído (40 intentos, 14 SKUs, cero
+éxitos). Se buscó qué más dependía de esa clave. Quedaban dos usos:
+
+| Uso | ¿Vivo? | Qué se hizo |
+|---|---|---|
+| `crear_producto._gemini_limpiar` (limpiar fotos en Crear Productos) | **No**: `LIMPIAR_CON_IA = False` desde el 2-jul (las fotos se copian de Alibaba tal cual) | Nada. Si se reactiva, que use `imagenes_editor._editar` |
+| `packing_sku._gemini_relacion` (paso D del Resolver de costos) | **Sí**: `usar_vision=True` por omisión; última corrida 6-oct (TXGU7518788) | Pasa por OpenRouter |
+
+El paso D compara las FOTOS de dos productos cuyo nombre se parece («colchón enrollado matrimonial» / «colchón
+enrollado queen») y decide `same` / `variant` / `different`; con `same` o `variant` los une bajo un mismo número de
+SKU. Con la clave muerta fallaba **en silencio**: `_gemini_relacion` devolvía None, no se unía nada y el packing
+list salía con números distintos para el mismo producto. El segundo paso visual del Resolver
+(`packing_comparador.empatar_por_imagen`) usa Claude Haiku y no se ve afectado.
+
+**Qué modelo.** Ocho pares de fotos reales con respuesta conocida —colchones CAM-0030 IND/MAT/QUE, overol
+ROP-0121 L/XL, la manguera TEC-1075 desde dos ángulos, y cuatro pares de productos distintos con nombres
+parecidos—, con el prompt y la reducción a 512 px de producción:
+
+| Modelo (por OpenRouter) | Aciertos | Costo por par | Falla |
+|---|---|---|---|
+| `google/gemini-2.5-flash` | **8/8** | $0.0003 | — |
+| `google/gemini-3.1-flash-lite` | 7/8 | $0.0006 | separó los colchones |
+| `google/gemini-2.5-flash-lite` | 5/8 | $0.0001 | **unió el seguro de cajuela con la manguera** (dos productos, un SKU) |
+
+Se queda el **mismo Gemini 2.5 Flash, ahora por OpenRouter**: el más barato que no se equivoca. Con el tope de 20
+pares por packing list son ≤ $0.006 por corrida.
+
+**Cómo.** `packing_sku._relacion`: con `OPENROUTER_API_KEY` pregunta a `/chat/completions` con las dos fotos y el
+prompt de siempre (`_openrouter_relacion`; reintenta 429/502/503, no insiste con 401/402); si no contesta y hay
+`GEMINI_API_KEY`, Gemini directo; sin la clave de OpenRouter, Gemini directo como antes. La verificación se omite
+solo si no hay ninguna de las dos claves.
+
+**Verificado.** 7 pruebas nuevas (`tests/test_packing_vision_openrouter.py`) + las 42 de packing y las 22 del
+editor, en verde. De punta a punta contra OpenRouter real con `_fusionar_por_vision`: los colchones
+matrimonial/queen se unieron en un concepto con variantes MAT y QUE, y el seguro y la manguera quedaron separados.
+
+**Sin variables nuevas**: usa la `OPENROUTER_API_KEY` que ya está en Railway desde v0.668.0.
+
 ### v0.668.0 — Editor de imágenes por OpenRouter: cada tipo de edición con el modelo más barato que la aguanta
 
 **Qué pidió Brandon (19-oct-2026).** Que «Procesar con IA» del Publicador (Fondo, Traducir texto, Quitar logos,

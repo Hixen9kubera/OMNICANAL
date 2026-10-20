@@ -16,7 +16,8 @@ Pipeline (portado de kubera/costos/app.py, validado contra ~60 contenedores):
   D. Gemini Flash compara las FOTOS de los conceptos cuyos labels se parecen
      (``difflib > 0.7``): el proveedor escribe "silla plegable" y "silla
      plegable de metal" para el mismo producto, y solo la imagen lo desambigua.
-     Si dice "same" o "variant", los conceptos se fusionan.
+     Si dice "same" o "variant", los conceptos se fusionan. Con
+     OPENROUTER_API_KEY va por OpenRouter (el mismo modelo); sin ella, directo.
   E. Asignación de SKU con :mod:`packing_taxonomia`: un número por concepto,
      tomado del contador sembrado con Odoo, y el atributo solo si el concepto
      tiene 2+ variantes distintas (un "NEGRO" solitario no es una variante).
@@ -54,6 +55,22 @@ log = logging.getLogger("omnicanal.packing.sku")
 DEEPSEEK_MODEL = "deepseek-chat"
 GEMINI_MODEL = "gemini-2.5-flash"
 _GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+
+# El mismo Gemini 2.5 Flash, pero por OpenRouter (20-oct-2026): la clave de
+# Gemini de producción da «API key not valid» desde el 16-oct, y aquí el error
+# no se nota —`_gemini_relacion` devuelve None, no se fusiona nada y el
+# packing list sale con números repetidos para el mismo producto—.
+# Medido con 8 pares de fotos reales con respuesta conocida (colchones
+# CAM-0030 IND/MAT/QUE, overol ROP-0121 L/XL, manguera TEC-1075 de dos ángulos,
+# y cuatro pares de productos distintos con labels parecidos):
+#   · gemini-2.5-flash      8/8   $0.0003 por par  ← este
+#   · gemini-3.1-flash-lite 7/8   $0.0006           (separó los colchones)
+#   · gemini-2.5-flash-lite 5/8   $0.0001           (FUSIONÓ el seguro de cajuela
+#                                                    con la manguera: dos productos
+#                                                    bajo un mismo SKU)
+# Con el tope de `_MAX_PARES_VISION` un packing list cuesta ≤ $0.006.
+_OR_URL = "https://openrouter.ai/api/v1/chat/completions"
+_OR_MODELO_VISION = "google/gemini-2.5-flash"
 
 _CONCURRENCIA_DEEPSEEK = 20
 _UMBRAL_SIMILITUD = 0.7   # difflib sobre los labels; debajo de esto ni se pregunta
@@ -296,6 +313,58 @@ async def _gemini_relacion(
     return None
 
 
+async def _openrouter_relacion(
+    cli: httpx.AsyncClient, img_a: bytes, img_b: bytes, lbl_a: str, lbl_b: str,
+) -> str | None:
+    """`_gemini_relacion` por OpenRouter: mismo prompt, mismas fotos reducidas."""
+    da, ma = _comprimir(img_a)
+    db, mb = _comprimir(img_b)
+    body = {
+        "model": _OR_MODELO_VISION,
+        "temperature": 0.1,
+        "max_tokens": 400,
+        "messages": [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": f"data:{ma};base64,{base64.b64encode(da).decode()}"}},
+            {"type": "image_url", "image_url": {"url": f"data:{mb};base64,{base64.b64encode(db).decode()}"}},
+            {"type": "text", "text": _PROMPT_VISION.format(a=lbl_a, b=lbl_b)},
+        ]}],
+    }
+    headers = {"Authorization": f"Bearer {settings.openrouter_api_key}",
+               "X-Title": "Kubera Omnicanal"}
+    for intento in range(4):
+        try:
+            r = await cli.post(_OR_URL, json=body, headers=headers, timeout=90.0)
+            if r.status_code in (429, 502, 503):
+                await asyncio.sleep(2 ** intento)
+                continue
+            if r.status_code in (401, 402):   # clave mala / sin crédito: no insistir
+                log.warning("OpenRouter HTTP %d comparando fotos: %s",
+                            r.status_code, r.text[:150])
+                return None
+            r.raise_for_status()
+            texto = ((r.json().get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+            rel = (_parse_json(texto).get("relation") or "").strip().lower()
+            return rel or None
+        except Exception as exc:  # noqa: BLE001
+            if intento == 3:
+                log.warning("OpenRouter falló comparando %r vs %r: %s",
+                            lbl_a[:25], lbl_b[:25], exc)
+                return None
+            await asyncio.sleep(1 + intento)
+    return None
+
+
+async def _relacion(
+    cli: httpx.AsyncClient, img_a: bytes, img_b: bytes, lbl_a: str, lbl_b: str,
+) -> str | None:
+    """same/variant/different: OpenRouter si hay clave; Gemini directo si no o si falla."""
+    if settings.openrouter_api_key:
+        rel = await _openrouter_relacion(cli, img_a, img_b, lbl_a, lbl_b)
+        if rel or not settings.gemini_api_key:
+            return rel
+    return await _gemini_relacion(cli, img_a, img_b, lbl_a, lbl_b)
+
+
 def _foto_de_concepto(
     concepto: dict[str, Any], fotos_por_clave: dict[tuple[str, str], bytes],
 ) -> bytes | None:
@@ -312,9 +381,10 @@ async def _fusionar_por_vision(
     progreso: Progreso = None,
 ) -> int:
     """Fusiona in-place los conceptos que Gemini declara same/variant. Devuelve cuántos."""
-    if len(conceptos) < 2 or not settings.gemini_api_key:
-        if not settings.gemini_api_key:
-            log.info("GEMINI_API_KEY no configurada: se omite la verificación visual.")
+    hay_ia = bool(settings.openrouter_api_key or settings.gemini_api_key)
+    if len(conceptos) < 2 or not hay_ia:
+        if not hay_ia:
+            log.info("Sin OPENROUTER_API_KEY ni GEMINI_API_KEY: se omite la verificación visual.")
         return 0
 
     cids = list(conceptos.keys())
@@ -346,7 +416,7 @@ async def _fusionar_por_vision(
             foto_b = _foto_de_concepto(conceptos[b], fotos_por_clave)
             if not foto_a or not foto_b:
                 continue
-            rel = await _gemini_relacion(
+            rel = await _relacion(
                 cli, foto_a, foto_b, conceptos[a]["label"], conceptos[b]["label"],
             )
             if rel in ("same", "variant"):
