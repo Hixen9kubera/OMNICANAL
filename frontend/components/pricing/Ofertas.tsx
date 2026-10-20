@@ -22,7 +22,6 @@ import {
 } from "@/lib/api";
 
 import { pesos } from "./formato";
-import MotivoSelect, { motivoListo } from "./MotivoSelect";
 
 const CUENTAS = ["BEKURA", "SANCORFASHION"] as const;
 const NOMBRE_CUENTA: Record<string, string> = { BEKURA: "Kubera", SANCORFASHION: "San Corpe" };
@@ -281,9 +280,6 @@ function FilaOferta({
   const [piezas, setPiezas] = useState("");
   const [trabajando, setTrabajando] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; texto: string } | null>(null);
-  // Por qué (v0.673.0): va a la bitácora de pricing. Se propone el más común; se puede cambiar.
-  const [motivo, setMotivo] = useState(esBuenFin(f.promo) ? "temporada" : "campana_canal");
-  const [motivoTexto, setMotivoTexto] = useState("");
 
   const ofertaPrecio = f.estado === "candidate" ? f.sugerido : f.precio;
   const vsHoy = ofertaPrecio && f.cobra ? ofertaPrecio / f.cobra - 1 : null;
@@ -307,8 +303,6 @@ function FilaOferta({
     tipo: f.tipo,
     promo_id: f.promo_id,
     sku: f.sku,
-    motivo,
-    motivo_texto: motivoTexto.trim() || null,
     // Lo que se veía en la fila al decidir (plano): va a la bitácora de pricing.
     contexto: {
       cobra_hoy: f.cobra,
@@ -323,7 +317,6 @@ function FilaOferta({
       motivo_bloqueo: f.motivo,
     },
   };
-  const conMotivo = motivoListo(motivo, motivoTexto);
 
   const tomar = async () => {
     setTrabajando(true);
@@ -482,9 +475,8 @@ function FilaOferta({
                 <div className="sm of-caro">Más cara que lo que cobra hoy ({fmt2(f.cobra)}): el comprador no la vería.</div>
               )}
               {f.tipo === "LIGHTNING" && <div className="sm">ML escoge el horario; ya activa no se quita.</div>}
-              <MotivoSelect motivo={motivo} texto={motivoTexto} onMotivo={setMotivo} onTexto={setMotivoTexto} compacto />
               <div className="ed-botones">
-                <button type="button" className="ed-revisar" disabled={!valido || !conMotivo || trabajando} onClick={() => void tomar()}>
+                <button type="button" className="ed-revisar" disabled={!valido || trabajando} onClick={() => void tomar()}>
                   {trabajando ? "Tomando…" : "Tomar en ML"}
                 </button>
                 <button type="button" className="ed-cancelar" disabled={trabajando} onClick={() => setModo("nada")}>
@@ -496,9 +488,8 @@ function FilaOferta({
           {modo === "quitar" && (
             <div className="ed-form">
               <div className="sm">¿Sacarla de {f.tipo === "LIGHTNING" ? "la relámpago" : `«${f.promo}»`}?</div>
-              <MotivoSelect motivo={motivo} texto={motivoTexto} onMotivo={setMotivo} onTexto={setMotivoTexto} compacto />
               <div className="ed-botones">
-                <button type="button" className="ed-revisar" disabled={!conMotivo || trabajando} onClick={() => void quitar()}>
+                <button type="button" className="ed-revisar" disabled={trabajando} onClick={() => void quitar()}>
                   {trabajando ? "Quitando…" : "Sí, quitar"}
                 </button>
                 <button type="button" className="ed-cancelar" disabled={trabajando} onClick={() => setModo("nada")}>

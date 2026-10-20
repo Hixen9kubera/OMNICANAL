@@ -36,7 +36,7 @@ ADMIN = SimpleNamespace(autenticado=True, tipo="persona", rol="admin", actor="br
 INVITADO = SimpleNamespace(autenticado=True, tipo="persona", rol="operador", actor="andy@x")
 ANONIMO = SimpleNamespace(autenticado=False, tipo="", rol="", actor="?")
 PEDIDO = {"item": "MLM3160816867", "cuenta": "SANCORFASHION", "tipo": "LIGHTNING", "promo_id": "LGH-MLM1000",
-          "precio": 148.41, "stock": 5, "motivo": "campana_canal"}
+          "precio": 148.41, "stock": 5}
 
 
 def _cliente() -> TestClient:

@@ -2824,11 +2824,8 @@ export interface PricingTrabajoPrecio {
   error: string | null;
 }
 
-/** Lo que va a la bitácora del esquema `pricing` (v0.673.0): por qué, y qué veía la pantalla al decidir. */
+/** Lo que va a la bitácora del esquema `pricing` (v0.673.0): qué veía la pantalla al decidir (sin motivo, v0.674.0). */
 export interface DatosBitacoraML {
-  /** Código de `pricing.motivo` (obligatorio al aplicar, tomar o quitar; «otro» pide texto). */
-  motivo?: string | null;
-  motivo_texto?: string | null;
   /** Lo que mostraba la pantalla, PLANO: solo números, textos, booleanos o null. */
   contexto?: Record<string, number | string | boolean | null> | null;
   /** La clave de «Qué hacer» (reglas.ts) y su precio. */
@@ -2838,18 +2835,6 @@ export interface DatosBitacoraML {
   umbrales?: Record<string, unknown> | null;
   /** De qué foto de PRICING salían los datos (meta.generado). */
   foto?: string | null;
-}
-
-/** Un motivo del catálogo de la bitácora (pricing.motivo). No confundir con PricingMotivos: cancelaciones. */
-export interface PricingMotivoCambio {
-  codigo: string;
-  nombre: string;
-  descripcion: string | null;
-}
-
-/** Solo lee: el catálogo de motivos de un movimiento de precio u oferta (pricing.motivo). */
-export function pricingMotivosCambio(signal?: AbortSignal): Promise<{ motivos: PricingMotivoCambio[] }> {
-  return getJSON<{ motivos: PricingMotivoCambio[] }>("/api/pricing/bitacora/motivos", signal);
 }
 
 export interface PedidoPrecioML extends DatosBitacoraML {

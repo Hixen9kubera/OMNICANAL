@@ -1001,6 +1001,29 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.674.0 — PRICING: sin preguntas de motivo; la bitácora guarda solo lo que se hizo
+
+**Qué pidió Brandon (20-oct-2026), justo después de la v0.673.0.** El selector «¿Por qué?» iba a salir en cada
+publicar, deshacer, tomar y quitar. Pidió quitarlo: «no nos interesa el motivo, solamente debe guardar lo que se
+hizo».
+
+**Qué cambió.**
+- «Cambiar precio» publica sin pedir motivo. «Tomar» y «Quitar» en Ofertas tampoco lo piden, ni lo proponen.
+- Las rutas ya no lo exigen ni lo validan. Se van `GET /api/pricing/bitacora/motivos`, `MotivoSelect.tsx` y la
+  validación del catálogo (`validar_motivo`, `motivos_vigentes`).
+- La bitácora del esquema `pricing` sigue escribiendo todo lo demás, igual que en la v0.673.0: quién, cuándo, qué
+  movimiento, cómo estaba y cómo quedó, qué recomendaba la pantalla y qué veía (contexto, umbrales, foto), precio
+  antes y después, y las ofertas que empezaron o terminaron. `pricing.accion.motivo` queda vacío. El catálogo
+  `pricing.motivo` sigue en la base, sin uso desde el panel.
+
+**Ya en producción desde la v0.673.0, verificado el 20-oct a las 22:31 UTC.** El relleno al arrancar pasó el cambio
+del 19-oct: la acción 1, ORG-0448-VER de $97 a $90 con tachado $350, `brandon@kubera.mx`, con su precio antes y
+después y el descuento viejo cerrado y el nuevo abierto. Entre la v0.673.0 y esta versión nadie movió nada desde el
+panel, así que no hay acciones con motivo.
+
+**Pruebas.** 68 (PRICING, Ofertas y bitácora). Las rutas comprueban que aplicar, tomar y quitar pasan sin motivo y
+llevan el contexto de la pantalla, y que el catálogo ya no existe. `tsc` limpio.
+
 ### v0.673.0 — PRICING: cada movimiento del panel queda en la bitácora del esquema `pricing`, con su motivo y lo que veía la pantalla
 
 **Qué pidió Brandon (20-oct-2026).** El esquema `pricing` (v0.671.0, migración 0074) existe en producción para guardar

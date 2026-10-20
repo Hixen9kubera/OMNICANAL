@@ -538,7 +538,7 @@ class PrecioManual(Base):
             self.assertEqual(_cliente().post("/api/pricing/precio/MLM123456789/vista", json=cuerpo).status_code, 401)
 
     def test_aplicar_arranca_un_trabajo_y_valida_antes(self):
-        cuerpo = {"cuenta": "BEKURA", "sku": "X", "precio": 500, "pct": 10, "motivo": "prueba"}
+        cuerpo = {"cuenta": "BEKURA", "sku": "X", "precio": 500, "pct": 10}
         with _como(ADMIN), mock.patch.object(ruta.pp, "aplicar", new=mock.AsyncMock(return_value={"ok": 1})) as a:
             cli = _cliente()
             r = cli.post("/api/pricing/precio/MLM123456789", json=cuerpo)

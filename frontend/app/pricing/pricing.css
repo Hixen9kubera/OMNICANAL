@@ -268,10 +268,3 @@
 .pm .of-chip.duda { background: var(--warn-wash); color: var(--warn); }
 .pm .of-aviso { color: var(--warn) !important; }
 .pm .of-caro { color: var(--warn) !important; }
-
-/* Motivo de cada movimiento (v0.673.0): va a la bitácora del esquema pricing */
-.pm .ed-motivo { display: grid; gap: 4px; justify-items: stretch; text-align: left; }
-.pm .ed-motivo label { display: grid; gap: 2px; font-size: 12px; color: var(--muted); }
-.pm .ed-motivo select, .pm .ed-motivo input { font: inherit; font-size: 13px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--fg); min-width: 0; max-width: 100%; }
-.pm .ed-motivo .sm { font-size: 11.5px; color: var(--muted); }
-.pm .of-accion .ed-motivo { min-width: 180px; }

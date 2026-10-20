@@ -29,7 +29,8 @@ LAS REGLAS QUE MANDA EL ESQUEMA (triggers de la 0074)
       (pedida → aplicada | parcial | error; aplicada | parcial → deshecha).
     · Un «deshacer» apunta a la acción que regresa (deshace_id) y, al quedar aplicado, la original
       pasa a «deshecha» y su publicación a «regresada».
-    · El motivo es del catálogo `pricing.motivo`; «otro» exige texto.
+    · El motivo (catálogo `pricing.motivo`) queda VACÍO: desde v0.674.0 no se pregunta (Brandon, 20-oct-2026:
+      «solamente debe guardar lo que se hizo»). Si algún día se pide, `plan()` ya lo lee de `bitacora.motivo`.
 
 POR QUÉ UNA SENTENCIA POR PASO
     El pool de kubera (SteadyDB) puede cambiar de conexión entre sentencias de una misma
@@ -502,14 +503,6 @@ def rellenar(limite: int = 200, registra: str = "relleno-bitacora") -> dict:
     return {"pendientes": len(filas), "hechas": hechas, "fallas": fallas}
 
 
-def motivos() -> list[dict]:
-    """BLOQUEANTE (kubera, SELECT). El catálogo de motivos activos."""
-    from services import supabase_db as sdb
-
-    return [dict(r) for r in sdb.fetch_all(
-        "select codigo, nombre, descripcion from pricing.motivo where activo order by (codigo = 'otro'), nombre")]
-
-
 def tras_anotar(fila: dict | None) -> None:
     """
     BLOQUEANTE. Lo llaman los escritores de ops.process_log de PRICING (editor de precio y Ofertas) justo
@@ -526,39 +519,3 @@ def tras_anotar(fila: dict | None) -> None:
     except Exception as exc:  # noqa: BLE001
         log.warning("bitácora pricing: el relleno no corrió: %s", exc)
 
-
-# ── MOTIVOS (lo que pide la pantalla) ────────────────────────────────────────
-
-_motivos_cache: tuple[float, list[dict]] | None = None
-
-
-def motivos_vigentes() -> list[dict]:
-    """BLOQUEANTE. El catálogo, recordado 10 min (crece sin migración: un INSERT en pricing.motivo)."""
-    import time
-
-    global _motivos_cache
-    if _motivos_cache and time.monotonic() - _motivos_cache[0] < 600:
-        return _motivos_cache[1]
-    xs = motivos()
-    _motivos_cache = (time.monotonic(), xs)
-    return xs
-
-
-def validar_motivo(motivo: str | None, texto: str | None, codigos: set[str] | None) -> tuple[str, str | None]:
-    """
-    PURA. El motivo es obligatorio al mover un precio u oferta (es lo único que contesta «¿por qué se movió?»
-    meses después). «otro» exige texto. `codigos` = el catálogo; None = no se pudo leer (se valida la forma).
-    """
-    from services.pricing_precio import ErrorPrecio
-
-    m = (motivo or "").strip()
-    t = (texto or "").strip() or None
-    if not m:
-        raise ErrorPrecio("Escoge el motivo del cambio.")
-    if not MOTIVO_CODIGO.match(m) or (codigos is not None and m not in codigos):
-        raise ErrorPrecio("Ese motivo no está en el catálogo.")
-    if m == "otro" and not t:
-        raise ErrorPrecio("Con «Otro», escribe el motivo.")
-    if t and len(t) > 2000:
-        raise ErrorPrecio("El texto del motivo es muy largo (máximo 2,000 caracteres).")
-    return m, t

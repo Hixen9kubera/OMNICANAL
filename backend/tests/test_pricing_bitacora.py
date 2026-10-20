@@ -6,8 +6,8 @@
    tomar y quitar ofertas. El precio base es el TACHADO de ML, no `item.price`
    (ORG-0448-VER, 19-oct: price $108, tachado $350).
 2. **El contexto va plano** (el esquema rechaza objetos anidados y números raros).
-3. **El motivo es obligatorio** al aplicar, tomar y quitar; «otro» pide texto; un
-   código fuera del catálogo se rechaza antes de ir a ML.
+3. **No se pide motivo** (v0.674.0, Brandon: «solamente debe guardar lo que se hizo»):
+   aplicar, tomar y quitar pasan sin él, y la bitácora lleva lo que veía la pantalla.
 4. **Una fila ya pasada no se vuelve a escribir** (process_log_id es único).
 
 Sin red ni base: lo que sí escribe en un Postgres con las reglas reales de la 0074 se
@@ -34,7 +34,6 @@ from services import pricing_bitacora as pb  # noqa: E402
 
 CDMX = timezone(timedelta(hours=-6))
 ADMIN = SimpleNamespace(autenticado=True, tipo="persona", rol="admin", actor="brandon@x")
-CATALOGO = [{"codigo": c, "nombre": c, "descripcion": None} for c in ("sin_ventas", "prueba", "otro", "temporada", "campana_canal")]
 
 PD_VIEJO = {"tipo": "PRICE_DISCOUNT", "id": None, "estado": "started", "precio": 97.0, "inicio": "2026-10-15T00:00:00",
             "fin": "2026-11-11T23:59:59"}
@@ -139,15 +138,6 @@ class Puras(unittest.TestCase):
         self.assertEqual(pb.base_de({"precio": 108.0, "tachado": None}), 108.0)
         self.assertIsNone(pb.base_de(None))
 
-    def test_validar_motivo(self):
-        codigos = {c["codigo"] for c in CATALOGO}
-        self.assertEqual(pb.validar_motivo("prueba", "  ", codigos), ("prueba", None))
-        self.assertEqual(pb.validar_motivo("otro", "lo pidió Haim", codigos), ("otro", "lo pidió Haim"))
-        for m, t in ((None, None), ("", "x"), ("inventado", None), ("otro", " "), ("Sin Ventas", None)):
-            with self.subTest(m=m, t=t), self.assertRaises(ruta.pp.ErrorPrecio):
-                pb.validar_motivo(m, t, codigos)
-        self.assertEqual(pb.validar_motivo("nuevo_motivo", None, None), ("nuevo_motivo", None))   # sin catálogo: solo la forma
-
 
 class Idempotente(unittest.TestCase):
     def test_una_fila_ya_pasada_no_se_vuelve_a_escribir(self):
@@ -177,45 +167,31 @@ def _como(quien):
 
 
 class Rutas(unittest.TestCase):
-    def test_aplicar_y_tomar_exigen_motivo_del_catalogo(self):
-        precio = {"cuenta": "BEKURA", "sku": "X", "precio": 500, "pct": 10}
-        oferta = {"item": "MLM123456789", "cuenta": "BEKURA", "tipo": "DEAL", "promo_id": "P-MLM17923024", "precio": 300}
-        with _como(ADMIN), mock.patch.object(pb, "motivos_vigentes", return_value=CATALOGO), \
-             mock.patch.object(ruta.pp, "aplicar", new=mock.AsyncMock(return_value={})) as aplicar, \
-             mock.patch.object(ruta.po, "tomar", new=mock.AsyncMock(return_value={"estado": "pending"})) as tomar:
+    def test_aplicar_y_tomar_sin_motivo_llevan_lo_que_veia_la_pantalla(self):
+        precio = {"cuenta": "BEKURA", "sku": "X", "precio": 500, "pct": 10, "contexto": {"stock": 3},
+                  "recomendacion": "sv_nuevo", "foto": "2026-10-14 18:25"}
+        oferta = {"item": "MLM123456789", "cuenta": "BEKURA", "tipo": "DEAL", "promo_id": "P-MLM17923024", "precio": 300,
+                  "contexto": {"cobra_hoy": 364}}
+        with _como(ADMIN), mock.patch.object(ruta.pp, "aplicar", new=mock.AsyncMock(return_value={})) as aplicar,              mock.patch.object(ruta.po, "tomar", new=mock.AsyncMock(return_value={"estado": "pending"})) as tomar,              mock.patch.object(ruta.po, "quitar", new=mock.AsyncMock(return_value={"estado": "candidate"})):
             cli = _cliente()
-            for cuerpo, falta in ((precio, "Escoge el motivo"), ({**precio, "motivo": "inventado"}, "catálogo"),
-                                  ({**precio, "motivo": "otro"}, "escribe el motivo")):
-                r = cli.post("/api/pricing/precio/MLM123456789", json=cuerpo)
-                self.assertEqual(r.status_code, 400, cuerpo)
-                self.assertIn(falta, r.json()["detail"])
-            self.assertEqual(cli.post("/api/pricing/ofertas/tomar", json=oferta).status_code, 400)
-            r = cli.post("/api/pricing/precio/MLM123456789", json={**precio, "motivo": "sin_ventas", "contexto": {"stock": 3},
-                                                                     "recomendacion": "sv_nuevo", "foto": "2026-10-14 18:25"})
-            self.assertEqual(r.status_code, 200)
-            r2 = cli.post("/api/pricing/ofertas/tomar", json={**oferta, "motivo": "temporada"})
-            self.assertEqual(r2.status_code, 200)
+            self.assertEqual(cli.post("/api/pricing/precio/MLM123456789", json=precio).status_code, 200)
+            self.assertEqual(cli.post("/api/pricing/ofertas/tomar", json=oferta).status_code, 200)
+            self.assertEqual(cli.post("/api/pricing/ofertas/quitar", json=oferta).status_code, 200)
+            self.assertEqual(cli.get("/api/pricing/bitacora/motivos").status_code, 404)   # ya no hay catálogo que pedir
         import time
         for _ in range(50):          # el trabajo del editor corre en segundo plano
             if aplicar.await_count:
                 break
             time.sleep(0.02)
         b = aplicar.await_args.kwargs["bitacora"]
-        self.assertEqual((b["motivo"], b["contexto"], b["recomendacion"], b["pantalla"]), ("sin_ventas", {"stock": 3}, "sv_nuevo", "pricing"))
-        self.assertEqual(tomar.await_args.kwargs["bitacora"]["motivo"], "temporada")
+        self.assertNotIn("motivo", b)
+        self.assertEqual((b["contexto"], b["recomendacion"], b["pantalla"]), ({"stock": 3}, "sv_nuevo", "pricing"))
+        self.assertEqual(tomar.await_args.kwargs["bitacora"]["contexto"], {"cobra_hoy": 364})
 
-    def test_deshacer_no_exige_motivo(self):
-        with _como(ADMIN), mock.patch.object(pb, "motivos_vigentes", return_value=CATALOGO), \
-             mock.patch.object(ruta.pp, "deshacer", new=mock.AsyncMock(return_value={})):
+    def test_deshacer_pasa(self):
+        with _como(ADMIN), mock.patch.object(ruta.pp, "deshacer", new=mock.AsyncMock(return_value={})):
             r = _cliente().post("/api/pricing/precio/MLM123456789/deshacer", json={"cuenta": "BEKURA"})
         self.assertEqual(r.status_code, 200)
-
-    def test_catalogo_de_motivos(self):
-        with _como(ADMIN), mock.patch.object(pb, "motivos_vigentes", return_value=CATALOGO):
-            r = _cliente().get("/api/pricing/bitacora/motivos")
-        self.assertEqual((r.status_code, len(r.json()["motivos"])), (200, 5))
-        with _como(ADMIN), mock.patch.object(pb, "motivos_vigentes", side_effect=RuntimeError("caída")):
-            self.assertEqual(_cliente().get("/api/pricing/bitacora/motivos").status_code, 503)
 
 
 if __name__ == "__main__":
