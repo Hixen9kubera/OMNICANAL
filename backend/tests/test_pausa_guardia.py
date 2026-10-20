@@ -14,8 +14,9 @@ omnicanal y el vigilante del censo (cada hora, tope de 60) tardó tres horas en 
   3. SIN TOPE, de 10 en 10, primero lo que vende; firmado «pausa del canal».
   4. UN BARRIDO POR CANAL A LA VEZ (lo comparte con el vigilante del censo).
   5. EL AVISO DE TIKTOK (tipo 37) programa UN barrido tras la ráfaga, sólo con pausa.
-  6. CANDADOS PROPIOS: con el canal en pausa omnicanal no publica ni edita
-     (`publicar.confirmar`) ni prende (`fanout_seguro._prender`); con un «no sé», tampoco.
+  6. CANDADOS PROPIOS: con el canal en pausa omnicanal publica APAGADO (TikTok como
+     borrador; Temu se apaga al nacer; desde el 20-oct) y no prende
+     (`fanout_seguro._prender`); con un «no sé», no publica.
   7. Está colgada del scheduler cada 10 min y del webhook de TikTok.
 
 ── NO SE TOCA NADA REAL ─────────────────────────────────
@@ -418,49 +419,159 @@ class Colgado(unittest.TestCase):
         self.assertEqual(correr(b'{"type": 1, "data": {"order_id": "9"}}', True), [])
 
 
-class CandadoDePublicar(unittest.TestCase):
-    """Con el canal en pausa, omnicanal no publica ni edita ahí."""
+class PublicarApagado(unittest.TestCase):
+    """Con TikTok/Temu en pausa el Publicador PUBLICA, pero apagado (20-oct-2026). Antes
+    (v0.646) la pausa lo bloqueaba entero."""
 
-    def _confirmar(self, canal, estado):
+    def _confirmar(self, canal, estado, **extra):
         from services import publicar as P
         siguio = []
 
         async def rellenar(req):
-            siguio.append(req["canal"])
+            siguio.append(dict(req))
             raise RuntimeError("siguió de largo")
 
         with mock.patch.object(L, "pausa", side_effect=lambda c, refrescar=False: dict(estado)), \
                 mock.patch.object(P, "_rellenar_desde_guardado", side_effect=rellenar):
             try:
-                r = asyncio.run(P.confirmar({"canal": canal, "sku": "ZZZ-0001-NEG"}))
+                r = asyncio.run(P.confirmar({"canal": canal, "sku": "ZZZ-0001-NEG", **extra}))
             except RuntimeError:
                 r = None
         return r, siguio
 
-    def test_en_pausa_no_publica_y_dice_por_que(self):
-        for canal, nombre in (("tiktok", "TikTok"), ("temu", "Temu")):
+    def test_en_pausa_sigue_y_marca_apagado(self):
+        for canal in ("tiktok", "temu"):
             r, siguio = self._confirmar(canal, EN_PAUSA)
-            self.assertEqual(siguio, [], canal)
-            self.assertEqual((r["ok"], r["canal"], r["en_pausa"]), (False, canal, True))
-            self.assertIn(f"{nombre} está EN PAUSA", r["motivo"])
-            self.assertIn("jefe@kubera.mx", r["motivo"])
+            self.assertIsNone(r, canal)
+            self.assertEqual(len(siguio), 1, canal)
+            self.assertIs(siguio[0]["_publicar_apagado"], True, canal)
+        self.assertEqual(self._confirmar("tiktok", EN_PAUSA)[1][0]["save_mode"], "AS_DRAFT")
+        self.assertNotIn("save_mode", self._confirmar("temu", EN_PAUSA)[1][0])
 
-    def test_con_un_no_se_tampoco(self):
+    def test_la_pantalla_no_puede_pedir_que_salga_a_la_venta(self):
+        _, siguio = self._confirmar("tiktok", EN_PAUSA, save_mode="LISTING", _publicar_apagado=False)
+        self.assertEqual((siguio[0]["save_mode"], siguio[0]["_publicar_apagado"]), ("AS_DRAFT", True),
+                         "lo decide el servidor, no la petición")
+
+    def test_con_un_no_se_no_publica(self):
         r, siguio = self._confirmar("tiktok", NO_SE)
         self.assertEqual((siguio, r["ok"]), ([], False))
         self.assertIn("No se pudo confirmar", r["motivo"])
 
-    def test_sin_pausa_sigue_su_camino(self):
-        r, siguio = self._confirmar("tiktok", SIN_PAUSA)
-        self.assertEqual((r, siguio), (None, ["tiktok"]))
+    def test_sin_pausa_publica_como_siempre(self):
+        _, siguio = self._confirmar("tiktok", SIN_PAUSA, save_mode="LISTING")
+        self.assertEqual((siguio[0]["_publicar_apagado"], siguio[0]["save_mode"]), (False, "LISTING"))
 
     def test_los_demas_canales_ni_preguntan(self):
         from services import publicar as P
-        with mock.patch.object(P, "_bloqueo_por_pausa", side_effect=AssertionError("no aplica")), \
+        with mock.patch.object(P, "_pausa_publicar", side_effect=AssertionError("no aplica")), \
                 mock.patch.object(P, "_rellenar_desde_guardado", side_effect=RuntimeError("siguió")):
             for canal in ("mercado_libre", "amazon", "walmart"):
                 with self.assertRaises(RuntimeError):
                     asyncio.run(P.confirmar({"canal": canal, "sku": "ZZZ-0001-NEG"}))
+
+    def test_la_vista_previa_dice_que_nace_apagado(self):
+        from services import publicar as P
+        vistos = []
+
+        async def canal_prev(canal, req):
+            vistos.append(dict(req))
+            return {"ok": True, "canal": canal, "avisos": ["otro"]}
+
+        async def nada(req):
+            return None
+
+        async def sin_avisos(req):
+            return []
+
+        with mock.patch.object(L, "pausa", side_effect=lambda c, refrescar=False: dict(EN_PAUSA)), \
+                mock.patch.object(P, "_rellenar_desde_guardado", side_effect=nada), \
+                mock.patch.object(P, "_asegurar_wc_id", side_effect=nada), \
+                mock.patch.object(P, "_candado_padre", side_effect=sin_avisos), \
+                mock.patch.object(P, "_aviso_imagenes", side_effect=nada), \
+                mock.patch.object(P, "_aviso_titulo", return_value=None), \
+                mock.patch.object(P, "_preview_canal", side_effect=canal_prev):
+            r = asyncio.run(P.preview({"canal": "tiktok", "sku": "ZZZ-0001-NEG"}))
+        self.assertEqual(vistos[0]["save_mode"], "AS_DRAFT", "la vista previa enseña el borrador")
+        self.assertTrue(r["publicar_apagado"])
+        self.assertIn("BORRADOR", r["avisos"][0])
+
+
+class TikTokEnPausa(unittest.TestCase):
+    """`publicar_tiktok.confirmar` con el canal en pausa."""
+
+    def _correr(self, item_id=None, vivo=None):
+        from services import fanout_seguro
+        from services import publicar_tiktok as PT
+        from services import tiktok as tk
+        llamadas = []
+
+        async def armar(req, token, cipher, subir_imagenes=True):
+            return {"payload": {"save_mode": req.get("save_mode") or "LISTING", "skus": []},
+                    "categoria_id": "1", "imagenes": 0}
+
+        async def llamar(ruta, token, params=None, cuerpo=None, metodo="GET"):
+            llamadas.append((ruta, metodo, dict(cuerpo or {})))
+            return {"product_id": item_id or "1799"}
+
+        with mock.patch.object(tk, "access_token", return_value="tok"), \
+                mock.patch.object(tk, "cipher", return_value="ciph"), \
+                mock.patch.object(tk, "llamar", side_effect=llamar), \
+                mock.patch.object(PT, "_armar", side_effect=armar), \
+                mock.patch.object(PT, "_listing_id", return_value=item_id), \
+                mock.patch.object(PT, "_registrar", side_effect=lambda *a, **k: None), \
+                mock.patch.object(PT, "_reflejar", side_effect=lambda *a, **k: None), \
+                mock.patch.object(fanout_seguro, "_leer_vivo", return_value=vivo or {"ok": False}):
+            r = asyncio.run(PT.confirmar({"sku": "ZZZ-0001-NEG", "_publicar_apagado": True,
+                                          "save_mode": "LISTING"}))
+        return r, llamadas
+
+    def test_lo_nuevo_nace_borrador(self):
+        r, llamadas = self._correr()
+        self.assertEqual(len(llamadas), 1)
+        ruta, metodo, cuerpo = llamadas[0]
+        self.assertEqual((ruta, metodo, cuerpo["save_mode"]), ("/product/202309/products", "POST", "AS_DRAFT"))
+        self.assertTrue(r["ok"] and r["apagado"])
+
+    def test_uno_que_estuvo_a_la_venta_no_se_toca(self):
+        for estado in ("ACTIVATE", "SELLER_DEACTIVATED", "PLATFORM_DEACTIVATED"):
+            r, llamadas = self._correr("1701", {"ok": True, "estado": estado})
+            self.assertEqual((r["ok"], llamadas), (False, []), estado)
+            self.assertIn("EN PAUSA", r["motivo"])
+        r, llamadas = self._correr("1701", {"ok": False, "motivo": "x"})
+        self.assertEqual((r["ok"], llamadas), (False, []), "sin poder leerlo, tampoco")
+
+    def test_un_borrador_si_se_edita_como_borrador(self):
+        r, llamadas = self._correr("1701", {"ok": True, "estado": "DRAFT"})
+        self.assertEqual(len(llamadas), 1)
+        ruta, metodo, cuerpo = llamadas[0]
+        self.assertEqual((ruta, metodo, cuerpo["save_mode"]), ("/product/202309/products/1701", "PUT", "AS_DRAFT"))
+        self.assertTrue(r["ok"])
+
+
+class TemuEnPausa(unittest.TestCase):
+
+    def test_el_alta_se_apaga_al_nacer(self):
+        from services import fanout_seguro
+        from services import publicar_temu as PM
+        with mock.patch.object(fanout_seguro, "_apagar", return_value={"success": True}) as ap:
+            r = asyncio.run(PM._apagar_recien_creado("ZZZ-0001-NEG", "601"))
+        ap.assert_called_once_with("temu", "601")
+        self.assertEqual((r["pedido"], r["ok"]), (True, True))
+
+    def test_si_temu_no_la_acepta_todavia_no_truena(self):
+        from services import fanout_seguro
+        from services import publicar_temu as PM
+        with mock.patch.object(fanout_seguro, "_apagar", side_effect=RuntimeError("en revisión")):
+            r = asyncio.run(PM._apagar_recien_creado("ZZZ-0001-NEG", "601"))
+        self.assertEqual((r["pedido"], r["ok"]), (True, False))
+        self.assertIn("guardia", r["detalle"])
+
+    def test_confirmar_la_apaga_solo_en_pausa(self):
+        from services import publicar_temu as PM
+        fuente = inspect.getsource(PM.confirmar)
+        self.assertIn('await _apagar_recien_creado(sku, goods_id) if req.get("_publicar_apagado") else None',
+                      fuente)
 
 
 class CandadoDePrender(unittest.TestCase):

@@ -1001,6 +1001,42 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.670.0 — Publicar APAGADO en TikTok y Temu: con el canal en pausa, el Publicador ya no se bloquea — TikTok crea un borrador y Temu apaga el alta en cuanto existe
+
+**Qué pidió Brandon (20-oct-2026).** «Quisiera ahora empezar a publicar desde el publicador, sin embargo
+… se publica y se activa la publicación automáticamente, ¿podemos desactivarlo temporalmente? … ojo,
+solamente para TikTok y Temu».
+
+**Cómo estaba.** Desde v0.646.0, con TikTok o Temu en pausa el Publicador contestaba «está EN PAUSA: no
+se publica ni se edita nada ahí». Era la forma segura de que nada saliera a la venta, pero también
+impedía preparar el catálogo mientras durara la pausa.
+
+**Cómo queda.** La pausa del canal ahora significa «publicar apagado», no «no publicar»
+(`publicar._pausa_publicar`). Lo decide el servidor, no la pantalla: aunque la petición pida otra cosa,
+con el canal en pausa la publicación nace apagada.
+
+| Canal | Producto nuevo | Producto que ya existe |
+|---|---|---|
+| **TikTok** | Se crea con `save_mode: AS_DRAFT`: queda como **Borrador**, nunca a la venta | Sólo se edita si en vivo también es borrador (y se edita como borrador). Si estuvo a la venta (`ACTIVATE`, `SELLER_DEACTIVATED`…) **no se toca**: editarlo lo manda a auditoría y de ahí puede regresar a la venta (14-oct). Sin poder leerlo, tampoco |
+| **Temu** | `v3.add` como siempre y, en cuanto Temu da el `goodsId`, la misma orden de «Desactivar por canal» (`onsale: 0`). Si Temu todavía la está revisando y no la acepta, la **guardia de la pausa** la apaga a los pocos minutos de que aparezca a la venta (cada 10 min) | Temu sólo da altas desde el panel; un SKU repetido ya se aborta (candado de siempre) |
+
+- La **vista previa** lo dice arriba de todo («⏸️ TikTok está EN PAUSA: la publicación se crea como
+  BORRADOR…») y enseña el payload con `AS_DRAFT`.
+- Si **no se puede leer la pausa**, no se publica: sin saberlo no se puede prometer que nazca apagada.
+- **Sin pausa nada cambia**: TikTok publica `LISTING` y Temu queda a la venta como siempre.
+- Para **venderlo después**: quitar la pausa y volver a publicarlo. En TikTok eso edita el borrador
+  como `LISTING`; en Temu, prenderlo (todavía sin botón en el panel).
+- Mercado Libre, Amazon y Walmart no cambian.
+- El panel (Desactivar por canal) ya no dice «no se publica ni se edita»: dice que lo que se publique
+  nace apagado.
+
+**Pruebas.** `tests/test_pausa_guardia.py`: `PublicarApagado` (en pausa sigue y marca apagado; la
+pantalla no puede pedir `LISTING`; «no sé» no publica; sin pausa como siempre; ML/Amazon/Walmart ni
+preguntan; la vista previa lo dice), `TikTokEnPausa` (nuevo → `POST` con `AS_DRAFT`; uno que estuvo a
+la venta no se toca; un borrador se edita como borrador) y `TemuEnPausa` (se apaga al nacer; si Temu
+no lo acepta todavía no truena). Batería del backend: 3,063 pruebas; la única falla es
+`test_regla_11_productos`, que ya falla igual en `main`. `tsc` limpio.
+
 ### v0.669.0 — Resolver de costos: la comparación de fotos del packing list pasa por OpenRouter (la clave de Gemini está muerta)
 
 **Qué pasaba.** Al desplegar v0.668.0 apareció que `GEMINI_API_KEY` de producción contesta «API key not valid»

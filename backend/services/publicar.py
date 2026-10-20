@@ -293,7 +293,18 @@ async def preview(req: dict[str, Any]) -> dict[str, Any]:
     await _rellenar_desde_guardado(req)
     await _asegurar_wc_id(req)
     avisos_padre = await _candado_padre(req)
+    # La vista previa enseña lo MISMO que va a pasar: con TikTok/Temu en pausa la
+    # publicación nace apagada (ver `_pausa_publicar`).
+    pausa = None
+    if canal in ("tiktok", "temu"):
+        pausa = await asyncio.to_thread(_pausa_publicar, canal)
+        if pausa["estado"] == "apagado" and canal == "tiktok":
+            req["save_mode"] = "AS_DRAFT"
     r = await _preview_canal(canal, req)
+    if isinstance(r, dict) and r.get("ok") and pausa and pausa["texto"]:
+        r.setdefault("avisos", []).insert(0, ("⏸️ " if pausa["estado"] == "apagado" else "⚠️ ")
+                                          + pausa["texto"])
+        r["publicar_apagado"] = pausa["estado"] == "apagado"
     if isinstance(r, dict) and r.get("ok"):
         avisos = r.setdefault("avisos", [])
         # ML en modo actualizar NO toca las fotos (`_update_ml_una` solo manda
@@ -726,31 +737,49 @@ def _aviso_titulo(req: dict[str, Any], modo: str | None = None) -> str | None:
             "antes de publicar.")
 
 
-def _bloqueo_por_pausa(canal: str) -> str | None:
-    """Con el canal EN PAUSA (Publicador › Desactivar por canal) no se publica ni se
-    edita: en TikTok editar o crear manda el producto a auditoría y de ahí sale A LA
-    VENTA. Si no se puede leer la pausa, tampoco (falla cerrado). SÍNCRONO."""
+def _pausa_publicar(canal: str) -> dict[str, Any]:
+    """
+    Cómo se publica en TikTok/Temu según la pausa del canal (Publicador › Desactivar
+    por canal). SÍNCRONO.
+
+      «libre»     sin pausa: se publica como siempre (a la venta).
+      «apagado»   en pausa: SE PUBLICA, PERO APAGADO (Brandon, 20-oct-2026: «se publica
+                  y se activa la publicación automáticamente, ¿podemos desactivarlo
+                  temporalmente? … solamente para TikTok y Temu»). TikTok lo crea como
+                  BORRADOR; Temu lo da de alta y lo apaga en cuanto existe (y la guardia
+                  de la pausa apaga lo que llegue a la venta). Antes de esto (v0.646) la
+                  pausa bloqueaba el Publicador entero.
+      «ilegible»  no se pudo leer la pausa: no se publica (falla cerrado: sin saber, no
+                  se puede prometer que nazca apagado).
+    """
     from services import publicaciones_lote
     p = publicaciones_lote.pausa(canal, refrescar=True)
     nombre = publicaciones_lote.NOMBRE.get(canal, canal)
     if p.get("en_pausa") is True:
-        quien = f" por {p['por']}" if p.get("por") else ""
-        desde = f" desde {p['desde']}" if p.get("desde") else ""
-        return (f"{nombre} está EN PAUSA{desde}{quien}: no se publica ni se edita nada ahí. "
-                "Para volver a vender, quita la pausa en Publicador › Desactivar por canal.")
+        como = ("se crea como BORRADOR (no se vende)" if canal == "tiktok"
+                else "se da de alta y se apaga en cuanto Temu la acepta (no se vende)")
+        return {"estado": "apagado", "texto": (
+            f"{nombre} está EN PAUSA: la publicación {como}. Para venderla, quita la pausa en "
+            "Publicador › Desactivar por canal y vuelve a publicarla.")}
     if p.get("en_pausa") is None:
-        return (f"No se pudo confirmar que {nombre} no esté en pausa; no se publicó nada. "
-                "Intenta de nuevo en un momento.")
-    return None
+        return {"estado": "ilegible", "texto": (
+            f"No se pudo confirmar si {nombre} está en pausa, así que no se puede asegurar que "
+            "la publicación nazca apagada; no se publicó nada. Intenta de nuevo en un momento.")}
+    return {"estado": "libre", "texto": None}
 
 
 async def confirmar(req: dict[str, Any]) -> dict[str, Any]:
     canal = req.get("canal")
     if canal in ("tiktok", "temu"):
-        bloqueo = await asyncio.to_thread(_bloqueo_por_pausa, canal)
-        if bloqueo:
-            return {"ok": False, "canal": canal, "sku": req.get("sku"), "motivo": bloqueo,
-                    "en_pausa": True}
+        pausa = await asyncio.to_thread(_pausa_publicar, canal)
+        if pausa["estado"] == "ilegible":
+            return {"ok": False, "canal": canal, "sku": req.get("sku"), "motivo": pausa["texto"],
+                    "en_pausa": None}
+        # Lo decide el servidor, nunca la pantalla: con el canal en pausa se publica
+        # apagado aunque la petición pida otra cosa.
+        req["_publicar_apagado"] = pausa["estado"] == "apagado"
+        if req["_publicar_apagado"] and canal == "tiktok":
+            req["save_mode"] = "AS_DRAFT"
     await _rellenar_desde_guardado(req)
     # El MISMO par sku/wc_id y el MISMO candado que la vista previa: lo que se
     # revisó es lo que sale. El 409 llega legible al modal (ApiError.detail) y

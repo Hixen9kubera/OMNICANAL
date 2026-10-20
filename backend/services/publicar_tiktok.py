@@ -31,6 +31,7 @@ LAS TRAMPAS DE TIKTOK QUE ESTE MÓDULO RESPETA
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -321,6 +322,24 @@ async def confirmar(req: dict[str, Any]) -> dict[str, Any]:
 
     payload = armado["payload"]
     item_id = str(req.get("item_id") or "").strip() or _listing_id(sku)
+    apagado = bool(req.get("_publicar_apagado"))
+    if apagado:
+        # TikTok EN PAUSA (`publicar._pausa_publicar`): nace como BORRADOR. Un producto
+        # que YA existe sólo se edita si también es borrador: editar uno que estuvo a la
+        # venta lo manda a auditoría y de ahí puede regresar a la venta (14-oct-2026).
+        payload["save_mode"] = "AS_DRAFT"
+        if item_id:
+            from services import fanout_seguro
+            vivo = await asyncio.to_thread(fanout_seguro._leer_vivo, CANAL, item_id)
+            estado = str(vivo.get("estado") or "").upper() if vivo.get("ok") else ""
+            if estado != "DRAFT":
+                motivo = (f"TikTok está EN PAUSA y este producto ya existe en TikTok "
+                          f"({estado or 'estado ilegible'}). Editarlo podría regresarlo a la venta, "
+                          "así que no se tocó. Se edita cuando se quite la pausa.")
+                _registrar(sku, False, error=motivo, status="en_pausa",
+                           operacion="update_product")
+                return {"ok": False, "canal": CANAL, "sku": sku, "motivo": motivo,
+                        "en_pausa": True}
     # Crear y actualizar son endpoints distintos: crear con un producto que ya
     # existe genera un DUPLICADO, que en TikTok hay que borrar a mano.
     # Y el VERBO tambien cambia: crear es POST, editar es PUT. Con POST sobre
@@ -344,7 +363,9 @@ async def confirmar(req: dict[str, Any]) -> dict[str, Any]:
             "operacion": operacion,
             "url": f"https://shop.tiktok.com/view/product/{pid}" if pid else None,
             "modo": payload["save_mode"],
-            "registrado_en": "ops.channel_submissions + channel.listings"}
+            "registrado_en": "ops.channel_submissions + channel.listings",
+            # Con TikTok en pausa nace como borrador: no está a la venta.
+            "apagado": apagado}
 
 
 def _listing_id(sku: str) -> str | None:

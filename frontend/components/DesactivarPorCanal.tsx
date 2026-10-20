@@ -21,7 +21,8 @@
  * alguien puede publicar o prender algo. Con la pausa puesta se apaga lo que haya
  * reaparecido —cada 10 minutos leyendo el canal en vivo y, en TikTok, en cuanto TikTok avisa
  * que auditó un producto (14-oct-2026: alguien prendió 162 desde el Seller Center)—, el
- * seguro de stock 0 no regresa nada y omnicanal no publica ni edita ahí. La pone y la quita
+ * seguro de stock 0 no regresa nada y lo que se publique desde omnicanal nace APAGADO (TikTok
+ * como borrador, Temu se apaga al darse de alta; 20-oct-2026). La pone y la quita
  * una persona aquí mismo; no apaga nada en el momento y quitarla no prende nada.
  *
  * Cuatro cosas que esta pantalla no puede dejar a la imaginación:
@@ -355,7 +356,8 @@ export default function DesactivarPorCanal({ canales, onCerrar }: Props) {
                         {lista.pausa.por ? ` (${lista.pausa.por})` : ""}. Cada 10 minutos{lista.canal === "tiktok"
                           ? " (y en cuanto TikTok avisa)" : ""} se apaga lo que haya vuelto a la venta —lo libere
                         {" "}{lista.nombre}, lo publique o lo prenda alguien—, el seguro de stock 0 no regresa nada y
-                        desde omnicanal no se publica ni se edita ahí.
+                        lo que se publique desde omnicanal nace apagado ({lista.canal === "tiktok"
+                          ? "como borrador" : "se apaga al darse de alta"}).
                       </>
                     ) : lista.pausa.en_pausa === null ? (
                       <>No se pudo leer si {lista.nombre} está en pausa. Vuelve a cargar la lista.</>
@@ -648,7 +650,9 @@ export default function DesactivarPorCanal({ canales, onCerrar }: Props) {
                 <li>Cada 10 minutos{lista.canal === "tiktok" ? " (y en cuanto TikTok avisa)" : ""} se apaga
                   {" "}<strong>todo lo que esté o vuelva a estar a la venta</strong>, también lo que alguien publique o
                   prenda desde el Seller Center.</li>
-                <li>Desde omnicanal <strong>no se publica ni se edita</strong> nada en {lista.nombre}.</li>
+                <li>Lo que se publique desde omnicanal <strong>nace apagado</strong>{lista.canal === "tiktok"
+                  ? " (como borrador)" : " (se apaga al darse de alta)"}: se puede seguir publicando sin que
+                  se venda.</li>
                 <li>El seguro de stock 0 <strong>no regresa nada</strong> en {lista.nombre} aunque vuelva el stock.</li>
                 <li>No apaga nada en este momento: lo que hoy esté a la venta se apaga en el siguiente barrido
                   (a lo mucho 10 minutos), o ya mismo con «Desactivar».</li>

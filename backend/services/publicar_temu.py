@@ -36,6 +36,7 @@ anidado en `result.success`. Eso ya lo levanta `services/temu.llamar`.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -354,9 +355,35 @@ async def confirmar(req: dict[str, Any]) -> dict[str, Any]:
                   status="published" if goods_id else "published_sin_goods_id",
                   error=None if goods_id else res)
     _reflejar(sku, goods_id, payload, armado["categoria_id"])
+    apagado = await _apagar_recien_creado(sku, goods_id) if req.get("_publicar_apagado") else None
     return {"ok": True, "canal": CANAL, "sku": sku, "goods_id": goods_id,
             "categoria_id": armado["categoria_id"],
-            "avisos": armado["avisos"], "respuesta": res}
+            "avisos": armado["avisos"], "respuesta": res, "apagado": apagado}
+
+
+async def _apagar_recien_creado(sku: str, goods_id: str) -> dict[str, Any]:
+    """
+    Temu EN PAUSA (`publicar._pausa_publicar`): el alta se apaga en cuanto existe.
+    `v3.add` no tiene un «crear apagado» que se haya visto funcionar (v3 ignora en
+    silencio lo que no conoce), así que se manda la misma orden que «Desactivar por
+    canal» (`sale.status.set onsale:0`). Si Temu todavía la está revisando y no la
+    acepta, NO es un fallo: la guardia de la pausa (`pausa_guardia`, cada 10 min) la
+    apaga en cuanto aparezca a la venta. Jamás lanza: el alta ya quedó hecha.
+    """
+    if not goods_id:
+        return {"pedido": False, "detalle": "sin goodsId: lo apaga la guardia cuando aparezca"}
+    try:
+        from services import fanout_seguro
+        await asyncio.to_thread(fanout_seguro._apagar, CANAL, goods_id)
+        log.info("TEMU alta %s (%s) apagada al nacer: canal en pausa", sku, goods_id)
+        return {"pedido": True, "ok": True,
+                "detalle": "Temu aceptó apagarla; la guardia de la pausa la vigila igual"}
+    except Exception as exc:  # noqa: BLE001
+        log.info("TEMU alta %s (%s): no se pudo apagar al nacer (%s); la guardia la apaga "
+                 "cuando aparezca a la venta", sku, goods_id, exc)
+        return {"pedido": True, "ok": False,
+                "detalle": (f"Temu no aceptó apagarla todavía ({str(exc)[:160]}); la guardia de "
+                            "la pausa la apaga a los pocos minutos de que aparezca a la venta")}
 
 
 def _registrar(sku: str, ok: bool, *, status: str,
