@@ -1001,6 +1001,66 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.668.0 — Editor de imágenes por OpenRouter: cada tipo de edición con el modelo más barato que la aguanta
+
+**Qué pidió Brandon (19-oct-2026).** Que «Procesar con IA» del Publicador (Fondo, Traducir texto, Quitar logos,
+Modelo) deje de usar Gemini 3 Pro para todo y pase por OpenRouter, eligiendo el editor más barato según el tipo
+de edición, sin perder lo esencial: se manda la foto y vuelve una foto, igual que con Gemini.
+
+**Cómo funciona.** Con `OPENROUTER_API_KEY` en el ambiente, `imagenes_editor._editar` llama a
+`POST https://openrouter.ai/api/v1/images` (la foto va como data URL en `input_references`, vuelve en
+`data[0].b64_json` con su `usage.cost`), a 1K y con la proporción más cercana a la foto original:
+
+| Tipo de edición | Modelo | Costo por foto | Si falla, sube a |
+|---|---|---|---|
+| Quitar fondo | `black-forest-labs/flux-3-image-klein` | $0.009 | Seedream → Gemini 3 Pro |
+| Traducir texto | `bytedance-seed/seedream-5-0-flash` | $0.018 | Gemini 3 Pro |
+| Quitar logos | `bytedance-seed/seedream-5-0-flash` | $0.018 | Gemini 3 Pro |
+| Modelo | `bytedance-seed/seedream-5-0-flash` | $0.018 | Gemini 3 Pro |
+| «Analizando persona» (paso previo de Modelo) | `google/gemini-3.1-flash-lite` (texto) | $0.0003 | Gemini directo |
+
+Con varios flags en la misma foto manda el más exigente (la edición sigue siendo UNA llamada). Un modelo que
+falla —moderación, 200 sin imagen, saturado tras un reintento de 5 s, tiempo agotado— no tira la foto: sube al
+siguiente escalón, y el último es `google/gemini-3-pro-image`, la calidad de siempre (~$0.136). Si OpenRouter
+rechaza la cuenta (401 clave, 402 sin crédito) o se agota la cadena, y hay `GEMINI_API_KEY`, edita con Gemini
+directo exactamente como antes. **Sin `OPENROUTER_API_KEY` no cambia nada.** El candado del marco azul
+(`_editar_sin_marco`) se queda igual y ahora envuelve `_editar`.
+
+**Cómo se eligieron: midiendo, no por la lista de precios.** 79 ediciones con fotos reales de la bitácora
+`ml_image_edit_backlog` (10-jul a 16-oct) y el prompt de producción, 11 modelos, contra lo que Gemini 3 Pro
+entregó para esas mismas fotos. $2.65 de crédito.
+
+| Modelo | Fondo | Traducir | Logos | Modelo | Veredicto |
+|---|---|---|---|---|---|
+| seedream-5-0-flash ($0.018) | ✓ | ✓ (CAM-0025, la hoja de certificaciones, casi igual que Gemini) | ✓ | ✓ | elegido |
+| flux-3-image-klein ($0.009) | ✓ | ✗ cambió una medida (TEC-0272: «13cm» → «15m») | ~ redibujó la pieza | ✗ no cambió a la persona | solo fondo |
+| gemini-3.1-flash-image ($0.068) | ✗ no quitó el fondo | ✓ | ✗ moderación (marca de agua) | ✓ | — |
+| qwen-image-2.1-turbo ($0.018) | ✗ borra los títulos | ✗ faltas | ✗ borra texto | ✓ | — |
+| gpt-image-1-mini, flux.2-klein-4b | ✗ redibujan | ✗ ilegible | — | — | — |
+| riverflow-v2.5-fast | — | ✗ ilegible | — | — | lista $0.019, cobró $0.08–0.21 |
+| gemini-nano-banana-2.1 | 429 de Google en las cinco | | | | — |
+
+Ninguno dibujó el marco azul (16 de 16 con «Quitar logos» pasaron `_marco_agregado`).
+
+**Lo que cuesta.** La bitácora tiene 1,339 ediciones del 10-jul al 19-oct (71% «Traducir texto»): ~400 al mes. A
+~$0.134 con Gemini 3 Pro eran ~$54 al mes; a $0.018 son ~$7. OpenRouter es prepago: con el crédito en cero
+devuelve 402 y el editor cae a Gemini directo (si su clave sigue viva), no se queda sin editar.
+
+**La bitácora.** `ml_image_edit_backlog.gemini_model` guarda ahora el modelo que DE VERDAD editó
+(`openrouter:bytedance-seed/seedream-5-0-flash`, …, o `gemini-3-pro-image-preview` si fue Gemini directo).
+
+**Archivos.** `backend/services/imagenes_editor.py` (`_cadena_openrouter`, `_proporcion`, `_openrouter_edit`,
+`_editar`, `_describir_persona`), `backend/config.py` (`openrouter_api_key`), `.env.example`,
+`backend/tests/test_imagenes_openrouter.py` (17 pruebas: cadena por tipo, proporción, escalones, 402 → Gemini,
+sin clave = como antes, lectura real de `/images`, persona).
+
+**Verificado.** 22 pruebas en verde (17 nuevas + las 5 de saturación de Gemini). De punta a punta contra
+OpenRouter real, con `_editar_sin_marco` y sin subir nada a Woo: fondo (Klein, 9.7 s), traducir, logos y modelo
+(Seedream, 11–16 s), cada una con su imagen de vuelta.
+
+**Variable nueva en Railway (BackendOmnicanal):** `OPENROUTER_API_KEY`. Es la credencial, no un interruptor:
+quitarla regresa a Gemini directo.
+
 ### v0.667.0 — PRICING: filtros «Calidad ML» y «Experiencia ML»
 
 **Qué pidió Eduardo (19-oct-2026).** Poder filtrar la tabla de PRICING por la calidad de la publicación y por la

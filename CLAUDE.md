@@ -170,7 +170,7 @@ BEKURA="Kubera" y SANCORFASHION="San Corpe")**, **Amazon** (San Corpe) y, vía
 | Tab Ventas | `backend/services/ventas_ml.py` + `frontend/app/ventas/page.tsx` | `resumen_pedidos` (fuente pedidos_ml) + vista ML histórica con caché (`ventas_horarias`/`ventas_sync`) |
 | Vigilante Odoo | `backend/services/odoo_watch.py` | Foto vs foto de qty_available → campana; auto_push opcional |
 | Imágenes Amazon | `backend/services/imagenes_amazon.py` | WebP→JPEG, ≥1000px (Lanczos, fallback Real-ESRGAN), caché `amazon_imagenes` |
-| Editor imágenes IA | `backend/services/imagenes_editor.py` | Gemini por flags (fondo/traducir/logos/modelo); un solo PUT a la galería |
+| Editor imágenes IA | `backend/services/imagenes_editor.py` | Flags fondo/traducir/logos/modelo; un solo PUT a la galería. Con `OPENROUTER_API_KEY` (v0.668.0): fondo → FLUX Klein ($0.009), lo demás → Seedream ($0.018), sube a Gemini 3 Pro si falla; 401/402 o sin clave → Gemini directo |
 | Atributos ML (IA) | `backend/services/ml_atributos.py` | Prompt canónico + DeepSeek; guarda metas `ml_attr_<ID>` (lo que lee el publisher) |
 | Tipo Amazon (picker) | `backend/routers/publicar.py` + `frontend/components/TipoAmazonPicker.tsx` | Ver/buscar/guardar product type; prioridad panel |
 | Sync Odoo→Woo | `backend/services/sync_woo.py` (`POST /api/sync/woo`) | Barrido stock+costos, solo diferencias |

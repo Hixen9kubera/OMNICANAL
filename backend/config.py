@@ -134,6 +134,10 @@ class Settings(BaseSettings):
     # ── IA ────────────────────────────────────────────────────
     anthropic_api_key: str = ""
     gemini_api_key: str = ""
+    # OpenRouter (19-oct-2026). Con clave, el editor de imágenes del Estudio
+    # (`imagenes_editor`) edita por OpenRouter con el modelo más barato que
+    # aguanta cada tipo de edición; sin ella, Gemini directo como siempre.
+    openrouter_api_key: str = ""
     replicate_api_key: str = ""
     serpapi_key: str = ""
     # DeepSeek (API compatible con OpenAI). Si hay clave, los generadores de

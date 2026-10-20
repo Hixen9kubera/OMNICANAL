@@ -1,12 +1,14 @@
 """
-imagenes_editor.py — Editor de imágenes de producto (WooCommerce) con IA (Gemini).
+imagenes_editor.py — Editor de imágenes de producto (WooCommerce) con IA.
 
 On-demand desde el Studio: por imagen se reciben los flags
-  quitar_fondo / traducir_texto / cambiar_modelo
+  quitar_fondo / traducir_texto / quitar_logos / cambiar_modelo
 y este servicio:
   1. Descarga la imagen desde su URL de WooCommerce.
-  2. (cambiar_modelo) describe la persona con Gemini para reemplazarla por una latina.
-  3. Compone un prompt quirúrgico según los flags activos y edita con Gemini.
+  2. (cambiar_modelo) describe la persona para reemplazarla por una latina.
+  3. Compone un prompt quirúrgico según los flags activos y edita: con
+     OPENROUTER_API_KEY, por OpenRouter con el modelo más barato que aguanta
+     ese tipo de edición (ver `_cadena_openrouter`); sin ella, con Gemini.
   4. Sube el resultado a WordPress Media (nuevo attachment).
   5. Reemplaza los IDs viejos por los nuevos en la galería del producto en UN SOLO
      PUT (evita la race condition de escrituras paralelas), + variaciones.
@@ -29,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import math
 import time
 from typing import Any, Optional
 
@@ -357,6 +360,202 @@ async def _gemini_edit(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# OPENROUTER: el modelo más barato que aguanta cada tipo de edición
+# ══════════════════════════════════════════════════════════════════════════════
+# Brandon, 19-oct-2026: dejar de pagar Gemini 3 Pro (~$0.134 por foto) para
+# todo. Con OPENROUTER_API_KEY la edición pasa por OpenRouter —`/images`: la
+# foto entra como data URL en `input_references` y vuelve en base64, igual que
+# con Gemini— y el modelo se elige por TIPO de edición. Sin la clave, Gemini
+# directo como siempre.
+#
+# Elegidos MIDIENDO, no por la lista de precios: 79 ediciones con fotos reales
+# de la bitácora (10-jul a 16-oct) y el prompt de producción, 11 modelos,
+# contra lo que Gemini 3 Pro entregó para esas mismas fotos.
+#   · seedream-5-0-flash ($0.018): el único barato que pasó los cuatro tipos.
+#     Tradujo la hoja de certificaciones de CAM-0025 casi igual que Gemini 3
+#     Pro, quitó JULONG y ZPY sin mover la pieza y sí cambió a la modelo de
+#     PAS-0009.
+#   · flux-3-image-klein ($0.009): bien con el fondo, pero al TRADUCIR cambió
+#     una medida (TEC-0272: «13cm/5.116in» → «15m/5.1.16in») y en «Modelo» dejó
+#     a la misma persona. Por eso solo hace «Quitar fondo».
+#   · Descartados: gpt-image-1-mini y flux.2-klein (texto ilegible, redibujan
+#     la foto), Gemini Flash Lite (no quitó ni el fondo ni el logo), qwen-image
+#     (borra los títulos o los escribe mal), Riverflow (lista $0.019 y cobró
+#     $0.08-0.21 por foto) y Nano Banana 2.1 (429 de Google en todas).
+# Ninguno dibujó el marco azul: las 16 de «Quitar logos» pasaron
+# `_marco_agregado`. El candado se queda igual, por si acaso.
+_OR_BASE = "https://openrouter.ai/api/v1"
+_OR_KLEIN = "black-forest-labs/flux-3-image-klein"   # $0.009 por foto (1K)
+_OR_SEEDREAM = "bytedance-seed/seedream-5-0-flash"   # $0.018
+_OR_PRO = "google/gemini-3-pro-image"                # ~$0.136: el de siempre, de respaldo
+_OR_DESCRIBE = "google/gemini-3.1-flash-lite"        # ~$0.0003 (solo texto, «Analizando persona»)
+
+# De más barato a más caro. Cada tipo arranca en su escalón y, si ese modelo
+# falla, sube; el último es el Gemini 3 Pro de siempre. Con varios flags en la
+# misma foto manda el más exigente: la edición es UNA sola llamada.
+_OR_ESCALERA = (_OR_KLEIN, _OR_SEEDREAM, _OR_PRO)
+_OR_POR_TIPO = {
+    "quitar_fondo": _OR_KLEIN,
+    "quitar_logos": _OR_SEEDREAM,
+    "traducir_texto": _OR_SEEDREAM,
+    "cambiar_modelo": _OR_SEEDREAM,
+}
+# Las proporciones que aceptan los tres. Se manda la más cercana a la foto:
+# sin ella el modelo regresa cuadrada una foto de 1600×1205.
+_OR_PROPORCIONES = ("1:1", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "16:9", "9:16", "21:9")
+# Saturado (429/5xx): una espera corta y un reintento con el MISMO modelo; si
+# sigue, se sube al siguiente escalón en vez de esperar minutos como con Gemini.
+_OR_ESPERA_SATURADO = 5
+# 401 = clave mala, 402 = sin crédito: ningún modelo de OpenRouter va a pasar.
+_OR_CUENTA = {401, 402}
+
+
+def _or_headers() -> dict[str, str]:
+    return {"Authorization": f"Bearer {settings.openrouter_api_key}",
+            "X-Title": "Kubera Omnicanal"}
+
+
+def _cadena_openrouter(flags: dict[str, Any]) -> list[str]:
+    """Los modelos a intentar, en orden: el del tipo más exigente y los de arriba."""
+    escalones = [_OR_ESCALERA.index(_OR_POR_TIPO[k]) for k, v in flags.items()
+                 if v and k in _OR_POR_TIPO]
+    return list(_OR_ESCALERA[max(escalones, default=1):])
+
+
+def _proporcion(imagen: bytes) -> str:
+    """La proporción de `_OR_PROPORCIONES` más cercana a la foto (1:1 si no se puede leer)."""
+    try:
+        from io import BytesIO
+        from PIL import Image
+        w, h = Image.open(BytesIO(imagen)).size   # solo lee el encabezado
+        r = math.log(w / h)
+    except Exception:  # noqa: BLE001
+        return "1:1"
+
+    def distancia(p: str) -> float:
+        a, b = p.split(":")
+        return abs(math.log(float(a) / float(b)) - r)
+
+    return min(_OR_PROPORCIONES, key=distancia)
+
+
+async def _openrouter_edit(
+    img_b64: str, mime: str, prompt: str, modelo: str, proporcion: str,
+    espera: float = 180.0,
+) -> tuple[Optional[bytes], str, Optional[str], Optional[float], Optional[int]]:
+    """Una edición en OpenRouter: (bytes|None, mime_salida, error, costo_usd, http)."""
+    body = {
+        "model": modelo,
+        "prompt": prompt,
+        "input_references": [{"type": "image_url",
+                              "image_url": {"url": f"data:{mime};base64,{img_b64}"}}],
+        "resolution": "1K",
+        "aspect_ratio": proporcion,
+    }
+    http: Optional[int] = None
+    for intento in range(2):
+        try:
+            async with httpx.AsyncClient(timeout=espera) as cli:
+                r = await cli.post(f"{_OR_BASE}/images", json=body, headers=_or_headers())
+        except Exception as exc:  # noqa: BLE001
+            return None, mime, f"{modelo}: {type(exc).__name__}: {exc}", None, None
+        http = r.status_code
+        if http in _HTTP_SATURADO and intento == 0:
+            await asyncio.sleep(_OR_ESPERA_SATURADO)
+            continue
+        try:
+            data = r.json()
+        except ValueError:
+            data = {}
+        if http != 200:
+            e = data.get("error") if isinstance(data, dict) else None
+            msg = (e.get("message") if isinstance(e, dict) else None) or r.text
+            return None, mime, f"{modelo} HTTP {http}: {msg[:160]}", None, http
+        costo = (data.get("usage") or {}).get("cost")
+        for item in data.get("data") or []:
+            if item.get("b64_json"):
+                out_mime = (item.get("media_type") or "image/png").lower()
+                return base64.b64decode(item["b64_json"]), out_mime, None, costo, http
+        return None, mime, f"{modelo}: sin imagen en la respuesta", costo, http
+    return None, mime, f"{modelo} HTTP {http}: saturado", None, http
+
+
+async def _editar(
+    original: bytes, img_b64: str, mime: str, prompt: str, flags: dict[str, Any],
+    retries: int = 2, espera: float = 240.0, avisar: Any = None,
+) -> tuple[Optional[bytes], str, Optional[str], str]:
+    """
+    Edita la foto: (bytes|None, mime_salida, error, modelo_que_la_hizo).
+
+    Con OPENROUTER_API_KEY recorre `_cadena_openrouter`: si un modelo falla
+    (moderación, sin imagen, saturado, tiempo agotado) prueba el siguiente, más
+    caro y más capaz; el último es Gemini 3 Pro. Si OpenRouter rechaza la
+    CUENTA (401 clave, 402 sin crédito) o se acaba la cadena, y hay
+    GEMINI_API_KEY, edita con Gemini directo: nunca queda peor que antes.
+    """
+    if settings.openrouter_api_key:
+        proporcion = _proporcion(original)
+        cadena = _cadena_openrouter(flags)
+        errores: list[str] = []
+        for i, modelo in enumerate(cadena):
+            if i and avisar:
+                avisar(f"Probando con otro modelo ({modelo.split('/')[-1]})…")
+            foto, out_mime, err, costo, http = await _openrouter_edit(
+                img_b64, mime, prompt, modelo, proporcion, espera=min(espera, 180.0))
+            if foto is not None:
+                log.info("imagen editada con %s (%s USD)", modelo, costo)
+                return foto, out_mime, None, f"openrouter:{modelo}"
+            log.warning("openrouter: %s", err)
+            errores.append(str(err))
+            if http in _OR_CUENTA:
+                break
+        if not settings.gemini_api_key:
+            return None, mime, " · ".join(errores)[:500], f"openrouter:{cadena[0]}"
+        if avisar:
+            avisar("OpenRouter no respondió; editando con Gemini…")
+    foto, out_mime, err = await _gemini_edit(
+        img_b64, mime, prompt, retries=retries, espera=espera, avisar=avisar)
+    return foto, out_mime, err, GEMINI_MODEL
+
+
+async def _openrouter_describe_person(img_b64: str, mime: str) -> tuple[bool, Optional[str]]:
+    """(contestó, descripción|None). None con contestó=True es «no hay persona»."""
+    body = {
+        "model": _OR_DESCRIBE,
+        "max_tokens": 120,
+        "messages": [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{img_b64}"}},
+            {"type": "text", "text": _PROMPT_DESCRIBE_PERSON},
+        ]}],
+    }
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as cli:
+            r = await cli.post(f"{_OR_BASE}/chat/completions", json=body, headers=_or_headers())
+        if r.status_code != 200:
+            log.warning("describe_person openrouter HTTP %s: %s", r.status_code, r.text[:160])
+            return False, None
+        msg = ((r.json().get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+        if isinstance(msg, list):
+            msg = " ".join(p.get("text", "") for p in msg if isinstance(p, dict))
+        t = msg.strip()
+        if not t:
+            return False, None
+        return True, (None if t.upper().startswith("NO_PERSON") else t)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("describe_person openrouter: %s", exc)
+        return False, None
+
+
+async def _describir_persona(img_b64: str, mime: str) -> Optional[str]:
+    """La persona de la foto (o None): OpenRouter si hay clave y contesta; si no, Gemini."""
+    if settings.openrouter_api_key:
+        contesto, desc = await _openrouter_describe_person(img_b64, mime)
+        if contesto:
+            return desc
+    return await _gemini_describe_person(img_b64, mime)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # CANDADO: la editada no puede traer un marco que el original no tenía
 # ══════════════════════════════════════════════════════════════════════════════
 def _azul_por_lado(im: Any, ancho: int = 3, laxo: bool = False) -> list[float]:
@@ -437,10 +636,10 @@ def _marco_agregado(original: bytes, editada: bytes) -> bool:
 async def _editar_sin_marco(
     original: bytes, img_b64: str, mime: str, flags: dict[str, Any],
     person_desc: Optional[str], prompt: str, avisar: Any = None,
-) -> tuple[Optional[bytes], str, Optional[str], int, str]:
+) -> tuple[Optional[bytes], str, Optional[str], int, str, str]:
     """
-    `_gemini_edit` con el candado del marco:
-    (bytes|None, mime, error, reintentos, instrucción_que_produjo_la_foto).
+    `_editar` con el candado del marco:
+    (bytes|None, mime, error, reintentos, instrucción_que_produjo_la_foto, modelo).
 
     Vigila siempre que se pidió «Quitar logos» (también con «Quitar fondo»: el
     fondo nuevo es blanco y el candado sólo cuenta azul nuevo). Si la editada
@@ -451,11 +650,12 @@ async def _editar_sin_marco(
     justo el que no dibuja el marco. Si ninguno entrega una foto limpia,
     devuelve None con el motivo: una foto con marco NO se sube.
     """
-    edited, out_mime, err = await _gemini_edit(img_b64, mime, prompt, avisar=avisar)
+    edited, out_mime, err, modelo = await _editar(
+        original, img_b64, mime, prompt, flags, avisar=avisar)
     if edited is None or not flags.get("quitar_logos"):
-        return edited, out_mime, err, 0, prompt
+        return edited, out_mime, err, 0, prompt, modelo
     if not await asyncio.to_thread(_marco_agregado, original, edited):
-        return edited, out_mime, err, 0, prompt
+        return edited, out_mime, err, 0, prompt, modelo
 
     sin_respuesta: Optional[str] = None
     for n in range(1, _REINTENTOS_MARCO + 1):
@@ -469,17 +669,19 @@ async def _editar_sin_marco(
             flags.get("quitar_fondo", False), flags.get("traducir_texto", False), True,
             flags.get("cambiar_modelo", False), person_desc, sin_marco=ultimo,
         ) or prompt
-        nueva, nuevo_mime, nuevo_err = await _gemini_edit(
-            img_b64, mime, otro, retries=1, espera=_ESPERA_REINTENTO_MARCO, avisar=avisar)
+        nueva, nuevo_mime, nuevo_err, nuevo_modelo = await _editar(
+            original, img_b64, mime, otro, flags, retries=1,
+            espera=_ESPERA_REINTENTO_MARCO, avisar=avisar)
         if nueva is None:
             sin_respuesta = nuevo_err
             continue
         if not await asyncio.to_thread(_marco_agregado, original, nueva):
-            return nueva, nuevo_mime, None, n, otro
+            return nueva, nuevo_mime, None, n, otro, nuevo_modelo
     motivo = "La IA devolvió la foto con un marco de color que el original no tenía"
     if sin_respuesta:
         motivo += f", y un reintento no respondió ({str(sin_respuesta)[:60].strip()})"
-    return None, mime, motivo + ". No se guardó; vuelve a procesarla.", _REINTENTOS_MARCO, prompt
+    return (None, mime, motivo + ". No se guardó; vuelve a procesarla.",
+            _REINTENTOS_MARCO, prompt, modelo)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -501,7 +703,8 @@ def _backlog(sku: str, wc_id: int | None, item: dict, info: dict) -> None:
                     f"studio:{sku}", "studio", sku, wc_id, item.get("wc_image_id"), item.get("src"),
                     int(item["flags"]["quitar_fondo"]), int(item["flags"]["traducir_texto"]),
                     int(item["flags"]["cambiar_modelo"]),
-                    info.get("action"), info.get("person_desc"), info.get("prompt_used"), GEMINI_MODEL,
+                    info.get("action"), info.get("person_desc"), info.get("prompt_used"),
+                    (info.get("modelo") or GEMINI_MODEL)[:60],
                     int(bool(info.get("gemini_success"))), info.get("gemini_error"),
                     info.get("bytes_in"), info.get("bytes_out"),
                     info.get("wp_media_id_new"), info.get("wp_url_new"),
@@ -684,7 +887,7 @@ async def _run(sku: str, parent_id: int | None, variante: bool = False) -> None:
             person_desc = None
             if f["cambiar_modelo"]:
                 _set_img(sku, idx, "procesando", "Analizando persona…")
-                person_desc = await _gemini_describe_person(img_b64, mime)
+                person_desc = await _describir_persona(img_b64, mime)
                 info["person_desc"] = person_desc
 
             prompt = _compose_prompt(
@@ -698,9 +901,12 @@ async def _run(sku: str, parent_id: int | None, variante: bool = False) -> None:
                 return
 
             _set_img(sku, idx, "procesando", "Editando con IA…")
-            edited, out_mime, gerr, reintentos, prompt_final = await _editar_sin_marco(
+            edited, out_mime, gerr, reintentos, prompt_final, modelo = await _editar_sin_marco(
                 data, img_b64, mime, f, person_desc, prompt,
                 avisar=lambda paso: _set_img(sku, idx, "procesando", paso))
+            # Va a la columna `gemini_model` de la bitácora: el modelo que DE
+            # VERDAD editó (p. ej. «openrouter:bytedance-seed/seedream-5-0-flash»).
+            info["modelo"] = modelo
             if reintentos:
                 # La bitácora no tiene columna para esto: va en `prompt_used`,
                 # con la instrucción que DE VERDAD produjo la foto (la de reserva
