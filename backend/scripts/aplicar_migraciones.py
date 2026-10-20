@@ -114,7 +114,7 @@ POR = "aplicar_migraciones.py"
 CANDADO = 6602866  # cualquier entero fijo: es la llave del candado
 
 ESQUEMAS_PROPIOS = ("core", "channel", "costing", "enrich", "ops", "migration",
-                    "ventas", "almacen")
+                    "ventas", "almacen", "pricing")
 
 
 def _watchdog():

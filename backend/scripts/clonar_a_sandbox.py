@@ -195,6 +195,19 @@ def tiene_identidad_always(cur, tabla: str) -> bool:
     return cur.fetchone() is not None
 
 
+def _triggers_pricing(cd, accion: str) -> list[str]:
+    """Apaga ("disable") o prende ("enable") los triggers de usuario de cada tabla
+    de `pricing` en el SANDBOX, dentro de la transacción del clon. Devuelve las
+    tablas tocadas (vacío si el esquema no existe)."""
+    cd.execute("""select c.relname from pg_catalog.pg_class c
+                    join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+                   where n.nspname = 'pricing' and c.relkind in ('r', 'p') order by 1""")
+    tablas = [r[0] for r in cd.fetchall()]
+    for t in tablas:
+        cd.execute(f'alter table pricing."{t}" {accion} trigger user')
+    return tablas
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Clona kubera producción → sandbox (lectura en prod).")
     ap.add_argument("--real", action="store_true", help="escribe en el sandbox (default: dry-run)")
@@ -312,6 +325,16 @@ def main() -> None:
     print("  " + "-" * 58)
     try:
         with ori.cursor() as co, des.cursor() as cd:
+            # `pricing` (0074) referencia core.channels y core.accounts, así que el
+            # `truncate core.* cascade` de abajo también la VACÍA en el sandbox, y sus
+            # candados (sin_truncate / solo_agregar) tumbarían el clon entero. Se
+            # apagan sus triggers SOLO dentro de esta transacción y se vuelven a
+            # prender antes del commit (si algo falla, el rollback los deja como
+            # estaban). Lo que había en pricing del sandbox se pierde: es de prueba.
+            pricing_apagado = _triggers_pricing(cd, "disable") if args.real else []
+            if pricing_apagado:
+                print(f"  pricing: {len(pricing_apagado)} tablas con triggers apagados mientras dura el clon "
+                      "(el truncate en cascada las vacía)")
             for tabla, col_fecha in tablas:
                 co.execute(f"select count(*) from {tabla}")
                 n_prod = co.fetchone()[0]
@@ -357,6 +380,9 @@ def main() -> None:
                 # que es peor que dejarlo como estaba. Se confirma todo al final.
                 print("  %-34s %10d %10d" % (tabla, n_prod, copiadas))
                 total += copiadas
+            if pricing_apagado:
+                _triggers_pricing(cd, "enable")
+                print("  pricing: triggers prendidos otra vez")
             # SECUENCIAS AL DÍA. Al copiar ids explícitos, el contador de cada
             # columna de identidad se queda donde estaba y el siguiente INSERT
             # del sandbox chocaría con una llave ya usada. Se adelanta al máximo

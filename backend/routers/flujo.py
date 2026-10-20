@@ -43,7 +43,7 @@ router = APIRouter(prefix="/api/flujo", tags=["flujo"],
 # que mudó la 0068 y las de la 0069/0070, y aparecen solos con su color
 # (RedViva.tsx). En `ops` quedan las 9 vistas puente de la 0068.
 ESQUEMAS = ("core", "channel", "costing", "enrich", "ops", "migration",
-            "analytics", "public", "propuestas_retirado", "ventas", "almacen")
+            "analytics", "public", "propuestas_retirado", "ventas", "almacen", "pricing")
 
 EXTERNOS = [
     ("mercado_libre", "Mercado Libre", "canal"),

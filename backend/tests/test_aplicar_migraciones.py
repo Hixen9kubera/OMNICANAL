@@ -973,17 +973,22 @@ class MainTest(unittest.TestCase):
         b = BaseFalsa(tabla=True, filas=[{"migracion": n, "detalle": {}}
                                          for n in [m.nombre for m in A.listar_migraciones(MIGRACIONES)]
                                          if n < "0068"])
-        # Las reales 0068-0071 se registran solas (la base falsa entiende sus tres
-        # formas de insert; la 0071 usa `values`, como la 0064): una fila cada una, la suya.
+        # Las reales desde la 0068 se registran solas (la base falsa entiende sus
+        # tres formas de insert; la 0071 usa `values`, como la 0064): una fila cada
+        # una, la suya. La lista sale de la carpeta para que una migración nueva
+        # (0072, 0073, 0074…) no rompa esta prueba ni choque al fusionar ramas;
+        # el subconjunto fijo de abajo cuida que no falte ninguna conocida.
         rc, out, paridad = self._correr([], b)
         self.assertEqual(rc, 0)
-        nuevas = ["0068_mudanza_ov_a_ventas_y_almacen", "0069_almacen_locations",
-                  "0070_almacen_historial_movimientos", "0071_ov_editar_confirmada"]
-        self.assertEqual([f["migracion"] for f in b.filas[-4:]], nuevas)
-        self.assertEqual([f["detalle"] for f in b.filas[-4:]], [{"propia": True}] * 4)
+        nuevas = [m.nombre for m in A.listar_migraciones(MIGRACIONES) if m.nombre >= "0068"]
+        self.assertLessEqual({"0068_mudanza_ov_a_ventas_y_almacen", "0069_almacen_locations",
+                              "0070_almacen_historial_movimientos", "0071_ov_editar_confirmada",
+                              "0074_pricing_historial"}, set(nuevas))
+        self.assertEqual([f["migracion"] for f in b.filas[-len(nuevas):]], nuevas)
+        self.assertEqual([f["detalle"] for f in b.filas[-len(nuevas):]], [{"propia": True}] * len(nuevas))
         for n in nuevas:
             self.assertEqual(sum(1 for f in b.filas if f["migracion"] == n), 1, n)
-        self.assertEqual(b.commits, 4)
+        self.assertEqual(b.commits, len(nuevas))
         paridad.assert_called_once()
 
     def _sandbox_del_9_oct(self) -> BaseFalsa:

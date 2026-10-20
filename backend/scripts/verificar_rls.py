@@ -88,10 +88,12 @@ MIGRACIONES = RAIZ / "supabase" / "migrations"
 # silencio, así que entran desde el día en que existen. La 0068 (9-oct) les mudó
 # las tablas de las órdenes de venta y del libro; la 0069/0070 crearon las de
 # almacen.locations y almacen.historial_movimientos.
+# `pricing` nace en la 0074 (19-oct-2026): sin esta línea el CI salía verde sin
+# revisarlo (se probó: un esquema fuera de la lista no se revisa).
 ESQUEMAS_NEGOCIO = frozenset({
     "core", "channel", "costing", "enrich", "ops",
     "analytics", "migration", "public", "propuestas_retirado",
-    "ventas", "almacen",
+    "ventas", "almacen", "pricing",
 })
 
 # ─── Patrones ──────────────────────────────────────────────────────────────

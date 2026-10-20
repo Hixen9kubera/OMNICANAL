@@ -1001,6 +1001,59 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.671.0 — Esquema `pricing` (migración 0074): la historia de precios y la bitácora de quién cambió qué, ya en producción
+
+**Qué pidió Eduardo (19 y 20-oct-2026).** Guardar a largo plazo cómo cambian precio, promociones,
+competencia, calidad y experiencia de las publicaciones que se modifican, para una regresión futura; y
+«guardar quién hizo qué cambio en pricing, los accionables que hacen, para tener esa memoria». Después:
+«Aplica la migración en producción» y «fusiona a main».
+
+**Cómo estaba.** `channel.listing_history` guarda el precio por SKU y cuenta, sin promociones ni autor;
+`enrich.listing_health_hist` guarda la calidad diaria pero nada la cruza con el precio; las ventas no
+separan la reventa de ML (`meli_resale`); y lo que hace el editor de PRICING solo queda en
+`ops.process_log`, sin motivo ni la recomendación que había en pantalla.
+
+**Cómo queda.** La migración `0074_pricing_historial.sql` (aplicada el 20-oct en sandbox y producción)
+crea el esquema `pricing`: 28 tablas y 15 vistas.
+
+| Capa | Tablas |
+|---|---|
+| Identidad | `publicacion` (la llave de todo, un entero), `publicacion_sku`, `promocion` |
+| Corridas | `captura`: cada lectura del escritor; toda fila de la foto apunta a la suya |
+| Foto diaria | `listing_dia`, `oferta_dia`, `resultado_dia`, `disponibilidad_dia`, `ads_dia`, `cuenta_dia` |
+| Series de cambios | `precio_obs` (fuente del precio propio), `oferta`, `listing_ficha`, `evento` |
+| Competencia | `rival`, `listing_rival`, `rival_precio` |
+| Ventas | `orden_etiqueta` (reventa de ML); las ventas se derivan de `channel.*` |
+| Bitácora | `motivo` (14), `accion`, `accion_publicacion`: quién, por qué, qué veía, cómo terminó, deshacer |
+| Decisiones | `decision`, `decision_listing`, `seguimiento` |
+| Contexto y modelo | `calendario`, `parametro_canal`, `modelo_corrida`, `modelo_coef` |
+
+- Las reglas de escritura las imponen triggers (valen aunque escriba el dueño): solo agregar y
+  completar en la foto, una fila nueva solo cuando algo cambia, periodos sin traslape, la atribución
+  solo se llena, nada se borra ni se vacía (salvo `calendario` y `decision_listing`).
+- Vistas: `panel_v` (111 columnas por publicación y día, el panel de la regresión), `panel_semana_v`,
+  `ventas_dia_v` (normal contra reventa), `competencia_dia_v`, `costo_vigencia_v`, `cambio_v`
+  («Qué cambió»), `accion_v`, `accion_efecto_v` (14 días antes contra 14 después) y `actor_resumen_v`.
+- Seguridad: RLS en las 28 tablas, cero políticas, `anon`/`authenticated` sin acceso al esquema, vistas
+  con `security_invoker`; la propia migración lo comprueba antes del COMMIT.
+- Fuera de `pricing` solo crea el índice `enrich.order_shipping_cost (cuenta, shipment_id)`.
+- **Las tablas nacen vacías.** Falta el escritor diario y que el editor de precios escriba en la bitácora.
+
+**Herramientas que conocen el esquema nuevo.**
+- `verificar_rls.py`: `pricing` en `ESQUEMAS_NEGOCIO` (sin esto daba verde sin revisarlo).
+- `aplicar_migraciones.py`: `pricing` en `ESQUEMAS_PROPIOS`.
+- `routers/flujo.py`: la red viva lo enseña.
+- `clonar_a_sandbox.py`: apaga y vuelve a prender los triggers de `pricing` alrededor de sus
+  `truncate … cascade`. Sin esto el clon con `--real` fallaba contra un sandbox que ya tiene `pricing`.
+- `test_aplicar_migraciones.py`: la lista de migraciones nuevas se calcula, ya no está escrita a mano.
+
+**Pruebas.**
+- Ensayo en el sandbox con ROLLBACK: 151 pruebas.
+- Aplicación real en sandbox y producción (`aplicar_0074.py` exige el hash del archivo verificado),
+  verificación del catálogo y lectura de las 15 vistas en producción.
+- Tres revisores de solo lectura con verificación adversarial: 0 bloqueantes.
+- `verificar_rls.py` sale en 0. Batería del backend: ver el commit.
+
 ### v0.670.0 — Publicar APAGADO en TikTok y Temu: con el canal en pausa, el Publicador ya no se bloquea — TikTok crea un borrador y Temu apaga el alta en cuanto existe
 
 **Qué pidió Brandon (20-oct-2026).** «Quisiera ahora empezar a publicar desde el publicador, sin embargo
