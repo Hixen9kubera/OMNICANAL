@@ -232,3 +232,39 @@
 .pm .ed-avisos li { color: var(--warn); }
 .pm .ed-error { color: var(--bad); font-weight: 600; }
 .pm .ed-chk { display: block; font-size: 13px; margin-top: 6px; }
+
+/* Ofertas de ML (v0.672.0): relámpago, Buen Fin y campaña propia; tomar y quitar es de admin */
+.pm .of-abrir { font: inherit; font-size: 13px; font-weight: 600; color: #fff; background: var(--accent); border: 0; border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+.pm .of-abrir:hover { filter: brightness(1.08); }
+.pm dialog.of-dlg { width: min(1280px, calc(100vw - 32px)); max-height: 90vh; }
+.pm .of-cab-botones { display: flex; gap: 8px; align-items: flex-start; }
+.pm .of-cuerpo { padding: 10px 18px 18px; display: grid; gap: 10px; }
+.pm .of-filtros { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+.pm .of-buscar { font: inherit; font-size: 13px; padding: 5px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--fg); min-width: 0; width: 200px; max-width: 100%; }
+.pm .of-ayuda { margin: 0; font-size: 13px; color: var(--hold); background: var(--hold-wash); border-radius: 8px; padding: 8px 12px; }
+.pm .of-promos { margin: 0; padding-left: 18px; font-size: 12.5px; color: var(--muted); }
+.pm .of-promos b { color: var(--fg); }
+.pm .of-tabla-env { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }
+.pm .of-tabla { width: 100%; border-collapse: collapse; font-size: 13px; }
+.pm .of-tabla th { position: sticky; top: 0; background: var(--panel-2); text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; padding: 8px 10px; white-space: nowrap; }
+.pm .of-tabla td { padding: 8px 10px; border-top: 1px solid var(--line); vertical-align: top; }
+.pm .of-tabla .der { text-align: right; }
+.pm .of-tabla .sm { font-size: 11.5px; color: var(--muted); }
+.pm .of-pub { display: flex; gap: 10px; min-width: 260px; max-width: 460px; }
+.pm .of-pub img, .pm .of-sin-foto { width: 40px; height: 40px; border-radius: 6px; object-fit: cover; flex: none; background: var(--panel-2); }
+.pm .of-pub a { text-decoration: none; }
+.pm .of-pub a:hover { text-decoration: underline; }
+.pm .of-estado { min-width: 150px; max-width: 280px; }
+.pm .of-chip { display: inline-block; border-radius: 999px; padding: 1px 8px; font-size: 11.5px; font-weight: 600; }
+.pm .of-chip.si { background: var(--up-wash); color: var(--up); }
+.pm .of-chip.no { background: var(--bad-wash); color: var(--bad); }
+.pm .of-chip.prog { background: var(--warn-wash); color: var(--warn); }
+.pm .of-chip.activa { background: var(--accent-wash); color: var(--accent); }
+.pm .of-motivo { color: var(--bad) !important; }
+.pm .of-ok { color: var(--up) !important; font-weight: 600; }
+.pm .of-baja { color: var(--down) !important; }
+.pm .of-accion { min-width: 120px; }
+.pm .of-accion .ed-form label:nth-child(2) input { width: 64px; }
+.pm .of-chip.duda { background: var(--warn-wash); color: var(--warn); }
+.pm .of-aviso { color: var(--warn) !important; }
+.pm .of-caro { color: var(--warn) !important; }

@@ -17,11 +17,21 @@ pricing.py — La pestaña PRICING (v0.650.0): el «Monitor de precios FULL».
   POST /api/pricing/precio/{id}/vista    → cómo está en ML y qué pasaría con un precio y un %
   POST /api/pricing/precio/{id}          → CAMBIA el precio en ML (normal + descuento visible)
   POST /api/pricing/precio/{id}/deshacer → la regresa a como estaba antes del último cambio
-                                  (v0.665.0; SOLO ADMIN — son las únicas rutas que escriben, en ML)
+                                  (v0.665.0; SOLO ADMIN)
 
-SOLO LECTURA, salvo `/precio` (v0.665.0, pedido de Brandon 19-oct-2026): cambiar a
-mano el precio de una publicación de ML, solo admin, con bitácora y «Deshacer». El servicio (`services/pricing_monitor.py`) solo
-lee la foto de su carpeta o de GitHub, y para «Hecho» lee kubera.
+  GET  /api/pricing/ofertas?cuenta=      → relámpago, campañas de ML (Buen Fin) y campaña propia de
+                                  la cuenta, con cada publicación: candidata, programada o activa,
+                                  su rango y si puede entrar (v0.672.0; solo GET a ML y SELECT a kubera)
+  POST /api/pricing/ofertas/tomar        → INSCRIBE la publicación en la oferta, en ML
+  POST /api/pricing/ofertas/quitar       → la SACA de la oferta, en ML
+                                  (v0.672.0; SOLO ADMIN)
+
+SOLO LECTURA, salvo `/precio` (v0.665.0, pedido de Brandon 19-oct-2026: cambiar a
+mano el precio de una publicación de ML, con bitácora y «Deshacer») y
+`/ofertas/tomar|quitar` (v0.672.0, pedido de Brandon 20-oct-2026: tomar y quitar
+ofertas de ML). Son las únicas rutas que escriben, en ML, y son solo de admin. El
+servicio (`services/pricing_monitor.py`) solo lee la foto de su carpeta o de GitHub,
+y para «Hecho» lee kubera.
 
 ACCESO: admin con sesión del panel, y desde v0.661.0 también las personas de
 `core.rbac.PRICING_INVITADOS` (Haim y Andrea Pardo, Brandon 16-oct-2026): la foto
@@ -45,6 +55,7 @@ from core import actor as core_actor
 from core import identidad as core_identidad
 from core import rbac
 from services import pricing_monitor as pm
+from services import pricing_ofertas as po
 from services import pricing_precio as pp
 
 log = logging.getLogger("omnicanal.pricing")
@@ -205,3 +216,42 @@ async def precio_trabajo(tid: str, quien=Depends(solo_admin)) -> dict:
     if not t:
         raise HTTPException(status_code=404, detail="Ese cambio ya no está en memoria (¿se reinició el backend?). Revisa la publicación.")
     return t
+
+
+# ── OFERTAS DE ML (v0.672.0) ─────────────────────────────────────────────────
+
+@router.get("/ofertas")
+async def ofertas(cuenta: str, fresco: bool = False, quien=Depends(acceso_pricing)) -> dict:
+    """Solo lee: las ofertas de la cuenta y sus publicaciones (se recuerda 10 min; `fresco=1` relee)."""
+    try:
+        return await po.listar(cuenta, fresco)
+    except po.ErrorOferta as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+class PedidoOferta(BaseModel):
+    item: str
+    cuenta: str
+    tipo: str
+    promo_id: str
+    sku: str | None = None
+    precio: float = 0
+    stock: int | None = None
+
+
+@router.post("/ofertas/tomar")
+async def ofertas_tomar(req: PedidoOferta, quien=Depends(solo_admin)) -> dict:
+    """ESCRIBE EN ML: inscribe la publicación en la oferta (relee antes, comprueba después, bitácora)."""
+    try:
+        return await po.tomar(req.item, req.cuenta, req.tipo, req.promo_id, req.precio, req.stock, req.sku, _quien(quien))
+    except po.ErrorOferta as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/ofertas/quitar")
+async def ofertas_quitar(req: PedidoOferta, quien=Depends(solo_admin)) -> dict:
+    """ESCRIBE EN ML: saca la publicación de la oferta (relámpago: solo si no ha empezado)."""
+    try:
+        return await po.quitar(req.item, req.cuenta, req.tipo, req.promo_id, req.sku, _quien(quien))
+    except po.ErrorOferta as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

@@ -35,6 +35,7 @@ import {
   type Reglas,
   type Sentido,
 } from "./reglas";
+import Ofertas from "./Ofertas";
 import Rivales from "./Rivales";
 import { CLUSTERS, clusterizar, type Cluster } from "./clusters";
 
@@ -264,6 +265,9 @@ export default function Monitor({
   const [F, setF] = useState<Filtros>(F0);
   const [abiertos, setAbiertos] = useState<Set<number>>(() => new Set());
   const [rivSku, setRivSku] = useState<string | null>(null);
+  // «Ofertas de ML» (v0.672.0): se monta al abrirla por primera vez; lee ML solo entonces.
+  const [verOfertas, setVerOfertas] = useState(false);
+  const [ofertasUsadas, setOfertasUsadas] = useState(false);
 
   useEffect(() => setR(leerReglas()), []);
   const cambiarReglas = (parcial: Partial<Reglas> | null) => {
@@ -466,8 +470,21 @@ export default function Monitor({
           <span className="badge">
             <EyeOff size={13} aria-hidden /> Oculta · admin e invitados
           </span>
+          <button
+            type="button"
+            className="of-abrir"
+            onClick={() => {
+              setOfertasUsadas(true);
+              setVerOfertas(true);
+            }}
+          >
+            Ofertas de ML · relámpago, Buen Fin y campaña propia
+          </button>
           <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-            <Info size={14} aria-hidden /> Solo lectura: esta pantalla no cambia ningún precio; «Hecho» muestra lo ya movido en ML
+            <Info size={14} aria-hidden />{" "}
+            {esAdmin
+              ? "«Cambiar precio» y «Ofertas de ML» escriben en ML (solo admin, con bitácora); «Hecho» muestra lo ya movido"
+              : "Solo lectura: esta pantalla no cambia ningún precio; «Hecho» muestra lo ya movido en ML"}
           </span>
           <span title={`Lista de publicaciones y competencia: revisión del ${hoyLargo}`}>
             {vivo && vivo !== "error" ? (
@@ -775,6 +792,7 @@ export default function Monitor({
       <Notas R={R} convTipica={convTipica} fallas={foto.meta.fallas?.length ?? 0} />
 
       <Rivales sku={rivSku} filas={filas} riv={foto.riv} series={series} onCerrar={() => setRivSku(null)} />
+      {ofertasUsadas && <Ofertas abierto={verOfertas} onCerrar={() => setVerOfertas(false)} esAdmin={esAdmin} />}
     </div>
   );
 }

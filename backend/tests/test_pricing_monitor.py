@@ -89,12 +89,15 @@ class Acceso(Base):
         self.assertEqual(tapan, [])
 
     def test_router_solo_get_y_exige_admin_con_sesion(self):
-        # Solo lectura, salvo las tres rutas de cambiar el precio a mano (v0.665.0, solo admin).
-        metodos = {m for r in ruta.router.routes for m in r.methods if not r.path.startswith("/api/pricing/precio/")}
-        # (el GET de /precio/trabajo también es de admin: lo cubre test_solo_admin_puede_cambiar)
+        # Solo lectura, salvo cambiar el precio a mano (v0.665.0) y tomar/quitar ofertas (v0.672.0), solo admin.
+        metodos = {m for r in ruta.router.routes for m in r.methods
+                   if not r.path.startswith(("/api/pricing/precio/", "/api/pricing/ofertas/"))}
+        # (el GET de /precio/trabajo también es de admin: lo cubre test_solo_admin_puede_cambiar;
+        #  tomar y quitar ofertas, tests/test_pricing_ofertas.py)
         self.assertTrue(metodos <= {"GET", "HEAD"}, metodos)
         escriben = sorted(r.path for r in ruta.router.routes if "POST" in r.methods)
-        self.assertEqual(escriben, ["/api/pricing/precio/{item_id}", "/api/pricing/precio/{item_id}/deshacer",
+        self.assertEqual(escriben, ["/api/pricing/ofertas/quitar", "/api/pricing/ofertas/tomar",
+                                    "/api/pricing/precio/{item_id}", "/api/pricing/precio/{item_id}/deshacer",
                                     "/api/pricing/precio/{item_id}/vista"])
         from core import rbac as _rbac
         self.assertEqual(_rbac.rol_requerido("POST", "/api/pricing/precio/MLM1"), "admin")

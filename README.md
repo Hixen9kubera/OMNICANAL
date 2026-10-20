@@ -1001,6 +1001,114 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.672.0 — PRICING: «Ofertas de ML» — ver y tomar relámpago, Buen Fin y campaña propia desde el panel (tomar y quitar, solo admin)
+
+**Qué pidió Brandon (20-oct-2026).** Primero, investigar si se puede tomar por código la oferta relámpago, la campaña
+propia y Buen Fin, probando con una sola publicación de cada una. Se probó y se puede: las tres se tomaron y se
+quitaron, y quedaron igual que antes. Luego pidió **un botón para ver qué ofertas se pueden tomar y tomarlas o
+quitarlas desde el panel**.
+
+**Lo medido en vivo el 20-oct** (una publicación por tipo; bitácora en `Documents\omnicanal_ofertas_ml_20oct\`).
+En ninguna prueba cambió lo que pagaba el comprador.
+
+| Oferta | Cómo se toma | Prueba | Resultado |
+|---|---|---|---|
+| Relámpago | `POST /seller-promotions/items/{id}` con `{deal_price, stock, promotion_type: LIGHTNING}`, **sin promotion_id** | ORG-0852-NEG (San Corpe), $148.41, 5 pzs | 201 → programada; DELETE solo con `promotion_type` → 200; igual que antes ✓ |
+| Campaña propia | `{promotion_id, promotion_type: SELLER_CAMPAIGN, deal_price}` | TEC-1313-NEG-15M (Kubera), ALWAYS ON OCT $1,129.41 | 201 → activa al momento; DELETE con `promotion_id` → 200; igual ✓ |
+| Buen Fin | `{promotion_id, promotion_type: DEAL, deal_price}` | TEC-0281-GRI (Kubera), $353.08 | 201 → programada para el 12-nov; DELETE → 200; igual ✓ |
+
+Reglas de ML que salieron de las pruebas, y que la pantalla explica:
+- **Relámpago: el horario lo escoge ML.** Son bloques de 12 h; a ORG-0852-NEG le dio el 22-oct de 00:00 a 11:59,
+  unas 33 h después. Aparta las piezas (pide un mínimo y un máximo). Según la doc de ML, una relámpago **ya activa no
+  se puede quitar**: lo único que la detiene es pausar la publicación.
+- **Campaña propia: ML no deja entrar a una publicación con DESCUENTO INDIVIDUAL activo.** Contesta «No candidates
+  found for item» (2 de 2, MUE-0160-GRI-NEG y ACC-0278-ROJ), aunque su propia lista la marque como candidata. La
+  señal es que en `/seller-promotions/items/{id}` la entrada de la campaña viene **sin rango de precio**. Al revés sí
+  se puede: poner el descuento individual encima de la campaña.
+- **Buen Fin acepta publicaciones con descuento individual**, y se quita mientras no empiece (12-nov a las 22:00).
+- La documentación de ML (developers.mercadolibre.com.mx: ofertas relámpago, campañas del vendedor, deals) da 403
+  si se pide directo; se leyó por un lector público.
+
+**Cómo se usa.** En la cabecera de PRICING hay un botón **«Ofertas de ML · relámpago, Buen Fin y campaña propia»**.
+Abre una ventana con:
+- Pestañas **Relámpago · Buen Fin · Campaña propia · Otras campañas de ML** (Activa tus descuentos y clearance de
+  Full).
+- Filtro de cuenta (las dos, Kubera o San Corpe) y buscador por SKU o título.
+- Tres vistas con su conteo: **Pueden entrar · Inscritas · No pueden**.
+- Arriba, cada oferta con sus fechas, hasta cuándo se puede inscribir y cuántas hay activas, programadas y
+  candidatas.
+
+Cada fila muestra:
+- la publicación (foto, SKU, cuenta, título con liga a ML);
+- stock y piezas vendidas en 30 días;
+- lo que cobra hoy;
+- la oferta: el sugerido de ML y su rango (en relámpago, las piezas que pide), con el % contra hoy. **Si la oferta es
+  más cara que lo que cobra hoy, lo dice**: el comprador paga siempre la promoción más baja, así que no le cambiaría
+  el precio;
+- el estado: Puede entrar, Dudosa, No puede (con el porqué), Programada o Activa (con su horario).
+
+Un admin ve además **«Tomar»**: abre el precio (lleno con el sugerido) y, en relámpago, las piezas (llenas con el
+mínimo), y avisa si queda fuera del rango o más caro que hoy. **«Quitar»** pide confirmación y se desactiva en una
+relámpago ya activa.
+
+**«Dudosa»:** 66 candidatas a campaña propia (37 de Kubera y 29 de San Corpe) vienen sin rango de precio y **sin**
+descuento individual. Ese caso no se probó: las dos rechazadas tenían descuento individual. Se deja intentar con el
+aviso «ML no le da rango de precio: puede que no la acepte», y si ML la rechaza, el error lo explica.
+
+**Qué hace por dentro** (`services/pricing_ofertas.py`):
+- **Ver** (solo GET a ML y SELECT a kubera; se recuerda 10 min por cuenta, «Volver a leer» relee):
+  - `/seller-promotions/users/{uid}`: las ofertas vivas;
+  - `/seller-promotions/promotions/{id}/items`: candidatas e inscritas, con rango;
+  - `/items?ids=`: título, foto, stock y estado, de 20 en 20;
+  - `/seller-promotions/items/{id}`: solo las candidatas a campaña propia, para saber cuáles bloquea un descuento
+    individual;
+  - kubera `channel.listings`: SKU y lo que cobra hoy;
+  - kubera `channel.order_items`: vendidas en 30 días.
+
+  Medido: Kubera 12 s (803 filas), San Corpe 21 s (1,035 filas).
+- **Tomar / Quitar** (un POST o un DELETE por clic):
+  1. Relee la publicación en ML.
+  2. Revisa que siga siendo candidata o que esté inscrita.
+  3. Revisa el rango de precio y de piezas, y el bloqueo por descuento individual. Si falla aquí, no se llama a ML.
+  4. Manda el cuerpo de la doc.
+  5. Comprueba en ML que quedó (hasta 30 s). En relámpago, además, lee el horario que dio ML.
+
+  Todo queda en `ops.process_log` (proceso `ofertas`, origen `pricing`, `detail_ref` `ofertas:{id}`) con quién lo hizo
+  y la foto de antes y después. Comparte el candado por publicación con el editor de precio (v0.665.0): no se pueden
+  cruzar dos cambios en la misma publicación.
+- **Quitar una relámpago se niega** si ya empezó, o si la publicación tiene dos programadas: ML la quita solo por
+  tipo, sin decir cuál.
+
+**Acceso.**
+- `GET /api/pricing/ofertas?cuenta=` la ve quien ve PRICING (admin e invitados).
+- `POST /api/pricing/ofertas/tomar` y `/quitar` son **solo admin**, en el router (`solo_admin`) y en `core/rbac.py`
+  (`POST /api/pricing` = admin, desde v0.665.0).
+- La leyenda de la cabecera ya no dice «solo lectura» a un admin: dice que «Cambiar precio» y «Ofertas de ML»
+  escriben en ML.
+
+**Pendiente, fuera de esta versión:**
+- **No existe campaña propia de noviembre** en ninguna cuenta (ALWAYS ON OCT y Octubre acaban el 31-oct). Según la
+  doc, crearla por API es `POST /seller-promotions/promotions` (no probado).
+- El esquema `pricing` (v0.671.0) todavía no recibe estas acciones; igual que el editor de precio, esperan el
+  escritor de `pricing.accion`.
+- La casilla «Sacarla de campañas» del editor de precio (apagada) fallaría al deshacer si hay descuento individual:
+  hay que re-inscribir la campaña ANTES de volver a poner el descuento.
+
+**Pruebas.** +16 en `tests/test_pricing_ofertas.py` (53 con las de PRICING):
+- acceso: el invitado ve y no toma; sin sesión, 401; entradas inválidas, 400;
+- el `price` de la candidata relámpago es el sugerido;
+- horas de ML en CDMX;
+- bloqueo de campaña propia (con descuento individual, con rango, sin rango);
+- relámpago sin piezas o pausada;
+- rango y piezas antes del POST;
+- el cuerpo de cada tipo (relámpago sin promotion_id);
+- con descuento individual, la campaña propia no llama a ML;
+- relámpago activa no se quita;
+- Buen Fin manda el cuerpo correcto, comprueba y anota;
+- al quitar, la campaña lleva promotion_id y la relámpago no.
+
+`tsc` limpio. La pantalla se revisó en local leyendo ML de verdad (solo GET), con tomar y quitar desactivados.
+
 ### v0.671.0 — Esquema `pricing` (migración 0074): la historia de precios y la bitácora de quién cambió qué, ya en producción
 
 **Qué pidió Eduardo (19 y 20-oct-2026).** Guardar a largo plazo cómo cambian precio, promociones,

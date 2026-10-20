@@ -2852,6 +2852,104 @@ export function pricingPrecioTrabajo(tid: string, signal?: AbortSignal): Promise
   return getJSON<PricingTrabajoPrecio>(`/api/pricing/precio/trabajo/${encodeURIComponent(tid)}`, signal);
 }
 
+// ── PRICING: ofertas de Mercado Libre (v0.672.0; ver solo lee, tomar y quitar ESCRIBEN en ML y son de admin) ──
+
+export type TipoOfertaML = "LIGHTNING" | "DEAL" | "SELLER_CAMPAIGN";
+
+export interface PricingOfertaPromo {
+  id: string;
+  tipo: TipoOfertaML;
+  nombre: string;
+  estado: string;
+  /** Hora de CDMX, «YYYY-MM-DD HH:MM». */
+  inicio: string | null;
+  fin: string | null;
+  /** Hasta cuándo se puede inscribir (deadline de ML). */
+  limite: string | null;
+  conteo: Record<string, number>;
+}
+
+export interface PricingOfertaFila {
+  item: string;
+  cuenta: string;
+  tipo: TipoOfertaML;
+  promo_id: string;
+  promo: string;
+  /** candidate = puede entrar; pending = programada; started = activa. */
+  estado: "candidate" | "pending" | "started";
+  /** Precio con el que está inscrita (programada o activa). */
+  precio: number | null;
+  sugerido: number | null;
+  min: number | null;
+  max: number | null;
+  top: number | null;
+  original: number | null;
+  /** Relámpago: piezas que pide (rango) y las que le quedan. */
+  stock_min: number | null;
+  stock_max: number | null;
+  restante: number | null;
+  inicio: string | null;
+  fin: string | null;
+  ref: string | null;
+  /** null = no se revisó; false = no puede, con `motivo`. */
+  puede: boolean | null;
+  motivo: string | null;
+  sku: string | null;
+  titulo: string | null;
+  foto: string | null;
+  url: string | null;
+  stock: number | null;
+  normal: number | null;
+  status: string | null;
+  /** Lo que se cobra hoy (kubera, sync de 15 min). */
+  cobra: number | null;
+  u30: number;
+  logistica: string | null;
+}
+
+export interface PricingOfertas {
+  cuenta: string;
+  leido: string;
+  promos: PricingOfertaPromo[];
+  filas: PricingOfertaFila[];
+  kubera: boolean;
+}
+
+export interface PedidoOfertaML {
+  item: string;
+  cuenta: string;
+  tipo: TipoOfertaML;
+  promo_id: string;
+  sku?: string | null;
+  precio?: number;
+  stock?: number | null;
+}
+
+export interface ResultadoOfertaML {
+  estado: string | null;
+  precio?: number | null;
+  inicio?: string | null;
+  fin?: string | null;
+  cobra_antes: number | null;
+  cobra_despues: number | null;
+  avisos: string[];
+}
+
+/** Solo lee: las ofertas de la cuenta y sus publicaciones (el servidor las recuerda 10 min; `fresco` relee). */
+export function pricingOfertas(cuenta: string, fresco = false, signal?: AbortSignal): Promise<PricingOfertas> {
+  return getJSON<PricingOfertas>(`/api/pricing/ofertas?cuenta=${encodeURIComponent(cuenta)}${fresco ? "&fresco=true" : ""}`, signal);
+}
+
+/** ESCRIBE EN ML: inscribe la publicación en la oferta. */
+export function pricingOfertaTomar(pedido: PedidoOfertaML): Promise<ResultadoOfertaML> {
+  return postJSON<ResultadoOfertaML>("/api/pricing/ofertas/tomar", pedido);
+}
+
+/** ESCRIBE EN ML: la saca de la oferta (relámpago: solo si no ha empezado). */
+export function pricingOfertaQuitar(pedido: PedidoOfertaML): Promise<ResultadoOfertaML> {
+  return postJSON<ResultadoOfertaML>("/api/pricing/ofertas/quitar", pedido);
+}
+
 /** Calidad y experiencia de compra de ML (lo que guarda el barrido de calidad). Solo lee. */
 export function pricingSalud(signal?: AbortSignal): Promise<PricingSalud> {
   return getJSON<PricingSalud>("/api/pricing/salud", signal);
