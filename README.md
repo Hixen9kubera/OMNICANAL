@@ -1001,6 +1001,41 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.675.0 — La categoría elegida al guardar el costo ahora MANDA al publicar, y el error «categoría sin Mercado Envíos 2» ya no tapa el error real de ML
+
+**Qué pasó.** JUGU-0085-PLA (Funda extensor), 20-oct-2026: Cinthya eligió «Fundas para Penes» (MLM46606) y
+guardó el costo. El Estudio pintaba esa categoría, pero al publicar ML recibió **«Alimentos y Bebidas >
+Comidas Preparadas > Otros» (MLM194402)** y la rechazó porque esa categoría exige el atributo
+`PRODUCT_NAME`. El panel lo mostró como `CATEGORIA_SIN_ME2: esta categoría de ML no admite Mercado Envíos
+2`, que era falso: ML sólo había agregado el AVISO `shipping.lost_me1_by_user` (tipo `warning`) junto al
+error real, y las dos categorías admiten ME2.
+
+**Por qué.** Hay dos llaves de categoría en Woo y el publicador lee primero la del panel
+(`ml_categoria_id`, regla 2). El guardado de costos (`_sync_woo_costo`) sólo escribía la del predictor
+(`ml_category_id`) más la ruta y los niveles legibles, que es lo que pinta el Estudio. Así quedaron la
+ruta en Fundas para Penes y la llave que manda en una elección vieja (JSON compacto y `ml_dominio`
+«Alimentos y bebidas»: la escribió un proceso externo, no este backend). Medido en WordPress: **205
+productos** tienen `ml_categoria_id ≠ ml_category_id`.
+
+**El arreglo.**
+- `routers/crear.py`: la construcción de las metas de una categoría elegida sale del endpoint
+  `/api/crear/categoria-ml` a `_meta_categoria_panel`. `_sync_woo_costo` recibe `cat_elegida` (la
+  `ml_cat_id` que vino en la PETICIÓN de costos, individual o masiva) y con ella escribe las mismas metas
+  que el selector del Estudio, incluida `ml_categoria_id`, y registra la elección en kubera
+  (`categorias_write.registrar`). Sin categoría en la petición, se comporta como antes.
+- `services/publicar_ready.py::_traducir_error_ml`: recibe la `ml_response` del vendor. Si trae causas
+  de tipo `error` aparte de `lost_me1_by_user`, el mensaje es «ML rechazó la publicación (categoría X):
+  <error real>». Si ME1 es lo único, sigue la traducción de siempre.
+
+**Datos.** JUGU-0085-PLA se corrigió a mano con la misma escritura del selector (`ml_categoria_id` y
+niveles = MLM46606, verificado en `wp_postmeta`). Los otros 204 desalineados no se tocaron: en muchos la
+del panel es la buena y la del predictor la vieja (caso TEC-1812-NEG). Se corrigen solos la próxima vez que
+alguien guarde su costo o elija la categoría.
+
+**Pruebas.** `tests/test_categoria_costeo.py` (5): con categoría en la petición se escribe
+`ml_categoria_id` y se registra en kubera; sin ella, como antes; ME1 junto a un error real muestra el real;
+ME1 solo conserva la traducción; otros errores no se tocan.
+
 ### v0.674.0 — PRICING: sin preguntas de motivo; la bitácora guarda solo lo que se hizo
 
 **Qué pidió Brandon (20-oct-2026), justo después de la v0.673.0.** El selector «¿Por qué?» iba a salir en cada

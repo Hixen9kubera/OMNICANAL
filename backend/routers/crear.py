@@ -404,24 +404,20 @@ class GuardarCategoriaML(BaseModel):
     category_id: str = Field(..., description="ID de categoría ML, ej. MLM447349")
 
 
-@router.post("/categoria-ml")
-async def guardar_categoria_ml(req: GuardarCategoriaML):
+async def _meta_categoria_panel(cat_id: str) -> tuple[list[dict], dict] | None:
     """
-    Persiste en WooCommerce la categoría ML ELEGIDA en el panel (Estudio). Escribe
-    las MISMAS metas que lee el publicador (`publicar_ready.construir_prod`):
-    `ml_categoria_id` es la elección HUMANA y MANDA sobre el predictor de Crear
-    (`ml_category_id`). Sin este guardado, el picker solo cambiaba estado local y
-    la categoría no persistía (bug 2026-07-23).
+    Metas de Woo de una categoría ML ELEGIDA por una persona, y la categoría tal
+    como la devolvió ML. None si ML no la conoce.
+
+    Las escribe `guardar_categoria_ml` (el selector del Estudio) y también el
+    guardado de costos cuando trae categoría (`_sync_woo_costo`).
     """
     import httpx
     import json as _json
-    cat_id = (req.category_id or "").strip()
-    if not cat_id:
-        raise HTTPException(422, "category_id vacío.")
     async with httpx.AsyncClient(base_url="https://api.mercadolibre.com", timeout=15.0) as cli:
         r = await cli.get(f"/categories/{cat_id}")
     if r.status_code != 200:
-        raise HTTPException(404, f"Categoría {cat_id} no encontrada en Mercado Libre.")
+        return None
     d = r.json()
     niveles = [{"id": p.get("id", ""), "name": p.get("name", "")}
                for p in (d.get("path_from_root") or [])]
@@ -442,6 +438,29 @@ async def guardar_categoria_ml(req: GuardarCategoriaML):
     # niveles legibles (los que pinta el breadcrumb del Estudio desde postmeta)
     for i, n in enumerate(niveles[:5], start=1):
         meta.append({"key": f"ml_categoria_nivel_{i}", "value": n["name"]})
+    return meta, d
+
+
+@router.post("/categoria-ml")
+async def guardar_categoria_ml(req: GuardarCategoriaML):
+    """
+    Persiste en WooCommerce la categoría ML ELEGIDA en el panel (Estudio). Escribe
+    las MISMAS metas que lee el publicador (`publicar_ready.construir_prod`):
+    `ml_categoria_id` es la elección HUMANA y MANDA sobre el predictor de Crear
+    (`ml_category_id`). Sin este guardado, el picker solo cambiaba estado local y
+    la categoría no persistía (bug 2026-07-23).
+    """
+    cat_id = (req.category_id or "").strip()
+    if not cat_id:
+        raise HTTPException(422, "category_id vacío.")
+    armado = await _meta_categoria_panel(cat_id)
+    if not armado:
+        raise HTTPException(404, f"Categoría {cat_id} no encontrada en Mercado Libre.")
+    meta, d = armado
+    niveles = [{"id": p.get("id", ""), "name": p.get("name", "")}
+               for p in (d.get("path_from_root") or [])]
+    ruta = " > ".join(n["name"] for n in niveles)
+    nombre_hoja = d.get("name") or (niveles[-1]["name"] if niveles else cat_id)
     # UNA VARIACIÓN SE ESCRIBE POR SU PROPIA RUTA. `PUT /products/{id}` LEE una
     # variación (probado: devuelve 200), pero la regla de escritura ya está en la
     # casa —`woocommerce.obtener_producto_por_sku`: «el update va a
@@ -765,8 +784,19 @@ def _tiene_costo_propio(variacion: dict) -> bool:
     return False
 
 
-async def _sync_woo_costo(sku: str, fila: dict) -> bool:
-    """Escribe a WooCommerce precio regular/oferta + costo + peso/dimensiones + categoría ML."""
+async def _sync_woo_costo(sku: str, fila: dict, cat_elegida: str | None = None) -> bool:
+    """
+    Escribe a WooCommerce precio regular/oferta + costo + peso/dimensiones + categoría ML.
+
+    `cat_elegida` es la categoría que vino en la PETICIÓN (la que la persona
+    tenía en pantalla al guardar el costo). Esa se escribe como elección del
+    panel (`ml_categoria_id`, la que MANDA al publicar) y se registra en kubera,
+    igual que el selector del Estudio. Antes el costeo sólo escribía
+    `ml_category_id` + la ruta: el Estudio pintaba la categoría nueva y se
+    publicaba con una vieja del panel. JUGU-0085-PLA (20-oct): la pantalla decía
+    «Fundas para Penes» y ML recibió «Comidas Preparadas».
+    Sin `cat_elegida`, la de la fila se escribe como antes (llave del predictor).
+    """
     p = await woocommerce.obtener_producto_por_sku(sku)
     wc_id = p.get("wc_id") if p else None
     if not wc_id:
@@ -777,7 +807,13 @@ async def _sync_woo_costo(sku: str, fila: dict) -> bool:
     ]
     if fila.get("costo_unitario") is not None:
         meta.append({"key": "costo", "value": f"{float(fila['costo_unitario']):.2f}"})
-    if fila.get("ml_cat_id"):
+    cat_panel = None
+    if cat_elegida and str(cat_elegida).strip():
+        armado = await _meta_categoria_panel(str(cat_elegida).strip())
+        if armado:
+            meta.extend(armado[0])
+            cat_panel = armado[1]
+    if cat_panel is None and fila.get("ml_cat_id"):
         meta.extend(await _categoria_ml_meta(str(fila["ml_cat_id"])))
     payload: dict = {
         "regular_price": f"{float(fila['precio_base']):.2f}",
@@ -806,6 +842,13 @@ async def _sync_woo_costo(sku: str, fila: dict) -> bool:
     async with woocommerce._client() as cli:
         r = await cli.put(ruta, json=payload, timeout=120.0)
         r.raise_for_status()
+        if cat_panel is not None:
+            # kubera se entera de la elección, como en `guardar_categoria_ml`.
+            niveles_k = [n.get("name", "") for n in (cat_panel.get("path_from_root") or [])]
+            await run_in_threadpool(
+                categorias_write.registrar, int(wc_id), str(cat_elegida).strip(),
+                cat_panel.get("name") or (niveles_k[-1] if niveles_k else ""),
+                " > ".join(niveles_k))
 
         # Padre variable: WooCommerce muestra en las listas el precio de las
         # VARIANTES, no el del padre — así que sin esto, un padre recién costeado
@@ -911,7 +954,7 @@ async def costos_recalcular(sku: str, req: RecalcularCostos):
     synced, sync_error = False, None
     if req.sincronizar_woo:
         try:
-            synced = await _sync_woo_costo(sku, fila)
+            synced = await _sync_woo_costo(sku, fila, req.ml_cat_id)
         except Exception as exc:  # noqa: BLE001
             sync_error = f"{type(exc).__name__}: {exc}"[:200]
             alertas.avisar(f"sync_woo_costo:{sku}",
@@ -1155,7 +1198,7 @@ async def costos_bulk(req: BulkCostos):
         synced = False
         if req.sincronizar_woo:
             try:
-                synced = await _sync_woo_costo(it.sku, fila)
+                synced = await _sync_woo_costo(it.sku, fila, it.ml_cat_id)
             except Exception as exc:  # noqa: BLE001
                 resultados.append({"sku": it.sku, "ok": True, "sincronizado_woo": False,
                                    "aviso": f"DB ok, Woo falló: {str(exc)[:80]}",

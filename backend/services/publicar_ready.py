@@ -150,7 +150,18 @@ def _backlog_ml(backlog_key: str, entry: dict[str, Any]) -> None:
         _marcar_publicado_en_woo(sku, wc_id)
 
 
-def _traducir_error_ml(error: str, prod: dict[str, Any] | None = None) -> str:
+def _errores_reales_ml(respuesta: Any) -> list[str]:
+    """Las causas de tipo `error` de una respuesta de ML que NO son el aviso de ME1."""
+    if not isinstance(respuesta, dict):
+        return []
+    return [str(c.get("message") or c.get("code") or "").strip()
+            for c in (respuesta.get("cause") or [])
+            if isinstance(c, dict) and c.get("type") == "error"
+            and c.get("code") != "shipping.lost_me1_by_user"]
+
+
+def _traducir_error_ml(error: str, prod: dict[str, Any] | None = None,
+                       respuesta: Any = None) -> str:
     """
     Reescribe los mensajes del vendor que mandan al usuario a una acción imposible.
 
@@ -178,6 +189,13 @@ def _traducir_error_ml(error: str, prod: dict[str, Any] | None = None) -> str:
             cat = f" (categoría {cid})"
     except Exception:  # noqa: BLE001
         pass
+    # ML manda `lost_me1_by_user` también como simple AVISO junto a otro error.
+    # Si hay un error real, ESE es el motivo: JUGU-0085-PLA (20-oct) se leyó
+    # «categoría sin Mercado Envíos 2» cuando ML decía que faltaba el atributo
+    # PRODUCT_NAME — en una categoría equivocada.
+    reales = [m for m in _errores_reales_ml(respuesta) if m]
+    if reales:
+        return f"ML rechazó la publicación{cat}: " + " | ".join(reales)[:400]
     return error.replace(
         "ME1_INACTIVO (activar Mercado Envíos 1 en dashboard ML)",
         f"CATEGORIA_SIN_ME2{cat}: esta categoría de ML no admite Mercado Envíos 2 "
@@ -687,7 +705,7 @@ async def crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
 
         item_id = r.get("ml_item_id") or ""
         if r.get("error"):
-            r["error"] = _traducir_error_ml(r["error"], prod)
+            r["error"] = _traducir_error_ml(r["error"], prod, r.get("ml_response"))
         fila: dict[str, Any] = {
             "cuenta":    cuenta,
             "item_id":   item_id,
