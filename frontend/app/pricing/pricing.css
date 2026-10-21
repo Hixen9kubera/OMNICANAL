@@ -287,3 +287,81 @@
 .pm .sg-barra { flex: 1; background: var(--accent); border-radius: 2px 2px 0 0; opacity: .8; min-height: 2px; }
 .pm .sg-barra.nd { background: var(--line); }
 .pm .sg-barra.curso { background: repeating-linear-gradient(45deg, var(--accent) 0 3px, var(--accent-soft) 3px 6px); }
+
+/* v0.679.0 · Accesos de PRICING y rediseño de «Ofertas de ML» (Brandon, 21-oct): Tomar primero y a la vista,
+   y a cuánto quedaría con su descuento; el botón de ofertas, grande y distinguible. */
+.pm .atajos { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 12px; }
+.pm .atajo { display: flex; align-items: center; gap: 14px; text-align: left; padding: 14px 18px; border-radius: 14px; cursor: pointer;
+  border: 1px solid var(--accent-soft); background: linear-gradient(135deg, var(--accent-wash), var(--panel) 70%); color: var(--fg);
+  font: inherit; transition: box-shadow .15s, border-color .15s, transform .15s; min-width: 0; }
+.pm .atajo:hover { border-color: var(--accent); box-shadow: 0 6px 18px rgba(109, 63, 224, .14); transform: translateY(-1px); }
+.pm .atajo .ico { flex: none; width: 44px; height: 44px; border-radius: 12px; background: var(--accent); color: #fff; display: grid; place-items: center; }
+.pm .atajo .txt { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.pm .atajo .txt b { font-size: 16px; }
+.pm .atajo .txt span { font-size: 13px; color: var(--muted); }
+.pm .atajo .num { flex: none; display: grid; justify-items: end; font-family: var(--font-num); font-size: 24px; font-weight: 700; color: var(--accent); line-height: 1.1; }
+.pm .atajo .num small { font-family: inherit; font-size: 11px; font-weight: 500; color: var(--muted); }
+.pm .atajo .flecha { flex: none; color: var(--accent); }
+
+.pm .of-dlg h3 { display: flex; align-items: center; gap: 8px; }
+.pm .of-icono { color: var(--accent); }
+.pm .of-pestanas { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.pm .of-pestanas button { display: grid; gap: 0; text-align: left; padding: 10px 14px; border-radius: 12px; border: 1px solid var(--line);
+  background: var(--panel); color: var(--fg); font: inherit; cursor: pointer; }
+.pm .of-pestanas button span { font-size: 14px; font-weight: 600; }
+.pm .of-pestanas button b { font-family: var(--font-num); font-size: 22px; font-weight: 700; color: var(--up); line-height: 1.2; }
+.pm .of-pestanas button small { font-size: 11px; color: var(--muted); }
+.pm .of-pestanas button.activa { border-color: var(--accent); background: var(--accent-wash); box-shadow: inset 0 0 0 1px var(--accent); }
+.pm .of-ayuda { display: grid; gap: 4px; }
+.pm .of-ayuda .of-promos { display: grid; gap: 2px; margin: 0; padding: 0; font-size: 12px; color: var(--hold); }
+.pm .of-vacio { margin: 0; padding: 24px; text-align: center; color: var(--muted); border: 1px dashed var(--line); border-radius: 12px; }
+
+.pm .of-lista { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); overflow: hidden; }
+.pm .of-fila { display: grid; grid-template-columns: 112px minmax(180px, 1.1fr) minmax(220px, 2fr) 96px minmax(150px, 1fr);
+  gap: 8px 16px; align-items: start; padding: 12px 14px; border-top: 1px solid var(--line); font-size: 13px; }
+.pm .of-fila.sin-accion { grid-template-columns: minmax(180px, 1.1fr) minmax(220px, 2fr) 96px minmax(150px, 1fr); }
+.pm .of-fila.abierta { background: #fbfaff; }
+.pm .of-cabeza { border-top: 0; background: var(--panel-2); padding-block: 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--muted); font-weight: 600; }
+.pm .of-fila .sm { font-size: 11.5px; color: var(--muted); }
+.pm .of-fila .der { text-align: right; }
+.pm .of-tomar { width: 100%; font: inherit; font-size: 15px; font-weight: 700; color: #fff; background: var(--accent); border: 0; border-radius: 10px;
+  padding: 10px 12px; cursor: pointer; box-shadow: 0 2px 8px rgba(109, 63, 224, .25); }
+.pm .of-tomar:hover:not(:disabled) { filter: brightness(1.08); }
+.pm .of-tomar:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; }
+.pm .of-quitar { width: 100%; font: inherit; font-size: 14px; font-weight: 600; color: var(--bad); background: var(--panel); border: 1px solid var(--bad);
+  border-radius: 10px; padding: 9px 12px; cursor: pointer; }
+.pm .of-quitar.fuerte { width: auto; color: #fff; background: var(--bad); }
+.pm .of-quitar:disabled { opacity: .5; cursor: not-allowed; }
+.pm .of-nopuede { display: block; text-align: center; font-size: 12px; color: var(--muted); padding: 10px 0; border: 1px dashed var(--line); border-radius: 10px; }
+.pm .of-resultado { display: grid; gap: 1px; }
+.pm .of-precio { font-family: var(--font-num); font-size: 20px; font-weight: 700; color: var(--fg); }
+.pm .of-vs { font-size: 12.5px; color: var(--muted); }
+.pm .of-vs b { font-family: var(--font-num); }
+.pm .of-pub { min-width: 0; max-width: none; }
+.pm .of-pub img, .pm .of-pub .of-sin-foto { width: 44px; height: 44px; }
+.pm .of-datos b { font-size: 15px; }
+.pm .of-panel { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(220px, 1fr) minmax(240px, 1.3fr) auto; gap: 14px 20px;
+  align-items: start; padding: 12px 14px; border-radius: 12px; background: var(--panel); border: 1px solid var(--accent-soft); }
+.pm .of-panel-campos { display: grid; gap: 8px; }
+.pm .of-panel-campos label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); font-weight: 600; }
+.pm .of-panel-campos input { font: inherit; font-family: var(--font-num); font-size: 16px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--panel); color: var(--fg); width: 130px; }
+.pm .of-input-pesos { display: inline-flex; align-items: center; gap: 4px; font-size: 16px; color: var(--fg); }
+.pm .of-atajos { display: flex; flex-wrap: wrap; gap: 6px; }
+.pm .of-atajos button { font: inherit; font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel); cursor: pointer; }
+.pm .of-atajos button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-wash); color: var(--accent); font-weight: 600; }
+.pm .of-panel-efecto { display: grid; gap: 4px; font-size: 13.5px; }
+.pm .of-panel-efecto .of-precio { font-size: 22px; color: var(--accent); }
+.pm .of-panel-botones { display: flex; flex-direction: column; gap: 8px; align-items: stretch; min-width: 170px; }
+
+@media (max-width: 900px) {
+  .pm .of-fila { grid-template-columns: 104px minmax(0, 1fr); }
+  .pm .of-fila > .of-pub, .pm .of-fila > .of-datos, .pm .of-fila > .of-estado { grid-column: 2; }
+  .pm .of-fila > .of-datos { text-align: left; }
+  .pm .of-fila.sin-accion { grid-template-columns: minmax(0, 1fr); }
+  .pm .of-fila.sin-accion > * { grid-column: 1; }
+  .pm .of-cabeza { display: none; }
+  .pm .of-panel { grid-template-columns: minmax(0, 1fr); }
+  .pm .of-panel-botones { flex-direction: row; }
+}

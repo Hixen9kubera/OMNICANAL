@@ -3,14 +3,21 @@
 // Ofertas.tsx — «Ofertas de ML» en PRICING (v0.672.0, pedido de Brandon 20-oct-2026): qué relámpagos, Buen Fin,
 // campañas propias y otras campañas de ML se pueden tomar, y tomarlas o quitarlas desde aquí.
 //
-// Ver lo puede quien ve PRICING; tomar y quitar, solo un admin (el servidor también lo exige). Cada clic es UN
-// POST o UN DELETE a ML: el servidor relee la publicación antes, comprueba después y lo deja en la bitácora.
-// Las reglas de ML que la pantalla explica (medidas en vivo el 20-oct):
+// v0.679.0 (Brandon, 21-oct): rediseño. Cada fila se lee de izquierda a derecha en el orden en que se decide:
+// el botón PRIMERO (antes había que deslizar la tabla para verlo), luego A CUÁNTO QUEDARÍA y qué descuento
+// aplica —contra lo que cobra hoy y contra el tachado que ve el comprador—, luego la publicación y sus datos.
+// Al tomar, un panel debajo de la fila deja escoger el precio (sugerido, mínimo, máximo o a mano) y dice
+// antes de confirmar cuánto pagaría el comprador.
+//
+// Ver lo puede quien ve PRICING; tomar y quitar, admin o editor de PRICING (el servidor también lo exige).
+// Cada clic es UN POST o UN DELETE a ML: el servidor relee la publicación antes, comprueba después y lo deja
+// en la bitácora. Las reglas de ML que la pantalla explica (medidas en vivo el 20-oct):
 //   · Relámpago: ML escoge el horario (12 h) y aparta las piezas; solo se quita mientras está programada.
 //   · Campaña propia: ML no deja entrar a una publicación con descuento individual activo.
 //   · Buen Fin: acepta aunque tenga descuento individual; se quita mientras no empiece.
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Zap } from "lucide-react";
 
 import {
   mensajeDeError,
@@ -20,8 +27,6 @@ import {
   type PricingOfertaFila,
   type PricingOfertas,
 } from "@/lib/api";
-
-import { pesos } from "./formato";
 
 const CUENTAS = ["BEKURA", "SANCORFASHION"] as const;
 const NOMBRE_CUENTA: Record<string, string> = { BEKURA: "Kubera", SANCORFASHION: "San Corpe" };
@@ -34,6 +39,11 @@ const PESTANAS: [Pestana, string][] = [
   ["ml", "Otras campañas de ML"],
 ];
 type Vista = "pueden" | "inscritas" | "no";
+const VISTAS: [Vista, string][] = [
+  ["pueden", "Pueden entrar"],
+  ["inscritas", "Ya inscritas"],
+  ["no", "No pueden"],
+];
 
 const esBuenFin = (nombre: string) => /buen\s*fin/i.test(nombre);
 const dePestana = (f: { tipo: string; promo: string }, p: Pestana) =>
@@ -48,8 +58,7 @@ const dePestana = (f: { tipo: string; promo: string }, p: Pestana) =>
 const AYUDA: Record<Pestana, string> = {
   relampago:
     "ML escoge el horario (bloques de 12 h) y aparta las piezas que pongas. Se puede quitar solo mientras está programada: ya activa, ML no deja quitarla.",
-  buenfin:
-    "Se inscribe con un precio dentro del rango que da ML. Acepta publicaciones con descuento individual y se puede quitar mientras no empiece.",
+  buenfin: "Se inscribe con un precio dentro del rango que da ML. Acepta publicaciones con descuento individual y se puede quitar mientras no empiece.",
   propia:
     "Tus campañas (ALWAYS ON, Octubre…). ML NO deja entrar a una publicación con descuento individual activo: primero hay que quitárselo con «Cambiar precio» (Desc. 0 %).",
   ml: "Las demás campañas de ML (Activa tus descuentos, clearance de Full). Mismo trato que Buen Fin.",
@@ -57,6 +66,7 @@ const AYUDA: Record<Pestana, string> = {
 
 const fmt2 = (x: number | null | undefined) =>
   x == null ? "—" : "$" + x.toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const pct = (x: number) => `${x > 0 ? "+" : "−"}${Math.abs(Math.round(x * 1000) / 10).toLocaleString("es-MX")} %`;
 
 /** «2026-10-22 00:00» → «22 oct 00:00». */
 function cuando(s: string | null | undefined) {
@@ -67,6 +77,22 @@ function cuando(s: string | null | undefined) {
 }
 
 const llave = (f: PricingOfertaFila) => [f.cuenta, f.item, f.promo_id, f.estado, f.inicio || ""].join("|");
+const vistaDe = (f: PricingOfertaFila): Vista => (f.estado !== "candidate" ? "inscritas" : f.puede === false ? "no" : "pueden");
+
+/**
+ * Qué pasaría con un precio de oferta: contra lo que se cobra hoy (lo que importa: el comprador paga SIEMPRE la
+ * promoción más baja) y contra el precio de lista que ML muestra tachado.
+ */
+function efecto(f: PricingOfertaFila, precio: number | null) {
+  if (!precio) return null;
+  const lista = f.original ?? f.normal ?? null;
+  return {
+    vsHoy: f.cobra ? precio / f.cobra - 1 : null,
+    vsLista: lista && lista > precio ? precio / lista - 1 : null,
+    lista,
+    masCara: f.cobra != null && precio >= f.cobra - 0.005,
+  };
+}
 
 type Carga = PricingOfertas | "cargando" | { error: string };
 
@@ -125,14 +151,23 @@ export default function Ofertas({ abierto, onCerrar, esAdmin }: { abierto: boole
     })
     .filter(Boolean) as string[];
 
-  const todas = useMemo(() => listas.flatMap((d) => d.filas).filter((f) => dePestana(f, pestana)), [listas, pestana]);
-  const cuentaVista = (f: PricingOfertaFila): Vista =>
-    f.estado !== "candidate" ? "inscritas" : f.puede === false ? "no" : "pueden";
+  const todasCuentas = useMemo(() => listas.flatMap((d) => d.filas), [listas]);
+  // Cuántas PUEDEN ENTRAR en cada pestaña: lo que se ve en los botones de arriba.
+  const puedenPor = useMemo(() => {
+    const n: Record<Pestana, number> = { relampago: 0, buenfin: 0, propia: 0, ml: 0 };
+    todasCuentas.forEach((f) => {
+      if (vistaDe(f) !== "pueden") return;
+      const p = PESTANAS.find(([k]) => dePestana(f, k));
+      if (p) n[p[0]] += 1;
+    });
+    return n;
+  }, [todasCuentas]);
+  const todas = useMemo(() => todasCuentas.filter((f) => dePestana(f, pestana)), [todasCuentas, pestana]);
   const n: Record<Vista, number> = { pueden: 0, inscritas: 0, no: 0 };
-  todas.forEach((f) => (n[cuentaVista(f)] += 1));
+  todas.forEach((f) => (n[vistaDe(f)] += 1));
   const q = buscar.trim().toLowerCase();
   const filas = todas
-    .filter((f) => cuentaVista(f) === vista)
+    .filter((f) => vistaDe(f) === vista)
     .filter((f) => !q || (f.sku || "").toLowerCase().includes(q) || (f.titulo || "").toLowerCase().includes(q) || f.item.toLowerCase().includes(q))
     .sort((a, b) => b.u30 - a.u30 || (b.stock ?? 0) - (a.stock ?? 0) || (a.inicio || "").localeCompare(b.inicio || ""));
   const promos = listas.flatMap((d) => d.promos.filter((p) => dePestana({ tipo: p.tipo, promo: p.nombre }, pestana)).map((p) => ({ ...p, cuenta: d.cuenta })));
@@ -156,11 +191,13 @@ export default function Ofertas({ abierto, onCerrar, esAdmin }: { abierto: boole
     >
       <div className="dlg-cab">
         <div>
-          <h3 id="of-titulo">Ofertas de Mercado Libre</h3>
+          <h3 id="of-titulo">
+            <Zap size={17} aria-hidden className="of-icono" /> Ofertas de Mercado Libre
+          </h3>
           <div className="sm">
-            Relámpago, Buen Fin, campaña propia y otras campañas de ML de las dos cuentas
+            Qué se puede tomar, a qué precio quedaría y qué descuento vería el comprador
             {listas.length ? ` · leído ${listas.map((d) => d.leido.slice(11, 16)).join(" y ")}` : ""}
-            {esAdmin ? " · tomar y quitar escribe en ML al momento y queda en la bitácora" : " · solo ver (tomar y quitar es de admin)"}
+            {esAdmin ? " · «Tomar» y «Quitar» escriben en ML al momento y quedan en la bitácora" : " · solo ver"}
           </div>
         </div>
         <div className="of-cab-botones">
@@ -174,11 +211,22 @@ export default function Ofertas({ abierto, onCerrar, esAdmin }: { abierto: boole
       </div>
 
       <div className="of-cuerpo">
+        <div className="of-pestanas" role="tablist" aria-label="Tipo de oferta">
+          {PESTANAS.map(([k, t]) => (
+            <button key={k} type="button" role="tab" aria-selected={pestana === k} className={pestana === k ? "activa" : undefined} onClick={() => setPestana(k)}>
+              <span>{t}</span>
+              <b>{cargando && !listas.length ? "…" : puedenPor[k]}</b>
+              <small>pueden entrar</small>
+            </button>
+          ))}
+        </div>
+
         <div className="of-filtros">
-          <div className="seg" role="tablist" aria-label="Tipo de oferta">
-            {PESTANAS.map(([k, t]) => (
-              <button key={k} type="button" role="tab" aria-selected={pestana === k} aria-pressed={pestana === k} onClick={() => setPestana(k)}>
+          <div className="seg" aria-label="Estado">
+            {VISTAS.map(([k, t]) => (
+              <button key={k} type="button" aria-pressed={vista === k} onClick={() => setVista(k)}>
                 {t}
+                <span className="cnt">{n[k]}</span>
               </button>
             ))}
           </div>
@@ -189,47 +237,24 @@ export default function Ofertas({ abierto, onCerrar, esAdmin }: { abierto: boole
               </button>
             ))}
           </div>
-          <div className="seg" aria-label="Estado">
-            {(
-              [
-                ["pueden", "Pueden entrar"],
-                ["inscritas", "Inscritas"],
-                ["no", "No pueden"],
-              ] as [Vista, string][]
-            ).map(([k, t]) => (
-              <button key={k} type="button" aria-pressed={vista === k} onClick={() => setVista(k)}>
-                {t}
-                <span className="cnt">{n[k]}</span>
-              </button>
-            ))}
-          </div>
-          <input
-            className="of-buscar"
-            type="search"
-            value={buscar}
-            onChange={(e) => setBuscar(e.target.value)}
-            placeholder="SKU o título"
-            aria-label="Buscar por SKU o título"
-          />
+          <input className="of-buscar" type="search" value={buscar} onChange={(e) => setBuscar(e.target.value)} placeholder="Buscar SKU o título" aria-label="Buscar por SKU o título" />
         </div>
 
-        <p className="of-ayuda">{AYUDA[pestana]}</p>
-
-        {promos.length > 0 && (
-          <ul className="of-promos">
-            {promos.map((p) => (
-              <li key={p.cuenta + p.id}>
-                <b>{p.tipo === "LIGHTNING" ? "Relámpago" : p.nombre}</b> · {NOMBRE_CUENTA[p.cuenta]}
-                {p.inicio ? ` · ${cuando(p.inicio)} → ${cuando(p.fin)}` : ""}
-                {p.limite && p.estado === "pending" ? ` · inscribir hasta ${cuando(p.limite)}` : ""}
-                {" · "}
-                <span className="mono">
-                  {p.conteo.started || 0} activas · {p.conteo.pending || 0} programadas · {p.conteo.candidate || 0} candidatas
+        <div className="of-ayuda">
+          <span>{AYUDA[pestana]}</span>
+          {promos.length > 0 && (
+            <span className="of-promos">
+              {promos.map((p) => (
+                <span key={p.cuenta + p.id}>
+                  <b>{p.tipo === "LIGHTNING" ? "Relámpago" : p.nombre}</b> · {NOMBRE_CUENTA[p.cuenta]}
+                  {p.inicio ? ` · ${cuando(p.inicio)} → ${cuando(p.fin)}` : ""}
+                  {p.limite && p.estado === "pending" ? ` · inscribir hasta ${cuando(p.limite)}` : ""} · {p.conteo.started || 0} activas · {p.conteo.pending || 0}{" "}
+                  programadas · {p.conteo.candidate || 0} candidatas
                 </span>
-              </li>
-            ))}
-          </ul>
-        )}
+              ))}
+            </span>
+          )}
+        </div>
 
         {errores.map((e) => (
           <p key={e} className="ed-error">
@@ -237,27 +262,20 @@ export default function Ofertas({ abierto, onCerrar, esAdmin }: { abierto: boole
           </p>
         ))}
         {cargando && <p className="sm">Leyendo las ofertas en Mercado Libre (10 a 25 s la primera vez)…</p>}
-        {!cargando && !filas.length && !errores.length && <p className="sm">No hay publicaciones en esta vista.</p>}
+        {!cargando && !filas.length && !errores.length && <p className="of-vacio">No hay publicaciones en esta vista.</p>}
 
         {filas.length > 0 && (
-          <div className="of-tabla-env">
-            <table className="of-tabla">
-              <thead>
-                <tr>
-                  <th>Publicación</th>
-                  <th className="der">Stock · 30 d</th>
-                  <th className="der">Hoy cobra</th>
-                  <th className="der">Oferta</th>
-                  <th>Estado</th>
-                  {esAdmin && <th className="der">Acción</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {filas.slice(0, 400).map((f) => (
-                  <FilaOferta key={llave(f)} f={f} esAdmin={esAdmin} onCambio={(c) => actualizar(f, c)} />
-                ))}
-              </tbody>
-            </table>
+          <div className="of-lista" role="list">
+            <div className={`of-fila of-cabeza${esAdmin ? "" : " sin-accion"}`} aria-hidden>
+              {esAdmin && <span />}
+              <span>Si entra</span>
+              <span>Publicación</span>
+              <span className="der">Stock · 30 d</span>
+              <span>Estado</span>
+            </div>
+            {filas.slice(0, 400).map((f) => (
+              <FilaOferta key={llave(f)} f={f} esAdmin={esAdmin} onCambio={(c) => actualizar(f, c)} />
+            ))}
             {filas.length > 400 && <p className="sm">Se muestran 400 de {filas.length}: usa el buscador para encontrar el resto.</p>}
           </div>
         )}
@@ -266,28 +284,29 @@ export default function Ofertas({ abierto, onCerrar, esAdmin }: { abierto: boole
   );
 }
 
-function FilaOferta({
-  f,
-  esAdmin,
-  onCambio,
-}: {
-  f: PricingOfertaFila;
-  esAdmin: boolean;
-  onCambio: (c: Partial<PricingOfertaFila>) => void;
-}) {
+function FilaOferta({ f, esAdmin, onCambio }: { f: PricingOfertaFila; esAdmin: boolean; onCambio: (c: Partial<PricingOfertaFila>) => void }) {
   const [modo, setModo] = useState<"nada" | "tomar" | "quitar">("nada");
   const [precio, setPrecio] = useState("");
   const [piezas, setPiezas] = useState("");
   const [trabajando, setTrabajando] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; texto: string } | null>(null);
 
-  const ofertaPrecio = f.estado === "candidate" ? f.sugerido : f.precio;
-  const vsHoy = ofertaPrecio && f.cobra ? ofertaPrecio / f.cobra - 1 : null;
+  const candidata = f.estado === "candidate";
+  const ofertaPrecio = candidata ? f.sugerido : f.precio;
+  const ef = efecto(f, ofertaPrecio);
   const nPrecio = parseFloat(precio);
   const nPiezas = parseInt(piezas, 10);
+  const efNuevo = efecto(f, nPrecio > 0 ? nPrecio : null);
   const fuera = (f.min != null && nPrecio < f.min - 0.005) || (f.max != null && nPrecio > f.max + 0.005);
   const valido =
     nPrecio > 0 && !fuera && (f.tipo !== "LIGHTNING" || (nPiezas > 0 && (!f.stock_min || nPiezas >= f.stock_min) && (!f.stock_max || nPiezas <= f.stock_max)));
+  const relampagoActiva = f.tipo === "LIGHTNING" && f.estado === "started";
+
+  // Atajos de precio: lo que ML propone y los extremos que acepta.
+  const atajos: [string, number][] = [];
+  if (f.sugerido != null) atajos.push(["Sugerido", f.sugerido]);
+  if (f.min != null) atajos.push(["Mínimo", f.min]);
+  if (f.max != null && f.max !== f.sugerido) atajos.push(["Máximo", f.max]);
 
   const abrirTomar = () => {
     const base = f.sugerido ?? f.max ?? f.min ?? null;
@@ -327,13 +346,18 @@ function FilaOferta({
       setMsg({
         ok: true,
         texto:
-          `Listo: ${est} a ${fmt2(r.precio ?? nPrecio)}` +
-          (r.inicio ? ` · ${cuando(r.inicio)} → ${cuando(r.fin)}` : "") +
-          (r.avisos.length ? ` · ${r.avisos.join(" ")}` : ""),
+          `Listo: ${est} a ${fmt2(r.precio ?? nPrecio)}` + (r.inicio ? ` · ${cuando(r.inicio)} → ${cuando(r.fin)}` : "") + (r.avisos.length ? ` · ${r.avisos.join(" ")}` : ""),
       });
       setModo("nada");
       if (r.estado === "pending" || r.estado === "started")
-        onCambio({ estado: r.estado, precio: r.precio ?? nPrecio, inicio: r.inicio ?? null, fin: r.fin ?? null, cobra: r.cobra_despues ?? f.cobra, restante: f.tipo === "LIGHTNING" ? nPiezas : f.restante });
+        onCambio({
+          estado: r.estado,
+          precio: r.precio ?? nPrecio,
+          inicio: r.inicio ?? null,
+          fin: r.fin ?? null,
+          cobra: r.cobra_despues ?? f.cobra,
+          restante: f.tipo === "LIGHTNING" ? nPiezas : f.restante,
+        });
     } catch (e) {
       setMsg({ ok: false, texto: mensajeDeError(e, "No se pudo tomar la oferta.") });
     } finally {
@@ -356,67 +380,97 @@ function FilaOferta({
     }
   };
 
-  const relampagoActiva = f.tipo === "LIGHTNING" && f.estado === "started";
-
   return (
-    <tr>
-      <td>
-        <div className="of-pub">
-          {/* eslint-disable-next-line @next/next/no-img-element -- miniatura de ML, ya del tamaño justo */}
-          {f.foto ? <img src={f.foto} alt="" width={40} height={40} loading="lazy" /> : <span className="of-sin-foto" />}
-          <div>
-            <div className="mono sm">
-              {f.sku || "sin SKU"} · {NOMBRE_CUENTA[f.cuenta] || f.cuenta}
-              {f.tipo !== "LIGHTNING" ? ` · ${f.promo}` : ""}
-            </div>
-            {f.url ? (
-              <a href={f.url} target="_blank" rel="noopener noreferrer">
-                {f.titulo || f.item}
-              </a>
-            ) : (
-              <span>{f.titulo || f.item}</span>
-            )}
-          </div>
+    <div className={`of-fila${esAdmin ? "" : " sin-accion"}${modo !== "nada" ? " abierta" : ""}`} role="listitem">
+      {/* 1. La acción, primero. */}
+      {esAdmin && (
+        <div className="of-accion">
+          {candidata && f.puede !== false ? (
+            <button type="button" className="of-tomar" onClick={abrirTomar} disabled={modo === "tomar"}>
+              Tomar
+            </button>
+          ) : candidata ? (
+            <span className="of-nopuede">No puede</span>
+          ) : (
+            <button
+              type="button"
+              className="of-quitar"
+              disabled={relampagoActiva || modo === "quitar"}
+              title={relampagoActiva ? "Ya empezó: ML no deja quitar una relámpago activa" : "Sacarla de esta oferta en ML"}
+              onClick={() => {
+                setMsg(null);
+                setModo("quitar");
+              }}
+            >
+              {relampagoActiva ? "Activa" : "Quitar"}
+            </button>
+          )}
         </div>
-      </td>
-      <td className="der mono">
-        {f.stock ?? "—"} pzs
-        <div className="sm">{f.u30} vendidas</div>
-      </td>
-      <td className="der mono">{fmt2(f.cobra)}</td>
-      <td className="der mono">
-        {f.estado === "candidate" ? (
+      )}
+
+      {/* 2. A cuánto quedaría y qué descuento aplica. */}
+      <div className="of-resultado">
+        {ofertaPrecio != null ? (
           <>
-            {f.sugerido != null ? (
-              <>
-                <b>{fmt2(f.sugerido)}</b>
-                <div className="sm">sugerido</div>
-              </>
-            ) : (
-              "—"
-            )}
-            {(f.min != null || f.max != null) && (
-              <div className="sm">
-                {f.min != null && f.max != null ? `${fmt2(f.min)} – ${fmt2(f.max)}` : f.min != null ? `desde ${fmt2(f.min)}` : `hasta ${fmt2(f.max)}`}
+            <div className="sm">{candidata ? (f.sugerido != null ? "Quedaría en (sugerido)" : "Quedaría en") : f.estado === "started" ? "Activa a" : "Programada a"}</div>
+            <div className="of-precio">{fmt2(ofertaPrecio)}</div>
+            {ef?.masCara ? (
+              <div className="sm of-caro" title="El comprador paga siempre la promoción más baja: esta no le cambiaría el precio">
+                Hoy cobra menos ({fmt2(f.cobra)}): no cambiaría el precio
               </div>
+            ) : (
+              ef?.vsHoy != null && (
+                <div className="of-vs">
+                  <b className="of-baja">{pct(ef.vsHoy)}</b> vs hoy {fmt2(f.cobra)}
+                </div>
+              )
             )}
-            {f.tipo === "LIGHTNING" && f.stock_min != null && (
+            {ef?.vsLista != null && (
               <div className="sm">
-                {f.stock_min}–{f.stock_max} pzs
+                Se vería <s>{fmt2(ef.lista)}</s> → {pct(ef.vsLista)} OFF
               </div>
             )}
           </>
         ) : (
-          <b>{fmt2(f.precio)}</b>
-        )}
-        {vsHoy != null && vsHoy <= -0.005 && <div className="sm of-baja">{(vsHoy * 100).toFixed(1)} % vs hoy</div>}
-        {vsHoy != null && vsHoy >= 0.005 && (
-          <div className="sm of-caro" title="El comprador paga siempre la promoción más baja: esta no le cambiaría el precio">
-            +{(vsHoy * 100).toFixed(1)} %: más cara que hoy
+          <div className="sm">
+            ML no da precio sugerido
+            {f.min != null || f.max != null ? `: rango ${f.min != null ? fmt2(f.min) : "…"} – ${f.max != null ? fmt2(f.max) : "…"}` : ""}
           </div>
         )}
-      </td>
-      <td className="of-estado">
+      </div>
+
+      {/* 3. La publicación. */}
+      <div className="of-pub">
+        {/* eslint-disable-next-line @next/next/no-img-element -- miniatura de ML, ya del tamaño justo */}
+        {f.foto ? <img src={f.foto} alt="" width={44} height={44} loading="lazy" /> : <span className="of-sin-foto" />}
+        <div>
+          <div className="mono sm">
+            {f.sku || "sin SKU"} · {NOMBRE_CUENTA[f.cuenta] || f.cuenta}
+            {f.tipo !== "LIGHTNING" ? ` · ${f.promo}` : ""}
+          </div>
+          {f.url ? (
+            <a href={f.url} target="_blank" rel="noopener noreferrer">
+              {f.titulo || f.item}
+            </a>
+          ) : (
+            <span>{f.titulo || f.item}</span>
+          )}
+        </div>
+      </div>
+
+      {/* 4. Datos. */}
+      <div className="of-datos der mono">
+        <b>{f.stock ?? "—"}</b> pzs
+        <div className="sm">{f.u30} vendidas</div>
+        {candidata && f.tipo === "LIGHTNING" && f.stock_min != null && (
+          <div className="sm">
+            pide {f.stock_min}–{f.stock_max} pzs
+          </div>
+        )}
+      </div>
+
+      {/* 5. Estado. */}
+      <div className="of-estado">
         {f.estado === "started" ? (
           <span className="of-chip activa">Activa</span>
         ) : f.estado === "pending" ? (
@@ -428,78 +482,98 @@ function FilaOferta({
         ) : (
           <span className="of-chip si">Puede entrar</span>
         )}
-        {f.inicio && f.estado !== "candidate" && (
+        {f.inicio && !candidata && (
           <div className="sm">
             {cuando(f.inicio)} → {cuando(f.fin)}
           </div>
         )}
-        {f.tipo === "LIGHTNING" && f.restante != null && f.estado !== "candidate" && <div className="sm">quedan {f.restante} pzs</div>}
+        {f.tipo === "LIGHTNING" && f.restante != null && !candidata && <div className="sm">quedan {f.restante} pzs</div>}
         {f.motivo && <div className={`sm ${f.puede === false ? "of-motivo" : "of-aviso"}`}>{f.motivo}</div>}
         {msg && <div className={`sm ${msg.ok ? "of-ok" : "ed-error"}`}>{msg.texto}</div>}
-      </td>
-      {esAdmin && (
-        <td className="der of-accion">
-          {f.estado === "candidate" && f.puede !== false && modo === "nada" && (
-            <button type="button" className="ed-revisar" onClick={abrirTomar}>
-              Tomar
-            </button>
-          )}
-          {f.estado !== "candidate" && modo === "nada" && (
-            <button
-              type="button"
-              className="ed-cancelar"
-              disabled={relampagoActiva}
-              title={relampagoActiva ? "Ya empezó: ML no deja quitar una relámpago activa" : "Sacarla de esta oferta en ML"}
-              onClick={() => {
-                setMsg(null);
-                setModo("quitar");
-              }}
-            >
-              Quitar
-            </button>
-          )}
-          {modo === "tomar" && (
-            <div className="ed-form">
+      </div>
+
+      {/* Panel de tomar: debajo de la fila, a todo lo ancho. */}
+      {modo === "tomar" && (
+        <div className="of-panel">
+          <div className="of-panel-campos">
+            <label>
+              Precio de la oferta
+              <span className="of-input-pesos">
+                $
+                <input type="number" step="0.01" min={f.min ?? 0} max={f.max ?? undefined} value={precio} onChange={(e) => setPrecio(e.target.value)} aria-label="Precio de la oferta" autoFocus />
+              </span>
+            </label>
+            {atajos.length > 0 && (
+              <div className="of-atajos" aria-label="Precios que da ML">
+                {atajos.map(([t, v]) => (
+                  <button key={t} type="button" aria-pressed={Math.abs(nPrecio - v) < 0.005} onClick={() => setPrecio(String(v))}>
+                    {t} {fmt2(v)}
+                  </button>
+                ))}
+              </div>
+            )}
+            {f.tipo === "LIGHTNING" && (
               <label>
-                Precio $
-                <input type="number" step="0.01" min={f.min ?? 0} max={f.max ?? undefined} value={precio} onChange={(e) => setPrecio(e.target.value)} aria-label="Precio de la oferta" />
+                Piezas para la relámpago
+                <input type="number" step="1" min={f.stock_min ?? 1} max={f.stock_max ?? undefined} value={piezas} onChange={(e) => setPiezas(e.target.value)} aria-label="Piezas para la relámpago" />
+                <span className="sm">
+                  ML pide {f.stock_min}–{f.stock_max}
+                </span>
               </label>
-              {f.tipo === "LIGHTNING" && (
-                <label>
-                  Piezas
-                  <input type="number" step="1" min={f.stock_min ?? 1} max={f.stock_max ?? undefined} value={piezas} onChange={(e) => setPiezas(e.target.value)} aria-label="Piezas para la relámpago" />
-                </label>
-              )}
-              {fuera && <div className="sm ed-error">Fuera del rango de ML</div>}
-              {nPrecio > 0 && f.cobra != null && nPrecio >= f.cobra + 0.005 && (
-                <div className="sm of-caro">Más cara que lo que cobra hoy ({fmt2(f.cobra)}): el comprador no la vería.</div>
-              )}
-              {f.tipo === "LIGHTNING" && <div className="sm">ML escoge el horario; ya activa no se quita.</div>}
-              <div className="ed-botones">
-                <button type="button" className="ed-revisar" disabled={!valido || trabajando} onClick={() => void tomar()}>
-                  {trabajando ? "Tomando…" : "Tomar en ML"}
-                </button>
-                <button type="button" className="ed-cancelar" disabled={trabajando} onClick={() => setModo("nada")}>
-                  Cancelar
-                </button>
-              </div>
-            </div>
-          )}
-          {modo === "quitar" && (
-            <div className="ed-form">
-              <div className="sm">¿Sacarla de {f.tipo === "LIGHTNING" ? "la relámpago" : `«${f.promo}»`}?</div>
-              <div className="ed-botones">
-                <button type="button" className="ed-revisar" disabled={trabajando} onClick={() => void quitar()}>
-                  {trabajando ? "Quitando…" : "Sí, quitar"}
-                </button>
-                <button type="button" className="ed-cancelar" disabled={trabajando} onClick={() => setModo("nada")}>
-                  No
-                </button>
-              </div>
-            </div>
-          )}
-        </td>
+            )}
+          </div>
+          <div className="of-panel-efecto">
+            {nPrecio > 0 ? (
+              <>
+                <div>
+                  El comprador pagaría <b className="of-precio">{fmt2(efNuevo?.masCara ? f.cobra : nPrecio)}</b>
+                </div>
+                {efNuevo?.masCara ? (
+                  <div className="of-caro">Hoy ya cobra {fmt2(f.cobra)}: esta oferta no le bajaría el precio.</div>
+                ) : (
+                  efNuevo?.vsHoy != null && (
+                    <div>
+                      <b className="of-baja">{pct(efNuevo.vsHoy)}</b> contra lo que cobra hoy ({fmt2(f.cobra)})
+                    </div>
+                  )
+                )}
+                {efNuevo?.vsLista != null && (
+                  <div className="sm">
+                    En ML se vería <s>{fmt2(efNuevo.lista)}</s> {fmt2(nPrecio)} · {pct(efNuevo.vsLista)} OFF
+                  </div>
+                )}
+                {fuera && <div className="ed-error">Fuera del rango que acepta ML ({fmt2(f.min)} – {fmt2(f.max)}).</div>}
+                {f.tipo === "LIGHTNING" && <div className="sm">ML escoge el horario (12 h); ya activa no se puede quitar.</div>}
+              </>
+            ) : (
+              <div className="sm">Escribe el precio o escoge uno de los que da ML.</div>
+            )}
+          </div>
+          <div className="of-panel-botones">
+            <button type="button" className="of-tomar" disabled={!valido || trabajando} onClick={() => void tomar()}>
+              {trabajando ? "Tomando en ML…" : "Confirmar en ML"}
+            </button>
+            <button type="button" className="ed-cancelar" disabled={trabajando} onClick={() => setModo("nada")}>
+              Cancelar
+            </button>
+          </div>
+        </div>
       )}
-    </tr>
+      {modo === "quitar" && (
+        <div className="of-panel">
+          <div className="of-panel-efecto">
+            ¿Sacarla de {f.tipo === "LIGHTNING" ? "la relámpago" : `«${f.promo}»`}? El precio vuelve a lo que cobraría sin esta oferta.
+          </div>
+          <div className="of-panel-botones">
+            <button type="button" className="of-quitar fuerte" disabled={trabajando} onClick={() => void quitar()}>
+              {trabajando ? "Quitando…" : "Sí, quitar"}
+            </button>
+            <button type="button" className="ed-cancelar" disabled={trabajando} onClick={() => setModo("nada")}>
+              No
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

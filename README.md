@@ -1001,6 +1001,43 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.679.0 — PRICING: «Ofertas de ML» rediseñada — «Tomar» primero y a la vista, a cuánto quedaría y qué descuento vería el comprador; accesos grandes en la cabecera
+
+**Qué pidió Brandon (21-oct-2026), viendo la v0.672.0 en producción:**
+- el botón «Tomar» estaba escondido: había que deslizar la tabla a la derecha para verlo;
+- no se veía qué pasaba si la publicación entraba: qué descuento aplicaba y a qué precio quedaba;
+- el botón que abre las ofertas estaba a la derecha, chico, y no se distinguía.
+
+**Cabecera de PRICING.** Los dos botones chicos se vuelven dos **accesos grandes**, debajo del título:
+- **⚡ Ofertas de Mercado Libre**, con cuántas publicaciones pueden entrar hoy a una relámpago;
+- **📈 Seguimiento semanal**, con cuántas tienen precio movido.
+
+**Ventana de ofertas.**
+- **Pestañas grandes** (Relámpago · Buen Fin · Campaña propia · Otras de ML). Cada una dice cuántas **pueden
+  entrar**.
+- Debajo, el estado (Pueden entrar · Ya inscritas · No pueden), la cuenta y el buscador.
+- **Cada fila se lee en el orden en que se decide**, sin deslizar nada:
+  1. **El botón primero**: «Tomar» grande en las candidatas, «Quitar» en las inscritas, «Activa» (bloqueado) en
+     una relámpago que ya empezó y «No puede» en las bloqueadas.
+  2. **Si entra**: **a cuánto quedaría** (el sugerido de ML), **cuánto baja contra lo que cobra hoy** (p. ej.
+     «−61.2 % vs hoy $92.93») y **cómo se vería en ML** (el precio de lista tachado y su % OFF). Si la oferta sale
+     más cara que lo que cobra hoy, lo dice: «no cambiaría el precio».
+  3. La publicación (foto, SKU, cuenta, título con liga).
+  4. Stock y piezas vendidas en 30 días; en relámpago, las piezas que pide ML.
+  5. El estado (puede entrar, dudosa, no puede, programada o activa, con fechas y motivo).
+- **Al tomar**, se abre un panel debajo de la fila, a todo lo ancho:
+  - el precio, con **atajos** a lo que da ML (sugerido, mínimo, máximo) o escrito a mano, y en relámpago las
+    piezas;
+  - **antes de confirmar**, cuánto pagaría el comprador, el % contra hoy, cómo se vería en ML y si queda fuera
+    del rango;
+  - «Confirmar en ML».
+
+  «Quitar» pide confirmación en el mismo panel.
+- La tabla pasa a filas en rejilla: en pantallas angostas se acomodan en dos columnas, sin deslizar a lo ancho.
+
+Solo cambia la pantalla: la lectura, tomar, quitar y la bitácora son las de la v0.672.0–v0.676.0. Revisado en
+local con datos reales de ML (solo lectura; tomar y quitar desactivados en la prueba). `tsc` limpio.
+
 ### v0.678.0 — PRICING: «Seguimiento semanal · ¿se movieron?» — ventas y visitas, semana por semana, de lo que se cambió
 
 **Qué pidió Brandon (21-oct-2026).** Un monitoreo para ver cada semana si las publicaciones a las que se les aplicó

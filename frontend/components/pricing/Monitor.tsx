@@ -9,7 +9,7 @@
 // este navegador (localStorage), como en el artifact.
 
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { EyeOff, Info } from "lucide-react";
+import { ChevronRight, EyeOff, Info, TrendingUp, Zap } from "lucide-react";
 
 import type {
   DatosBitacoraML, PricingComp, PricingFoto, PricingHecho, PricingHechos, PricingMetricaML, PricingMotivos, PricingOrden, PricingPromoHoy, PricingPub,
@@ -295,6 +295,11 @@ export default function Monitor({
       kubera: hechos.kubera,
     };
   }, [hechos]);
+  // Para el acceso a «Ofertas de ML»: cuántas de TODAS las publicaciones pueden entrar hoy a una relámpago.
+  const relampagoTotal = useMemo(
+    () => (X.estado === "listo" ? foto.pubs.filter((p) => X.promo[p.id]?.relampago).length : 0),
+    [X, foto.pubs],
+  );
   // PRECIO DE AHORA (v0.662.0): la foto es del 14-oct y los precios cambian (campañas, descuentos). Si hay
   // lectura de promociones de ML (cada 30 min), el precio que se cobra y el normal salen de ahí, y con ellos
   // todo lo que se calcula: «Precio hoy», contra la competencia, venta en 7 días y «Qué hacer» del detalle.
@@ -475,30 +480,10 @@ export default function Monitor({
           <span className="badge">
             <EyeOff size={13} aria-hidden /> Oculta · admin e invitados
           </span>
-          <button
-            type="button"
-            className="of-abrir"
-            onClick={() => {
-              setOfertasUsadas(true);
-              setVerOfertas(true);
-            }}
-          >
-            Ofertas de ML · relámpago, Buen Fin y campaña propia
-          </button>
-          <button
-            type="button"
-            className="of-abrir sg-abrir"
-            onClick={() => {
-              setSeguimientoUsado(true);
-              setVerSeguimiento(true);
-            }}
-          >
-            Seguimiento semanal · ¿se movieron?
-          </button>
           <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
             <Info size={14} aria-hidden />{" "}
             {esAdmin
-              ? "«Cambiar precio» y «Ofertas de ML» escriben en ML (solo admin, con bitácora); «Hecho» muestra lo ya movido"
+              ? "«Cambiar precio» y «Ofertas de ML» escriben en ML (con bitácora); «Hecho» muestra lo ya movido"
               : "Solo lectura: esta pantalla no cambia ningún precio; «Hecho» muestra lo ya movido en ML"}
           </span>
           <span title={`Lista de publicaciones y competencia: revisión del ${hoyLargo}`}>
@@ -516,6 +501,56 @@ export default function Monitor({
           </span>
         </div>
       </header>
+
+      {/* Las dos herramientas, a la vista (v0.679.0, Brandon: el botón de ofertas era chico y no se distinguía). */}
+      <section className="atajos" aria-label="Herramientas">
+        <button
+          type="button"
+          className="atajo"
+          onClick={() => {
+            setOfertasUsadas(true);
+            setVerOfertas(true);
+          }}
+        >
+          <span className="ico" aria-hidden>
+            <Zap size={22} />
+          </span>
+          <span className="txt">
+            <b>Ofertas de Mercado Libre</b>
+            <span>Relámpago, Buen Fin y campaña propia: qué se puede tomar y a qué precio quedaría</span>
+          </span>
+          {relampagoTotal > 0 && (
+            <span className="num" title="Publicaciones que pueden entrar hoy a una relámpago">
+              {relampagoTotal}
+              <small>pueden entrar a relámpago</small>
+            </span>
+          )}
+          <ChevronRight size={20} aria-hidden className="flecha" />
+        </button>
+        <button
+          type="button"
+          className="atajo"
+          onClick={() => {
+            setSeguimientoUsado(true);
+            setVerSeguimiento(true);
+          }}
+        >
+          <span className="ico" aria-hidden>
+            <TrendingUp size={22} />
+          </span>
+          <span className="txt">
+            <b>Seguimiento semanal</b>
+            <span>¿Se movieron? Ventas y visitas, semana por semana, de lo que se cambió</span>
+          </span>
+          {X.hecho.size > 0 && (
+            <span className="num" title="Publicaciones con precio movido en ML">
+              {X.hecho.size}
+              <small>con precio movido</small>
+            </span>
+          )}
+          <ChevronRight size={20} aria-hidden className="flecha" />
+        </button>
+      </section>
 
       <section className="resumen" aria-label="Acciones sugeridas">
         {ORDEN_ACC.filter((k) => conteo[k]).map((k) => (
