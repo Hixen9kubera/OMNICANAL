@@ -259,6 +259,37 @@ async def _descargar(url: str) -> tuple[Optional[bytes], str, Optional[str]]:
     return None, "image/jpeg", f"download_error: {last_err}"
 
 
+# Lo que los modelos de edición aceptan seguro. Lo demás se pasa a JPEG.
+_FORMATOS_IA = {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp"}
+
+
+def _normalizar_imagen(data: bytes, mime: str) -> tuple[bytes, str]:
+    """
+    La foto en un formato que la IA acepte, con su mime VERDADERO.
+
+    Las AVIF de chunche.shop (las fotos nuevas de octubre lo son) llegan con
+    `Content-Type: text/plain`, y `_descargar` las etiquetaba como JPEG: el
+    modelo recibía bytes AVIF diciendo ser JPEG. Con Gemini fallaron las 32 de
+    la bitácora (desde mayo); por OpenRouter, dos de cuatro (BAS-0506-BLN y
+    MUE-0132-VER, 21-oct). Aquí el formato se lee de los bytes (no de la
+    cabecera) y lo que no sea JPEG/PNG/WebP se convierte a JPEG. Si Pillow no
+    lo puede abrir, se manda tal cual: no empeora nada.
+    """
+    try:
+        from io import BytesIO
+        from PIL import Image
+        im = Image.open(BytesIO(data))
+        if im.format in _FORMATOS_IA:
+            return data, _FORMATOS_IA[im.format]
+        buf = BytesIO()
+        im.convert("RGB").save(buf, "JPEG", quality=92)
+        log.info("imagen %s convertida a JPEG para la IA", im.format)
+        return buf.getvalue(), "image/jpeg"
+    except Exception as exc:  # noqa: BLE001
+        log.warning("no se pudo leer el formato de la imagen (%s); va tal cual", exc)
+        return data, mime
+
+
 async def _gemini_describe_person(img_b64: str, mime: str) -> Optional[str]:
     if not settings.gemini_api_key:
         return None
@@ -492,11 +523,18 @@ async def _editar(
     caro y más capaz; el último es Gemini 3 Pro. Si OpenRouter rechaza la
     CUENTA (401 clave, 402 sin crédito) o se acaba la cadena, y hay
     GEMINI_API_KEY, edita con Gemini directo: nunca queda peor que antes.
+
+    Si todo falla, el error dice PRIMERO por qué falló OpenRouter. Antes se
+    devolvía solo el de Gemini, y el 21-oct la pantalla y la bitácora decían
+    «Gemini: API key not valid» cuando la causa era que OpenRouter se había
+    quedado sin crédito (402): nadie sabía que había que recargar.
     """
+    motivo_or: Optional[str] = None
     if settings.openrouter_api_key:
         proporcion = _proporcion(original)
         cadena = _cadena_openrouter(flags)
         errores: list[str] = []
+        cuenta: Optional[int] = None
         for i, modelo in enumerate(cadena):
             if i and avisar:
                 avisar(f"Probando con otro modelo ({modelo.split('/')[-1]})…")
@@ -508,14 +546,29 @@ async def _editar(
             log.warning("openrouter: %s", err)
             errores.append(str(err))
             if http in _OR_CUENTA:
+                cuenta = http
                 break
+        motivo_or = _motivo_openrouter(cuenta, errores)
         if not settings.gemini_api_key:
-            return None, mime, " · ".join(errores)[:500], f"openrouter:{cadena[0]}"
+            return None, mime, motivo_or, f"openrouter:{cadena[0]}"
         if avisar:
-            avisar("OpenRouter no respondió; editando con Gemini…")
+            avisar(("OpenRouter sin crédito" if cuenta == 402 else "OpenRouter falló")
+                   + "; probando con Gemini…")
     foto, out_mime, err = await _gemini_edit(
         img_b64, mime, prompt, retries=retries, espera=espera, avisar=avisar)
+    if foto is None and motivo_or:
+        err = f"{motivo_or} · Gemini directo tampoco: {str(err)[:120]}"
     return foto, out_mime, err, GEMINI_MODEL
+
+
+def _motivo_openrouter(cuenta: Optional[int], errores: list[str]) -> str:
+    """Por qué falló OpenRouter, en palabras de quien lo tiene que arreglar."""
+    if cuenta == 402:
+        return ("OpenRouter sin crédito (HTTP 402): hay que recargar en "
+                "openrouter.ai/settings/credits")
+    if cuenta == 401:
+        return "OpenRouter rechazó la clave (HTTP 401): revisar OPENROUTER_API_KEY en Railway"
+    return "OpenRouter: " + " · ".join(errores)[:400]
 
 
 async def _openrouter_describe_person(img_b64: str, mime: str) -> tuple[bool, Optional[str]]:
@@ -882,6 +935,7 @@ async def _run(sku: str, parent_id: int | None, variante: bool = False) -> None:
                 _bump(sku)
                 return
             info["bytes_in"] = len(data)
+            data, mime = await asyncio.to_thread(_normalizar_imagen, data, mime)
             img_b64 = base64.b64encode(data).decode()
 
             person_desc = None
@@ -917,6 +971,7 @@ async def _run(sku: str, parent_id: int | None, variante: bool = False) -> None:
             if edited is None:
                 _set_img(sku, idx, "error",
                          "La IA agregó un marco" if "marco de color" in (gerr or "")
+                         else "OpenRouter sin crédito" if "sin crédito" in (gerr or "")
                          else "La IA no devolvió imagen", error=gerr)
                 info["gemini_error"] = gerr
                 _backlog(sku, parent_id, item, info)

@@ -124,14 +124,78 @@ class Editar(unittest.TestCase):
             [(None, "image/png", "a", None, 400), (None, "image/png", "b", None, 502)],
             gemini_key="")
         self.assertIsNone(foto)
-        self.assertEqual(err, "a · b")
+        self.assertEqual(err, "OpenRouter: a · b")
         self.assertEqual(llamados, [E._OR_SEEDREAM, E._OR_PRO])
+
+    def test_sin_credito_y_gemini_muerto_dice_la_causa_real(self):
+        # 21-oct-2026: la pantalla decía «Gemini: API key not valid» y la causa
+        # era que OpenRouter se quedó sin crédito.
+        (foto, _, err, _), llamados, avisos = _correr_editar(
+            [(None, "image/png", "HTTP 402: Insufficient credits", None, 402)],
+            gemini=(None, "image/png", "Gemini HTTP 400: API key not valid"))
+        self.assertIsNone(foto)
+        self.assertTrue(err.startswith("OpenRouter sin crédito (HTTP 402)"), err)
+        self.assertIn("openrouter.ai/settings/credits", err)
+        self.assertIn("Gemini directo tampoco: Gemini HTTP 400", err)
+        self.assertEqual(llamados, [E._OR_SEEDREAM, "gemini-directo"])
+        self.assertIn("OpenRouter sin crédito", avisos[-1])
+
+    def test_sin_credito_y_sin_gemini(self):
+        (foto, _, err, _), _, _ = _correr_editar(
+            [(None, "image/png", "HTTP 402: Insufficient credits", None, 402)], gemini_key="")
+        self.assertIsNone(foto)
+        self.assertTrue(err.startswith("OpenRouter sin crédito (HTTP 402)"), err)
+
+    def test_clave_mala(self):
+        (_, _, err, _), llamados, _ = _correr_editar(
+            [(None, "image/png", "HTTP 401: bad key", None, 401)], gemini_key="")
+        self.assertIn("OpenRouter rechazó la clave (HTTP 401)", err)
+        self.assertEqual(llamados, [E._OR_SEEDREAM])
 
     def test_sin_clave_de_openrouter_es_gemini_como_siempre(self):
         (foto, _, _, modelo), llamados, _ = _correr_editar([], or_key="")
         self.assertEqual(foto, b"gem")
         self.assertEqual(modelo, E.GEMINI_MODEL)
         self.assertEqual(llamados, ["gemini-directo"])
+
+
+def _imagen(formato: str) -> bytes:
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (40, 30), "red").save(buf, formato)
+    return buf.getvalue()
+
+
+def _hay_avif() -> bool:
+    from PIL import features
+    try:
+        return bool(features.check("avif"))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+class Normalizar(unittest.TestCase):
+    """Las AVIF de chunche.shop llegan como `text/plain` y se mandaban como JPEG."""
+
+    def test_jpeg_png_webp_pasan_tal_cual_con_su_mime_verdadero(self):
+        for formato, mime in (("JPEG", "image/jpeg"), ("PNG", "image/png"), ("WEBP", "image/webp")):
+            data = _imagen(formato)
+            self.assertEqual(E._normalizar_imagen(data, "image/jpeg"), (data, mime), formato)
+
+    def test_otro_formato_se_convierte_a_jpeg(self):
+        data, mime = E._normalizar_imagen(_imagen("GIF"), "image/jpeg")
+        self.assertEqual(mime, "image/jpeg")
+        self.assertTrue(data.startswith(b"\xff\xd8\xff"))
+
+    @unittest.skipUnless(_hay_avif(), "Pillow sin AVIF (requiere Pillow ≥ 11.3)")
+    def test_avif_se_convierte_a_jpeg(self):
+        data, mime = E._normalizar_imagen(_imagen("AVIF"), "image/jpeg")
+        self.assertEqual(mime, "image/jpeg")
+        self.assertTrue(data.startswith(b"\xff\xd8\xff"))
+
+    def test_ilegible_va_tal_cual(self):
+        self.assertEqual(E._normalizar_imagen(b"no es imagen", "image/jpeg"),
+                         (b"no es imagen", "image/jpeg"))
 
 
 class _Resp:

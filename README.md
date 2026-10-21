@@ -1001,6 +1001,39 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.681.0 — Editor de imágenes: cuando OpenRouter falla, el error dice por qué (y las AVIF se mandan como JPEG)
+
+**Qué pasó (21-oct-2026).** «Procesar con IA» empezó a fallar en DEPO-0048-MET, ACC-0418-NEG, TEC-1631-PLA,
+MUE-0132-VER… con el aviso «OpenRouter no respondió» y, en la pantalla y en la bitácora, **«Gemini HTTP 400: API key
+not valid»**. Reproducido con la misma foto: OpenRouter contestaba **HTTP 402 «Insufficient credits»**. Los $10 del
+crédito se fueron en 1.7 días (313 ediciones desde v0.668.0, ~$4 al día) y con $0.95 de saldo OpenRouter ya rechaza.
+El editor hacía lo diseñado —402 → Gemini directo—, pero la clave de Gemini está muerta desde el 16-oct y **el error
+que quedaba era el de Gemini**: nadie podía saber que la solución era recargar.
+
+**Arreglos.**
+
+1. **El error dice primero la causa de OpenRouter** (`_editar` + `_motivo_openrouter`): 402 → «OpenRouter sin
+   crédito (HTTP 402): hay que recargar en openrouter.ai/settings/credits»; 401 → «OpenRouter rechazó la clave»;
+   lo demás, los errores de cada modelo. Si además falló Gemini directo, se agrega «· Gemini directo tampoco: …».
+   La etiqueta roja de la imagen dice «OpenRouter sin crédito» y el paso intermedio, «OpenRouter sin crédito;
+   probando con Gemini…» (antes, «OpenRouter no respondió», que era falso: sí respondió).
+2. **Las AVIF se convierten a JPEG antes de mandarlas** (`_normalizar_imagen`). chunche.shop sirve las `.avif`
+   (las fotos nuevas de octubre) con `Content-Type: text/plain`; `_descargar` las etiquetaba `image/jpeg` y el modelo
+   recibía AVIF diciendo ser JPEG. Con Gemini fallaron las 32 de la bitácora desde mayo; por OpenRouter, 2 de 4
+   (BAS-0506-BLN, MUE-0132-VER). Ahora el formato se lee de los BYTES: JPEG/PNG/WebP pasan tal cual con su mime
+   verdadero; lo demás (AVIF, GIF…) se convierte a JPEG; lo ilegible va como antes.
+3. **Pillow 11.1.0 → 11.3.0** (`requirements.txt`): 11.3 es la primera que abre AVIF. Las 186 pruebas que tocan
+   imágenes (editor, packing, Walmart, pricing) pasan con 11.3.
+
+**Verificado.** 36 pruebas del editor (6 nuevas: 402 con Gemini muerto, 402 sin Gemini, 401, normalización
+JPEG/PNG/WebP/GIF/AVIF/ilegible). De punta a punta con la AVIF real de MUE-0132-VER y la clave real: llega
+`ftypavif` con cabecera `image/jpeg`, sale JPEG de 169 KB, y el error es «OpenRouter sin crédito (HTTP 402): hay
+que recargar en openrouter.ai/settings/credits».
+
+**Lo que NO arregla el código:** el crédito. Hay que recargar en openrouter.ai/settings/credits (y conviene la
+recarga automática: el gasto real fue ~$4/día, muy arriba de los ~$7/mes estimados, por las ediciones atoradas
+durante los 4 días que el editor estuvo caído).
+
 ### v0.680.0 — PRICING: el precio con cupón ya sale en TODAS las publicaciones (ML a veces no los decía por publicación)
 
 **Qué vio Brandon (21-oct-2026):** ORG-0770-CAF (MLM2947783363, BEKURA, FULL) se ve en Mercado Libre a **$1,160
