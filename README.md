@@ -1001,6 +1001,43 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.680.0 — PRICING: el precio con cupón ya sale en TODAS las publicaciones (ML a veces no los decía por publicación)
+
+**Qué vio Brandon (21-oct-2026):** ORG-0770-CAF (MLM2947783363, BEKURA, FULL) se ve en Mercado Libre a **$1,160
+«3 % OFF con cupón»**, tachando $1,199, y PRICING decía «sin descuento» y sin cupón.
+
+**La causa (sondeo solo GET).** PRICING sacaba los cupones de la lista de promociones POR PUBLICACIÓN
+(`/seller-promotions/items/{id}`). Para esa publicación ML contestaba **una lista vacía**, aunque la publicación está
+inscrita como `candidate` en los **7 cupones vigentes de BEKURA** (KUBERA 39 PESOS, Seguidores Kubera, OCTUBRE,
+carritos abandonados, recompra… de $39 con compra mínima de $399; NUEVOS SEGUIDORES de $29 desde $299). La lista
+**de cada campaña** (`/seller-promotions/promotions/{id}/items`) sí la trae: $1,199 − $39 = $1,160 (3.25 %).
+`sale_price`, `/prices` y el ítem no dicen nada del cupón: se aplica encima del precio de venta.
+
+**Cuántas tenían el mismo hueco (medido el 21-oct).** Todas las publicaciones activas están en los cupones de su
+cuenta (245 de 245 en BEKURA, 317 de 317 en SANCORFASHION). En **70 de 562** la lista por publicación no lo decía
+(41 BEKURA, 29 SANCORFASHION): 42 llegaban vacías y 28 solo con «lleva más» o la campaña que pone el precio; las sanas
+traen de 8 a 24 promociones. Es del lado de ML; no se puede corregir allá.
+
+**El arreglo.** Al releer las promociones (cada 30 min, en segundo plano, solo GET), el servidor lee también la lista
+de publicaciones de cada cupón **vigente** de cada cuenta (11 campañas, de 50 en 50: ~65 llamadas más) y completa con
+ella los cupones de la publicación que no los traiga, sin repetir ni pisar los que sí trae
+(`cupones_de_campana` + `completar_cupones` en `services/pricing_monitor.py`). Lo mismo hace
+`scripts/pricing_promos.py` para la foto.
+Además, un cupón **terminado** o **sin presupuesto** para uno más (`remaining_budget` menor que su monto; OCTUBRE
+lleva 1,323 canjeados y le quedan $8,403 de $60,000) ya no cuenta para el precio con cupón.
+
+**Verificado contra ML real** (relectura completa en local, solo GET, sin servidor): de las 70, las 69 que están en
+la foto de PRICING ya traen sus cupones; **42 muestran ahora su precio con cupón** —ORG-0770-CAF: $1,160— y las
+27 restantes cuestan menos que la compra mínima ($299/$399), así que con razón no lo muestran. La pantalla no cambia:
+la celda «Precio hoy» ya pintaba «con cupón $X · −N %» cuando el servidor le daba los cupones.
+
+Pendiente visto en el sondeo: esas mismas publicaciones tampoco traen por publicación sus **candidatas**
+(relámpago, Buen Fin…), así que la columna de promociones de PRICING no las muestra. «Ofertas de ML» sí las ve,
+porque lee por campaña.
+
+Pruebas: `tests/test_pricing_monitor.py` (+3: el caso ORG-0770-CAF, completar sin repetir ni pisar, cupón agotado o
+terminado); las 79 de PRICING en verde.
+
 ### v0.679.0 — PRICING: «Ofertas de ML» rediseñada — «Tomar» primero y a la vista, a cuánto quedaría y qué descuento vería el comprador; accesos grandes en la cabecera
 
 **Qué pidió Brandon (21-oct-2026), viendo la v0.672.0 en producción:**

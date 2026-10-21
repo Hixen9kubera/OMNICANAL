@@ -878,6 +878,45 @@ def mejor_cupon(precio: float | None, cupones: list[dict]) -> float | None:
     return round(precio - mejor, 2) if mejor > 0 else None
 
 
+def _cupon_agotado(camp: dict, p: dict) -> bool:
+    """PURA. La campaña de cupón ya no se puede canjear: terminó, o su presupuesto no alcanza para un cupón más."""
+    if camp.get("status") and camp["status"] != "started":
+        return True
+    resta = camp.get("remaining_budget")
+    return resta is not None and float(resta) < float(p.get("fixed_amount") or 1)
+
+
+def cupones_de_campana(camp: dict, items: list[dict]) -> dict[str, dict]:
+    """
+    PURA (v0.680.0). De la lista de publicaciones de UNA campaña de cupón
+    (`/seller-promotions/promotions/{id}/items`), una entrada por publicación con la forma que trae
+    `/seller-promotions/items/{id}`.
+
+    Hace falta porque esa lista por publicación a veces llega sin los cupones (y sin las candidatas): el 21-oct,
+    70 de 562 publicaciones activas venían vacías o solo con «lleva más», y la pantalla decía «sin descuento»
+    mientras ML mostraba, p. ej., ORG-0770-CAF a $1,160 «3 % OFF con cupón» ($1,199 − $39). La lista de la
+    campaña sí las trae todas.
+    """
+    out = {}
+    for it in items:
+        if not it.get("id"):
+            continue
+        out[it["id"]] = {
+            "id": camp.get("id"), "type": "SELLER_COUPON_CAMPAIGN", "status": it.get("status"), "name": camp.get("name"),
+            "fixed_amount": it.get("fixed_amount") or camp.get("fixed_amount"),
+            "fixed_percentage": it.get("fixed_percentage") or camp.get("fixed_percentage"),
+            "start_date": camp.get("start_date") or it.get("start_date"),
+            "finish_date": camp.get("finish_date") or it.get("end_date"),
+        }
+    return out
+
+
+def completar_cupones(promos: list[dict], de_campanas: list[dict]) -> list[dict]:
+    """PURA. La lista de la publicación más los cupones que solo dijo la campaña (sin repetir los que ya trae)."""
+    ya = {p.get("id") for p in promos if p.get("type") == "SELLER_COUPON_CAMPAIGN"}
+    return promos + [c for c in de_campanas if c.get("id") not in ya]
+
+
 def resumir(sp: dict, promos: list[dict], ahora: datetime, campanas: dict | None = None) -> dict:
     """
     PURA. De `sale_price` y la lista de promociones del ítem, lo que la pantalla muestra.
@@ -897,8 +936,8 @@ def resumir(sp: dict, promos: list[dict], ahora: datetime, campanas: dict | None
         ini, fin = _fecha(p.get("start_date")), _fecha(p.get("finish_date"))
         if tipo == "SELLER_COUPON_CAMPAIGN":
             # La campaña de cupón cubre a la publicación como «candidate»; vale mientras su fecha esté vigente.
-            if (not ini or ini <= ahora) and (not fin or fin >= ahora):
-                camp_c = campanas.get(p.get("id") or "", {})
+            camp_c = campanas.get(p.get("id") or "", {})
+            if (not ini or ini <= ahora) and (not fin or fin >= ahora) and not _cupon_agotado(camp_c, p):
                 regla = {"minimo": camp_c.get("min_purchase_amount"), "tope": camp_c.get("max_purchase_amount")}
                 if p.get("fixed_amount"):
                     cupones.append({"nombre": nombre, "monto": p["fixed_amount"], "pct": None, **regla})
@@ -962,6 +1001,7 @@ async def _refrescar_promos() -> None:
         ahora = datetime.now(CDMX)
         res: dict[str, dict | None] = {}
         campanas: dict[str, dict] = {}   # las campañas de cada cuenta: compra mínima y tope de los cupones
+        de_cupones: dict[str, list[dict]] = {}   # los cupones de cada publicación, según la lista de cada campaña
         visitas: dict[str, int] = {}     # visitas de ML de los últimos 30 días, por publicación
         sem = asyncio.Semaphore(6)
         async with httpx.AsyncClient(base_url="https://api.mercadolibre.com", timeout=30) as cli:
@@ -979,6 +1019,20 @@ async def _refrescar_promos() -> None:
                     return r.json() if r.status_code == 200 else None
                 return None
 
+            async def items_de_cupon(pid: str, tk: str) -> list[dict]:
+                out, sa = [], None
+                for _ in range(100):   # de 50 en 50: hasta 5,000 publicaciones por cupón
+                    params = {"promotion_type": "SELLER_COUPON_CAMPAIGN", "app_version": "v2", "limit": 50}
+                    if sa:
+                        params["search_after"] = sa
+                    j = await get(f"/seller-promotions/promotions/{pid}/items", tk, **params) or {}
+                    out += j.get("results") or []
+                    pg = j.get("paging") or {}
+                    sa = pg.get("searchAfter") or pg.get("search_after")
+                    if not j.get("results") or not sa:
+                        break
+                return out
+
             for c, tk in tokens.items():
                 if not tk:
                     continue
@@ -988,6 +1042,10 @@ async def _refrescar_promos() -> None:
                     for x in (lista or {}).get("results") or []:
                         if x.get("id"):
                             campanas[x["id"]] = x
+                        if x.get("type") == "SELLER_COUPON_CAMPAIGN" and x.get("status") == "started":
+                            # v0.680.0: la lista por publicación a veces llega sin sus cupones; la de la campaña no.
+                            for i, e in cupones_de_campana(x, await items_de_cupon(x["id"], tk)).items():
+                                de_cupones.setdefault(i, []).append(e)
 
             async def uno(i: str, c: str) -> None:
                 tk = tokens.get(c)
@@ -998,7 +1056,7 @@ async def _refrescar_promos() -> None:
                     pr = await get(f"/seller-promotions/items/{i}", tk, app_version="v2")
                     vv = await get(f"/items/{i}/visits/time_window", tk, last=30, unit="day")
                 if sp:
-                    res[i] = resumir(sp, pr if isinstance(pr, list) else [], ahora, campanas)
+                    res[i] = resumir(sp, completar_cupones(pr if isinstance(pr, list) else [], de_cupones.get(i, [])), ahora, campanas)
                 if isinstance(vv, dict) and vv.get("total_visits") is not None:
                     visitas[i] = int(vv["total_visits"])
 

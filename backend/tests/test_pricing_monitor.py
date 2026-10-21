@@ -672,6 +672,39 @@ class PrecioConCupon(unittest.TestCase):
         self.assertEqual(pm.resumir(sp, promos, ahora, {"C-1": {"min_purchase_amount": 399}})["con_cupon"], 1560)
         self.assertIsNone(pm.resumir({**sp, "amount": 300}, promos, ahora, {"C-1": {"min_purchase_amount": 399}})["con_cupon"])
 
+    def test_cupon_que_solo_dice_la_campana(self):
+        """v0.680.0, caso ORG-0770-CAF: la lista por publicación llega vacía y ML la muestra a $1,160 con cupón."""
+        from datetime import datetime
+        ahora = datetime.fromisoformat("2026-10-21T15:00:00-06:00")
+        camp = {"id": "C-MLM1703579", "type": "SELLER_COUPON_CAMPAIGN", "sub_type": "FIXED_AMOUNT", "fixed_amount": 39,
+                "min_purchase_amount": 399, "status": "started", "start_date": "2026-10-17T06:00:00Z",
+                "finish_date": "2026-11-17T05:59:59Z", "name": "KUBERA 39 PESOS", "remaining_budget": 69961}
+        items = [{"id": "MLM2947783363", "status": "candidate", "original_price": 1199, "fixed_amount": 39,
+                  "start_date": "2026-10-17T00:00:00", "end_date": "2026-11-16T23:59:59", "sub_type": "FIXED_AMOUNT"}, {}]
+        extra = pm.cupones_de_campana(camp, items)
+        self.assertEqual(list(extra), ["MLM2947783363"])
+        sp = {"amount": 1199, "regular_amount": None, "metadata": {}}
+        campanas = {camp["id"]: camp}
+        self.assertIsNone(pm.resumir(sp, [], ahora, campanas)["con_cupon"])                     # lo que pasaba
+        r = pm.resumir(sp, pm.completar_cupones([], [extra["MLM2947783363"]]), ahora, campanas)
+        self.assertEqual((r["con_cupon"], r["cupones"][0]["nombre"], r["cupones"][0]["minimo"]), (1160, "KUBERA 39 PESOS", 399))
+
+    def test_completar_no_repite_ni_pisa(self):
+        propio = {"id": "C-1", "type": "SELLER_COUPON_CAMPAIGN", "status": "candidate", "fixed_amount": 39}
+        vol = {"id": "V-1", "type": "VOLUME", "status": "started"}
+        otra = {"id": "C-2", "type": "SELLER_COUPON_CAMPAIGN", "status": "candidate", "fixed_amount": 29}
+        r = pm.completar_cupones([vol, propio], [{**propio, "fixed_amount": 99}, otra])
+        self.assertEqual([(p["id"], p.get("fixed_amount")) for p in r], [("V-1", None), ("C-1", 39), ("C-2", 29)])
+
+    def test_cupon_agotado_o_terminado_no_cuenta(self):
+        from datetime import datetime
+        ahora = datetime.fromisoformat("2026-10-21T15:00:00-06:00")
+        promos = [{"id": "C-1", "type": "SELLER_COUPON_CAMPAIGN", "status": "candidate", "fixed_amount": 39}]
+        sp = {"amount": 1199, "metadata": {}}
+        self.assertEqual(pm.resumir(sp, promos, ahora, {"C-1": {"status": "started", "remaining_budget": 39}})["con_cupon"], 1160)
+        self.assertIsNone(pm.resumir(sp, promos, ahora, {"C-1": {"status": "started", "remaining_budget": 20}})["con_cupon"])
+        self.assertIsNone(pm.resumir(sp, promos, ahora, {"C-1": {"status": "finished"}})["con_cupon"])
+
 
 class ScriptsHechoYPromos(unittest.TestCase):
     def test_bitacora_a_hechos_sin_lo_revertido_ni_lo_fallido(self):

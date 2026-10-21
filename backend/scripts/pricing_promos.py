@@ -7,6 +7,8 @@ foto de PRICING (columna «Promoción hoy», v0.654.0).
 Por publicación de `monitor.json.gz`, SOLO GET a Mercado Libre:
     GET /items/{id}/sale_price?context=channel_marketplace   → lo que se cobra y qué promoción lo pone
     GET /seller-promotions/items/{id}?app_version=v2         → todas sus promociones (vivas, programadas, cupones)
+Y por cuenta, los cupones vigentes con sus publicaciones (v0.680.0: la lista por publicación a veces llega sin ellos):
+    GET /seller-promotions/promotions/{id}/items?promotion_type=SELLER_COUPON_CAMPAIGN
 
 El token sale de `services.meli._access_token`, que SOLO lee (nunca renueva). No escribe en ML, kubera ni Woo.
 Es una foto con su hora (`leido`): para ponerla al día se vuelve a correr y se sube.
@@ -30,7 +32,7 @@ CDMX = timezone(timedelta(hours=-6))
 API = "https://api.mercadolibre.com"
 
 # La lógica vive en el servicio (el servidor la usa para releer en vivo); aquí solo se reexporta.
-from services.pricing_monitor import NOMBRE_TIPO, PRECIO, resumir  # noqa: E402,F401
+from services.pricing_monitor import NOMBRE_TIPO, PRECIO, completar_cupones, cupones_de_campana, resumir  # noqa: E402,F401
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -58,19 +60,37 @@ def main() -> int:
 
     ahora = datetime.now(CDMX)
 
+    def items_de_cupon(pid: str, tk: str) -> list[dict]:
+        out, sa = [], None
+        for _ in range(100):
+            params = {"promotion_type": "SELLER_COUPON_CAMPAIGN", "app_version": "v2", "limit": 50}
+            if sa:
+                params["search_after"] = sa
+            j = get(f"/seller-promotions/promotions/{pid}/items", tk, **params) or {}
+            out += j.get("results") or []
+            sa = (j.get("paging") or {}).get("searchAfter")
+            if not j.get("results") or not sa:
+                break
+        return out
+
     campanas: dict = {}
+    de_cupones: dict[str, list[dict]] = {}
     for c, tk in tokens.items():
         yo = get("/users/me", tk)
         if yo and yo.get("id"):
             for x in (get(f"/seller-promotions/users/{yo['id']}", tk, app_version="v2") or {}).get("results") or []:
                 if x.get("id"):
                     campanas[x["id"]] = x
+                if x.get("type") == "SELLER_COUPON_CAMPAIGN" and x.get("status") == "started":
+                    for i, e in cupones_de_campana(x, items_de_cupon(x["id"], tk)).items():
+                        de_cupones.setdefault(i, []).append(e)
 
     def uno(par):
         i, c = par
         sp = get(f"/items/{i}/sale_price", tokens[c], context="channel_marketplace") or {}
         pr = get(f"/seller-promotions/items/{i}", tokens[c], app_version="v2")
-        return i, resumir(sp, pr if isinstance(pr, list) else [], ahora, campanas) if sp else None
+        pr = completar_cupones(pr if isinstance(pr, list) else [], de_cupones.get(i, []))
+        return i, resumir(sp, pr, ahora, campanas) if sp else None
 
     with ThreadPoolExecutor(a.hilos) as ex:
         res = dict(ex.map(uno, pubs))
