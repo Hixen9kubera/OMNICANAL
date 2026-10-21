@@ -51,7 +51,8 @@ export default function PricingPage() {
     void quienSoy().then((u) => {
       // Admin o invitado: lo decide el backend (`puede.pricing`, ver core/rbac.py).
       if (vivo) setAcceso(u.autenticado && (u.rol === "admin" || !!u.puede?.pricing) ? "admin" : "no");
-      if (vivo) setEsAdmin(u.autenticado && u.rol === "admin");
+      // Mover precios y ofertas: admin o editor de PRICING (`puede.pricing_editar`, v0.676.0: Alejandro).
+      if (vivo) setEsAdmin(u.autenticado && (u.rol === "admin" || !!u.puede?.pricing_editar));
     });
     return () => {
       vivo = false;

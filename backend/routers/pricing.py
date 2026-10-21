@@ -158,11 +158,14 @@ async def imagen(hoja: str, quien=Depends(acceso_pricing)) -> Response:
 # ── CAMBIAR EL PRECIO A MANO (v0.665.0) ──────────────────────────────────────
 
 async def solo_admin(request: Request):
-    """Cambiar precios en ML es de admin: los invitados de PRICING solo ven."""
+    """
+    Mover precios y ofertas en ML: admin, o editor de PRICING (`rbac.PRICING_EDITORES`, v0.676.0: Alejandro).
+    Los demás invitados de PRICING solo ven. (El nombre se queda por las rutas que ya lo usan.)
+    """
     quien = await acceso_pricing(request)
-    if getattr(quien, "rol", "") != "admin":
-        log.warning("PRICING 403: %s intentó cambiar un precio sin ser admin", quien.actor)
-        raise HTTPException(status_code=403, detail="Solo un admin puede cambiar precios en Mercado Libre.")
+    if not rbac.edita_pricing(quien):
+        log.warning("PRICING 403: %s intentó cambiar un precio sin ser admin ni editor", quien.actor)
+        raise HTTPException(status_code=403, detail="Solo un admin o un editor de PRICING puede cambiar precios en Mercado Libre.")
     return quien
 
 

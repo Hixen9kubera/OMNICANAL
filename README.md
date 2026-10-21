@@ -1001,6 +1001,40 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.676.0 — PRICING: Alejandro ve y mueve precios y ofertas, y Operaciones → Monitoreo cuenta lo que se hace en PRICING
+
+**Qué pidió Brandon (21-oct-2026).** Darle a Alejandro (`alejandro@kubera.mx`, operador) acceso a PRICING y que lo
+que haga aparezca en Operaciones → Monitoreo. Medido antes del cambio: Alejandro **no tenía ningún movimiento
+firmado** en kubera, ni en `ops.process_log` (lo que lee Monitoreo) ni en ninguna otra tabla con columna de autor.
+Lo que haga fuera del panel (Odoo, Seller Center, WordPress) no deja firma y no se puede mostrar. Brandon escogió
+«ver y mover precios»: así su trabajo en PRICING queda firmado y aparece en Monitoreo.
+
+**Acceso** (`core/rbac.py`):
+- `PRICING_INVITADOS` suma a Alejandro: ve la pestaña, como Haim y Andy.
+- Nuevo `PRICING_EDITORES` (`edita_pricing`) con Alejandro: además de los admin, **mueve precios y ofertas en ML**.
+  Eso es «Cambiar precio» y su «Deshacer», y «Ofertas de ML» con «Tomar» y «Quitar». Haim y Andy siguen solo viendo.
+- La regla `("POST", "/api/pricing", ...)` pasa de `admin` a `operador`, igual que el GET. El router vuelve a cerrar
+  con `edita_pricing` (`solo_admin`): un operador que no sea editor recibe 403, y uno sin sesión, 401.
+- `/api/auth/me` trae `puede.pricing_editar`. La pantalla de PRICING le muestra los botones a quien lo tenga.
+
+**Monitoreo** (`services/monitoreo.py`, `frontend/app/monitoreo/page.tsx`):
+- Cuenta también `ofertas`: tomar y quitar en «Ofertas de ML». Columna «Ofertas»; en la gaveta, «Oferta de ML».
+  `precio` ya se contaba desde la v0.665.0.
+- Los movimientos de PRICING caen en **Mercado Libre** y su cuenta. PRICING no guarda `canal` en el detalle y
+  salían «(sin canal)». Comprobado contra producción, solo lectura: el cambio del 19-oct de Brandon (ORG-0448-VER)
+  sale como `mercado_libre · SANCORFASHION`.
+- Se corrige la nota de la pantalla que decía que «Editar precio» no se registraba.
+
+**Pruebas.** +1 en `tests/test_pricing_ofertas.py`:
+- Alejandro toma ofertas y cambia precios (200) y la bitácora firma con su correo.
+- Haim recibe 403 al mover.
+- Valeria no ve ni mueve.
+- Una máquina con rol admin no edita.
+
+Se actualizan las dos que fijaban `POST /api/pricing` en admin. 69 en PRICING. Las 39 suites que tocan permisos,
+sesión o Monitoreo (2,326 pruebas) pasan, salvo las dos fallas que ya estaban en `main` (`test_regla_11_productos`
+y `test_competencia_juez_rutas`, documentadas en la v0.671.0). `tsc` limpio.
+
 ### v0.675.0 — La categoría elegida al guardar el costo ahora MANDA al publicar, y el error «categoría sin Mercado Envíos 2» ya no tapa el error real de ML
 
 **Qué pasó.** JUGU-0085-PLA (Funda extensor), 20-oct-2026: Cinthya eligió «Fundas para Penes» (MLM46606) y

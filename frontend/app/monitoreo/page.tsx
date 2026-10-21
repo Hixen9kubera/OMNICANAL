@@ -133,11 +133,13 @@ const VERBO: Record<string, string> = {
   publicar: "Publicado", costos: "Costo recalculado", crear: "Producto creado",
   validar: "Costo validado",
   competencia: "Competencia", precio: "Precio editado", stock: "Stock editado",
+  ofertas: "Oferta de ML",
 };
 const COLUMNA: Record<string, string> = {
   crear: "Creados", costos: "Costeos", publicar: "Publicados",
   validar: "Validados",
   competencia: "Competencia", precio: "Precio", stock: "Stock",
+  ofertas: "Ofertas",
 };
 const NOMBRE_CANAL: Record<string, string> = {
   mercado_libre: "Mercado Libre", amazon: "Amazon", tiktok: "TikTok",
@@ -1205,9 +1207,9 @@ function TarjetaCobertura({ c }: { c: Cobertura[] }) {
         <AlertTriangle className="mt-[2px] h-3 w-3 shrink-0" />
         <span>
           La parte rayada <strong>no es inactividad</strong>: son movimientos sin
-          actor guardado. <strong>Editar precio</strong> y{" "}
-          <strong>cambiar stock</strong> no aparecen porque ningún botón los
-          registra todavía.
+          actor guardado. <strong>Precio</strong> y <strong>Ofertas</strong> son lo
+          que se mueve desde PRICING; <strong>cambiar stock</strong> no aparece
+          porque ningún botón lo registra todavía.
         </span>
       </p>
     </section>

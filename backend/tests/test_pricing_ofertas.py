@@ -79,10 +79,34 @@ class Acceso(unittest.TestCase):
             self.assertEqual(_cliente().post("/api/pricing/ofertas/tomar", json={**PEDIDO, "tipo": "DOD"}).status_code, 400)
             self.assertEqual(_cliente().post("/api/pricing/ofertas/quitar", json={**PEDIDO, "promo_id": "x;drop"}).status_code, 400)
 
-    def test_rbac_post_pricing_es_admin(self):
+    def test_rbac_post_pricing_deja_pasar_al_operador_y_el_router_cierra(self):
         from core import rbac
-        self.assertEqual(rbac.rol_requerido("POST", "/api/pricing/ofertas/tomar"), "admin")
-        self.assertEqual(rbac.rol_requerido("POST", "/api/pricing/ofertas/quitar"), "admin")
+        self.assertEqual(rbac.rol_requerido("POST", "/api/pricing/ofertas/tomar"), "operador")
+        self.assertEqual(rbac.rol_requerido("POST", "/api/pricing/ofertas/quitar"), "operador")
+
+    def test_alejandro_edita_y_haim_solo_ve(self):
+        """v0.676.0 (Brandon, 21-oct): Alejandro mueve precios y ofertas; los demás invitados siguen sin poder."""
+        from core import rbac
+        alejandro = SimpleNamespace(autenticado=True, tipo="persona", rol="operador", actor="alejandro@kubera.mx")
+        haim = SimpleNamespace(autenticado=True, tipo="persona", rol="operador", actor="haim@kubera.mx")
+        valeria = SimpleNamespace(autenticado=True, tipo="persona", rol="operador", actor="valeria@kubera.mx")
+        self.assertTrue(rbac.ve_pricing(alejandro) and rbac.edita_pricing(alejandro))
+        self.assertTrue(rbac.ve_pricing(haim))
+        self.assertFalse(rbac.edita_pricing(haim))
+        self.assertFalse(rbac.ve_pricing(valeria) or rbac.edita_pricing(valeria))
+        self.assertTrue(rbac.edita_pricing(ADMIN))
+        self.assertFalse(rbac.edita_pricing(SimpleNamespace(autenticado=True, tipo="maquina", rol="admin", actor="alejandro@kubera.mx")))
+        self.assertFalse(rbac.edita_pricing(SimpleNamespace(autenticado=False, tipo="persona", rol="operador", actor="alejandro@kubera.mx")))
+        precio = {"cuenta": "BEKURA", "precio": 500, "pct": 10}
+        with mock.patch.object(po, "tomar", new=mock.AsyncMock(return_value={"estado": "pending"})) as tomar,              mock.patch.object(ruta.pp, "aplicar", new=mock.AsyncMock(return_value={})):
+            with _como(alejandro):
+                cli = _cliente()
+                self.assertEqual(cli.post("/api/pricing/ofertas/tomar", json=PEDIDO).status_code, 200)
+                self.assertEqual(cli.post("/api/pricing/precio/MLM123456789", json=precio).status_code, 200)
+            with _como(haim):
+                self.assertEqual(_cliente().post("/api/pricing/ofertas/tomar", json=PEDIDO).status_code, 403)
+                self.assertEqual(_cliente().post("/api/pricing/precio/MLM123456789", json=precio).status_code, 403)
+        self.assertEqual(tomar.await_args[0][7], "alejandro@kubera.mx")      # la bitácora firma con su correo
 
 
 class Reglas(unittest.TestCase):

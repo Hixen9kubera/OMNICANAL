@@ -35,7 +35,13 @@ from services import supabase_db
 log = logging.getLogger("omnicanal.monitoreo")
 
 # Procesos que nacen de un botón. Ver services/bitacora.py.
-_DE_PERSONA = ("publicar", "costos", "crear", "precio", "stock")
+# `precio` (Cambiar precio, v0.665.0) y `ofertas` (tomar/quitar en «Ofertas de ML», v0.672.0) los
+# escribe PRICING; `ofertas` se agregó el 21-oct-2026 (Brandon: ver lo que hace Alejandro en PRICING).
+_DE_PERSONA = ("publicar", "costos", "crear", "precio", "stock", "ofertas")
+
+#: De qué canal es cada movimiento. PRICING no guarda `canal` en el detalle (solo mueve Mercado
+#: Libre): sin esto sus movimientos caían en «(sin canal)».
+_CANAL = "coalesce(detalle->>'canal', case when origen = 'pricing' then 'mercado_libre' end)"
 
 # ⚠️ `crear` escribe un renglon POR PASO, no por producto: "En cola…",
 # "1/5 Scrapeando Alibaba…", "2/5 Mejorando titulo…". Medido el 1-sep: 147 filas
@@ -234,7 +240,7 @@ def _canales_por_persona(dias: int) -> dict[str, dict[str, dict[str, int]]]:
     try:
         filas = supabase_db.fetch_all(
             f"""select actor,
-                      coalesce(detalle->>'canal', '(sin canal)') canal,
+                      coalesce({_CANAL}, '(sin canal)') canal,
                       coalesce(r.value->>'cuenta', detalle->>'cuenta', '') cuenta,
                       count(*) total,
                       count(*) filter (
@@ -526,7 +532,7 @@ def resumen(dias: int = 30) -> dict[str, Any]:
     try:
         filas = supabase_db.fetch_all(
             f"""select actor, {_PROCESO} proceso,
-                      coalesce(detalle->>'canal', '(sin canal)') canal,
+                      coalesce({_CANAL}, '(sin canal)') canal,
                       coalesce(detalle->>'cuenta', '') cuenta,
                       count(*) total,
                       count(*) filter (where estado = any(%s)) exitos,
@@ -652,12 +658,12 @@ def movimientos(limite: int = 100, usuario: str | None = None,
         correos = [usuario] + [c for c, u in _MISMA_PERSONA.items() if u == usuario]
         where.append("actor = any(%s)"); params.append(correos)
     if canal:
-        where.append("detalle->>'canal' = %s"); params.append(canal)
+        where.append(f"{_CANAL} = %s"); params.append(canal)
     params.append(limite)
     try:
         return supabase_db.fetch_all(
             f"""select created_at, actor, proceso, accion, sku, estado,
-                       detalle->>'canal' canal, detalle->>'cuenta' cuenta,
+                       {_CANAL} canal, detalle->>'cuenta' cuenta,
                        detalle, duracion_s
                   from ops.process_log
                  where {' and '.join(where)}

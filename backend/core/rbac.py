@@ -113,9 +113,11 @@ REGLAS: tuple[tuple[str, str, str], ...] = (
     # al operador y el router la vuelve a cerrar con `ve_pricing` (admin con
     # sesión o invitado con sesión). Un operador que no esté en la lista: 403.
     ("GET", "/api/pricing", "operador"),
-    # Cambiar el precio a mano desde PRICING (v0.665.0, 19-oct): ESCRIBE en ML. Solo admin;
-    # el router lo vuelve a exigir (`solo_admin`) por si RBAC_ENFORCED está apagado.
-    ("POST", "/api/pricing", "admin"),
+    # Cambiar el precio a mano y tomar/quitar ofertas desde PRICING (v0.665.0/v0.672.0): ESCRIBE
+    # en ML. Desde v0.676.0 (21-oct, Brandon) lo hacen los admin Y las personas de PRICING_EDITORES
+    # (Alejandro): esta regla deja pasar al operador y el router la vuelve a cerrar con
+    # `edita_pricing` (admin con sesión o editor con sesión), igual que el GET con `ve_pricing`.
+    ("POST", "/api/pricing", "operador"),
     # Estas cuatro familias YA pedían admin —por omisión, no por decisión— y
     # está bien que lo pidan: sus pestañas son soloAdmin y traen datos del
     # comprador o tokens. Se listan para que el auditor pueda llegar a CERO;
@@ -312,6 +314,15 @@ ROL_POR_DEFECTO = "admin"   # lo no listado nace cerrado — ver decisión 1
 PRICING_INVITADOS = frozenset({
     "haim@kubera.mx",
     "andrea.pardo@kubera.mx",   # «Andy»
+    "alejandro@kubera.mx",      # 21-oct-2026; además EDITA (abajo)
+})
+
+# PRICING: quién, además de los admin, puede MOVER precios y ofertas en Mercado Libre desde la
+# pestaña («Cambiar precio», «Ofertas de ML»: tomar y quitar) — Brandon, 21-oct-2026. Cada
+# movimiento queda en la bitácora del esquema `pricing` y en Operaciones → Monitoreo con su
+# correo. Tiene que estar también en PRICING_INVITADOS (sin ver la pestaña no hay botones).
+PRICING_EDITORES = frozenset({
+    "alejandro@kubera.mx",
 })
 
 
@@ -320,6 +331,13 @@ def ve_pricing(quien) -> bool:
     if not getattr(quien, "autenticado", False) or getattr(quien, "tipo", "") != "persona":
         return False
     return getattr(quien, "rol", "") == "admin" or str(getattr(quien, "actor", "")).strip().lower() in PRICING_INVITADOS
+
+
+def edita_pricing(quien) -> bool:
+    """¿Puede mover precios y ofertas en ML desde PRICING? Persona con sesión: admin, o editora por correo."""
+    if not ve_pricing(quien):
+        return False
+    return getattr(quien, "rol", "") == "admin" or str(getattr(quien, "actor", "")).strip().lower() in PRICING_EDITORES
 
 
 def rol_requerido(metodo: str, ruta: str) -> str:

@@ -100,7 +100,8 @@ class Acceso(Base):
                                     "/api/pricing/precio/{item_id}", "/api/pricing/precio/{item_id}/deshacer",
                                     "/api/pricing/precio/{item_id}/vista"])
         from core import rbac as _rbac
-        self.assertEqual(_rbac.rol_requerido("POST", "/api/pricing/precio/MLM1"), "admin")
+        # v0.676.0: la regla deja pasar al operador y el router cierra con `edita_pricing` (admin o editor).
+        self.assertEqual(_rbac.rol_requerido("POST", "/api/pricing/precio/MLM1"), "operador")
         self.poner_foto()
         cli = _cliente()
         anonimo = SimpleNamespace(autenticado=False, tipo="", rol="", actor="?")

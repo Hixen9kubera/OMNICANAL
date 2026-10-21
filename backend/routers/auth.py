@@ -55,5 +55,7 @@ def me(request: Request):
             "ver_auditoria": rbac.permite(quien.rol, "GET", "/api/auditoria"),
             # PRICING: admin o invitado por correo (rbac.PRICING_INVITADOS), no solo el rol.
             "pricing": rbac.ve_pricing(quien),
+            # ...y quién además MUEVE precios y ofertas en ML (rbac.PRICING_EDITORES, v0.676.0).
+            "pricing_editar": rbac.edita_pricing(quien),
         },
     }
