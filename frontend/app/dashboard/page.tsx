@@ -5,8 +5,10 @@
  *
  * Responde dos preguntas, en este orden:
  *   1. ¿Mi stock llega a los canales?  → el veredicto y las tarjetas de canal.
- *   2. ¿Qué se está moviendo ahora?    → la cadena Odoo → stock_watch → Woo →
- *      fan-out → canales y el horario de cambios, que se llena solo.
+ *   2. ¿Qué se está moviendo ahora?    → la cadena fuente → stock_watch → lo que
+ *      lee el fan-out → canales y el horario de cambios, que se llena solo. La
+ *      fuente es Woo (Odoo está congelado al 15-oct) o el libro de kubera
+ *      (`stock_watch.fuente`), y el fan-out reparte Woo o el libro (`fuente_fanout`).
  * El detalle vive a un clic: la matriz SKU × canal (/dashboard/matriz) y el
  * rastro de cada cambio (panel lateral al tocar una fila).
  *
@@ -27,7 +29,8 @@ import RastroCambio from "@/components/fanout/RastroCambio";
 import PulsoCanales from "@/components/fanout/PulsoCanales";
 import SerieDias from "@/components/fanout/SerieDias";
 import TrazabilidadSku from "@/components/fanout/TrazabilidadSku";
-import type { Atender, Evento, SeguroCero, Vivo } from "@/components/fanout/tipos";
+import type { Atender, Evento, FuentesStock, LecturaLibro, SeguroCero, Vivo } from "@/components/fanout/tipos";
+import { ODOO_ROTULO, esLibro, nombreFuenteFanout, nombreFuenteSw, reparteVivo } from "@/components/fanout/tipos";
 
 const SONDEO_MS = 4000;
 const clave = (e: { sku: string; fin: string }) => `${e.sku}|${e.fin}`;
@@ -128,6 +131,91 @@ function textoSeguro(s: SeguroCero): string {
   return `${modo} · ${apagadas}${hoy}${s.modo !== "apagado" && !s.reactivar ? " · sólo apaga" : ""}`;
 }
 
+/**
+ * De dónde sale el stock y a dónde va, según lo que lee stock_watch y lo que reparte el fan-out.
+ * Con el momento de `fanout_fuentes` (`stock_watch.fuentes.momento`) cuando viene: un T0 con
+ * stock_watch que sólo registra (`t0_sin_encolar`) NO es «cada cambio llega a los canales».
+ */
+function textoBanner(d: Vivo | null): string {
+  if (!d) return "Cada cambio de stock llega a los canales. Así va ahora mismo.";
+  const swLibro = (d.stock_watch.fuente || "").toLowerCase() === "libro";
+  const reparteLibro = esLibro(reparteVivo(d));
+  const momento = d.stock_watch.fuentes?.momento;
+  if (momento === "t0_sin_encolar")
+    return "El fan-out reparte el vendible del libro de kubera, pero stock_watch no encola sus cambios: a los canales sólo les llegan las ventas. Así va ahora mismo.";
+  if (swLibro && reparteLibro) return "Cada cambio del vendible sale del libro de kubera y llega a los canales. Así va ahora mismo.";
+  if (swLibro) return "stock_watch ya lee el libro de kubera, pero sólo lo registra: a los canales les llega el stock de Woo. Así va ahora mismo.";
+  if (reparteLibro) return `El fan-out reparte el vendible del libro de kubera; stock_watch todavía vigila ${nombreFuenteSw(d.stock_watch.fuente)}. Así va ahora mismo.`;
+  return `Cada cambio de stock sale de Woo y llega a los canales; ${ODOO_ROTULO} ya no se mueve. Así va ahora mismo.`;
+}
+
+/** Dónde cambia lo que llega a los canales: lo que reparte el fan-out (el libro de kubera o Woo). En
+ *  sombra stock_watch lee el libro, pero lo que llega sigue siendo Woo. */
+function dondeCambia(d: Vivo): string {
+  return esLibro(reparteVivo(d)) ? "el libro de kubera" : "Woo";
+}
+
+/** Hora local (CDMX) de un `ts` en segundos epoch. */
+function horaEpoch(ts: number | null | undefined): string {
+  if (ts == null || !Number.isFinite(ts)) return "";
+  return new Date(ts * 1000).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit", timeZone: "America/Mexico_City" });
+}
+
+/**
+ * Los dos avisos de la salida de Woo, discretos: no pinta nada si las fuentes del stock son
+ * coherentes (`stock_watch.fuentes.ok`) y el fan-out lee el libro sin fallar (`stock_watch.lectura`).
+ * Con un backend que no manda ninguno de los dos, tampoco.
+ */
+function AvisoFuentes({ fuentes, lectura }: { fuentes?: FuentesStock | null; lectura?: LecturaLibro | null }) {
+  const incoherentes = !!fuentes && fuentes.ok === false;
+  const racha = lectura?.racha ?? 0;
+  const reintento = lectura?.en_reintento ?? 0;
+  const falla = !!lectura && (racha > 0 || reintento > 0);
+  if (!incoherentes && !falla) return null;
+  // Con Woo también hay lecturas fallidas (la MySQL de WordPress que parpadea): no son «del libro».
+  const deDonde = esLibro(nombreFuenteFanout(fuentes?.fanout_fuente)) ? "el libro" : "el stock de Woo";
+  const ult = lectura?.ultima;
+  const hora = horaEpoch(ult?.ts);
+  return (
+    <div className="flex flex-col gap-2" role="status">
+      {incoherentes && (
+        <div className="flex items-start gap-2.5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-[13px] leading-5 text-rose-900">
+          <XCircle size={16} className="mt-0.5 shrink-0" aria-hidden />
+          <div className="min-w-0">
+            <div className="font-semibold">Las fuentes del stock no van juntas</div>
+            <div>
+              stock_watch vigila {nombreFuenteSw(fuentes?.stock_watch_fuente)} y el fan-out reparte {nombreFuenteFanout(fuentes?.fanout_fuente)}
+              {fuentes?.stock_watch_job ? ` · stock_watch: ${fuentes.stock_watch_job}` : ""}.
+            </div>
+            {fuentes?.motivo && <div className="mt-0.5 break-words text-xs text-rose-800">{fuentes.motivo}</div>}
+          </div>
+        </div>
+      )}
+      {falla && (
+        <div className={`flex items-start gap-2.5 rounded-xl border px-4 py-3 text-[13px] leading-5 ${
+          lectura?.avisado ? "border-rose-200 bg-rose-50 text-rose-900" : "border-amber-200 bg-amber-50 text-amber-900"}`}>
+          <AlertTriangle size={16} className="mt-0.5 shrink-0" aria-hidden />
+          <div className="min-w-0">
+            <div className="font-semibold">
+              {racha > 0
+                ? `El fan-out no pudo leer ${deDonde}: ${racha.toLocaleString("es-MX")} ${racha === 1 ? "lectura fallida" : "lecturas fallidas seguidas"}`
+                : `El fan-out volvió a leer ${deDonde}; quedan SKUs por reintentar`}
+              {reintento > 0 ? ` · ${reintento.toLocaleString("es-MX")} ${reintento === 1 ? "SKU espera" : "SKUs esperan"} reintento` : ""}
+            </div>
+            <div>No se reparte 0 por no saber: cada SKU vuelve a la cola y se reintenta solo.</div>
+            {ult && (
+              <div className="mt-0.5 break-words text-xs opacity-90">
+                Última: <span className="font-mono">{ult.sku}</span>{hora ? ` a las ${hora}` : ""}
+                {ult.error ? ` · ${ult.error}` : ""}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function SincronizacionInventario() {
   const [datos, setDatos] = useState<Vivo | null>(null);
   const [eventos, setEventos] = useState<Evento[]>([]);
@@ -204,7 +292,7 @@ export default function SincronizacionInventario() {
   const visibles = useMemo(() => eventos.filter((e) => e.toca).slice(0, 12), [eventos]);
   const nuevosIds = useMemo(() => new Set(eventos.filter((e) => nuevasClaves.has(clave(e))).map((e) => e.id)), [eventos, nuevasClaves]);
   const llegaEn = useMemo(() => {
-    const t = eventos.filter((e) => e.tono === "ok" && e.total_s != null && (e.origen === "odoo" || e.origen === "woo"))
+    const t = eventos.filter((e) => e.tono === "ok" && e.total_s != null && (e.origen === "odoo" || e.origen === "woo" || e.origen === "libro"))
       .map((e) => e.total_s as number);
     return t.length ? Math.max(1, Math.ceil(Math.max(...t) / 60)) : null;
   }, [eventos]);
@@ -229,7 +317,7 @@ export default function SincronizacionInventario() {
         <BannerFanout
           icono={<Activity size={28} aria-hidden />}
           titulo="Sincronización de inventario"
-          texto="Cada cambio de stock sale de Odoo, pasa por Woo y llega a los canales. Así va ahora mismo."
+          texto={textoBanner(datos)}
           acciones={
             <>
               <span className={ACCION_BANNER} aria-live="polite">
@@ -263,16 +351,54 @@ export default function SincronizacionInventario() {
                 <div className="text-lg leading-7 text-slate-700">{datos.veredicto.detalle}</div>
                 {llegaEn && alDia.length > 0 && (
                   <div className="text-sm text-slate-600">
-                    Lo que cambia en Odoo llega a {alDia.join(" y ")} en menos de {llegaEn} {llegaEn === 1 ? "minuto" : "minutos"}.
+                    Lo que cambia en {dondeCambia(datos)} llega a {alDia.join(" y ")} en menos de {llegaEn} {llegaEn === 1 ? "minuto" : "minutos"}.
                   </div>
                 )}
               </div>
               <PulsoCanales pulso={datos.pulso} canales={datos.canales} />
             </section>
 
+            <AvisoFuentes fuentes={datos.stock_watch.fuentes} lectura={datos.stock_watch.lectura} />
+
             <section className="flex flex-col gap-3 rounded-2xl bg-white px-6 pb-6 pt-5 shadow-sm">
               <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-2">
-                <h2 className="text-base font-bold text-slate-800">Recorrido del stock</h2>
+                <div>
+                  <h2 className="text-base font-bold text-slate-800">Recorrido del stock</h2>
+                  <p className="mt-0.5 text-[13px] text-slate-600">
+                    stock_watch lee <b className="font-semibold text-slate-800">{nombreFuenteSw(datos.stock_watch.fuente)}</b>
+                    {" · "}el fan-out reparte <b className="font-semibold text-slate-800">{reparteVivo(datos)}</b>
+                    {/* El vendible sólo existe con stock_watch en el libro; una pasada que abortó no repartió nada. */}
+                    {(datos.stock_watch.fuente || "").toLowerCase() === "libro" && !datos.stock_watch.aborta
+                      && (datos.stock_watch.vendible_cambios != null || datos.stock_watch.vendible_sin_numero != null) && (
+                      <>
+                        {" · "}última pasada: {(datos.stock_watch.vendible_cambios ?? 0).toLocaleString("es-MX")}{" "}
+                        {datos.stock_watch.vendible_cambios === 1 ? "cambio" : "cambios"} del vendible
+                        {(datos.stock_watch.vendible_sin_numero ?? 0) > 0 && (
+                          <>
+                            {", "}de ellos {(datos.stock_watch.vendible_sin_numero ?? 0).toLocaleString("es-MX")} a 0
+                            <span className="text-slate-500"> (el libro ya no los trae)</span>
+                          </>
+                        )}
+                        {(datos.stock_watch.vendible_registro ?? 0) > 0 && (
+                          <span className="text-slate-500">
+                            {" · "}{(datos.stock_watch.vendible_registro ?? 0).toLocaleString("es-MX")} sólo registrados (sombra: no se reparten)
+                          </span>
+                        )}
+                      </>
+                    )}
+                    {datos.stock_watch.aborta && (
+                      <>
+                        {" · "}
+                        <span className="font-semibold text-amber-800" title={datos.stock_watch.nota ?? undefined}>
+                          la última pasada de stock_watch abortó sin repartir
+                        </span>
+                        {datos.stock_watch.nota && (
+                          <span className="block break-words text-xs text-slate-500">{datos.stock_watch.nota}</span>
+                        )}
+                      </>
+                    )}
+                  </p>
+                </div>
                 <div className="flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-slate-600">
                   <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-indigo-500 shadow-[0_0_0_2px_#fff,0_0_6px_2px_#6366f1]" />cambio real</span>
                   <span className="flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-indigo-400" />pulso: ritmo de las últimas 24 h</span>
@@ -377,7 +503,12 @@ export default function SincronizacionInventario() {
                   Este proceso: fan-out {datos.fanout.habilitado ? (datos.fanout.dry_run ? "en simulación" : "encendido y escribiendo") : "apagado"}
                   {" · "}reparto: {datos.canales.map((c) => c.nombre).join(", ")}
                   {" · "}reserva {datos.fanout.reserva} · espera {datos.fanout.debounce_s} s
-                  {datos.stock_watch.modo ? ` · stock_watch en modo ${datos.stock_watch.modo}` : ""}
+                  {datos.stock_watch.modo
+                    ? (datos.stock_watch.modo.startsWith("apagado")
+                      ? ` · stock_watch ${datos.stock_watch.modo}`
+                      : ` · stock_watch en modo ${datos.stock_watch.modo}`)
+                    : ""}
+                  {` · el fan-out lee ${reparteVivo(datos)}`}
                   {" · "}actualizado {datos.ahora}
                   {datos.seguro && <span className="block">Seguro stock 0: {textoSeguro(datos.seguro)}</span>}
                 </span>

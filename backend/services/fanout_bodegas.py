@@ -19,7 +19,10 @@ DE DÓNDE SALE CADA COLUMNA
   · Odoo de la foto: `ops.stock_watch_photo.stock_odoo`, lo que leyó (y absorbió)
     la última pasada de stock_watch, ya con max(0).
   · kubera por bodega: `almacen.stock_almacen` (físico, apartado, libre).
-  · Woo hoy: `ops.stock_watch_photo.stock_woo` (la misma pasada).
+  · Woo hoy: `ops.stock_watch_photo.stock_woo` (la misma pasada). Con el libro
+    (`STOCK_WATCH_FUENTE=libro`) esa columna ya no se mueve: la pasada sólo escribe
+    `stock_kubera`. Sin copia de Odoo no se compara contra nada (`sin_copia`), pero la
+    columna se sigue pintando: enseñar ahí el vendible del libro es PENDIENTE.
   · Ya no hay «puerta» ni formatos de Bodega: eran de la mudanza de TEX2 a TEX3,
     que no existirá (Eduardo, 8-oct-2026; la limpieza de la Fase 1 los borra).
     Por UNA versión la respuesta sigue llevando `formatos` en ceros,
@@ -625,13 +628,20 @@ def _lentos(tablas: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]
 
 
 def _config_stock_watch() -> dict[str, Any]:
-    """Cómo decide HOY stock_watch, desde sus propias funciones."""
+    """Cómo decide HOY stock_watch, desde sus propias funciones.
+
+    `odoo_rotulo` es FIJO (`fanout_vivo.ODOO_ROTULO`, «Odoo (congelado al 15-oct)»): Odoo
+    salió de la operación el 15-oct y el rótulo ya no depende de `STOCK_WATCH_FUENTE`.
+    `stock_rotulo`: «Libro de kubera» con `FANOUT_FUENTE=kubera`, si no «Woo»
+    (`fanout_vivo.stock_rotulo`). Contrato con el panel, 20-oct."""
+    from services import fanout_vivo as fv
     from services import stock_watch as sw
     est = sw.estado()
     return {
         "habilitado": bool(est.get("habilitado")), "solo_registro": bool(est.get("solo_registro")),
         "tope": est.get("tope"), "modo": est.get("modo"),
-        "fuente": est.get("fuente", "odoo"), "odoo_rotulo": est.get("odoo_rotulo", "Odoo"),
+        "fuente": est.get("fuente", "odoo"), "odoo_rotulo": fv.ODOO_ROTULO,
+        "stock_rotulo": fv.stock_rotulo(),
         "odoo_congelado": est.get("odoo_congelado"),
         # ¿stock_watch copia Odoo? Falso con `STOCK_WATCH_FUENTE` woo/libro: no hay «Woo
         # esperado» y la pestaña ya no le pregunta a Odoo (`_resumen`, `detalle_sku`).
@@ -956,9 +966,15 @@ def _formula(ctx: dict[str, Any]) -> dict[str, Any]:
     """El aviso de cómo se calcula «Woo esperado» hoy (lo pinta el encabezado)."""
     m, cfg = ctx["modo"], ctx["cfg"]
     if not m.get("copia_odoo", True):
-        texto = (f"stock_watch ya no copia Odoo a Woo (fuente «{cfg.get('fuente')}»): Woo es la fuente y sus "
-                 f"cambios se reparten a los canales. El Odoo de la foto está congelado, así que no hay un "
-                 f"«Woo esperado» con qué comparar.")
+        # Quién es la fuente lo dice el fan-out (`stock_rotulo`), no stock_watch: con
+        # `FANOUT_FUENTE=kubera` Woo ya no está en el camino del stock.
+        if cfg.get("stock_rotulo", "Woo") != "Woo":
+            fuente = ("El libro de kubera es la fuente: el fan-out reparte su vendible y stock_watch anota sus "
+                      "cambios. Woo ya no está en el camino del stock")
+        else:
+            fuente = "Woo es la fuente y sus cambios se reparten a los canales"
+        texto = (f"stock_watch ya no copia Odoo a Woo (fuente «{cfg.get('fuente')}»): {fuente}. El Odoo de la "
+                 f"foto está congelado, así que no hay un «Woo esperado» con qué comparar.")
     elif not m["absoluto"]:
         texto = ("stock_watch está en modo DELTA: Woo conserva su base y Odoo sólo aporta su variación, así que "
                  "no hay un «Woo esperado» absoluto con qué comparar.")
@@ -980,7 +996,8 @@ def _formula(ctx: dict[str, Any]) -> dict[str, Any]:
                  + ", lo mismo que copia stock_watch.")
     return {"texto": texto, "suma_kubera": m["lee_kubera"], "absoluto": m["absoluto"], "resta": m["resta"],
             "solo_registro": cfg["solo_registro"], "habilitado": cfg["habilitado"],
-            "fuente": cfg.get("fuente", "odoo"), "odoo_congelado": cfg.get("odoo_congelado")}
+            "fuente": cfg.get("fuente", "odoo"), "odoo_congelado": cfg.get("odoo_congelado"),
+            "stock_rotulo": cfg.get("stock_rotulo", "Woo")}
 
 
 def _resumen() -> dict[str, Any]:

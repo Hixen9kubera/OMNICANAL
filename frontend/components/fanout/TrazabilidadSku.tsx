@@ -2,7 +2,9 @@
 
 /**
  * TrazabilidadSku — panel lateral con la línea de trazabilidad de UN SKU: cada
- * cambio de stock en Woo (vino de Odoo o lo detectó stock_watch en Woo), cada
+ * cambio de stock (vino de Odoo, lo detectó stock_watch en Woo o cambió el vendible
+ * del libro de kubera —éste en violeta; «el libro ya no trae el SKU → 0» es un cambio
+ * más (D4), y sólo las filas viejas que no repartían nada van en anillo—), cada
  * reparto del fan-out con lo que contestó cada canal, y lo que cada canal
  * reportó después. Una lectura del canal que no es lo último que el fan-out le
  * dejó se marca «cambió en el canal». Si el SKU vive en FULL, un carril aparte
@@ -16,7 +18,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { API_BASE, fetchSesion } from "@/lib/api";
 import type { GrupoFull, Historia, ItemDevolucion, ItemTraza, LigaDevolucion } from "./tipos";
-import { CAUSA_CLS, CELDA_CLS, CELDA_MATRIZ_PUNTEADO, CELDA_MATRIZ_SOLIDO, DEVOL_ESTADO_CLS, GRUPO_FULL, TONO_COLOR, conSigno } from "./tipos";
+import {
+  CAUSA_CLS, CELDA_CLS, CELDA_MATRIZ_PUNTEADO, CELDA_MATRIZ_SOLIDO, DEVOL_ESTADO_CLS, GRUPO_FULL, ODOO_ROTULO, ORIGEN_STOCK,
+  TONO_COLOR, conSigno, esLibro, rotuloStock,
+} from "./tipos";
 
 /** Qué parte de la línea se ve: todo, la bodega y Woo, los canales del reparto, la bodega FULL de ML o las devoluciones. */
 export type Carril = "todo" | "bodega" | "canales" | "full" | "devoluciones";
@@ -44,8 +49,8 @@ const CANAL_VENTA: Record<string, string> = {
   TEMU: "Temu", TIKTOK: "TikTok", ML: "Mercado Libre", MELI: "Mercado Libre", BEKURA: "ML Kubera",
   SANCORFASHION: "ML San Corpe", AMAZON: "Amazon", WALMART: "Walmart", WOO: "la tienda", WC: "la tienda",
 };
-const COLOR = { woo: "#4f46e5", coincide: "#0ea5e9", su_cuenta: "#f59e0b", sin_escritura: "#94a3b8", estado: "#64748b",
-  devolucion: "#db2777" };
+const COLOR = { woo: ORIGEN_STOCK.woo.color, libro: ORIGEN_STOCK.libro.color, coincide: "#0ea5e9", su_cuenta: "#f59e0b",
+  sin_escritura: "#94a3b8", estado: "#64748b", devolucion: "#db2777" };
 /** El tono del texto de la liga de una devolución con Odoo. */
 const LIGA_CLS: Partial<Record<LigaDevolucion, string>> = {
   reingreso: "text-emerald-800", sin_reingreso: "text-amber-800", sin_fecha: "text-amber-800",
@@ -78,10 +83,19 @@ function cuando(hora: string, delDia: string): string {
 
 function color(it: ItemTraza): string {
   if (it.tipo === "full") return GRUPO_FULL[it.grupo].color;
-  if (it.tipo === "woo") return it.fallo ? TONO_COLOR.mal : COLOR.woo;
+  if (it.tipo === "woo") return it.fallo ? TONO_COLOR.mal : it.origen === "libro" ? COLOR.libro : COLOR.woo;
   if (it.tipo === "devolucion") return COLOR.devolucion;
   if (it.tipo === "reparto") return TONO_COLOR[it.tono];
   return COLOR[it.relacion];
+}
+
+/** El libro dejó de traer el SKU en una fila vieja (`vendible_sin_numero`, `a` = null): no se repartió nada. */
+const sinNumeroViejo = (it: ItemTraza): boolean => it.tipo === "woo" && !!it.sin_numero && it.a == null;
+
+/** Punto hueco: un cambio de estado del canal, o una fila vieja en que el libro dejó de traer el SKU
+ *  (sin número). Desde D4 eso es un cambio a 0 y lleva el punto lleno del libro. */
+function anillo(it: ItemTraza): boolean {
+  return (it.tipo === "canal" && it.relacion === "estado") || sinNumeroViejo(it);
 }
 
 function venta(motivo: string): { canal: string; pedido: string } {
@@ -131,6 +145,53 @@ function Devolucion({ it }: { it: ItemDevolucion }) {
 function Renglon({ it, dia, onRastro, sku }: {
   it: ItemTraza; dia: string; sku: string; onRastro?: (sku: string, fin: string) => void;
 }) {
+  if (it.tipo === "woo" && it.origen === "libro") {
+    // El libro dejó de traer el SKU. Desde D4 es un cambio a 0 que se reparte (`a` = 0); en las
+    // filas viejas `vendible_sin_numero` (`a` = null) no se repartió nada.
+    if (it.sin_numero) {
+      const viejo = it.a == null;
+      return (
+        <>
+          <div className="flex flex-wrap items-baseline gap-x-2 text-[13px] leading-5">
+            <span className={`rounded px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide ${ORIGEN_STOCK.libro.chip}`}>{ORIGEN_STOCK.libro.texto}</span>
+            <span className="font-semibold text-slate-900">
+              {viejo ? "El libro ya no trae el SKU (nada que repartir)" : `El libro no trae el SKU → ${n(it.a)}`}
+            </span>
+          </div>
+          <div className="text-xs leading-[18px] text-slate-600">
+            {it.fallo ? <span className="font-semibold text-rose-700">El registro de este cambio marca una falla. </span> : null}
+            {it.de != null ? `Tenía ${n(it.de)} vendibles. ` : ""}
+            {viejo ? "Los canales se quedan con lo que tenían."
+              : "Lo que el libro no conoce sale en 0: el fan-out lo reparte a los canales."}
+          </div>
+          {it.liga_txt && (
+            <div className="mt-0.5 text-xs leading-[18px] text-pink-800">
+              {it.liga_txt} {it.liga_nota && <span className="text-slate-500">{it.liga_nota}</span>}
+            </div>
+          )}
+        </>
+      );
+    }
+    const cambio = it.de != null && it.a != null ? `Vendible ${n(it.de)} → ${n(it.a)}`
+      : it.a != null ? `Vendible: sin número → ${n(it.a)}` : "Cambió el vendible";
+    return (
+      <>
+        <div className="flex flex-wrap items-baseline gap-x-2 text-[13px] leading-5">
+          <span className={`rounded px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide ${ORIGEN_STOCK.libro.chip}`}>{ORIGEN_STOCK.libro.texto}</span>
+          <span className="font-semibold text-slate-900">{cambio}</span>
+        </div>
+        <div className="text-xs leading-[18px] text-slate-600">
+          {it.fallo ? <span className="font-semibold text-rose-700">El registro de este cambio marca una falla. </span> : null}
+          stock_watch lo vio en el libro: una venta, una OV, una entrada o un ajuste en las bodegas de kubera.
+        </div>
+        {it.liga_txt && (
+          <div className="mt-0.5 text-xs leading-[18px] text-pink-800">
+            {it.liga_txt} {it.liga_nota && <span className="text-slate-500">{it.liga_nota}</span>}
+          </div>
+        )}
+      </>
+    );
+  }
   if (it.tipo === "woo") {
     const cambio = it.de != null && it.a != null ? `: ${n(it.de)} → ${n(it.a)}` : "";
     // Lo que hizo ODOO (la foto del delta), que no siempre es lo que se movió en Woo.
@@ -140,7 +201,7 @@ function Renglon({ it, dia, onRastro, sku }: {
     return (
       <>
         <div className="text-[13px] font-semibold leading-5 text-slate-900">
-          {it.origen === "odoo" ? `Odoo movió Woo${cambio}` : `Woo cambió${cambio}`}
+          {it.origen === "odoo" ? `${ODOO_ROTULO} movió Woo${cambio}` : `Woo cambió${cambio}`}
         </div>
         <div className="text-xs leading-[18px] text-slate-600">
           {it.fallo ? <span className="font-semibold text-rose-700">La escritura en Woo falló. </span> : null}
@@ -198,9 +259,14 @@ function Renglon({ it, dia, onRastro, sku }: {
             </button>
           )}
         </div>
-        {it.sin_destinos || it.destinos.length === 0 ? (
+        {/* `sin_numero` (sólo con Woo: no gestiona su _stock) no es «sin destinos»: hubo a quién
+            escribirle, pero no había número que escribir. */}
+        {it.sin_numero ? (
+          <div className="text-xs leading-[18px] text-slate-600">Sin número en Woo: no se escribió a ningún canal</div>
+        ) : it.sin_destinos || it.destinos.length === 0 ? (
           <div className="text-xs leading-[18px] text-slate-600">No tenía a quién escribirle.</div>
-        ) : (
+        ) : null}
+        {(it.sin_numero || !it.sin_destinos) && it.destinos.length > 0 && (
           <div className="mt-1 flex flex-wrap gap-1">
             {it.destinos.map((d) => (
               <span key={`${d.canal}-${d.nombre}`} title={d.detalle || undefined}
@@ -290,6 +356,8 @@ export default function TrazabilidadSku({ sku, onCerrar, onRastro, carrilInicial
   }, [sku, carrilInicial]);
 
   const tieneFull = !!h?.full || (h?.resumen.full ?? 0) > 0;
+  const tieneLibro = esLibro(h?.stock_rotulo) || !!h?.items.some((it) => it.tipo === "woo" && it.origen === "libro");
+  const tieneSinNumeroViejo = !!h?.items.some(sinNumeroViejo);
   const dv = h?.resumen.devoluciones;
   const tieneDevol = (dv?.n ?? 0) > 0;
   const carriles = CARRILES.filter((c) => (c.id !== "full" || tieneFull) && (c.id !== "devoluciones" || tieneDevol));
@@ -320,7 +388,7 @@ export default function TrazabilidadSku({ sku, onCerrar, onRastro, carrilInicial
               <span className="break-all font-mono text-base font-bold text-slate-900">{sku}</span>
               {h && (
                 <span className="text-sm text-slate-700">
-                  {h.odoo_rotulo ?? "Odoo"} {h.odoo} · Woo <span className="font-bold">{h.woo}</span>
+                  {ODOO_ROTULO} {h.odoo} · {rotuloStock(h.stock_rotulo)} <span className="font-bold">{h.woo}</span>
                   {h.woo_de && <span className="text-[12px] text-slate-500"> ({h.woo_de})</span>}
                   {h.full?.cuentas.map((c) => (c.de_otro ? (
                     <span key={c.cuenta}> · FULL {c.nombre}: <span className="text-[12px] text-amber-800">es de {c.de_otro.sku}</span></span>
@@ -387,7 +455,7 @@ export default function TrazabilidadSku({ sku, onCerrar, onRastro, carrilInicial
                   {carriles.map((c) => (
                     <button key={c.id} type="button" aria-pressed={carril === c.id} onClick={() => setCarril(c.id)}
                       className={`h-8 rounded-lg px-3 text-xs font-semibold ${carril === c.id ? "bg-indigo-600 text-white shadow-sm" : "text-slate-600 hover:bg-white"}`}>
-                      {c.texto}
+                      {c.id === "bodega" && esLibro(h.stock_rotulo) ? "Bodega y libro" : c.texto}
                     </button>
                   ))}
                 </div>
@@ -462,7 +530,7 @@ export default function TrazabilidadSku({ sku, onCerrar, onRastro, carrilInicial
                   ))}
                 </div>
                 <p className="text-xs leading-[18px] text-slate-600">
-                  {pl(h.resumen.cambios_woo, "cambio", "cambios")} en Woo · {pl(h.resumen.repartos, "reparto", "repartos")}
+                  {pl(h.resumen.cambios_woo, "cambio", "cambios")} de stock · {pl(h.resumen.repartos, "reparto", "repartos")}
                   {h.resumen.con_rechazo ? ` (${h.resumen.con_rechazo} con rechazo)` : ""}
                   {" · "}{pl(h.resumen.su_cuenta, "vez", "veces")} el canal reportó algo que no le escribimos
                   {h.resumen.full ? ` · ${pl(h.resumen.full, "aviso", "avisos")} de FULL` : ""}
@@ -489,8 +557,8 @@ export default function TrazabilidadSku({ sku, onCerrar, onRastro, carrilInicial
                             <time dateTime={it.ts} className="pt-[3px] text-right text-xs tabular-nums text-slate-500">{it.hora.slice(11, 16)}</time>
                             <span className="relative flex justify-center">
                               {i < its.length - 1 && <span className="absolute bottom-0 top-3 w-0.5 bg-slate-200" aria-hidden />}
-                              <span className={`relative mt-[5px] h-3 w-3 ${it.tipo === "full" ? "rounded-[3px]" : it.tipo === "devolucion" ? "rotate-45 rounded-[2px]" : "rounded-full"} ${it.tipo === "canal" && it.relacion === "estado" ? "border-2 bg-white" : ""}`}
-                                style={it.tipo === "canal" && it.relacion === "estado" ? { borderColor: color(it) } : { background: color(it) }} aria-hidden />
+                              <span className={`relative mt-[5px] h-3 w-3 ${it.tipo === "full" ? "rounded-[3px]" : it.tipo === "devolucion" ? "rotate-45 rounded-[2px]" : "rounded-full"} ${anillo(it) ? "border-2 bg-white" : ""}`}
+                                style={anillo(it) ? { borderColor: color(it) } : { background: color(it) }} aria-hidden />
                             </span>
                             <div className="min-w-0 pb-3">
                               <Renglon it={it} dia={dia} sku={h.sku} onRastro={onRastro} />
@@ -508,6 +576,12 @@ export default function TrazabilidadSku({ sku, onCerrar, onRastro, carrilInicial
 
               <div className="flex flex-wrap gap-x-4 gap-y-1.5 border-t border-slate-100 pt-3 text-xs text-slate-600">
                 <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full" style={{ background: COLOR.woo }} />cambio en Woo</span>
+                {tieneLibro && (<>
+                  <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full" style={{ background: COLOR.libro }} />cambio del vendible (libro de kubera)</span>
+                  {tieneSinNumeroViejo && (
+                    <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full border-2 bg-white" style={{ borderColor: COLOR.libro }} />el libro ya no trae el SKU (sin repartir)</span>
+                  )}
+                </>)}
                 <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full" style={{ background: TONO_COLOR.ok }} />reparto que llegó</span>
                 <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full" style={{ background: TONO_COLOR.mal }} />reparto con rechazo</span>
                 <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full" style={{ background: TONO_COLOR.omit }} />sin escrituras</span>

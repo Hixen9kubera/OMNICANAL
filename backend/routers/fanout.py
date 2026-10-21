@@ -16,7 +16,8 @@ fanout.py — Monitoreo y simulación del fan-out de stock DROP.
   POST /api/fanout/seguro/soltar    → {sku, canal}: suelta la marca (no toca el canal;
                                       con el fan-out apagado no hace nada).
   GET  /api/fanout/vivo?desde_id=   → la página en vivo: veredicto, cadena y cambios.
-  GET  /api/fanout/matriz           → SKUs × canales contra Woo.
+  GET  /api/fanout/matriz           → SKUs × canales contra Woo (o el libro de kubera
+                                      con FANOUT_FUENTE=kubera: `stock_rotulo`).
   GET  /api/fanout/rastro?sku=&fin= → un cambio salto por salto.
   GET  /api/fanout/historia?sku=&dias=&liga= → la línea de trazabilidad de un SKU (con sus devoluciones).
   GET  /api/fanout/full             → la pestaña FULL (stock, avisos, cuadre, salud).
@@ -347,39 +348,65 @@ def encolar(sku: str = Query(..., description="SKU a encolar"),
 
 @router.get("/inventario/estado")
 def inventario_estado():
-    """Vigilante de inventario (Odoo →delta→ Woo →cambio→ canales)."""
-    from services import stock_watch
-    return stock_watch.estado()
+    """Vigilante de inventario (Odoo →delta→ Woo →cambio→ canales). Con los rótulos del
+    contrato con el panel (`fanout_vivo._rotulos`): `odoo_rotulo` FIJO «Odoo (congelado
+    al 15-oct)» —el de stock_watch decía «Odoo» a secas con FUENTE=odoo— y
+    `stock_rotulo`. Sólo memoria y configuración."""
+    from services import fanout_vivo, stock_watch
+    return {**stock_watch.estado(), **fanout_vivo._rotulos()}
 
 
 @router.post("/inventario/revisar")
 async def inventario_revisar(
-    forzar: bool = Query(False, description="Corre aunque esté apagado / pase el tope")
+    forzar: bool = Query(False, description="Deja pasar el tope y el piso de lectura. "
+                                            "NO lo enciende: apagado contesta 409.")
 ):
     """
     Dispara una pasada del vigilante de inventario a mano.
 
-    `forzar=true` sirve para dos cosas: correrlo estando apagado (una pasada en
-    solo-registro es inocua) y saltarse el cortacircuitos cuando el volumen de
-    cambios es REAL y ya se revisó.
+    **Apagado (`STOCK_WATCH_ENABLED=false`) contesta 409 y no corre, venga o no
+    `forzar`.** Antes `forzar=true` también lo corría estando apagado, con la idea
+    de que «una pasada en solo-registro es inocua»; pero `forzar` nunca miró
+    `STOCK_WATCH_SOLO_REGISTRO`: con el vigilante apagado y el registro en
+    `false`, un clic encolaba al fan-out justo lo que el apagado debía detener.
+    Apagarlo es una decisión (la de T0, la de un incidente) y un botón no la
+    deshace: se enciende con la variable. Retirado el 20-oct-2026 (1.9-a del plan
+    de salida de Odoo/Woo); `stock_watch.revisar` tiene su propio candado.
+
+    `forzar=true` sólo sirve, ya encendido, para pasar el cortacircuitos
+    (`STOCK_WATCH_TOPE`) y el piso de lectura cuando el volumen de cambios es REAL
+    y ya se revisó: la excepción del acta de T0 (la primera pasada del libro mide
+    contra el último número de Woo y puede pasar del tope).
     """
+    from fastapi import HTTPException
+
     from services import stock_watch
+    if not stock_watch.habilitado():
+        raise HTTPException(status_code=409, detail={
+            "estado": "apagado", "forzar": forzar,
+            "motivo": ("El vigilante de inventario está apagado (STOCK_WATCH_ENABLED=false) "
+                       "y no se corre a mano, ni con forzar: forzar sólo deja pasar el tope "
+                       "con el vigilante encendido. Para correrlo, enciéndelo con la variable."),
+        })
     return await stock_watch.revisar(forzar=forzar)
 
 
 @router.get("/inventario/pendientes")
 def inventario_pendientes(limite: int = Query(50, ge=1, le=500)):
-    """Lo que el vigilante de inventario propuso/aplicó, más reciente primero."""
-    from services import db
+    """Lo que el vigilante de inventario propuso/aplicó, más reciente primero.
+
+    Las dos ramas filtran con LA MISMA lista (`fanout_read._ACCIONES_INVENTARIO`, que ya
+    trae `vendible_cambio`/`vendible_registro` y las `vendible_sin_numero` viejas), como
+    parámetro y no como literal. La de MySQL sólo verá lo viejo: la pasada del libro anota
+    únicamente en kubera (`stock_watch._anotar(mysql=False)`)."""
+    from services import db, fanout_read
     if settings.supabase_read_fanout_log:
-        from services import fanout_read
         filas = fanout_read.pendientes_inventario(limite)
     else:
         filas = db.fetch_all(
             """SELECT ts, sku, accion, motivo, resultado, dry_run FROM fanout_log
-               WHERE accion IN ('odoo_delta','odoo_delta_registro','woo_cambio',
-                                'woo_cambio_registro','stock_watch_freno')
-               ORDER BY id DESC LIMIT %s""", (limite,))
+               WHERE accion IN %s
+               ORDER BY id DESC LIMIT %s""", (tuple(fanout_read._ACCIONES_INVENTARIO), limite))
     return {"eventos": filas, "total": len(filas)}
 
 
@@ -432,74 +459,10 @@ def alinear(canal: str = Query(..., description="tiktok | mercado_libre | temu")
                      else "conteo solamente — repetir con confirmar=true")}
 
 
-@router.get("/odoo/monitor")
-def odoo_monitor(horas: int = Query(24, ge=1, le=168),
-                 limite: int = Query(80, ge=10, le=400)):
-    """
-    Vigilancia EN VIVO de la cadena Odoo → Woo → canales DROP.
-
-    Existe porque el inventario depende de Odoo al 100%: cualquier movimiento
-    del master tiene que verse, quedar auditado y poder revisarse después. Lee
-    de `fanout_log` (bitácora del fan-out) y de `stock_watch_foto` (la foto que
-    compara Woo contra Odoo en cada pasada); no llama a Odoo, así que es barato
-    y se puede refrescar cada pocos segundos desde el panel.
-    """
-    from services import db, stock_watch
-
-    filas = db.fetch_all(
-        """SELECT ts, sku, accion, motivo, resultado, canal, stock_drop, objetivo
-           FROM fanout_log
-           WHERE ts >= UTC_TIMESTAMP() - INTERVAL %s HOUR
-             AND accion IN ('odoo_delta','odoo_delta_registro','woo_cambio',
-                            'woo_cambio_registro','odoo_master','stock_watch_freno')
-           ORDER BY id DESC LIMIT %s""", (horas, limite))
-
-    resumen = {r["accion"]: r["n"] for r in db.fetch_all(
-        """SELECT accion, COUNT(*) n FROM fanout_log
-           WHERE ts >= UTC_TIMESTAMP() - INTERVAL %s HOUR
-             AND accion IN ('odoo_delta','woo_cambio','odoo_master')
-           GROUP BY accion""", (horas,))}
-    canales = db.fetch_all(
-        """SELECT canal, accion, COUNT(*) n FROM fanout_log
-           WHERE ts >= UTC_TIMESTAMP() - INTERVAL %s HOUR AND canal IS NOT NULL
-             AND accion IN ('escribir','sin_cambio','omitir')
-           GROUP BY canal, accion""", (horas,))
-    errores = db.fetch_all(
-        """SELECT canal, sku, LEFT(resultado, 150) resultado, ts FROM fanout_log
-           WHERE ts >= UTC_TIMESTAMP() - INTERVAL %s HOUR
-             AND resultado LIKE 'ERROR%%' ORDER BY id DESC LIMIT 20""", (horas,))
-
-    # La foto de stock_watch ya trae Woo y Odoo lado a lado: de ahí salen las
-    # discrepancias SIN volver a preguntarle a Odoo.
-    try:
-        foto = db.fetch_one(
-            """SELECT COUNT(*) skus,
-                      SUM(stock_woo <> stock_odoo) discrepan,
-                      SUM(stock_odoo < 0) odoo_negativo,
-                      SUM(stock_woo < 0) woo_negativo,
-                      MAX(actualizado) ultima_foto
-               FROM stock_watch_foto
-               WHERE stock_woo IS NOT NULL AND stock_odoo IS NOT NULL""") or {}
-        desalineados = db.fetch_all(
-            """SELECT sku, stock_odoo, stock_woo, (stock_woo - stock_odoo) brecha,
-                      actualizado
-               FROM stock_watch_foto
-               WHERE stock_woo IS NOT NULL AND stock_odoo IS NOT NULL
-                 AND stock_woo <> stock_odoo
-               ORDER BY ABS(stock_woo - stock_odoo) DESC LIMIT 25""")
-    except Exception:  # noqa: BLE001 — la foto es opcional
-        foto, desalineados = {}, []
-
-    return {
-        "vigilante": stock_watch.estado(),
-        "horas": horas,
-        "movimientos": filas,
-        "resumen": resumen,
-        "por_canal": canales,
-        "errores": errores,
-        "foto": foto,
-        "desalineados": desalineados,
-    }
+# `GET /api/fanout/odoo/monitor` se retiró el 20-oct-2026: leía MySQL (`fanout_log` y
+# `stock_watch_foto`, sin escritor desde la salida de Odoo del 15-oct) con la lista
+# vieja de acciones, y ninguna pantalla la llamaba. La bitácora del vigilante vive en
+# `/inventario/pendientes` y la cadena en vivo en `/vivo` y `/matriz`.
 
 
 @router.get("/diagnostico/ip")

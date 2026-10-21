@@ -22,6 +22,8 @@ pruebas en tests/test_stock_libro.py (usa el arnés de este archivo).
  5. LOS LECTORES DEL PANEL: con el Odoo congelado, ni la matriz ni el Dashboard
     pintan «distinto de Odoo». (`LectoresVivo`; Bodegas en test_fanout_bodegas)
  6. LA FOTO con fecha trae `stock_kubera` y el sello. (`FotoLectura`)
+ 7. CON EL ACTA P2 (stock_watch apagado) el modo dice «apagado» y el panel recibe
+    `fuentes.stock_watch_job = "apagado"`: ni «Cada 20 min» ni «modo absoluto». (`PanelConP2`)
 
 Sin red: Woo, kubera, Odoo, Slack y el fan-out van suplantados. Los SKUs son
 INVENTADOS (el repo es público).
@@ -48,6 +50,9 @@ BASE = {"stock_watch_enabled": True, "stock_watch_solo_registro": False, "stock_
         "supabase_read_stock_watch": False, "supabase_write_stock_watch": False,
         "supabase_write_fanout_log": True, "wpdb_prefix": "wp_"}
 CONGELADO = "Odoo (congelado al 15-oct 18:34, incompleto)"
+# El PANEL (matriz, Dashboard) rotula Odoo FIJO desde la v0.694.0 (1.8, INVENTARIO FANOUT);
+# `stock_watch.odoo_rotulo()` sigue dinámico (CONGELADO).
+ROTULO_PANEL = "Odoo (congelado al 15-oct)"
 
 
 class WooFalso:
@@ -270,6 +275,34 @@ class SinMysql(unittest.TestCase):
             self.assertEqual(sw.estado()["odoo_congelado"], "15-oct 18:34")
 
 
+
+# ── 16 · con el acta P2 (stock_watch apagado), el panel no dice que corre ────
+
+class PanelConP2(unittest.TestCase):
+    """Las banderas de P2 (STOCK_WATCH_ENABLED=false, SOLO_REGISTRO=true): el pie del Dashboard
+    decía «stock_watch en modo absoluto (Odoo master)» y la cadena «Cada 20 min». Ajuste del
+    22-oct (MAESTRO): el modo dice «apagado» y el panel lee `fuentes.stock_watch_job`."""
+
+    P2 = {"stock_watch_enabled": False, "stock_watch_solo_registro": True, "stock_watch_fuente": "odoo",
+          "stock_watch_absoluto": True, "fanout_fuente": "woo"}
+
+    def test_el_modo_dice_apagado(self):
+        with mock.patch.multiple(sw.settings, **self.P2):
+            self.assertEqual(sw.estado()["modo"], "apagado (STOCK_WATCH_ENABLED=false)")
+        with mock.patch.multiple(sw.settings, **{**self.P2, "stock_watch_enabled": True}):
+            self.assertEqual(sw.estado()["modo"], "absoluto (Odoo master)")
+
+    def test_lo_que_lee_el_panel(self):
+        from services import fanout_fuentes, fanout_vivo
+        antes = dict(fanout_fuentes._estado)
+        self.addCleanup(lambda: (fanout_fuentes._estado.clear(), fanout_fuentes._estado.update(antes)))
+        with mock.patch.multiple(sw.settings, **self.P2),                 mock.patch.object(fanout_vivo.sdb, "fetch_one", return_value={}):
+            fanout_fuentes.al_arrancar(False)            # P2: el scheduler no registra el job
+            d = fanout_vivo._stock_watch("2026-10-22")
+        self.assertFalse(d["habilitado"])
+        self.assertEqual(d["modo"], "apagado (STOCK_WATCH_ENABLED=false)")
+        self.assertEqual(d["fuentes"]["stock_watch_job"], "apagado")
+
 # ── 14 · aviso por Slack y estado limpio ─────────────────────────────────────
 
 T0 = "2026-10-15T16:48:47Z"
@@ -367,6 +400,9 @@ class LectoresVivo(unittest.TestCase):
 
         parches = [
             mock.patch.multiple(sw.settings, stock_watch_fuente=fuente),
+            # Odoo «sigue igual» sólo si su última pasada terminó bien (v0.694.0): sin esto la
+            # prueba dependía del `_ultimo` que dejara otra prueba antes.
+            mock.patch.dict(sw._ultimo, {"ts": 1.0, "estado": "ok"} if fuente == "odoo" else {}, clear=True),
             mock.patch.multiple(fv.sdb, fetch_all=fetch_all, fetch_one=fetch_one),
             mock.patch.multiple(fv, reparto=lambda: [], _ahora_local=lambda: {"ahora": "2026-10-15 12:00:00"},
                                 _coincidencia=lambda rep: ([], []), _causas=lambda p, hoy: {},
@@ -385,7 +421,7 @@ class LectoresVivo(unittest.TestCase):
     def test_matriz_con_libro_no_marca_distinto_ni_lo_busca(self):
         fv = self._mundo("libro")
         m = fv.matriz()
-        self.assertEqual(m["odoo_rotulo"], CONGELADO)
+        self.assertEqual(m["odoo_rotulo"], ROTULO_PANEL)
         self.assertFalse(any("stock_odoo <> stock_woo" in s for s in self.sqls))
         self.assertEqual([(f["sku"], f["dif"], "distinto" in f["tags"]) for f in m["filas"]],
                          [("PRB-0001-AZL", False, False)])
@@ -393,7 +429,7 @@ class LectoresVivo(unittest.TestCase):
     def test_matriz_con_odoo_sigue_igual(self):
         fv = self._mundo("odoo")
         m = fv.matriz()
-        self.assertEqual(m["odoo_rotulo"], "Odoo")
+        self.assertEqual(m["odoo_rotulo"], ROTULO_PANEL)
         self.assertEqual(sorted((f["sku"], f["dif"]) for f in m["filas"]),
                          [("PRB-0001-AZL", True), ("PRB-0002-ROJ", True)])
 
@@ -402,7 +438,7 @@ class LectoresVivo(unittest.TestCase):
         r = fv._resumen()
         f = r["foto"]
         self.assertEqual((f["distintos"], f["distintos_por_ventas"], f["peor"]), (0, 0, None))
-        self.assertEqual((f["skus_odoo"], f["odoo_rotulo"], f["odoo_congelado"]), (5501, CONGELADO, "15-oct 18:34"))
+        self.assertEqual((f["skus_odoo"], f["odoo_rotulo"], f["odoo_congelado"]), (5501, ROTULO_PANEL, "15-oct 18:34"))
         self.assertFalse(any("Odoo distinto" in a["titulo"] for a in r["atender"]))
         self.assertFalse(any("limit 3000" in s for s in self.sqls))    # ni busca los distintos
 

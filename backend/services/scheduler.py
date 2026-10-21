@@ -495,21 +495,11 @@ def iniciar() -> None:
         log.info("Sondeo de ventas Walmart cada %s min (solo_registro=%s).",
                  settings.pedidos_walmart_sondeo_min,
                  settings.pedidos_walmart_solo_registro)
-    # Vigilante de Odoo: detecta cambios de qty_available (foto vs foto) y los
-    # avisa en la campana; con auto_push los empuja a Woo. Ver odoo_watch.py.
-    if settings.odoo_watch_enabled and settings.mysql_enabled:
-        from services import odoo_watch
-        _scheduler.add_job(
-            odoo_watch.revisar,
-            "interval",
-            minutes=settings.odoo_watch_min,
-            id="odoo_watch",
-            next_run_time=datetime.now() + timedelta(seconds=120),
-            max_instances=1,
-            coalesce=True,
-        )
-        log.info("Vigilante de Odoo cada %s min (auto_push=%s).",
-                 settings.odoo_watch_min, settings.odoo_watch_auto_push)
+    # El vigilante de Odoo (`odoo_watch`, foto de qty_available → campana y, con
+    # auto_push, el valor ABSOLUTO de Odoo a Woo) se RETIRÓ el 20-oct-2026 (1.9-c
+    # del plan de salida de Odoo/Woo): la API de Odoo se cortó el 15-oct y su
+    # empuje era una puerta para resucitar mercancía vendida. No hay job que lo
+    # reemplace: el stock lo vigila `stock_watch`.
     # Alta automática de SKUs nuevos de Odoo. Crea en Woo, como DRAFT, los SKUs
     # que existen en Odoo y faltan en la tienda — solo la identidad, sin
     # inventario (candado en woocommerce._borrador_wc). Era el único paso del
@@ -546,8 +536,29 @@ def iniciar() -> None:
     # FUENTE=odoo necesita MySQL (su foto y su `_asegurar_schema`); libro
     # viven sólo en kubera y no dependen de él.
     from services import stock_watch
-    if getattr(settings, "stock_watch_enabled", False) and (settings.mysql_enabled
-                                                           or stock_watch.fuente() != "odoo"):
+    # Antes de registrarlo: ¿STOCK_WATCH_FUENTE y FANOUT_FUENTE cuentan la misma historia?
+    # (services/fanout_fuentes.py). Incoherentes = CRITICAL en el log y aviso por Slack, y
+    # stock_watch NO se registra si su pasada correría (una fuente que conoce con un
+    # FANOUT_FUENTE que no casa); con una STOCK_WATCH_FUENTE que no conoce (`woo`, una
+    # errata) sí se registra: su pasada se niega sola. El fan-out por ventas sigue con su
+    # propio candado.
+    from services import alertas, fanout_fuentes
+    _sw_quiere = bool(getattr(settings, "stock_watch_enabled", False)
+                      and (settings.mysql_enabled or stock_watch.fuente() != "odoo"))
+    _sw_registrable = fanout_fuentes.al_arrancar(_sw_quiere)
+    # `avisa`: stock_watch quería correr, o T0 sin encolar (avisa aunque esté apagado).
+    if fanout_fuentes.estado().get("avisa") and alertas.disponible():
+
+        async def _avisar_fuentes() -> None:
+            await asyncio.to_thread(fanout_fuentes.avisar)   # regla 11: el candado lee la base
+
+        _scheduler.add_job(
+            _avisar_fuentes,
+            "date",
+            run_date=datetime.now(timezone.utc) + timedelta(seconds=30),
+            id="fanout_fuentes_aviso",
+        )
+    if _sw_quiere and _sw_registrable:
         _scheduler.add_job(
             stock_watch.revisar,
             "interval",
@@ -888,7 +899,8 @@ def iniciar() -> None:
     # los 1800 s, así que preguntando «¿ya venció?» la encontraría con 29 min y
     # medio y se saltaría una vuelta entera — la foto viviría una hora.
     #
-    # +210 s: después de sync (30), odoo_watch (120) y stock_watch (180), para
+    # +210 s: después de sync (30) y stock_watch (180) —y de lo que fue odoo_watch
+    # (120), retirado el 20-oct—, para
     # que el primer golpe a Odoo tras un deploy no caiga encima de los otros.
     if settings.inventario_flujo_enabled and settings.odoo_url:
         from services import inventario_flujo

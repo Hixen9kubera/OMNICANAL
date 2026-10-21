@@ -18,6 +18,12 @@ no corre esos procesos, como el del sandbox), se deduce de la bitácora.
 
 La página pregunta cada pocos segundos. Los agregados (24 h, 17 días, la foto)
 van con caché de 20 s; los eventos nuevos van siempre frescos por `desde_id`.
+
+SALIDA DE ODOO Y DE WOO (ruta directa, 20-oct): Odoo salió de la operación el 15-oct
+y su columna se rotula FIJA (`ODOO_ROTULO`); con `FANOUT_FUENTE=kubera` el número que
+se reparte es el vendible del libro (`stock_rotulo()` = «Libro de kubera») y stock_watch
+anota `vendible_cambio`. Los cambios de stock_watch se leen SIEMPRE con
+`stock_watch.ACCIONES_CAMBIO` como parámetro (`accion = any(%(acc)s)`, `_acc_cambio`).
 """
 from __future__ import annotations
 
@@ -34,7 +40,11 @@ from services import supabase_db as sdb
 log = logging.getLogger("omnicanal.fanout_vivo")
 
 _ZONA = "America/Mexico_City"
-_ACC_FANOUT = ["escribir", "omitir", "sin_cambio", "sin_destinos"]
+# `sin_numero` (el SKU sin número: `fanout_stock.plan`; hoy sólo leyendo Woo, con el libro
+# un SKU desconocido vale 0) era `sin_destinos` hasta que tuvo
+# acción propia: aquí sigue siendo un evento del fan-out (la matriz no lo pinta como
+# «cambio perdido»). Quien sí la separa es el recuperador (`fanout_recuperar._ACC_SIN_REPARTIR`).
+_ACC_FANOUT = ["escribir", "omitir", "sin_cambio", "sin_destinos", "sin_numero"]
 # Las filas del seguro «stock 0 ⇒ fuera de la venta» (`fanout_seguro`). Llevan el
 # mismo `ts` del cambio que las produjo, así que se juntan con él por (sku, ts);
 # las del barrido de después del censo forman su propio renglón. NO cuentan como
@@ -72,6 +82,166 @@ COLUMNAS = [
 ]
 _MESES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
 _FLECHA = re.compile(r"(-?\d+)\s*->\s*(-?\d+)")
+# El resultado de un `vendible_sin_numero` VIEJO («N -> sin número (nada que repartir: …)»):
+# la versión D3 del libro lo anotaba cuando el libro dejaba de traer un SKU. Desde D4 ya no
+# se anota (puede quedar en la bitácora; filas nuevas no habrá). `_FLECHA` no lo casa a
+# propósito: no fue un cambio que se repartiera.
+_A_SIN_NUMERO = re.compile(r"(-?\d+)\s*->\s*sin\s+n")
+
+# ── Rótulos de la salida de Odoo y de Woo ───────────────────────────────────
+# Odoo salió de TODA la operación el 15-oct-2026 (API bloqueada a propósito; última
+# actividad de stock 16:48:47 UTC, la lectura truncada de stock_watch 18:34 UTC). Su
+# rótulo es FIJO y no depende de `stock_watch.odoo_vivo()`: ningún número de Odoo en
+# pantalla vuelve a pasar por vivo (contrato con el panel, 20-oct).
+ODOO_ROTULO = "Odoo (congelado al 15-oct)"
+_CONTRA_ODOO = "Comparación contra Odoo congelado al 15-oct"
+# La foto de stock_watch que ya nadie mueve: desde el 15-oct la pasada de Odoo aborta (era
+# la única que escribía `stock_woo`) y la del libro sólo escribe `stock_kubera` (ver
+# `_foto_vendible`).
+FOTO_CONGELADA = "foto del 15-oct"
+_FOTO_LIBRO_QUIETA = "foto sin pasada del libro"
+# Desde cuándo la foto de Woo ya no se mueve (la lectura truncada de stock_watch, 15-oct
+# 18:34 UTC). Con la foto quieta, lo que el fan-out leyó DESPUÉS de esto es más nuevo que
+# ella, sea de hace una hora o de hace una semana: la ventana de 3 días de la lectura del
+# fan-out sólo vale con una foto que se mueve. Constante del módulo: va al SQL tal cual.
+_FOTO_QUIETA_DESDE = "2026-10-15 18:34:00+00"
+# D4 en los lectores: con el fan-out en el libro y la pasada del libro corriendo, un SKU
+# que la ÚLTIMA pasada no tocó (sin `stock_kubera`, sin fila en la foto o con un
+# `actualizado` anterior a esa pasada) es un SKU que el libro no trae: el fan-out le
+# reparte 0 (`stock_libro.numero`). Un NULL que la última pasada SÍ selló es otra cosa (la
+# sombra conserva el valor viejo de lo que no repartió): ése sigue sin número.
+LIBRO_NO_LO_TRAE = "el libro no lo trae → 0"
+# El motivo con que stock_watch (FUENTE=libro) encola un cambio del vendible.
+MOTIVO_LIBRO = "cambio de vendible en kubera"
+# D4: el SKU que SALE del libro es un `vendible_cambio` a 0 y su motivo lo dice
+# («vendible X -> 0 (libro: no lo trae)», `stock_watch._pasada_libro`).
+SALE_DEL_LIBRO = "(libro: no lo trae)"
+TXT_SALE_DEL_LIBRO = "El libro no trae el SKU → 0"
+_TXT_SIN_NUMERO_VIEJO = "El libro ya no trae el SKU → sin número"
+# Los estados de `stock_watch.estado()` con los que la pasada SÍ terminó su trabajo;
+# cualquier otro (Odoo mudo, libro ilegible, freno, bitácora apagada, fuente
+# desconocida…) es una pasada que abortó sin repartir.
+_PASADA_TERMINO = ("ok", "foto_base")
+
+
+def stock_rotulo() -> str:
+    """De dónde sale el número que reparte el fan-out: «Libro de kubera» con
+    `FANOUT_FUENTE=kubera` (y con una errata: el fan-out se niega antes que leer Woo),
+    si no «Woo». Sólo lee la configuración (`stock_libro.lee_libro`)."""
+    from services import stock_libro
+    return "Libro de kubera" if stock_libro.lee_libro() else "Woo"
+
+
+def _lee_libro() -> bool:
+    return stock_rotulo() != "Woo"
+
+
+def _fuente_txt() -> str:
+    """El número contra el que se comparan los canales, dentro de una frase."""
+    return "el libro" if _lee_libro() else "Woo"
+
+
+def _ya_tiene(n: Any) -> str:
+    """«Woo ya tiene N» / «Libro de kubera ya tiene N»: con `stock_rotulo` (contrato
+    con el panel)."""
+    return f"{stock_rotulo()} ya tiene {_n(n)}"
+
+
+def _acc_cambio() -> list[str]:
+    """`stock_watch.ACCIONES_CAMBIO` para pasarla como PARÁMETRO (`accion = any(%(acc)s)`):
+    la lista vive en un solo lugar (acuerdo con WOO SALIDA). `vendible_registro` (sombra)
+    y los `*_sin_numero` no están: no son cambios que se repartan."""
+    from services import stock_watch
+    return list(stock_watch.ACCIONES_CAMBIO)
+
+
+def _reparto_sin_numero(filas: list[dict]) -> bool:
+    """¿El reparto se quedó SIN NÚMERO? La rama None de `fanout_stock.plan` (sólo con Woo:
+    el `_stock` no se pudo leer) no reparte y su único renglón es un `sin_destinos` con
+    «sin stock legible en …»; una acción `sin_numero` explícita cuenta igual."""
+    return any(f.get("accion") == "sin_numero"
+               or (f.get("accion") == "sin_destinos"
+                   and str(f.get("resultado") or "").startswith("sin stock legible"))
+               for f in filas)
+
+
+def _origen_accion(accion: str) -> str:
+    """El origen de un renglón de stock_watch (canal 'woocommerce') en la trazabilidad."""
+    return {"odoo_delta": "odoo", "vendible_cambio": "libro",
+            "vendible_sin_numero": "libro"}.get(accion, "woo")
+
+
+def _sale_del_libro(motivo: Any) -> bool:
+    """¿Es el `vendible_cambio` a 0 de un SKU que el libro dejó de traer (D4)?"""
+    return SALE_DEL_LIBRO in str(motivo or "")
+
+
+def _pasada_odoo_viva() -> bool:
+    """¿Hay PRUEBA de que la pasada de Odoo de este proceso terminó su trabajo (y con ella
+    se movieron `stock_odoo` y `stock_woo` de la foto)? Sólo con `STOCK_WATCH_FUENTE=odoo`
+    y la última pasada en memoria en `ok`/`foto_base`. Desde el 15-oct la API de Odoo
+    rechaza la cuenta y cada pasada aborta: esto es Falso, y sin memoria (el backend del
+    sandbox no corre stock_watch) también. Sin red ni disco."""
+    from services import stock_watch
+    if stock_watch.fuente() != "odoo":
+        return False
+    est = stock_watch.estado()
+    return bool(est.get("ts")) and est.get("estado") in _PASADA_TERMINO
+
+
+def _odoo_comparable() -> bool:
+    """¿Comparar contra la columna Odoo de la foto puede dar alarma o verde? Sólo si la
+    pasada de Odoo de verdad la movió (`_pasada_odoo_viva`) y el fan-out lee Woo. Si no
+    —el libro, la pasada de Odoo abortando desde el 15-oct o nada en memoria— es una
+    comparación contra Odoo congelado al 15-oct: se enseña como dato rotulado
+    (`contra_odoo`), ni como pendiente ni como «va bien» (riesgo 16: falso verde)."""
+    return _pasada_odoo_viva() and not _lee_libro()
+
+
+def _foto_vendible() -> tuple[str, bool]:
+    """(columna de la foto con el número que reparte el fan-out, ¿la mueve stock_watch?).
+
+    `stock_kubera` con el libro (la escribe la pasada `libro`: se mueve con
+    `STOCK_WATCH_FUENTE=libro`) y `stock_woo` con Woo (la escribía sólo la pasada de
+    Odoo, que aborta desde el 15-oct: quedó en la lectura de las 18:34 salvo prueba en
+    contrario, `_pasada_odoo_viva`). Cuando no se mueve, la foto se rotula como tal
+    (`_rotulo_foto`) y lo que leyó el fan-out le gana."""
+    from services import stock_watch, stock_watch_read
+    col = stock_watch_read.columna_vendible()
+    if col == "stock_kubera":
+        return col, stock_watch.fuente() == "libro"
+    return col, _pasada_odoo_viva()
+
+
+def _rotulo_foto(col: str) -> str:
+    return FOTO_CONGELADA if col == "stock_woo" else _FOTO_LIBRO_QUIETA
+
+
+def _d4(vend: tuple[str, bool]) -> bool:
+    """¿Lo que el libro no trae vale 0 en la comparación? Sólo con el fan-out en el libro
+    (`stock_kubera`) y la pasada del libro moviendo la foto: sin pasada no se sabe qué
+    trae el libro."""
+    return vend[0] == "stock_kubera" and vend[1]
+
+
+def _pasada_libro(vend: tuple[str, bool]) -> datetime | None:
+    """El instante de la última pasada del libro (`actualizado` de lo que selló con número;
+    cada pasada sella todo lo que lee con UN instante). None si no aplica (`_d4`) o si
+    nunca hubo pasada. Solo lee."""
+    if not _d4(vend):
+        return None
+    f = sdb.fetch_one("""select max(actualizado) as t from ops.stock_watch_photo
+                          where stock_kubera is not null""") or {}
+    return f.get("t")
+
+
+def _libro_no_lo_trae(ft: dict, vend: tuple[str, bool], pasada: datetime | None) -> bool:
+    """¿Este renglón de la foto es un SKU que el libro no trae (→ 0, D4)? Ver
+    `LIBRO_NO_LO_TRAE`."""
+    if not _d4(vend) or pasada is None or ft.get(vend[0]) is not None:
+        return False
+    act = ft.get("actualizado")
+    return act is None or act < pasada
 
 
 # ── Utilidades ──────────────────────────────────────────────────────────────
@@ -236,7 +406,9 @@ def _tono(celdas: dict[str, dict]) -> str:
 
 
 def _origen(motivo: str, woo: dict | None) -> tuple[str, str, int | None, int | None]:
-    """De dónde vino el cambio y qué se movió en Woo."""
+    """De dónde vino el cambio y qué se movió en Woo (o en el vendible del libro: con
+    `STOCK_WATCH_FUENTE=libro` el motivo del encolado empieza con `MOTIVO_LIBRO` y la
+    flecha es la del RESULTADO del `vendible_cambio`)."""
     antes = despues = None
     if woo:
         m = _FLECHA.search(str(woo.get("resultado") or ""))
@@ -249,6 +421,9 @@ def _origen(motivo: str, woo: dict | None) -> tuple[str, str, int | None, int | 
     if mot.startswith("cambio de stock en Woo"):
         txt = f"Woo {antes} → {despues}" if antes is not None else "cambio en Woo"
         return "woo", txt, antes, despues
+    if mot.startswith(MOTIVO_LIBRO):
+        txt = f"Vendible {antes} → {despues}" if antes is not None else "cambio del vendible"
+        return "libro", txt, antes, despues
     if mot.startswith("excedente:"):
         canal = {"tiktok": "TikTok", "temu": "Temu"}.get(mot.split(":", 1)[1], mot.split(":", 1)[1])
         return "otro", f"{canal} ofrecía de más", None, None
@@ -265,9 +440,11 @@ def _origen(motivo: str, woo: dict | None) -> tuple[str, str, int | None, int | 
 # ── Eventos (horario de cambios) ─────────────────────────────────────────────
 
 def _woo_de(eventos: list[dict]) -> dict[tuple[str, Any], dict]:
-    """El renglón de stock_watch (Odoo→Woo o cambio en Woo) que disparó cada cambio."""
+    """El renglón de stock_watch (Odoo→Woo, cambio en Woo o cambio del vendible del
+    libro) que disparó cada cambio."""
     pares = [(e["sku"], e["ts"]) for e in eventos
-             if str(e.get("motivo") or "").startswith(("delta de Odoo", "cambio de stock en Woo"))]
+             if str(e.get("motivo") or "").startswith(("delta de Odoo", "cambio de stock en Woo",
+                                                        MOTIVO_LIBRO))]
     if not pares:
         return {}
     filas = sdb.fetch_all(
@@ -278,10 +455,10 @@ def _woo_de(eventos: list[dict]) -> dict[tuple[str, Any], dict]:
              join lateral (
                    select w.ts, w.accion, w.resultado from ops.fanout_log w
                     where w.sku::text = e.sku and w.canal = 'woocommerce'
-                      and w.accion in ('odoo_delta', 'woo_cambio')
+                      and w.accion = any(%(acc)s)
                       and w.ts <= e.ts and w.ts > e.ts - interval '45 minutes'
                     order by w.ts desc limit 1) w on true""",
-        {"z": _ZONA, "s": [p[0] for p in pares], "t": [p[1] for p in pares]})
+        {"z": _ZONA, "s": [p[0] for p in pares], "t": [p[1] for p in pares], "acc": _acc_cambio()})
     return {(f["sku"], f["ts"]): f for f in filas}
 
 
@@ -431,6 +608,14 @@ _VERIFICADO = "verificado en vivo"
 
 # Publicaciones A LA VENTA en el reparto (sin FULL), con su valor más reciente:
 # lo usan las barras de coincidencia y la lista completa de la matriz.
+#
+# El número contra el que se comparan (`stock_woo`, nombre que la página ya lee) es el de
+# `_woo_vigente`: lo que el fan-out leyó al repartir (`r`) o la columna de la foto que
+# reparte ({FOTO}), lo más nuevo; con la foto quieta (`{FOTO_VIVA}` false) la lectura le
+# gana siempre y se busca desde que la foto se quedó quieta (`{R_DESDE}`), no sólo en 3
+# días. Con el libro (D4) lo que el libro no trae vale 0 (`{NO_TRAE}`): la foto va con
+# `left join` —un SKU que nunca entró al libro puede no tener fila— y se descarta sólo la
+# publicación SIN número (ni lectura ni foto), no la que tiene la columna vacía.
 _SQL_VIVAS = """
         with w as (
           select distinct on (sku, canal) sku::text as sku, canal, ts,
@@ -446,66 +631,106 @@ _SQL_VIVAS = """
              and ts > now() - interval '3 days'
            order by sku, canal, ts desc, id desc),
         r as (
-          -- Lo último que el fan-out leyó de Woo (en vivo, en cada venta o cambio).
+          -- Lo último que el fan-out leyó (en vivo, en cada venta o cambio): de Woo, o del
+          -- libro con `FANOUT_FUENTE=kubera` (`stock_drop` es lo que repartió).
           select distinct on (sku) sku::text as sku, ts, stock_drop
             from ops.fanout_log
            where stock_drop is not null and coalesce(canal, '') <> 'woocommerce'
-             and ts > now() - interval '3 days'
+             and ts > {R_DESDE}
            order by sku, ts desc, id desc),
-        v as (
+        lp as (
+          -- La última pasada del libro (sólo cuenta con el libro en marcha: `_d4`).
+          select max(actualizado) as t from ops.stock_watch_photo where {LP_FILTRO}),
+        v0 as (
           select l.canal, l.sku::text as sku, a.label as cuenta, a.legacy_code as cuenta_codigo,
                  l.status, l.situacion,
-                 -- Woo vigente: la foto de stock_watch (cada 20 min) o, si es más nueva, la
-                 -- lectura del fan-out (= `_woo_vigente`).
-                 case when r.ts is not null and r.ts > p.actualizado then r.stock_drop
-                      else p.stock_woo end as stock_woo,
+                 case when r.ts is not null and ({NUM_TS} is null or r.ts > {NUM_TS} or not {FOTO_VIVA})
+                      then r.stock_drop else {NUM} end as stock_woo,
+                 (r.ts is null or ({NUM_TS} is not null and r.ts <= {NUM_TS} and {FOTO_VIVA})) as de_foto,
+                 ({NO_TRAE} and (r.ts is null or r.ts <= {NUM_TS})) as no_trae,
                  case when w.ts is not null and w.ts > l.updated_at then w.objetivo
                       else l.stock_own end as valor
             from channel.listings l
-            join ops.stock_watch_photo p on p.sku = l.sku
+            left join ops.stock_watch_photo p on p.sku = l.sku
+            cross join lp
             left join core.accounts a on a.id = l.account_id
             left join w on w.sku = l.sku::text and w.canal = l.canal
             left join r on r.sku = l.sku::text
            where l.canal = any(%(c)s)
              and coalesce(l.is_fulfillment, false) = false
              and coalesce(l.logistic_type, '') <> 'fulfillment'
-             and l.stock_own is not null and p.stock_woo is not null
+             and l.stock_own is not null
              and ((l.canal = 'tiktok' and l.status = 'ACTIVATE')
                or (l.canal = 'temu' and l.status = '2/8')   -- = _TEMU_A_LA_VENTA
-               or (l.canal = 'mercado_libre' and l.situacion = 'active')))"""
+               or (l.canal = 'mercado_libre' and l.situacion = 'active'))),
+        v as (select * from v0 where stock_woo is not null)"""
+
+
+def _sql_vivas() -> tuple[str, bool]:
+    """`_SQL_VIVAS` con la columna de la foto que reparte el fan-out, si esa foto se mueve
+    (`_foto_vendible`) y, con el libro en marcha (`_d4`), el 0 de lo que el libro no trae.
+    Todas las piezas son fijas de este módulo, no del usuario."""
+    col, viva = _foto_vendible()
+    if _d4((col, viva)):
+        no_trae = "(p.stock_kubera is null and lp.t is not null and (p.actualizado is null or p.actualizado < lp.t))"
+        num = f"case when {no_trae} then 0 else p.stock_kubera end"
+        num_ts = f"case when {no_trae} then lp.t else p.actualizado end"
+        lp = "stock_kubera is not null"
+    else:
+        no_trae, num, num_ts, lp = "false", f"p.{col}", "p.actualizado", "false"
+    sql = (_SQL_VIVAS.replace("{NO_TRAE}", no_trae).replace("{NUM_TS}", num_ts).replace("{NUM}", num)
+           .replace("{LP_FILTRO}", lp).replace("{FOTO_VIVA}", "true" if viva else "false")
+           .replace("{R_DESDE}", "now() - interval '3 days'" if viva
+                    else f"timestamptz '{_FOTO_QUIETA_DESDE}'"))
+    return sql, viva
 
 
 def _skus_vivos(rep: list[str]) -> list[str]:
     """Todos los SKUs con al menos una publicación a la venta en el reparto."""
-    return [f["sku"] for f in sdb.fetch_all(_SQL_VIVAS + " select distinct sku from v order by sku", {"c": rep})]
+    return [f["sku"] for f in sdb.fetch_all(_sql_vivas()[0] + " select distinct sku from v order by sku",
+                                            {"c": rep})]
 
 
 def _coincidencia(rep: list[str]) -> tuple[list[dict], list[dict]]:
-    """Publicaciones A LA VENTA de cada canal contra Woo. El valor de cada una es
+    """Publicaciones A LA VENTA de cada canal contra el número que reparte el fan-out
+    (Woo, o el libro con `FANOUT_FUENTE=kubera`). El valor de cada una es
     el más reciente entre el censo del canal y la última escritura buena del
     fan-out (el censo de Temu pasa cada 4 h; sin esto, un cambio ya escrito
     parecería una diferencia). Devuelve el conteo por canal y TODAS las que no
-    coinciden (de más y de menos)."""
-    base = _SQL_VIVAS
+    coinciden (de más y de menos). `foto_congelada`: cuántas se compararon contra una
+    foto que ya nadie mueve (`FOTO_CONGELADA`); cada distinta lleva el suyo.
+    `libro_no_trae`: cuántas se compararon contra el 0 de un SKU que el libro no trae
+    (D4, `LIBRO_NO_LO_TRAE`): van en los conteos —un canal que ofrece piezas de un SKU
+    que el libro no tiene ofrece de más— y aparte, para que se vean; cada distinta lleva
+    el suyo."""
+    base, viva = _sql_vivas()
     conteo = sdb.fetch_all(base + """
         select canal, count(*) as vivas,
                count(*) filter (where valor = stock_woo) as iguales,
                count(*) filter (where valor > stock_woo) as de_mas,
-               count(*) filter (where valor < stock_woo) as de_menos
+               count(*) filter (where valor < stock_woo) as de_menos,
+               count(*) filter (where de_foto) as de_foto,
+               count(*) filter (where no_trae) as no_trae
           from v group by canal""", {"c": rep})
     # Primero las que ofrecen de MÁS (riesgo de vender lo que no hay) y, entre
     # ellas, las que tienen Woo en 0; luego las de menos.
     distintas = sdb.fetch_all(base + """
-        select canal, sku, cuenta, cuenta_codigo, status, situacion, valor, stock_woo from v
+        select canal, sku, cuenta, cuenta_codigo, status, situacion, valor, stock_woo, de_foto, no_trae from v
          where valor <> stock_woo
          order by (valor > stock_woo) desc, (stock_woo = 0) desc, abs(valor - stock_woo) desc""",
         {"c": rep})
+    for d in distintas:
+        d["foto_congelada"] = bool(d.pop("de_foto", False)) and not viva
+        d["libro_no_trae"] = bool(d.pop("no_trae", False))
     por = {f["canal"]: f for f in conteo}
     return [{"canal": c, "nombre": _NOMBRE.get(c, c),
              "vivas": int((por.get(c) or {}).get("vivas") or 0),
              "iguales": int((por.get(c) or {}).get("iguales") or 0),
              "de_mas": int((por.get(c) or {}).get("de_mas") or 0),
-             "de_menos": int((por.get(c) or {}).get("de_menos") or 0)} for c in rep], distintas
+             "de_menos": int((por.get(c) or {}).get("de_menos") or 0),
+             "foto_congelada": 0 if viva else int((por.get(c) or {}).get("de_foto") or 0),
+             "libro_no_trae": int((por.get(c) or {}).get("no_trae") or 0)}
+            for c in rep], distintas
 
 
 # ── Ventas sin orden en Odoo ─────────────────────────────────────────────────
@@ -556,45 +781,76 @@ def _explicado(odoo: Any, woo: Any, so: dict | None) -> bool:
     return stock_watch.resta_pendientes() and int(woo) == max(0, int(odoo) - int(so["piezas"]))
 
 
-def _odoo_rotulo() -> str:
-    """«Odoo», o «Odoo (congelado al …)» cuando stock_watch ya no lee Odoo."""
-    from services import stock_watch
-    return stock_watch.odoo_rotulo()
+def _rotulos() -> dict[str, str]:
+    """Lo que acompaña a todo lector que pinta la columna Odoo (contrato con el panel):
+    `odoo_rotulo` siempre `ODOO_ROTULO` —Odoo salió de la operación el 15-oct; antes
+    decía «Odoo» a secas con `STOCK_WATCH_FUENTE=odoo`— y `stock_rotulo`."""
+    return {"odoo_rotulo": ODOO_ROTULO, "stock_rotulo": stock_rotulo()}
 
 
-def _woo_leido(skus: list[str]) -> dict[str, dict[str, Any]]:
-    """Por SKU: lo último que el fan-out leyó de Woo (en vivo, en cada venta o cambio;
-    `stock_drop` en la bitácora), de los últimos 3 días. Solo lee."""
+def _woo_leido(skus: list[str], foto_viva: bool | None = None) -> dict[str, dict[str, Any]]:
+    """Por SKU: lo último que el fan-out leyó (en vivo, en cada venta o cambio;
+    `stock_drop` en la bitácora: de Woo, o del libro con `FANOUT_FUENTE=kubera`), de los
+    últimos 3 días. Con la foto quieta (`foto_viva` False) desde que se quedó quieta
+    (`_FOTO_QUIETA_DESDE`): una lectura de hace 5 días sigue siendo más nueva que ella, y
+    sin eso la venta del 16-oct volvía a compararse contra el número del 15-oct. Sin
+    `foto_viva`, la de `_foto_vendible` (memoria y configuración). Solo lee."""
     if not skus:
         return {}
+    if foto_viva is None:
+        foto_viva = _foto_vendible()[1]
+    desde = "now() - interval '3 days'" if foto_viva else f"timestamptz '{_FOTO_QUIETA_DESDE}'"
     return {f["sku"]: f for f in sdb.fetch_all(
         """select distinct on (sku) sku::text as sku, ts, stock_drop as valor,
                   to_char(ts at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as hora
              from ops.fanout_log
             where sku::text = any(%(s)s) and stock_drop is not null
-              and coalesce(canal, '') <> 'woocommerce' and ts > now() - interval '3 days'
+              and coalesce(canal, '') <> 'woocommerce' and ts > """ + desde + """
             order by sku, ts desc, id desc""", {"z": _ZONA, "s": list(skus)})}
 
 
-def _woo_vigente(ft: dict, leido: dict | None, hoy: str) -> tuple[Any, str]:
-    """El Woo contra el que se compara: el más reciente entre la foto de stock_watch
-    (cada 20 min) y lo último que leyó el fan-out. Justo después de una venta la foto
-    todavía no se entera y el canal, ya escrito, parecería «cambió el canal».
-    Devuelve (valor, de dónde salió)."""
+def _woo_vigente(ft: dict, leido: dict | None, hoy: str,
+                 vend: tuple[str, bool] | None = None,
+                 pasada_libro: datetime | None = None) -> tuple[Any, str]:
+    """El número contra el que se compara (Woo, o el vendible del libro): el más reciente
+    entre la foto de stock_watch (cada 20 min) y lo último que leyó el fan-out. Justo
+    después de una venta la foto todavía no se entera y el canal, ya escrito, parecería
+    «cambió el canal». Devuelve (valor, de dónde salió).
+
+    De la foto se toma la columna que reparte el fan-out (`_foto_vendible`; `vend` la
+    trae ya resuelta). Si esa foto ya no se mueve —con `STOCK_WATCH_FUENTE=odoo` la pasada
+    aborta desde el 15-oct; con `libro` no escribe `stock_woo`—, cualquier lectura del
+    fan-out le gana aunque su `actualizado` sea más nuevo (lo reescribe cada pasada, toque
+    o no esa columna) y, si sólo queda la foto, se rotula `FOTO_CONGELADA`: su sello diría
+    «foto hoy 10:20» sobre un número del 15-oct.
+
+    Con el libro en marcha (D4), un SKU que la última pasada del libro (`pasada_libro`,
+    ver `_pasada_libro`) no tocó vale 0 a partir de esa pasada (`LIBRO_NO_LO_TRAE`): es lo
+    que el fan-out le reparte. Una lectura del fan-out posterior le gana igual."""
+    col, viva = vend or _foto_vendible()
     foto_ts = ft.get("actualizado")
-    if leido and leido.get("valor") is not None and (foto_ts is None or leido["ts"] > foto_ts):
+    no_trae = _libro_no_lo_trae(ft, (col, viva), pasada_libro)
+    if no_trae:
+        foto_ts = pasada_libro
+    if leido and leido.get("valor") is not None and (not viva or foto_ts is None or leido["ts"] > foto_ts):
         return int(leido["valor"]), f"leído {_fecha(leido['hora'], hoy)}"
-    return ft.get("stock_woo"), (f"foto {_fecha(ft['foto_hora'], hoy)}" if ft.get("foto_hora") else "foto")
+    if no_trae:
+        return 0, LIBRO_NO_LO_TRAE
+    if not viva:
+        return ft.get(col), _rotulo_foto(col)
+    return ft.get(col), (f"foto {_fecha(ft['foto_hora'], hoy)}" if ft.get("foto_hora") else "foto")
 
 
 def _foto(odoo_vivo: bool = True) -> dict[str, Any]:
     """Los conteos de la foto de stock_watch para el Dashboard (CadenaViva).
 
-    Con `odoo_vivo=False` (`STOCK_WATCH_FUENTE` woo/libro) el Odoo de la foto está
-    congelado al 15-oct 18:34 —y a medias—: comparar Woo contra él ya no dice nada.
-    Cada `woo_cambio` sumaría un «distinto de Odoo» falso (el 15-oct había 5,498 SKUs
-    con los dos números), así que `distintos` y lo que de ahí sale van en 0 y el
-    rótulo lo dice. `skus_odoo` se queda: es lo que hay congelado."""
+    Con `odoo_vivo=False` (`STOCK_WATCH_FUENTE` woo/libro, o el fan-out en el libro: ver
+    `_odoo_comparable`) el Odoo de la foto está congelado al 15-oct 18:34 —y a medias—:
+    comparar Woo contra él ya no dice nada. Cada `woo_cambio` sumaría un «distinto de
+    Odoo» falso (el 15-oct había 5,498 SKUs con los dos números), así que `distintos` y
+    lo que de ahí sale van en 0 —ni alarma ni verde— y los conteos crudos viajan aparte,
+    en `contra_odoo`, rotulados como comparación contra Odoo congelado. `skus_odoo` se
+    queda: es lo que hay congelado. `odoo_rotulo` es fijo (`ODOO_ROTULO`)."""
     from services import stock_watch
     f = sdb.fetch_one(
         """select count(*) filter (where stock_odoo is not null) as skus_odoo,
@@ -607,13 +863,16 @@ def _foto(odoo_vivo: bool = True) -> dict[str, Any]:
                     as piezas_sin_odoo,
                   to_char(max(actualizado) at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as ultima
              from ops.stock_watch_photo""", {"z": _ZONA}) or {}
-    rotulo = {"odoo_rotulo": stock_watch.odoo_rotulo(),
-              "odoo_congelado": None if odoo_vivo else stock_watch.ODOO_CONGELADO}
+    rotulo = {**_rotulos(), "odoo_congelado": None if odoo_vivo else stock_watch.ODOO_CONGELADO}
     if not odoo_vivo:
-        return {**{k: (int(v) if isinstance(v, (int, float)) or (isinstance(v, str) and v.isdigit()) else v)
-                   for k, v in f.items()},
+        crudo = {k: (int(v) if isinstance(v, (int, float)) or (isinstance(v, str) and v.isdigit()) else v)
+                 for k, v in f.items()}
+        return {**crudo,
                 "distintos": 0, "distintos_por_ventas": 0, "sin_odoo_con_piezas": 0, "piezas_sin_odoo": 0,
-                "peor": None, **rotulo}
+                "peor": None, **rotulo,
+                "contra_odoo": {"rotulo": _CONTRA_ODOO,
+                                **{k: int(crudo.get(k) or 0) for k in
+                                   ("ambos", "distintos", "sin_odoo_con_piezas", "piezas_sin_odoo")}}}
     # Lo que explican las ventas sin orden se separa de lo que no; `peor` es el
     # mayor SIN explicar (el que de verdad hay que mirar).
     dif = sdb.fetch_all(
@@ -631,29 +890,95 @@ def _foto(odoo_vivo: bool = True) -> dict[str, Any]:
 def _stock_watch(hoy: str) -> dict[str, Any]:
     """La última pasada. En producción vive en la memoria del proceso; si este
     proceso no corre stock_watch, se deduce de la bitácora (que solo anota
-    pasadas CON cambios — un silencio no dice si hubo pasada)."""
-    from services import stock_watch
+    pasadas CON cambios — un silencio no dice si hubo pasada).
+
+    Los cambios son los de `stock_watch.ACCIONES_CAMBIO` (`odoo_delta`, `woo_cambio`,
+    `vendible_cambio`): `cambios` = odoo_deltas + woo_cambios + vendible_cambios. Un
+    `vendible_registro` (el libro en sombra: `STOCK_WATCH_SOLO_REGISTRO` o el fan-out
+    todavía en Woo) NO es un cambio repartido: va aparte, en `vendible_registro`.
+    `vendible_sin_numero` (nombre del contrato): cuántos SKUs salieron del libro y se
+    fueron a 0 en esa pasada (D4: un `vendible_cambio` con «(libro: no lo trae)»). En
+    sombra es 0, como `vendible_cambios`: esa salida tampoco se repartió (va en
+    `vendible_registro`). Una pasada que ABORTÓ (`aborta`; el freno deja en memoria lo
+    que habría movido) no repartió nada: sus conteos van en 0 y lo que pasó, en `nota`.
+    `fuente` es la de stock_watch y `fuente_fanout` la de `stock_libro.fuente_fanout()`
+    (con una errata, None y el error en `fuente_fanout_error`). `estado`/`aborta`/`nota`:
+    cómo terminó la última pasada de este proceso; desde el 15-oct, con FUENTE=odoo,
+    cada pasada aborta en silencio y esto es lo que lo deja ver. `fuentes` y `lectura`:
+    `fanout_fuentes.estado()` y `fanout_stock.lectura_estado()` (ver `_estados_opcionales`)."""
+    from services import stock_libro, stock_watch
     est = stock_watch.estado()
     d = sdb.fetch_one(
         """with u as (select max(ts) as t from ops.fanout_log
-                       where canal = 'woocommerce' and accion in ('odoo_delta', 'woo_cambio'))
+                       where canal = 'woocommerce' and accion = any(%(acc)s)),
+                p as (select l.accion, coalesce(l.motivo, '') as motivo from ops.fanout_log l, u
+                       where l.canal = 'woocommerce' and l.accion = any(%(acc)s)
+                         and l.ts > u.t - interval '3 minutes')
            select to_char(u.t at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as ultimo,
-                  (select count(*) from ops.fanout_log
-                    where canal = 'woocommerce' and accion in ('odoo_delta', 'woo_cambio')
-                      and ts > u.t - interval '3 minutes') as cambios
-             from u""", {"z": _ZONA}) or {}
+                  (select count(*) from p) as cambios,
+                  (select count(*) from p where accion = %(vend)s) as vendible_cambios,
+                  (select count(*) from p where accion = %(vend)s and strpos(motivo, %(sale)s) > 0)
+                    as vendible_sin_numero
+             from u""",
+        {"z": _ZONA, "acc": _acc_cambio(), "vend": "vendible_cambio", "sale": SALE_DEL_LIBRO}) or {}
     en_memoria = bool(est.get("ts"))
+    try:
+        fuente_fanout, fuente_fanout_error = stock_libro.fuente_fanout(), None
+    except stock_libro.LibroNoDisponible as exc:
+        fuente_fanout, fuente_fanout_error = None, str(exc)
+    if en_memoria:
+        # La pasada del libro en sombra anota `vendible_registro` y aun así guarda
+        # `vendible_cambios` = lo que movió: no se repartió, no es un cambio.
+        sombra = bool(est.get("solo_registra"))
+        vend = int(est.get("vendible_cambios") or 0)
+        vendible_cambios, vendible_registro = (0, vend) if sombra else (vend, 0)
+        vendible_sin_numero = 0 if sombra else int(est.get("vendible_sin_numero") or 0)
+        cambios = int(est.get("odoo_deltas") or 0) + int(est.get("woo_cambios") or 0) + vendible_cambios
+        if est.get("estado") is not None and est.get("estado") not in _PASADA_TERMINO:   # = `aborta`
+            # Abortó (freno, libro ilegible, Odoo mudo…): no se repartió ni se encoló nada,
+            # aunque `_ultimo` guarde lo que la pasada frenada habría movido.
+            cambios = vendible_cambios = vendible_sin_numero = 0
+            vendible_registro = 0
+    else:
+        vendible_cambios = int(d.get("vendible_cambios") or 0)
+        vendible_registro = None
+        vendible_sin_numero = int(d.get("vendible_sin_numero") or 0)
+        cambios = int(d.get("cambios") or 0)
+    estado = est.get("estado") if en_memoria else None
     return {
         "habilitado": bool(est.get("habilitado")), "modo": est.get("modo"),
         "fuente": est.get("fuente", "odoo"),
+        "fuente_fanout": fuente_fanout, "fuente_fanout_error": fuente_fanout_error,
         "en_memoria": en_memoria,
         "segundos": est.get("segundos") if en_memoria else None,
-        "cambios": (int(est.get("odoo_deltas") or 0) + int(est.get("woo_cambios") or 0))
-                   if en_memoria else int(d.get("cambios") or 0),
+        "cambios": cambios,
+        "vendible_cambios": vendible_cambios, "vendible_registro": vendible_registro,
+        "vendible_sin_numero": vendible_sin_numero,
+        "estado": estado, "aborta": estado is not None and estado not in _PASADA_TERMINO,
+        "nota": est.get("nota") if en_memoria else None,
+        "seguidas_sin_repartir": est.get("seguidas_sin_repartir") if en_memoria else None,
         "ultima": _fecha(d.get("ultimo"), hoy),
         "pendientes_ventas": est.get("pendientes_ventas") if en_memoria else None,
         "mas_vieja_h": est.get("pendientes_espera_mas_vieja_h") if en_memoria else None,
+        **_estados_opcionales(),
     }
+
+
+def _estados_opcionales() -> dict[str, Any]:
+    """`fuentes` (`fanout_fuentes.estado()`: ¿STOCK_WATCH_FUENTE y FANOUT_FUENTE cuentan
+    la misma historia?) y `lectura` (`fanout_stock.lectura_estado()`: la racha de
+    lecturas fallidas del libro en el fan-out) para el Dashboard. Las dos son memoria del
+    proceso (sin red ni base). Si una falla viaja como `{"error": …}` y la página sigue:
+    el frontend sólo avisa con `fuentes.ok === false` o con una racha > 0."""
+    from services import fanout_fuentes, fanout_stock
+    salida: dict[str, Any] = {}
+    for clave, leer in (("fuentes", fanout_fuentes.estado), ("lectura", fanout_stock.lectura_estado)):
+        try:
+            salida[clave] = leer()
+        except Exception as exc:  # noqa: BLE001 — un dato del tablero no tumba la página
+            log.warning("fanout_vivo: %s: %s", clave, exc)
+            salida[clave] = {"error": f"{type(exc).__name__}: {exc}"[:200]}
+    return salida
 
 
 def _fanout_estado() -> dict[str, Any]:
@@ -687,11 +1012,14 @@ def _atender_seguro(seg: dict[str, Any] | None) -> list[dict]:
     if not seg:
         return []
     salida: list[dict] = []
+    rotulo = stock_rotulo()
 
     def muestra(lista: list[dict]) -> str:
+        # `woo` es el número de la foto que reparte el fan-out (`fanout_seguro`): con
+        # `FANOUT_FUENTE=kubera`, el del libro (contrato con el panel: `stock_rotulo`).
         m = lista[0]
         resto = len(lista) - 1
-        return (f"{_NOMBRE.get(m['canal'], m['canal'])} · {m['sku']}: Woo tiene {int(m['woo']):,}"
+        return (f"{_NOMBRE.get(m['canal'], m['canal'])} · {m['sku']}: {rotulo} tiene {int(m['woo']):,}"
                 + (f", y {resto} más" if resto > 0 else "") + ".")
 
     con_stock = seg.get("con_stock") or []
@@ -792,7 +1120,6 @@ def _pulso_24h(rep: list[str]) -> list[dict]:
 
 
 def _resumen() -> dict[str, Any]:
-    from services import stock_watch
     rep = reparto()
     ahora = _ahora_local().get("ahora") or ""
     hoy = ahora[:10]
@@ -802,10 +1129,12 @@ def _resumen() -> dict[str, Any]:
     por_coinc = {c["canal"]: c for c in coinc}
     for c in canales:
         c["coincidencia"] = por_coinc.get(c["canal"])
-    # Con otra fuente (`STOCK_WATCH_FUENTE`) el Odoo de la foto está congelado:
-    # compararlo contra Woo ya no dice nada y no se pinta como pendiente (ni aquí
-    # ni en la CadenaViva, que lee `foto` tal cual: ver `_foto`).
-    odoo_vivo = stock_watch.odoo_vivo()
+    # Con otra fuente (`STOCK_WATCH_FUENTE`) o con el fan-out en el libro, el Odoo de la
+    # foto está congelado: compararlo contra Woo ya no dice nada y no se pinta como
+    # pendiente ni como verde (ni aquí ni en la CadenaViva, que lee `foto` tal cual: ver
+    # `_foto`). Se enseña aparte, en `contra_odoo`, rotulado como lo que es.
+    odoo_vivo = _odoo_comparable()
+    fuente = _fuente_txt()
     foto = _foto(odoo_vivo)
     sw = _stock_watch(hoy)
     full = _full_sin_regla()
@@ -844,7 +1173,9 @@ def _resumen() -> dict[str, Any]:
                   else _NOMBRE.get(f["canal"], f["canal"]))
         extra = len(de_mas) - 1
         atender.append({"nivel": "hoy",
-                        "titulo": f"{nombre} ofrece {f['valor']:,} de {f['sku']} con Woo en {f['stock_woo']:,}",
+                        "titulo": (f"{nombre} ofrece {f['valor']:,} de {f['sku']} con {fuente} en {f['stock_woo']:,}"
+                                   + (f" ({FOTO_CONGELADA})" if f.get("foto_congelada") else "")
+                                   + (" (el libro no lo trae)" if f.get("libro_no_trae") else "")),
                         "texto": ("Está a la venta." + (f" Hay {extra} más que ofrecen de más." if extra > 0 else "")),
                         "matriz": True})
     seguro = _seguro_cero()
@@ -887,9 +1218,27 @@ def _resumen() -> dict[str, Any]:
                     f"de {foto['ambos']:,} productos"
                     + (f"; en otros {por_ventas} la diferencia son ventas que esperan su orden en Odoo"
                        if por_ventas else "") + ".")
-    if sw.get("ultima") and sw.get("ultima") != "—":
+    # Con la pasada abortando (hoy, FUENTE=odoo desde el 15-oct) la última con cambios es
+    # vieja: no es algo que vaya bien.
+    if sw.get("ultima") and sw.get("ultima") != "—" and not sw.get("aborta"):
         bien.append(f"Última pasada {'de Odoo' if odoo_vivo else 'de stock_watch'} con cambios: {sw['ultima']}"
                     + (f", {sw['cambios']} cambios." if sw.get("cambios") else "."))
+
+    # Lo que antes era alarma o verde contra Odoo y hoy sólo es un dato: la columna Odoo
+    # de la foto está congelada al 15-oct (riesgo 16 del plan: falso verde).
+    contra_odoo: list[dict] = []
+    co = foto.get("contra_odoo") or {}
+    if co.get("sin_odoo_con_piezas"):
+        contra_odoo.append({"rotulo": _CONTRA_ODOO,
+                            "titulo": f"{co['sin_odoo_con_piezas']:,} SKUs con piezas en Woo y sin producto en Odoo",
+                            "texto": (f"Son {co['piezas_sin_odoo']:,} piezas. {_CONTRA_ODOO}: Odoo ya no "
+                                      "registra nada, así que no es una alarma.")})
+    if co.get("ambos"):
+        contra_odoo.append({"rotulo": _CONTRA_ODOO,
+                            "titulo": (f"Odoo y Woo coinciden en {co['ambos'] - co.get('distintos', 0):,} "
+                                       f"de {co['ambos']:,} productos"),
+                            "texto": (f"{_CONTRA_ODOO} (la foto de stock_watch): no dice si el stock "
+                                      "cuadra hoy.")})
 
     return {
         "ahora": _fecha(ahora, hoy), "reparto": rep,
@@ -897,9 +1246,10 @@ def _resumen() -> dict[str, Any]:
         "veredicto": {"llegan": len(llegan), "total": len(canales), "frase": frase,
                       "detalle": " ".join(partes), "grave": bool(rechazan)},
         "canales": canales, "foto": foto, "stock_watch": sw,
-        "atender": atender, "bien": bien, "serie": _serie(rep), "pulso": _pulso_24h(rep),
+        "atender": atender, "bien": bien, "contra_odoo": contra_odoo,
+        "serie": _serie(rep), "pulso": _pulso_24h(rep),
         "full_sin_regla": full, "seguro": seguro,
-        "columnas": [c for c in COLUMNAS if c["canal"] in rep],
+        "columnas": [c for c in COLUMNAS if c["canal"] in rep], **_rotulos(),
     }
 
 
@@ -981,11 +1331,11 @@ def _celda_matriz(l: dict | None, w: dict | None, woo: int | None, hoy: str,
         # La sacó de la venta el seguro de stock 0. Va DESPUÉS del rechazo: una
         # escritura que el canal rechazó se tiene que ver aunque esté apagada.
         if woo is not None and int(woo) > 0:
-            # …y Woo YA tiene stock. Mientras no regrese a la venta es una tarea
-            # pendiente, no un estado en reposo: con la reactivación apagada se
-            # quedaba así, gris y callada, con 50 piezas en Woo.
+            # …y Woo (o el libro, con `FANOUT_FUENTE=kubera`) YA tiene stock. Mientras no
+            # regrese a la venta es una tarea pendiente, no un estado en reposo: con la
+            # reactivación apagada se quedaba así, gris y callada, con 50 piezas en Woo.
             return {"k": "apagpend", "v": _n(valor), "d": "",
-                    "s": f"apagada por el seguro · Woo ya tiene {_n(woo)}", "p": True}
+                    "s": f"apagada por el seguro · {_ya_tiene(woo)}", "p": True}
         return {"k": "apag", "v": _n(valor), "d": "",
                 "s": f"apagada por stock 0 · {_fecha(marca.get('desde'), hoy)}", "p": True}
     if valor is None or woo is None:
@@ -1069,9 +1419,11 @@ def _cola_viva() -> tuple[dict[str, dict], float | None, bool]:
 
 
 def _causas(celdas: list[dict], hoy: str) -> dict[tuple[str, str, str], dict]:
-    """POR QUÉ una publicación no coincide con Woo. Se contesta con la bitácora:
+    """POR QUÉ una publicación no coincide con Woo (o con el libro, con
+    `FANOUT_FUENTE=kubera`). Se contesta con la bitácora:
 
-      1. Woo cambió y el fan-out todavía no tiene un evento después. Lo dice la COLA
+      1. Woo —o el vendible del libro (`vendible_cambio`)— cambió y el fan-out todavía
+         no tiene un evento después. Lo dice la COLA
          REAL del proceso (`fanout_stock.cola()`), no un plazo: «repartiendo ahora» si
          ya lo tomó, «en cola (posición N, ~M min)» si espera su turno, «en camino» si
          stock_watch aún no lo encola (lo anotó la pasada en curso, o < 3 min) y, si no está en
@@ -1081,19 +1433,22 @@ def _causas(celdas: list[dict], hoy: str) -> dict[tuple[str, str, str], dict]:
          error, omitida con su motivo, o quedó igual y DESPUÉS cambió el canal.
       3. El último reparto no la incluyó → o no recibe stock por política, o
          apareció después y nadie la alineó (el fan-out solo actúa cuando Woo
-         cambia).
+         —o el libro— cambia).
+    Los cambios son `stock_watch.ACCIONES_CAMBIO`, como parámetro; un
+    `vendible_registro` (sombra) no se repartió y no cuenta.
     `celdas`: [{sku, canal, cuenta (legacy_code), listing}]."""
     if not celdas:
         return {}
     skus = sorted({c["sku"] for c in celdas})
+    fuente = _fuente_txt()
     ahora = (sdb.fetch_one("select now() as n") or {}).get("n")
     cambios = {f["sku"]: f for f in sdb.fetch_all(
-        """select distinct on (sku) sku::text as sku, ts, resultado,
+        """select distinct on (sku) sku::text as sku, ts, accion, resultado, coalesce(motivo, '') as motivo,
                   to_char(ts at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as hora
              from ops.fanout_log
             where sku::text = any(%(s)s) and canal = 'woocommerce'
-              and accion in ('odoo_delta', 'woo_cambio') and resultado not like '%%FALLÓ%%'
-            order by sku, ts desc, id desc""", {"z": _ZONA, "s": skus})}
+              and accion = any(%(acc)s) and resultado not like '%%FALLÓ%%'
+            order by sku, ts desc, id desc""", {"z": _ZONA, "s": skus, "acc": _acc_cambio()})}
     ultimos = {f["sku"]: f for f in sdb.fetch_all(
         """select distinct on (sku) sku::text as sku, ts,
                   to_char(ts at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as hora
@@ -1133,19 +1488,24 @@ def _causas(celdas: list[dict], hoy: str) -> dict[tuple[str, str, str], dict]:
         elif cam and (not ult or ult["ts"] < cam["ts"]):
             m = _FLECHA.search(str(cam.get("resultado") or ""))
             mov = f" de {m.group(1)} a {m.group(2)}" if m else ""
+            # Quién cambió: el vendible del libro o Woo (un `odoo_delta` es lo que se le
+            # escribió a Woo, y así se ha dicho siempre).
+            quien = "El vendible" if cam.get("accion") == "vendible_cambio" else "Woo"
+            if cam.get("accion") == "vendible_cambio" and _sale_del_libro(cam.get("motivo")):
+                mov += " (el libro no trae el SKU)"
             en = cola.get(sku.upper())
             # Con fecha: lo que está en la cola puede venir de un cambio de otro día (lo
             # devuelven el recuperador o el seguro).
             cuando = _el(_fecha(cam["hora"], hoy))
             if en and en.get("estado") == "proceso":
                 codigo, texto = "proceso", _CAUSA_TXT["proceso"]
-                detalle = (f"Woo cambió{mov} {cuando}; el fan-out lo está "
+                detalle = (f"{quien} cambió{mov} {cuando}; el fan-out lo está "
                            "repartiendo en este momento.")
             elif en:
                 minutos = max(1, round(float(en.get("eta_s") or 0) / 60))
                 codigo = "cola"
                 texto = f"{_CAUSA_TXT['cola']} (posición {en.get('posicion')}, ~{minutos} min)"
-                detalle = (f"Woo cambió{mov} {cuando}; espera su turno en la cola del "
+                detalle = (f"{quien} cambió{mov} {cuando}; espera su turno en la cola del "
                            f"fan-out desde las {_hora_epoch(en.get('desde'))}"
                            + (" (lo devolvió a la cola el recuperador)"
                               if str(en.get("motivo") or "").startswith("recuperado") else "")
@@ -1153,12 +1513,12 @@ def _causas(celdas: list[dict], hoy: str) -> dict[tuple[str, str, str], dict]:
             elif (de_la_pasada := pasada is not None and cam["ts"].timestamp() >= pasada) or (
                     ahora and (ahora - cam["ts"]).total_seconds() < gracia):
                 codigo, texto = "camino", _CAUSA_TXT["camino"]
-                detalle = (f"Woo cambió{mov} {cuando}; "
+                detalle = (f"{quien} cambió{mov} {cuando}; "
                            + ("stock_watch todavía no termina su pasada y no lo ha encolado."
                               if de_la_pasada else "el fan-out todavía no lo procesa."))
             else:
                 codigo, texto = "perdido", _CAUSA_TXT["perdido"]
-                detalle = f"Woo cambió{mov} {_el(_fecha(cam['hora'], hoy))} y el fan-out nunca procesó ese cambio. "
+                detalle = f"{quien} cambió{mov} {_el(_fecha(cam['hora'], hoy))} y el fan-out nunca procesó ese cambio. "
                 if cam["hora"] < "2026-08-19":
                     # v0.206: hasta ahí los cambios de Odoo se escribían en Woo
                     # pero NO se encolaban al fan-out.
@@ -1193,7 +1553,7 @@ def _causas(celdas: list[dict], hoy: str) -> dict[tuple[str, str, str], dict]:
                 detalle = f"El fan-out no le escribe a propósito ({cuando}): {r[:140]}"
             elif bien:
                 codigo, texto = "canal", _CAUSA_TXT["canal"]
-                detalle = (f"{_el(cuando)[:1].upper()}{_el(cuando)[1:]} quedó en {_n(bien[0].get('objetivo'))}, igual que Woo; después el canal "
+                detalle = (f"{_el(cuando)[:1].upper()}{_el(cuando)[1:]} quedó en {_n(bien[0].get('objetivo'))}, igual que {fuente}; después el canal "
                            "cambió por su cuenta y nada lo vuelve a revisar.")
             else:
                 razon = _no_destino(c.get("listing"))
@@ -1202,20 +1562,22 @@ def _causas(celdas: list[dict], hoy: str) -> dict[tuple[str, str, str], dict]:
                 else:
                     codigo, texto = "tarde", _CAUSA_TXT["tarde"]
                     detalle = ("No estaba en el último reparto de este SKU" + (f" ({cuando})" if ult else "")
-                               + "; apareció después con su propio número y, como Woo no ha vuelto a cambiar, "
+                               + f"; apareció después con su propio número y, como {fuente} no ha vuelto a cambiar, "
                                  "nada la ha alineado.")
         salida[(sku, canal, cuenta)] = {"c": codigo, "t": texto, "d": detalle}
     return salida
 
 
 def _skus_perdidos(dias: int = 14, limite: int = 60) -> list[str]:
-    """SKUs cuyo ÚLTIMO cambio en Woo (de stock_watch) nunca pasó por el fan-out, sin
-    los que siguen en la cola del proceso (ésos esperan su turno, no se perdieron)."""
+    """SKUs cuyo ÚLTIMO cambio de stock_watch (en Woo, o del vendible del libro:
+    `stock_watch.ACCIONES_CAMBIO`) nunca pasó por el fan-out, sin los que siguen en la
+    cola del proceso (ésos esperan su turno, no se perdieron). Un `vendible_registro`
+    (sombra) no se encola a propósito: no es un cambio perdido."""
     cola = _cola_viva()[0]
     return [f["sku"] for f in sdb.fetch_all(
         """with c as (
              select distinct on (sku) sku::text as sku, ts from ops.fanout_log
-              where canal = 'woocommerce' and accion in ('odoo_delta', 'woo_cambio')
+              where canal = 'woocommerce' and accion = any(%(acc)s)
                 and resultado not like '%%FALLÓ%%' and ts > now() - make_interval(days => %(d)s)
               order by sku, ts desc, id desc),
            e as (
@@ -1225,12 +1587,12 @@ def _skus_perdidos(dias: int = 14, limite: int = 60) -> list[str]:
               group by sku)
            select c.sku from c left join e using (sku)
             where c.ts < now() - interval '15 minutes' and (e.t is null or e.t < c.ts)
-            order by c.ts desc limit %(n)s""", {"d": int(dias), "a": _ACC_FANOUT, "n": int(limite)})
+            order by c.ts desc limit %(n)s""",
+        {"d": int(dias), "a": _ACC_FANOUT, "n": int(limite), "acc": _acc_cambio()})
             if str(f["sku"]).upper() not in cola]
 
 
 def matriz() -> dict[str, Any]:
-    from services import stock_watch
     rep = reparto()
     ahora = _ahora_local().get("ahora") or ""
     hoy = ahora[:10]
@@ -1257,9 +1619,12 @@ def matriz() -> dict[str, Any]:
     # cambio perdido, distintos entre Odoo y Woo y movidos hace poco. Los topes son
     # holgados a propósito: con 20 se escondían SKUs sin avisar (1-oct: 42
     # rechazados y 86 movidos en 6 h). Odoo≠Woo sólo cuenta con Odoo vivo
-    # (`STOCK_WATCH_FUENTE=odoo`): con otra fuente su columna está congelada.
-    odoo_vivo = stock_watch.odoo_vivo()
-    rotulo = stock_watch.odoo_rotulo()
+    # (`STOCK_WATCH_FUENTE=odoo`) y el fan-out en Woo (`_odoo_comparable`): si no, su
+    # columna está congelada al 15-oct. El rótulo de Odoo es fijo (`ODOO_ROTULO`).
+    odoo_vivo = _odoo_comparable()
+    rotulos = _rotulos()
+    fuente = _fuente_txt()
+    vend = _foto_vendible()
     dif = [] if not odoo_vivo else sdb.fetch_all(
         """select sku::text as sku from ops.stock_watch_photo
             where stock_odoo is not null and stock_woo is not null and stock_odoo <> stock_woo
@@ -1282,14 +1647,15 @@ def matriz() -> dict[str, Any]:
                               + [f["sku"] for f in dif] + [f["sku"] for f in rec] + vivos))[:2000]
     if not skus:
         return {"ahora": _fecha(ahora, hoy), "columnas": cols, "barras": barras, "filas": [],
-                "odoo_rotulo": rotulo}
+                "odoo_comparable": odoo_vivo, **rotulos}
 
     foto = {f["sku"]: f for f in sdb.fetch_all(
-        """select sku::text as sku, stock_odoo, stock_woo, actualizado,
+        """select sku::text as sku, stock_odoo, stock_woo, stock_kubera, actualizado,
                   to_char(actualizado at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as foto_hora
              from ops.stock_watch_photo where sku::text = any(%(s)s)""",
         {"s": skus, "z": _ZONA})}
     leidos = _woo_leido(skus)
+    pasada = _pasada_libro(vend)
     sin_orden = _sin_orden(skus)
     lst = sdb.fetch_all(
         """select l.sku::text as sku, l.canal, a.legacy_code as cuenta, l.status, l.situacion,
@@ -1314,7 +1680,7 @@ def matriz() -> dict[str, Any]:
     celdas_por_sku: dict[str, dict[str, dict]] = {}
     pendientes: list[dict] = []
     for s in skus:
-        woo, _ = _woo_vigente(foto.get(s) or {}, leidos.get(s), hoy)
+        woo, _ = _woo_vigente(foto.get(s) or {}, leidos.get(s), hoy, vend, pasada)
         celdas = {}
         for col in cols:
             clave = (s, col["canal"], col["cuenta"])
@@ -1332,26 +1698,26 @@ def matriz() -> dict[str, Any]:
     for s in skus:
         ft = foto.get(s) or {}
         odoo = ft.get("stock_odoo")
-        woo, woo_de = _woo_vigente(ft, leidos.get(s), hoy)
+        woo, woo_de = _woo_vigente(ft, leidos.get(s), hoy, vend, pasada)
         celdas, tags, peso = celdas_por_sku[s], set(), 0.0
         resumen = None
         for col in cols:
             c = celdas[col["id"]]
             if c["k"] == "mas" and not c["p"]:
                 peso = max(peso, 100 + min(int(str(c["d"]).replace("+", "").replace(",", "") or 0), 500) / 10)
-                resumen = resumen or f"{col['nombre']} la ofrece y en Woo hay {_n(woo)}"
+                resumen = resumen or f"{col['nombre']} la ofrece y en {fuente} hay {_n(woo)}"
             elif c["k"] == "rech":
                 peso = max(peso, 80)
                 resumen = resumen or f"{col['nombre']} rechazó el cambio"
             elif c["k"] == "menos" and not c["p"]:
                 peso = max(peso, 60)
-                resumen = resumen or f"{col['nombre']} ofrece menos de lo que hay en Woo"
+                resumen = resumen or f"{col['nombre']} ofrece menos de lo que hay en {fuente}"
             elif c["k"] in ("mas", "menos"):
                 peso = max(peso, 20)
             elif c["k"] == "apagpend":
                 peso = max(peso, 70)
                 resumen = resumen or (f"{col['nombre']} sigue apagada por el seguro de stock 0 "
-                                      f"y en Woo ya hay {_n(woo)}")
+                                      f"y en {fuente} ya hay {_n(woo)}")
             if c["k"] in ("mas", "menos", "rech", "apagpend"):
                 tags.add("distinto")
             if c["k"] == "mas":
@@ -1362,8 +1728,11 @@ def matriz() -> dict[str, Any]:
                 tags.add(f"causa:{c['causa']['c']}")
         # Odoo≠Woo que son EXACTAMENTE las vendidas sin orden no es un desfase: es la
         # resta de stock_watch haciendo su trabajo. Solo lo que no cuadra es «distinto».
+        # Contra el Odoo congelado al 15-oct no explica nada (sería un verde falso): sólo
+        # con Odoo vivo (`_odoo_comparable`).
         sx = sin_orden.get(s)
-        explicado = odoo is not None and woo is not None and odoo != woo and _explicado(odoo, woo, sx)
+        explicado = (odoo_vivo and odoo is not None and woo is not None and odoo != woo
+                     and _explicado(odoo, woo, sx))
         dif_ow = odoo_vivo and odoo is not None and woo is not None and odoo != woo and not explicado
         if dif_ow:
             tags.add("distinto")
@@ -1380,14 +1749,16 @@ def matriz() -> dict[str, Any]:
             continue   # el cambio se perdió, pero hoy sus canales coinciden con Woo
         if resumen is None:
             otra = next((col["nombre"] for col in cols if celdas[col["id"]]["k"] in ("mas", "menos")), None)
-            resumen = (f"{otra} no coincide con Woo, pero no está a la venta" if otra
-                       else "Igual a Woo donde está a la venta")
+            resumen = (f"{otra} no coincide con {fuente}, pero no está a la venta" if otra
+                       else f"Igual {'al libro' if fuente == 'el libro' else 'a Woo'} donde está a la venta")
         filas.append({"sku": s, "que": resumen, "odoo": _n(odoo), "woo": _n(woo), "woo_de": woo_de,
                       "dif": dif_ow, "sin_orden": ({**sx, "explica": explicado} if sx else None),
                       "celdas": celdas, "tags": sorted(tags), "peso": peso})
     filas.sort(key=lambda f: -f["peso"])
+    # `odoo_comparable`: si la columna Odoo se puede comparar (Odoo vivo y el fan-out en Woo);
+    # si no, es un dato congelado y la página no pinta las vendidas sin orden contra él.
     return {"ahora": _fecha(ahora, hoy), "columnas": cols, "barras": barras, "filas": filas,
-            "odoo_rotulo": rotulo}
+            "odoo_comparable": odoo_vivo, **rotulos}
 
 
 # ── Rastro de un cambio ───────────────────────────────────────────────────────
@@ -1763,7 +2134,14 @@ def _subidas_odoo(woo: list[dict]) -> list[tuple[int, datetime | None, int]]:
     la más vieja a la más nueva. Se mide con la foto de Odoo (`odoo_de`/`odoo_a`), no
     con lo escrito en Woo. Un delta cuya escritura a Woo FALLÓ conserva la foto y la
     pasada siguiente lo vuelve a anotar idéntico: es el mismo movimiento de Odoo y
-    cuenta una vez, en la hora en que se vio primero."""
+    cuenta una vez, en la hora en que se vio primero.
+
+    Los renglones de origen «libro» (`vendible_cambio`) NO cuentan como subida a
+    propósito: su motivo («vendible X -> Y (libro)») no dice POR QUÉ subió el vendible
+    —una devolución recibida, una compra, una venta cancelada o un ajuste de conteo—
+    y ligar una devolución a la primera subida que pase sería inventar el reingreso.
+    Con el libro, la liga dura vendrá del movimiento (`almacen.stock_mov`: la recepción
+    de la devolución), no de la fecha (acuerdo con WOO SALIDA, 13-oct)."""
     odoo = sorted(((i, _hora_dt(w.get("hora")), w) for i, w in enumerate(woo) if w.get("origen") == "odoo"),
                   key=lambda s: (s[1] or datetime.min, s[0]))
     subidas, previa = [], None
@@ -2057,8 +2435,14 @@ def historia(sku: str, dias: int = 14, limite: int = 400, liga_dias: int | None 
     """La línea de trazabilidad de UN SKU: lo que le pasó en los últimos `dias`.
 
     Junta tres fuentes de kubera (solo lee):
-      · `ops.fanout_log` con canal 'woocommerce': cada cambio de stock en Woo que
-        anotó stock_watch (vino de Odoo, o lo detectó en Woo: una venta, una edición);
+      · `ops.fanout_log` con canal 'woocommerce': cada cambio que anotó stock_watch
+        (`stock_watch.ACCIONES_CAMBIO`): vino de Odoo (`origen` "odoo"), lo detectó en
+        Woo —una venta, una edición— ("woo") o cambió el vendible del libro de kubera
+        ("libro", `vendible_cambio`). El SKU que el libro deja de traer es un
+        `vendible_cambio` a 0 con «(libro: no lo trae)» en el motivo (D4): lleva
+        `sin_numero` y `texto` «El libro no trae el SKU → 0». Una fila VIEJA
+        `vendible_sin_numero` (D3; ya no se anota) es el mismo ítem con `a` None. Un
+        `vendible_registro` (sombra) no entra: no es un cambio;
       · el resto de `ops.fanout_log`: cada reparto del fan-out y lo que contestó
         cada destino;
       · `channel.listing_history`: lo que cada canal del reparto REPORTÓ después
@@ -2080,7 +2464,7 @@ def historia(sku: str, dias: int = 14, limite: int = 400, liga_dias: int | None 
     ahora = _ahora_local().get("ahora") or ""
     hoy = ahora[:10]
     foto = sdb.fetch_one(
-        """select stock_odoo, stock_woo, actualizado,
+        """select stock_odoo, stock_woo, stock_kubera, actualizado,
                   to_char(actualizado at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as foto_hora
              from ops.stock_watch_photo where sku = %(s)s""", {"s": sku, "z": _ZONA}) or {}
     log = sdb.fetch_all(
@@ -2112,7 +2496,8 @@ def historia(sku: str, dias: int = 14, limite: int = 400, liga_dias: int | None 
     cols = [c for c in COLUMNAS if c["canal"] in rep]
     leido = next(({"ts": f["ts"], "valor": f["stock_drop"], "hora": f["hora"]} for f in log
                   if f.get("stock_drop") is not None and f["canal"] not in ("", "woocommerce")), None)
-    woo, woo_de = _woo_vigente(foto, leido, hoy)
+    vend = _foto_vendible()
+    woo, woo_de = _woo_vigente(foto, leido, hoy, vend, _pasada_libro(vend))
     L = {(f["canal"], (f.get("cuenta") or "").upper()): f for f in lst}
     W: dict[tuple[str, str], dict] = {}
     for f in log:
@@ -2135,20 +2520,39 @@ def historia(sku: str, dias: int = 14, limite: int = 400, liga_dias: int | None 
         celdas[p["col"]]["causa"] = causas.get((sku, p["canal"], p["cuenta"].upper()))
 
     items: list[dict] = []
-    # 1) Cada cambio de stock en Woo.
+    # 1) Cada cambio de stock que anotó stock_watch: en Woo, o del vendible del libro.
     woo_items: list[dict] = []
+    acc = set(_acc_cambio())
     for f in log:
-        if f["canal"] != "woocommerce" or f["accion"] not in ("odoo_delta", "woo_cambio"):
+        if f["canal"] != "woocommerce":
+            continue
+        if f["accion"] == "vendible_sin_numero":
+            # Fila VIEJA (D3): «N -> sin número», el libro ya no traía el SKU y no se
+            # repartió. Desde D4 no se anota (sale como `vendible_cambio` a 0, abajo); las
+            # que quedaron se enseñan con el mismo ítem, `a` None: no fue a ningún número.
+            m = _A_SIN_NUMERO.search(f["resultado"])
+            woo_items.append({"tipo": "woo", "_t": f["ts"], "ts": f["ts"].isoformat(), "hora": f["hora"],
+                              "origen": "libro", "sin_numero": True, "texto": _TXT_SIN_NUMERO_VIEJO,
+                              "de": int(m.group(1)) if m else None, "a": None,
+                              "odoo_de": None, "odoo_a": None, "fallo": False,
+                              "motivo": f["motivo"][:140]})
+            continue
+        if f["accion"] not in acc:
             continue
         m = _FLECHA.search(f["resultado"])
-        # `de`/`a` es lo que quedó en Woo; `odoo_de`/`odoo_a`, la foto de Odoo del motivo
-        # (antes de recortarlo): con ésa se mide si ODOO subió (ver `_FOTO_ODOO`).
+        # `de`/`a` es lo que quedó en Woo (o el vendible del libro); `odoo_de`/`odoo_a`, la
+        # foto de Odoo del motivo (antes de recortarlo): con ésa se mide si ODOO subió (ver
+        # `_FOTO_ODOO`). Sólo un `odoo_delta` la trae.
         odoo_de, odoo_a = _foto_odoo(f["motivo"]) if f["accion"] == "odoo_delta" else (None, None)
-        woo_items.append({"tipo": "woo", "_t": f["ts"], "ts": f["ts"].isoformat(), "hora": f["hora"],
-                          "origen": "odoo" if f["accion"] == "odoo_delta" else "woo",
-                          "de": int(m.group(1)) if m else None, "a": int(m.group(2)) if m else None,
-                          "odoo_de": odoo_de, "odoo_a": odoo_a,
-                          "fallo": "FALLÓ" in f["resultado"], "motivo": f["motivo"][:140]})
+        it = {"tipo": "woo", "_t": f["ts"], "ts": f["ts"].isoformat(), "hora": f["hora"],
+              "origen": _origen_accion(f["accion"]),
+              "de": int(m.group(1)) if m else None, "a": int(m.group(2)) if m else None,
+              "odoo_de": odoo_de, "odoo_a": odoo_a,
+              "fallo": "FALLÓ" in f["resultado"], "motivo": f["motivo"][:140]}
+        if f["accion"] == "vendible_cambio" and _sale_del_libro(f["motivo"]):
+            # D4: el libro dejó de traer el SKU → 0, y ese 0 SÍ se reparte a los canales.
+            it.update(sin_numero=True, texto=TXT_SALE_DEL_LIBRO)
+        woo_items.append(it)
     items.extend(woo_items)
 
     # 1b) Las devoluciones, y su liga con las subidas de Odoo de arriba.
@@ -2197,7 +2601,8 @@ def historia(sku: str, dias: int = 14, limite: int = 400, liga_dias: int | None 
                   else "reenvio" if "reenv" in bajo else "cambio")
         items.append({"tipo": "reparto", "_t": ts, "ts": ts.isoformat(), "fin": ts.isoformat(),
                       "hora": filas[0]["hora"], "motivo": motivo[:140], "origen": origen, "tono": tono,
-                      "destinos": destinos, "sin_destinos": any(f["accion"] == "sin_destinos" for f in filas)})
+                      "destinos": destinos, "sin_destinos": any(f["accion"] == "sin_destinos" for f in filas),
+                      "sin_numero": _reparto_sin_numero(filas)})
 
     # 3) Lo que reportó cada canal, contra lo último que el fan-out le dejó.
     dejado: dict[tuple[str, str], list[tuple]] = {}   # más reciente primero (como `log`)
@@ -2254,7 +2659,12 @@ def historia(sku: str, dias: int = 14, limite: int = 400, liga_dias: int | None 
 
     items.sort(key=lambda x: x["_t"], reverse=True)
     resumen = {
-        "cambios_woo": sum(1 for x in items if x["tipo"] == "woo"),
+        # Un cambio es lo que se repartió: el «→ 0» del libro (D4) sí; la fila vieja
+        # `vendible_sin_numero` (`a` None), no. `sin_numero`: las veces que el libro dejó
+        # de traer el SKU, de cualquiera de las dos.
+        "cambios_woo": sum(1 for x in items if x["tipo"] == "woo"
+                           and not (x.get("sin_numero") and x.get("a") is None)),
+        "sin_numero": sum(1 for x in items if x["tipo"] == "woo" and x.get("sin_numero")),
         "repartos": sum(1 for x in items if x["tipo"] == "reparto"),
         "con_rechazo": sum(1 for x in items if x["tipo"] == "reparto" and x["tono"] == "mal"),
         "su_cuenta": sum(1 for x in items if x.get("relacion") == "su_cuenta"),
@@ -2270,10 +2680,10 @@ def historia(sku: str, dias: int = 14, limite: int = 400, liga_dias: int | None 
     return {"ok": True, "sku": sku, "dias": dias, "hoy": hoy, "ahora": _fecha(ahora, hoy),
             "existe": bool(foto or lst or log or hist or devs),
             "devoluciones_ok": not devs_fallas, "devoluciones_fallas": devs_fallas, "odoo": _n(foto.get("stock_odoo")), "woo": _n(woo), "woo_de": woo_de,
-            "sin_orden": ({**sx, "explica": _explicado(foto.get("stock_odoo"), woo, sx)} if sx else None),
+            "sin_orden": ({**sx, "explica": _odoo_comparable() and _explicado(foto.get("stock_odoo"), woo, sx)}
+                          if sx else None),
             "columnas": cols, "celdas": celdas, "resumen": resumen, "full": full,
-            "items": items[:limite], "total": total, "truncado": total > limite,
-            "odoo_rotulo": _odoo_rotulo()}
+            "items": items[:limite], "total": total, "truncado": total > limite, **_rotulos()}
 
 
 def _full_de(sku: str, filas: list[dict], avisos: list[dict]) -> dict[str, Any] | None:

@@ -1212,9 +1212,11 @@ def _emitir_avisos(avisos: dict[str, list], vaciar: bool = False) -> None:
                            "🟡", vaciar)
         for canal, skus in _por_canal("con_stock").items():
             nombre = NOMBRE.get(canal, canal)
+            # «Woo ya tiene» / «Libro de kubera ya tiene»: el número sale de la columna que
+            # reparte el fan-out (`_col_foto`), contrato con el panel (`stock_rotulo`).
             _avisar_juntas(alertas, "con_stock", canal, skus,
                            lambda l, n=nombre: (f"*Seguro stock 0*: {len(l)} en {n} siguen APAGADAS por el "
-                                                f"seguro y Woo ya tiene stock: {_lista(l)}. No están regresando "
+                                                f"seguro y {_stock_rotulo()} ya tiene stock: {_lista(l)}. No están regresando "
                                                 f"solas: reactivarlas a mano (la lista y el porqué de cada una, "
                                                 f"en el panel y en /api/fanout/seguro)."),
                            "🟡", vaciar)
@@ -2062,6 +2064,12 @@ def _reencolar_marcas(canal: str, marcas: list[dict[str, Any]]) -> list[str]:
     return fuera
 
 
+def _stock_rotulo() -> str:
+    """«Woo» o «Libro de kubera» (`fanout_vivo.stock_rotulo`: sólo la configuración)."""
+    from services import fanout_vivo
+    return fanout_vivo.stock_rotulo()
+
+
 def _aviso_con_stock(canal: str, vuelta: dict[str, Any], marcas: list[dict[str, Any]]) -> list[str]:
     """
     Lo que el seguro tiene APAGADO y ya tiene stock en Woo: que no se quede fuera
@@ -2075,6 +2083,7 @@ def _aviso_con_stock(canal: str, vuelta: dict[str, Any], marcas: list[dict[str, 
     entonces se dicen todas desde el primer censo.
     """
     reactiva = not ensayo(canal)[0]
+    rotulo = _stock_rotulo()      # «Woo» o «Libro de kubera»: de dónde sale `stock_woo` (`_col_foto`)
     nuevas: list[str] = []
     for m in marcas:
         woo = m.get("stock_woo")
@@ -2097,10 +2106,10 @@ def _aviso_con_stock(canal: str, vuelta: dict[str, Any], marcas: list[dict[str, 
         a = {"canal": canal, "cuenta": m.get("cuenta"), "item_id": str(m["item_id"]),
              "stock_actual_canal": m.get("stock_own")}
         if _anotar(ctx, a, ACC_SIN_CAMBIO,
-                   (f"{CON_STOCK}: Woo ya tiene {int(woo)} y sigue fuera de la venta "
+                   (f"{CON_STOCK}: {rotulo} ya tiene {int(woo)} y sigue fuera de la venta "
                     f"({m.get('status') or 'sin estado'}); {razon}"), una_al_dia=CON_STOCK):
             cerrar(ctx)
-            vuelta["avisos"]["con_stock"].append((canal, f"{sku} (Woo {int(woo)})"))
+            vuelta["avisos"]["con_stock"].append((canal, f"{sku} ({rotulo} {int(woo)})"))
             nuevas.append(sku)
     return nuevas
 

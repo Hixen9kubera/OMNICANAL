@@ -1001,6 +1001,67 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.694.0 — El panel lee el libro de kubera y se cierran las puertas que podían revivir a Odoo (ruta directa, tareas 1.8 y 1.9). **Nace inerte**, encima de la v0.693.0
+
+**Por qué (20–21-oct-2026).** La v0.693.0 enseña al fan-out a leer el libro. Esta versión hace que todo lo que
+lo VIGILA (matriz, trazabilidad, Dashboard, recuperador, devoluciones, Bodegas) entienda ese origen, que una
+falla del libro deje rastro en vez de perderse, y retira los caminos que podían volver a copiar el stock del
+15-oct a Woo. Con `FANOUT_FUENTE=woo` (omisión) todo se ve y funciona como hoy, salvo los rótulos de Odoo y los
+falsos verdes corregidos. PLAN MAESTRO 1.8 y 1.9; una sola acta con la 1.7 (un solo despliegue).
+
+**Lectores de `vendible_cambio`** (`fanout_vivo`, `fanout_devoluciones`, `routers/fanout`): toda lectura de los
+cambios de stock usa `stock_watch.ACCIONES_CAMBIO` como parámetro SQL (ya no el literal
+`('odoo_delta','woo_cambio')`). Origen nuevo **«libro»** en la historia, la cola y los eventos («Vendible X → Y»,
+motivo «cambio de vendible en kubera»). El SKU que el libro no trae («(libro: no lo trae)», D4: el que salió y el que nunca estuvo) es su propio
+evento: «El libro no trae el SKU → 0». `vendible_registro` (sombra) nunca cuenta como cambio. El Dashboard
+trae `fuente`, `fuente_fanout`, `vendible_cambios`, `vendible_sin_numero`, el estado de la última pasada (se ve si
+aborta), `fuentes` y `lectura`. Retirado `GET /odoo/monitor` (sin lectores).
+
+**Rótulos y falsos verdes (riesgo 16).** Odoo se rotula FIJO «Odoo (congelado al 15-oct)»; `stock_rotulo` dice
+«Libro de kubera» o «Woo» según lo que reparte el fan-out. «Odoo y Woo coinciden» y «piezas en Woo sin producto
+en Odoo» ya no dan verde ni alarma contra la foto congelada (pasan a «comparación contra Odoo congelado»). Cuando
+el «Woo vigente» cae a la foto se marca «foto del 15-oct». Las celdas y avisos del seguro dicen
+«{stock_rotulo} ya tiene N». Con el libro encendido, un SKU que la última pasada no tocó vale 0 en la matriz
+(D4) y se cuenta aparte como «el libro no lo trae».
+
+**Núcleo** (`fanout_stock`, `fanout_recuperar`, `fanout_fuentes` nuevo):
+- `sin_numero`: un SKU sin número (sólo con Woo; con el libro un desconocido es 0) se anota como acción propia en
+  vez de `sin_destinos`. El recuperador no lo da por repartido ni lo re-encola en bucle: lo cuenta en
+  `sin_repartir` y avisa si se sostiene.
+- Lectura fallida: `LibroNoDisponible` (o cualquier falla de lectura antes de escribir) ya no es un
+  `log.warning` que suelta el SKU. Se anota `lectura_fallida` (una por SKU cada 10 min), el SKU vuelve a la cola
+  con espera creciente (60 s → 15 min, una sola entrada) y tras 3 fallas seguidas avisa
+  (`fanout_lectura_fallida`). El recuperador re-encola una vez las lecturas varadas tras un reinicio.
+- Validación de fuentes al arrancar: coherentes (odoo, woo) hoy, (libro, woo) sombra y (libro, kubera) T0.
+  Incoherentes —(odoo, kubera), valores desconocidos y T0 sin encolar (stock_watch apagado o en solo registro)—
+  dejan CRITICAL y aviso; con una combinación incoherente no se registra stock_watch.
+
+**Puertas de resurrección (1.9).** `POST /api/fanout/inventario/revisar` responde 409 si stock_watch está apagado,
+venga o no `forzar` (que sólo sirve para pasar el tope, excepción del acta de T0). `POST /api/sync/woo` y su
+progreso responden **410** (copiaban el stock absoluto de Odoo a Woo); se borra `services/sync_woo.py`. Se retira
+`odoo_watch` (job, módulo, banderas `ODOO_WATCH_*` —las que queden en Railway no hacen nada—, su entrada en
+`/api/webhooks/estado` y en el censo del espejo) y `scripts/probar_campana_odoo_sandbox.py`.
+
+**Alineación en seco** (`scripts/alinear_seco_t0.py`, sólo lectura): por publicación DROP viva o latente de
+`channel.listings` (ML, TikTok, Temu; Amazon y Walmart aparte, D2) calcula con el `plan()` real y
+`FANOUT_FUENTE=kubera` en proceso lo que escribiría la primera pasada: igual / baja / sube / a cero porque el libro
+no la conoce (D4) / sin número en Woo; verifica que cada SKU de `--aprobados` esté en el libro; cuenta los cambios
+contra el tope de 300 y separa vivas de latentes (el seguro podría apagar las que van a 0). Sandbox por omisión;
+`--entorno prod` lee en una transacción de solo lectura. Sale ≠0 si el libro no pasa el piso.
+
+**Pruebas:** 7 archivos nuevos (lectores, sin número, lectura fallida, fuentes, alineación, puertas) y ajustes en
+cola, recuperador, seguro, bodegas y devoluciones; `test_stock_watch_fuente.LectoresVivo` pasa al rótulo fijo del
+panel (con permiso de WOO SALIDA). Suite: 3,375 con las 2 fallas heredadas de `main` (`test_regla_11_productos` y, según el entorno, `test_competencia_juez_rutas`).
+Escenario en el sandbox con filas marcadas y borradas: 34/34 y 16/16. Pantallas vistas en el navegador con el
+fan-out en Woo y en libro.
+
+**Pendiente (no bloquea el despliegue inerte):** Bodegas sigue comparando Odoo/kubera/Woo y debe volverse una
+vista del libro por bodega después de T0; devoluciones sin OV (2.5) y cola de guías de TikTok (2.9). El piso por
+bodega y la siembra de `stock_kubera` en 0 para lo que el libro no trae ya están en la v0.693.0 (la 1.7); la
+alineación en seco cuenta esos ceros donde `_movidos_libro` ya no los ve (fuera de la foto o sin ningún número).
+
+**Ajuste P2 (22-oct, pedido de MAESTRO; lo hizo WOO SALIDA con su permiso porque INVENTARIO FANOUT no estaba corriendo).** Con las banderas del acta P2 (`STOCK_WATCH_ENABLED=false`) el panel seguía diciendo «Cada 20 min · stock_watch» y «stock_watch en modo absoluto (Odoo master)». Ahora `stock_watch.estado()` da `modo = "apagado (STOCK_WATCH_ENABLED=false)"`; la cadena viva rotula «Apagado» con `fuentes.stock_watch_job = "apagado"` (o `habilitado=false`); Bodegas dice «apagado (acta P2): no corre» en lugar de «pasa cada 20 min», con el punto en ámbar (no rojo) y sin la pista de «foto vieja = freno»; y el pie del Dashboard dice «stock_watch apagado (…)». Prueba: `test_stock_watch_fuente.PanelConP2`.
+
 ### v0.693.0 — Stock desde el libro de kubera (ruta directa, tarea 1.7): el fan-out puede leer el vendible del libro (`FANOUT_FUENTE=kubera`) y `stock_watch` vigilarlo (`STOCK_WATCH_FUENTE=libro`). **Nace inerte**
 
 **Por qué (15–20-oct-2026).** Odoo salió de la operación el 15-oct (API bloqueada desde las 18:34 UTC) y la

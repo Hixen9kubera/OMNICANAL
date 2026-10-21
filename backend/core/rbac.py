@@ -11,8 +11,8 @@ se puede adjuntar como evidencia. Los tres roles son los que ya define
 desincronizarse.
 
     admin     Brandon, Eduardo y José. Todo, incluida la INFRAESTRUCTURA:
-              migración, webhooks, fan-out de stock, sincronización masiva
-              Odoo→Woo y la bitácora.
+              migración, webhooks, fan-out de stock, lecturas masivas de los
+              canales y la bitácora.
     operador  El rol que el equipo llama **KAM** (la tabla `core.usuarios`
               tiene un CHECK que solo admite tres nombres, así que "KAM" se
               guarda como `operador` y el panel lo rotula como KAM). Hace su
@@ -28,7 +28,7 @@ COMERCIAL y la INFRAESTRUCTURA que lo sostiene. Un KAM no puede:
 
   · apagar la captura de ventas   (POST /api/webhooks/pausar)
   · correr backfills de migración (POST /api/migracion/backfill/*)
-  · barrer stock y precios de TODO el catálogo (POST /api/sync/woo)
+  · leer en vivo TODOS los canales  (POST /api/sync/leer)
   · empujar inventario a los canales (POST /api/fanout/*)
   · leer la bitácora de auditoría  (GET  /api/auditoria)
 
@@ -83,7 +83,10 @@ def _n(rol: str) -> int:
 REGLAS: tuple[tuple[str, str, str], ...] = (
     # ══ ADMIN — pestañas Operaciones, Migración y Facturas ═══════════════════
     # Todo lo de aquí abajo mueve la INFRAESTRUCTURA, no un producto.
-    ("POST", "/api/sync/woo", "admin"),                  # barre stock y precios de TODO
+    # RETIRADA (410 desde el 20-oct-2026: copiaba el stock absoluto de Odoo a Woo).
+    # La regla se queda mientras la ruta exista, para que el auditor no la cuente
+    # como olvido.
+    ("POST", "/api/sync/woo", "admin"),
     ("POST", "/api/sync/leer", "admin"),
     ("POST", "/api/fanout", "admin"),                    # empuja inventario a los canales
     ("GET", "/api/fanout", "admin"),                     # expone flags de producción

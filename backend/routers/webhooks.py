@@ -689,7 +689,8 @@ async def estado_registro():
         "pedidos_wc": settings.pedidos_wc_enabled,
         "pedidos_descuentan_stock": settings.pedidos_wc_descuenta_stock,
         "webhook_guarda_mysql": settings.webhook_guarda_mysql,
-        "odoo_watch": settings.odoo_watch_enabled,
+        # `odoo_watch` salió de aquí al retirarse el vigilante de Odoo (20-oct-2026);
+        # ni el panel ni los scripts leían esta llave.
     }
 
 
@@ -800,9 +801,9 @@ def _leer_de_supabase() -> bool:
 # captura del 7-sep las cinco entradas visibles eran de stock y las dos alertas
 # del día quedaban debajo, con el mismo icono y el mismo peso visual.
 #
-# ⚠️ `odoo_watch` SIGUE ESCRIBIENDO sus eventos: esto quita la VISTA, no el
-# registro. Quedan en `ops.webhook_events` con canal `odoo` y se consultan
-# igual; lo que se retira es su derecho a interrumpir a una persona.
+# Los eventos de canal `odoo` que escribía `odoo_watch` siguen en
+# `ops.webhook_events` y se consultan igual; el vigilante mismo se RETIRÓ el
+# 20-oct-2026 (salida de Odoo/Woo), así que ya no nacen nuevos.
 _CANALES_CAMPANA = ("alertas",)
 
 

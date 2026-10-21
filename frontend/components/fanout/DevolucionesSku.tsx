@@ -15,7 +15,7 @@ import { useEffect, useRef, useState } from "react";
 import { Route, X } from "lucide-react";
 import { ApiError, devolucionesSku } from "@/lib/api";
 import type { CoberturaDevol, DetalleDevol, RecepcionSubida } from "./tipos";
-import { CUENTA_CHIP, DESTINO_RECEPCION, NOMBRE_CUENTA, TIPO_RECEPCION, conSigno, horaCorta } from "./tipos";
+import { CUENTA_CHIP, DESTINO_RECEPCION, NOMBRE_CUENTA, ODOO_ROTULO, ORIGEN_STOCK, TIPO_RECEPCION, conSigno, horaCorta } from "./tipos";
 
 const PERIODOS = [7, 14, 30, 60];
 const DIAS_SEMANA = ["dom", "lun", "mar", "mié", "jue", "vie", "sáb"];
@@ -145,7 +145,7 @@ export default function DevolucionesSku({ sku, diasInicial, hoy, cobertura, onCe
             </h2>
             {d && d.odoo_de != null && d.odoo_a != null && (
               <div className="mt-0.5 text-[13px] leading-5 text-slate-600">
-                Odoo <span className="font-bold tabular-nums text-slate-900">{n(d.odoo_de)} → {n(d.odoo_a)}</span> en {d.dias} días · horas de CDMX
+                {ODOO_ROTULO} <span className="font-bold tabular-nums text-slate-900">{n(d.odoo_de)} → {n(d.odoo_a)}</span> en {d.dias} días · horas de CDMX
               </div>
             )}
           </div>
@@ -238,21 +238,31 @@ export default function DevolucionesSku({ sku, diasInicial, hoy, cobertura, onCe
               )}
 
               <section aria-labelledby="t-devol-subidas" className="flex flex-col gap-3">
-                <h3 id="t-devol-subidas" className="text-xs font-semibold uppercase tracking-wide text-slate-500">Subidas de Odoo</h3>
+                <h3 id="t-devol-subidas" className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Subidas de {d.subidas.some((s) => s.origen === "libro") ? "stock" : ODOO_ROTULO}
+                </h3>
                 {d.subidas.length === 0 ? (
                   <div className="rounded-lg bg-slate-50 px-4 py-3 text-sm text-slate-700">
-                    Odoo no subió el stock de este SKU en los últimos {d.dias} días.
+                    Odoo no subió el stock de este SKU en los últimos {d.dias} días
+                    {" "}(está congelado al 15-oct: después de esa fecha ya no hay subidas suyas).
                     {d.dias < 60 && (
                       <button type="button" onClick={() => setDias(60)}
                         className="ml-2 font-semibold text-indigo-700 underline-offset-2 hover:underline">Ver 60 días</button>
                     )}
                   </div>
                 ) : d.subidas.map((s, i) => (
-                  <article key={`${s.hora}-${i}`} aria-label={`Subida de Odoo, ${conDia(s.hora, hoy)}`}
+                  <article key={`${s.hora}-${i}`} aria-label={`Subida de ${s.origen === "libro" ? ORIGEN_STOCK.libro.texto : "Odoo"}, ${conDia(s.hora, hoy)}`}
                     className="overflow-hidden rounded-xl border border-slate-200">
                     <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-slate-200 bg-slate-50 px-4 py-2.5">
                       <span className="text-[13px] font-semibold tabular-nums text-slate-700">{conDia(s.hora, hoy)}</span>
-                      <span className="text-[15px] font-bold tabular-nums text-slate-900">Odoo {n(s.de)} → {n(s.a)}</span>
+                      <span className="text-[15px] font-bold tabular-nums text-slate-900">
+                        {s.origen === "libro" ? "Vendible" : "Odoo"} {n(s.de)} → {n(s.a)}
+                      </span>
+                      {s.origen === "libro" && (
+                        <span className={`rounded px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide ${ORIGEN_STOCK.libro.chip}`}>
+                          {ORIGEN_STOCK.libro.texto}
+                        </span>
+                      )}
                       <span className="rounded-full bg-indigo-100 px-2.5 py-px text-xs font-bold tabular-nums text-indigo-900">{conSigno(s.sube)}</span>
                       {s.reparto_txt && <span className="basis-full text-xs leading-[18px] text-slate-600 sm:ml-auto sm:basis-auto">{s.reparto_txt}</span>}
                     </header>

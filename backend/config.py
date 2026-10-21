@@ -1677,16 +1677,10 @@ class Settings(BaseSettings):
     walmart_img_modo: str = "propio"
     walmart_img_base: str = ""
 
-    # Vigilante de Odoo: compara qty_available contra la última foto
-    # (productos.stock_odoo) cada N minutos; los cambios van a la campana.
-    # Con auto_push=true además empuja el stock nuevo a Woo (activar solo
-    # después de la carga inicial Odoo→Woo).
-    odoo_watch_enabled: bool = True
-    odoo_watch_min: int = 30
-    # OJO: su empuje manda el VALOR ABSOLUTO de Odoo. Desde que Woo es la fuente
-    # de verdad de las ventas (17-jul) eso RESUCITA mercancía vendida. El empuje
-    # correcto (por DELTA) vive en `stock_watch`; esto se queda apagado.
-    odoo_watch_auto_push: bool = False
+    # ODOO_WATCH_ENABLED / ODOO_WATCH_MIN / ODOO_WATCH_AUTO_PUSH: RETIRADAS el
+    # 20-oct-2026 junto con `services/odoo_watch.py` (plan de salida de Odoo/Woo,
+    # 1.9-c). Si siguen puestas en Railway no hacen nada (`extra="ignore"`): se
+    # pueden borrar de ahí cuando convenga, sin prisa y sin deploy.
 
     # Almacén · copia de Odoo (services/almacen_odoo.py). Cada 30 min deja en
     # kubera la foto de ubicaciones (`almacen.locations`) y el historial de

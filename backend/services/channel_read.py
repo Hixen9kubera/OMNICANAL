@@ -430,7 +430,7 @@ def no_full(limite: int) -> list[dict[str, Any]]:
     nombrara: en kubera 'general' es el catálogo Woo COMPLETO (13,092 filas)
     mientras `canal_inventario` solo tenía 21 legadas. No son la misma cosa, y
     además Woo es la FUENTE del stock, no un destino al que empujarlo — ese
-    camino es `sync_woo.py`. Incluirlo multiplicaría el plan por cuatro con
+    camino era `sync_woo.py` (retirado el 20-oct-2026). Incluirlo multiplicaría el plan por cuatro con
     filas que nadie pidió sincronizar.
     """
     return sdb.fetch_all(
@@ -721,8 +721,8 @@ def estado_amazon(skus: list[str]) -> dict[str, dict[str, Any]]:
 # LO QUE CAMBIA DE SIGNIFICADO, Y HAY QUE SABERLO
 # -----------------------------------------------
 # La columna `stock` de la rejilla venía de `productos.stock_odoo`, la foto del
-# vigilante de Odoo. **Esa columna no tiene casa en kubera** (es la decisión
-# pendiente de `odoo_watch`), así que aquí sale de `channel.listings.stock_own`.
+# vigilante de Odoo. **Esa columna no tiene casa en kubera** (y `odoo_watch`, que
+# la escribía, se retiró el 20-oct-2026), así que aquí sale de `channel.listings.stock_own`.
 #
 # No es un parche: es más correcto. La rejilla lista PUBLICACIONES de un canal,
 # y el stock que importa ahí es el del canal —lo que se está ofreciendo—, no el

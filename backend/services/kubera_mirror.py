@@ -92,17 +92,9 @@ CENSO: list[dict[str, Any]] = [
      "operacion": "INSERT", "disparador": "webhook ML (ráfagas)",
      "estado": "cubierto_por_companero",
      "nota": "Dual-write idempotente ya existe (SUPABASE_DUAL_WRITE)."},
-    {"archivo": "services/odoo_watch.py", "funcion": "_avisar_campana",
-     "tabla_mysql": "webhook_eventos", "tabla_kubera": "ops.webhook_events",
-     "operacion": "INSERT", "disparador": "scheduler cada 30 min",
-     "estado": "a_espejar",
-     "nota": "Eventos de campana canal='odoo' (cambios de stock)."},
-    {"archivo": "services/odoo_watch.py", "funcion": "_guardar_foto",
-     "tabla_mysql": "productos.stock_odoo", "tabla_kubera": None,
-     "operacion": "UPDATE", "disparador": "scheduler cada 30 min",
-     "estado": "no_aplica",
-     "nota": "Foto local de stock Odoo (Odoo en retiro). El stock por canal ya "
-             "viaja vía canal_inventario → channel.listings (compañero)."},
+    # `services/odoo_watch.py` (`_avisar_campana` → webhook_eventos y `_guardar_foto`
+    # → productos.stock_odoo) salió del censo al retirarse el vigilante de Odoo
+    # (20-oct-2026, salida de Odoo/Woo): ya no hay escritor que espejar.
     {"archivo": "services/ventas_ml.py", "funcion": "asegurar_dia",
      "tabla_mysql": "ventas_horarias / ventas_sync", "tabla_kubera": None,
      "operacion": "REPLACE", "disparador": "tab Ventas + warmup",

@@ -702,6 +702,10 @@ class Consultas(unittest.TestCase):
         self.assertEqual(llamadas[0][1], {"d": 150, "z": FD.ZONA})
         self.assertEqual(llamadas[1][1]["d"], 61)
         self.assertIn("TEC-0519-NAR-GRI", llamadas[1][1]["s"])
+        # Los cambios de stock_watch con LA lista, como parámetro (`vendible_cambio` incluido).
+        from services import stock_watch
+        self.assertEqual(llamadas[1][1]["acc"], list(stock_watch.ACCIONES_CAMBIO))
+        self.assertIn("accion = any(%(acc)s)", FD._SQL_SUBIDAS)
         self.assertEqual({f["cuenta"] for f in b["filas"]}, {"BEKURA"})
         with self.assertRaises(ValueError):
             FD.bandeja(60, "OTRA")

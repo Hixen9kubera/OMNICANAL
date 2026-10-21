@@ -1,8 +1,9 @@
 "use client";
 
 /**
- * /dashboard/matriz — ¿Coincide cada canal con Woo? Una fila por SKU (los
- * peores primero) y una columna por canal, coloreada contra Woo. Cada celda dice
+ * /dashboard/matriz — ¿Coincide cada canal con Woo (o con el libro de kubera,
+ * cuando el fan-out reparte el libro: `stock_rotulo`)? Una fila por SKU (los
+ * peores primero) y una columna por canal, coloreada contra ese número. Cada celda dice
  * de cuándo es su dato: «censo» (lo leyó el canal), «escrito» (lo mandó el
  * fan-out) o «igual desde» (la última vez que ese dato cambió en el canal); se
  * queda con el más reciente. Es una FOTO: se rehace cada minuto.
@@ -26,7 +27,9 @@ import FanoutPestanas from "@/components/fanout/FanoutPestanas";
 import RastroCambio from "@/components/fanout/RastroCambio";
 import TrazabilidadSku from "@/components/fanout/TrazabilidadSku";
 import type { Causa, Matriz } from "@/components/fanout/tipos";
-import { CAUSA_CLS, CAUSA_NOMBRE, CELDA_MATRIZ_PUNTEADO as PUNTEADO, CELDA_MATRIZ_SOLIDO as SOLIDO } from "@/components/fanout/tipos";
+import {
+  CAUSA_CLS, CAUSA_NOMBRE, CELDA_MATRIZ_PUNTEADO as PUNTEADO, CELDA_MATRIZ_SOLIDO as SOLIDO, ODOO_ROTULO, esLibro, rotuloStock,
+} from "@/components/fanout/tipos";
 
 const FILTROS = [
   { id: "todo", texto: "Todo" },
@@ -35,6 +38,15 @@ const FILTROS = [
   { id: "sin_orden", texto: "Vendidas sin orden en Odoo" },
 ];
 const ORDEN_CAUSAS: Causa["c"][] = ["403", "perdido", "tarde", "canal", "omitida", "fuera", "error", "cola", "proceso", "camino"];
+
+/** El porqué del número de la columna «Woo»/«Libro» (`woo_de` de `fanout_vivo._woo_vigente`). */
+function tituloWooDe(de: string): string {
+  if (de.startsWith("leído")) return "Lo leyó el fan-out en vivo al repartir el último cambio: es más reciente que la foto de stock_watch.";
+  if (de === "foto del 15-oct") return "Foto de stock_watch del 15-oct: desde entonces nadie la mueve y el fan-out no ha vuelto a leer este SKU.";
+  if (de === "foto sin pasada del libro") return "Foto del libro sin pasada de stock_watch: no se mueve.";
+  if (de.startsWith("el libro no lo trae")) return "El libro de kubera no trae este SKU: el fan-out le reparte 0.";
+  return "Foto de stock_watch (cada 20 min).";
+}
 
 function Leyenda({ cls, texto }: { cls: string; texto: string }) {
   return <span className="flex items-center gap-1.5"><span className={`h-3 w-3 rounded-[3px] ${cls}`} />{texto}</span>;
@@ -82,6 +94,9 @@ export default function MatrizCoincidencia() {
       .filter((x) => x.n > 0);
   }, [m]);
   const plantilla = m ? `minmax(230px,1.5fr) 76px 76px repeat(${m.columnas.length}, minmax(156px,1fr))` : "";
+  // Contra qué se compara: Woo, o el libro de kubera cuando el fan-out ya lo reparte.
+  const libro = esLibro(m?.stock_rotulo);
+  const contra = libro ? "el libro de kubera" : "Woo";
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -91,7 +106,7 @@ export default function MatrizCoincidencia() {
         <BannerFanout
           icono={<LayoutGrid size={28} aria-hidden />}
           titulo="Coincidencia por SKU"
-          texto="¿Coincide cada canal con Woo? Una fila por SKU y una columna por canal: el color lo compara contra Woo, debajo va de cuándo es el dato y, si no coincide, por qué."
+          texto={`¿Coincide cada canal con ${contra}? Una fila por SKU y una columna por canal: el color lo compara contra ${contra}, debajo va de cuándo es el dato y, si no coincide, por qué.`}
           acciones={
             <span className={ACCION_BANNER}>
               <Clock size={14} aria-hidden />{m ? `Foto de ${m.ahora} · se rehace cada minuto` : "Armando la foto…"}
@@ -115,7 +130,7 @@ export default function MatrizCoincidencia() {
                     <span className="text-[15px] font-bold text-slate-900">{b.nombre}</span>
                     <div className="flex items-baseline gap-2">
                       <span className="text-[28px] font-bold leading-[34px] text-slate-900">{b.iguales.toLocaleString("es-MX")}</span>
-                      <span className="text-sm text-slate-600">de {b.vivas.toLocaleString("es-MX")} a la venta coinciden con Woo</span>
+                      <span className="text-sm text-slate-600">de {b.vivas.toLocaleString("es-MX")} a la venta coinciden con {libro ? "el libro" : "Woo"}</span>
                     </div>
                     <div role="img" aria-label={`${b.iguales} iguales, ${b.de_mas} de más, ${b.de_menos} de menos`}
                       className="flex h-2.5 overflow-hidden rounded-full bg-slate-100">
@@ -126,6 +141,23 @@ export default function MatrizCoincidencia() {
                     <div className="text-xs text-slate-600">
                       {b.de_mas ? `${b.de_mas} ${b.de_mas === 1 ? "ofrece" : "ofrecen"} de más` : "ninguna ofrece de más"}{b.de_menos ? ` · ${b.de_menos} de menos` : ""}
                     </div>
+                    {/* Lo comparado contra la foto que ya nadie mueve no prueba que coincida hoy; lo que
+                        el libro no trae vale 0 (D4). */}
+                    {((b.foto_congelada ?? 0) > 0 || (b.libro_no_trae ?? 0) > 0) && (
+                      <div className="text-xs text-slate-600">
+                        {(b.foto_congelada ?? 0) > 0 && (
+                          <span title="Sin lectura del fan-out desde el 15-oct: se compararon contra la foto de ese día, que ya nadie mueve. Su «igual» no prueba que coincidan hoy.">
+                            {(b.foto_congelada ?? 0).toLocaleString("es-MX")} contra la foto del 15-oct
+                          </span>
+                        )}
+                        {(b.foto_congelada ?? 0) > 0 && (b.libro_no_trae ?? 0) > 0 && " · "}
+                        {(b.libro_no_trae ?? 0) > 0 && (
+                          <span title="SKUs que el libro de kubera no trae: el fan-out les reparte 0.">
+                            {(b.libro_no_trae ?? 0).toLocaleString("es-MX")} que el libro no trae (valen 0)
+                          </span>
+                        )}
+                      </div>
+                    )}
                     {b.causas && b.causas.length > 0 && (
                       <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-600">
                         <span>Por qué:</span>
@@ -169,7 +201,7 @@ export default function MatrizCoincidencia() {
                   )}
                 </div>
                 <div className="flex flex-wrap gap-x-3.5 gap-y-1.5 text-xs text-slate-600">
-                  <Leyenda cls="border border-emerald-300 bg-emerald-50" texto="igual a Woo" />
+                  <Leyenda cls="border border-emerald-300 bg-emerald-50" texto={libro ? "igual al libro" : "igual a Woo"} />
                   <Leyenda cls="border border-rose-400 bg-rose-50" texto="ofrece de más" />
                   <Leyenda cls="border border-amber-400 bg-amber-50" texto="ofrece de menos" />
                   <Leyenda cls="bg-rose-600" texto="rechazado" />
@@ -199,17 +231,20 @@ export default function MatrizCoincidencia() {
                 <div className="flex min-w-[1100px] flex-col">
                   <div className="grid items-end gap-2 border-b border-slate-200 px-6 py-2" style={{ gridTemplateColumns: plantilla }}>
                     <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">SKU</span>
-                    {/* La columna mide 76 px: el rótulo largo («Odoo (congelado al …, incompleto)»)
-                        va en dos renglones, como el subtítulo de los canales, y completo en el title. */}
-                    {m.odoo_rotulo && m.odoo_rotulo !== "Odoo" ? (
-                      <span className="flex flex-col" title={m.odoo_rotulo}>
-                        <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Odoo</span>
-                        <span className="text-[11px] text-slate-500">congelado, incompleto</span>
+                    {/* Las columnas miden 76 px: los rótulos largos van en dos renglones, como el
+                        subtítulo de los canales, y completos en el title. El de Odoo es FIJO. */}
+                    <span className="flex flex-col" title={ODOO_ROTULO}>
+                      <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Odoo</span>
+                      <span className="text-[11px] text-slate-500">congelado al 15-oct</span>
+                    </span>
+                    {libro ? (
+                      <span className="flex flex-col" title={rotuloStock(m.stock_rotulo)}>
+                        <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Libro</span>
+                        <span className="text-[11px] text-slate-500">de kubera</span>
                       </span>
                     ) : (
-                      <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Odoo</span>
+                      <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{rotuloStock(m.stock_rotulo)}</span>
                     )}
-                    <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Woo</span>
                     {m.columnas.map((c) => (
                       <span key={c.id} className="flex flex-col">
                         <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{c.nombre}</span>
@@ -229,7 +264,7 @@ export default function MatrizCoincidencia() {
                       </button>
                       <span className="flex flex-col items-start">
                         <span className={`rounded-lg px-2 py-1 text-[13px] font-semibold ${f.dif ? "border border-amber-400 bg-amber-50 text-amber-800" : "text-slate-700"}`}>{f.odoo}</span>
-                        {f.sin_orden && (
+                        {f.sin_orden && m.odoo_comparable !== false && (
                           <span title={`${f.sin_orden.piezas} ${f.sin_orden.piezas === 1 ? "pieza" : "piezas"} en ${f.sin_orden.ventas} ${f.sin_orden.ventas === 1 ? "venta" : "ventas"} de ${f.sin_orden.canales} que esperan su orden en Odoo; la más vieja hace ${f.sin_orden.edad}. Woo las descuenta hasta que la orden nace.`}
                             className="cursor-help px-2 text-[11px] leading-[14px] text-slate-600">−{f.sin_orden.piezas} sin orden</span>
                         )}
@@ -237,9 +272,7 @@ export default function MatrizCoincidencia() {
                       <span className="flex flex-col items-start px-2">
                         <span className="py-1 text-[13px] font-bold text-slate-900">{f.woo}</span>
                         {f.woo_de && (
-                          <span title={f.woo_de.startsWith("leído")
-                            ? "Lo leyó el fan-out en vivo al repartir el último cambio: es más reciente que la foto de stock_watch."
-                            : "Foto de stock_watch (cada 20 min)."}
+                          <span title={tituloWooDe(f.woo_de)}
                             className="cursor-help text-[11px] leading-[14px] text-slate-600">{f.woo_de}</span>
                         )}
                       </span>
@@ -268,7 +301,11 @@ export default function MatrizCoincidencia() {
                 </div>
               </div>
               <p className="px-6 pb-2 pt-1 text-xs leading-[18px] text-slate-600">
-                «censo» es lo que leyó el canal; «escrito» es lo que mandó el fan-out; «igual desde» es la última vez que ese dato cambió en el canal. Cada celda se queda con el más reciente. «−N sin orden» bajo Odoo son piezas ya vendidas cuya orden todavía no nace en Odoo (nace al comprar la guía): Woo las descuenta mientras tanto, así que si Odoo y Woo difieren justo eso, no hay nada desfasado. Toca un SKU para ver su línea de trazabilidad.
+                «censo» es lo que leyó el canal; «escrito» es lo que mandó el fan-out; «igual desde» es la última vez que ese dato cambió en el canal. Cada celda se queda con el más reciente.{" "}
+                {m.odoo_comparable === false
+                  ? `La columna ${ODOO_ROTULO} es un dato: ya no se mueve y no se compara contra nada.`
+                  : "«−N sin orden» bajo Odoo son piezas ya vendidas cuya orden todavía no nace en Odoo (nace al comprar la guía): Woo las descuenta mientras tanto, así que si Odoo y Woo difieren justo eso, no hay nada desfasado."}{" "}
+                Toca un SKU para ver su línea de trazabilidad.
               </p>
             </section>
           </>

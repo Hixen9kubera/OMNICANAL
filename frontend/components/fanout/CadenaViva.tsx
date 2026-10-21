@@ -1,8 +1,10 @@
 "use client";
 
 /**
- * CadenaViva — el recorrido del stock: Odoo → stock_watch → Woo → fan-out →
- * canales. Dos capas de movimiento:
+ * CadenaViva — el recorrido del stock: fuente → stock_watch → lo que lee el
+ * fan-out → canales. La fuente es Odoo (congelado al 15-oct) o, con
+ * `STOCK_WATCH_FUENTE=libro`, el libro de kubera; lo que reparte el fan-out es Woo
+ * o, con `FANOUT_FUENTE=kubera`, el libro (`stock_rotulo`). Dos capas de movimiento:
  *   · El PULSO, continuo y tenue: dice que la cadena está conectada y a qué
  *     ritmo se mueve cada canal (más rápido cuantos más cambios en 24 h; en rojo
  *     y apagándose donde el canal rechaza; nada donde no hubo actividad). Se
@@ -16,7 +18,7 @@
  */
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import type { CanalEstado, Columna, Evento, Vivo } from "./tipos";
-import { ESTADO_CANAL } from "./tipos";
+import { ESTADO_CANAL, LIBRO_ROTULO, esLibro, reparteVivo } from "./tipos";
 
 const W = 1280;
 const PASO = 94;           // separación vertical entre tarjetas de canal
@@ -81,10 +83,23 @@ function Nodo({ x, w, top, eyebrow, nombre, l1, l2, l2Aviso }: {
   );
 }
 
-function TarjetaCanal({ c, top, destello }: { c: CanalEstado; top: number; destello?: "ok" | "mal" }) {
+function TarjetaCanal({ c, top, destello, contra }: { c: CanalEstado; top: number; destello?: "ok" | "mal"; contra: string }) {
   const est = ESTADO_CANAL[c.estado];
   const rechaza = c.estado === "rechaza";
   const co = c.coincidencia;
+  // «iguales» contra una foto que ya nadie mueve no prueba que coincidan hoy (la del 15-oct con
+  // Woo): se dice cuántas. Y las que se compararon contra el 0 de lo que el libro no trae (D4).
+  const fc = co?.foto_congelada ?? 0;
+  const nt = co?.libro_no_trae ?? 0;
+  const coincide = co && co.vivas
+    ? (fc ? `${co.iguales} de ${co.vivas} iguales ${contra} · ${fc} vs. foto del 15-oct`
+      : `${co.iguales} de ${co.vivas} a la venta iguales ${contra}`) + (nt ? ` · ${nt} fuera del libro` : "")
+    : null;
+  const coincideTitulo = co && co.vivas
+    ? `${co.iguales} de ${co.vivas} publicaciones a la venta iguales ${contra}`
+      + (fc ? `; ${fc} se compararon contra la foto del 15-oct, que ya nadie mueve: su «igual» no prueba que coincidan hoy` : "")
+      + (nt ? `; ${nt} son de SKUs que el libro no trae (valen 0)` : "")
+    : undefined;
   return (
     <div className={`absolute flex flex-col justify-center gap-0.5 rounded-xl border px-3.5 py-2 transition-shadow duration-300 ${
       rechaza ? "border-rose-300 bg-rose-50/60" : "border-slate-200 bg-white"} ${
@@ -109,8 +124,8 @@ function TarjetaCanal({ c, top, destello }: { c: CanalEstado; top: number; deste
             <b className="text-base text-slate-900">{c.ok_24h.toLocaleString("es-MX")}</b> cambios en 24 h
             {c.rech_24h ? <span className="text-amber-800"> · {c.rech_24h} rechazados</span> : null}
           </div>
-          <div className="truncate text-[11px] leading-4 text-slate-600">
-            {co && co.vivas ? `${co.iguales} de ${co.vivas} a la venta iguales a Woo` : `último ${c.ultimo_ok_reciente}`}
+          <div className="truncate text-[11px] leading-4 text-slate-600" title={coincideTitulo}>
+            {coincide ?? `último ${c.ultimo_ok_reciente}`}
           </div>
         </>
       )}
@@ -216,8 +231,16 @@ export default function CadenaViva({ datos, nuevos, tanda, ultimaHora, conectado
 
   const sw = datos.stock_watch;
   const f = datos.foto;
-  // «15-oct 18:34» con STOCK_WATCH_FUENTE woo/libro; null/ausente (backend anterior) = Odoo vivo.
-  const odooCongelado = f.odoo_congelado ?? null;
+  // Odoo está congelado al 15-oct pase lo que pase (rótulo FIJO, sin `odoo_vivo()`):
+  // ya no es el maestro y «distintos de Odoo» no dice nada.
+  const fuente = (sw.fuente || "odoo").toLowerCase();
+  const swLibro = fuente === "libro";
+  const reparteLibro = esLibro(reparteVivo(datos));
+  // El acta P2 apaga stock_watch (STOCK_WATCH_ENABLED=false): sin job no hay «Cada 20 min».
+  // Manda `fuentes.stock_watch_job`; un backend sin `fuentes` cae a `habilitado`.
+  const swApagado = sw.fuentes?.stock_watch_job ? sw.fuentes.stock_watch_job === "apagado" : !sw.habilitado;
+  const vc = sw.vendible_cambios ?? sw.cambios;
+  const sinNumero = sw.vendible_sin_numero ?? 0;
   const fo = datos.fanout;
   const ml = canales.find((c) => c.estado === "rechaza");
   const mlIdx = ml ? canales.indexOf(ml) : -1;
@@ -268,27 +291,39 @@ export default function CadenaViva({ datos, nuevos, tanda, ultimaHora, conectado
             } as CSSProperties} />
         ))}
 
-        {/* Con STOCK_WATCH_FUENTE woo/libro el Odoo de la foto está congelado: no es el
-            maestro, stock_watch no le copia nada a Woo y «distintos de Odoo» no dice nada. */}
-        <Nodo x={NODOS[0].x} w={NODOS[0].w} top={filaTop} eyebrow={odooCongelado ? "Ya no es la fuente" : "Maestro"}
-          nombre="Odoo"
-          l1={`${f.skus_odoo.toLocaleString("es-MX")} SKUs`}
-          l2={odooCongelado ? `congelado al ${odooCongelado}` : "menos ventas sin orden"} />
-        <Nodo x={NODOS[1].x} w={NODOS[1].w} top={filaTop} eyebrow="Cada 20 min" nombre="stock_watch"
+        {/* La fuente de stock_watch: el libro de kubera (FUENTE=libro) o el Odoo de la foto,
+            congelado al 15-oct, que ya no es el maestro: stock_watch no le copia nada a Woo. */}
+        {swLibro ? (
+          <Nodo x={NODOS[0].x} w={NODOS[0].w} top={filaTop} eyebrow="Lo lee stock_watch" nombre={LIBRO_ROTULO}
+            l1="el vendible de cada SKU" l2="ni Woo ni Odoo" />
+        ) : (
+          <Nodo x={NODOS[0].x} w={NODOS[0].w} top={filaTop} eyebrow="Ya no es la fuente" nombre="Odoo"
+            l1={`${f.skus_odoo.toLocaleString("es-MX")} SKUs`} l2="congelado al 15-oct" />
+        )}
+        <Nodo x={NODOS[1].x} w={NODOS[1].w} top={filaTop} eyebrow={swApagado ? "Apagado" : "Cada 20 min"} nombre="stock_watch"
           l1={sw.en_memoria && sw.segundos != null ? `Pasada ${sw.ultima} · ${Math.round(sw.segundos)} s` : `Último cambio ${sw.ultima}`}
-          l2={odooCongelado ? `${sw.cambios} cambios de Woo` : `${sw.cambios} cambios a Woo`} />
-        <Nodo x={NODOS[2].x} w={NODOS[2].w} top={filaTop} eyebrow="Fuente de los canales" nombre="WooCommerce"
-          l1={`${f.skus_woo.toLocaleString("es-MX")} SKUs`}
-          l2={odooCongelado ? "su stock es el que se reparte"
-            : f.distintos - (f.distintos_por_ventas ?? 0) > 0 ? `${f.distintos - (f.distintos_por_ventas ?? 0)} distintos de Odoo`
-            : f.distintos ? `${f.distintos} con ventas sin orden` : "igual a Odoo"}
-          l2Aviso={!odooCongelado && f.distintos - (f.distintos_por_ventas ?? 0) > 0} />
+          l2={swApagado ? "apagado (acta P2): no corre"
+            : sw.aborta ? "la pasada abortó: no repartió"
+            : swLibro
+            ? (sinNumero ? `${vc} ${vc === 1 ? "cambio" : "cambios"} · ${sinNumero} a 0`
+              : `${vc} ${vc === 1 ? "cambio" : "cambios"} del vendible`)
+            : fuente === "woo" ? `${sw.cambios} cambios de Woo` : `${sw.cambios} cambios a Woo`}
+          l2Aviso={!swApagado && !!sw.aborta} />
+        {reparteLibro ? (
+          <Nodo x={NODOS[2].x} w={NODOS[2].w} top={filaTop} eyebrow="Fuente de los canales" nombre={LIBRO_ROTULO}
+            l1="el fan-out lo lee al repartir" l2="Woo ya no se reparte" />
+        ) : (
+          <Nodo x={NODOS[2].x} w={NODOS[2].w} top={filaTop} eyebrow="Fuente de los canales" nombre="WooCommerce"
+            l1={`${f.skus_woo.toLocaleString("es-MX")} SKUs`}
+            l2={swLibro ? "el libro todavía no se reparte" : "su stock es el que se reparte"} />
+        )}
         <Nodo x={NODOS[3].x} w={NODOS[3].w} top={filaTop} eyebrow="Por cambio" nombre="Fan-out"
           l1={`Cola ${fo.cola} · espera ${fo.debounce_s} s`}
           l2={ultimaHora ? `último cambio ${ultimaHora}` : `a ${canales.length} canales`} />
 
         {canales.map((c, i) => (
-          <TarjetaCanal key={c.canal} c={c} top={14 + i * PASO} destello={destellos[c.canal]?.tono} />
+          <TarjetaCanal key={c.canal} c={c} top={14 + i * PASO} destello={destellos[c.canal]?.tono}
+            contra={reparteLibro ? "al libro" : "a Woo"} />
         ))}
         {ml && mlIdx >= 0 && ml.error_codigo && (
           <span className="absolute w-10 text-center text-[13px] font-bold leading-4 text-rose-700"

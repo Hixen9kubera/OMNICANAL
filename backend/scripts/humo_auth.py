@@ -219,7 +219,7 @@ def main() -> int:
         ("operador", "POST", "/api/competencia/correr", True),
         ("operador", "PATCH", "/api/competencia/skus/ABC", True),
         # --- ...pero NO la infraestructura que las sostiene ---
-        ("operador", "POST", "/api/sync/woo", False),          # barrido de TODO el catálogo
+        ("operador", "POST", "/api/sync/leer", False),         # lectura en vivo de TODOS los canales
         ("operador", "POST", "/api/fanout/encolar", False),    # empuja stock a los canales
         ("operador", "POST", "/api/webhooks/pausar", False),   # apaga la captura de ventas
         ("operador", "GET",  "/api/webhooks/estado", False),
@@ -229,7 +229,7 @@ def main() -> int:
         ("operador", "GET",  "/api/auditoria", False),         # NO ve la bitácora
         # --- admin: todo ---
         ("admin",    "POST", "/api/publicar/confirmar", True),
-        ("admin",    "POST", "/api/sync/woo", True),
+        ("admin",    "POST", "/api/sync/leer", True),
         ("admin",    "POST", "/api/migracion/backfill/channel-orders", True),
         ("admin",    "GET",  "/api/auditoria", True),
     ]

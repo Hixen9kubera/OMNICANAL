@@ -12,7 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Route, X } from "lucide-react";
 import { API_BASE, fetchSesion } from "@/lib/api";
 import type { DetalleBodega, MovLibro } from "./tipos";
-import { COINCIDE_BODEGA, MOTIVO_MOV, conSigno, horaCorta } from "./tipos";
+import { COINCIDE_BODEGA, MOTIVO_MOV, ODOO_ROTULO, conSigno, horaCorta } from "./tipos";
 
 const MESES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
 const n = (v: number | null | undefined) => (v == null ? "—" : v.toLocaleString("es-MX"));
@@ -52,7 +52,7 @@ function Cifra({ titulo, valor, linea, cls = "bg-slate-50 text-slate-900" }: {
 export default function LibroSku({ sku, onCerrar, onTrazabilidad }: {
   sku: string | null;
   onCerrar: () => void;
-  /** Abre la línea de trazabilidad del fan-out (Woo → canales) del mismo SKU. */
+  /** Abre la línea de trazabilidad del fan-out (Woo o el libro → canales) del mismo SKU. */
   onTrazabilidad?: (sku: string) => void;
 }) {
   const [d, setD] = useState<DetalleBodega | null>(null);
@@ -168,14 +168,10 @@ export default function LibroSku({ sku, onCerrar, onTrazabilidad }: {
                           : `físico ${n(o?.fisico ?? 0)} · reservado ${n(o?.reservado ?? 0)}`} />
                     );
                   })}
-                  {/* Con STOCK_WATCH_FUENTE woo/libro ese número ya no se mueve (y la última
-                      lectura fue parcial): que nadie lo lea como el Odoo de hoy. */}
-                  <Cifra titulo={d.formula?.odoo_congelado ? "Odoo total (foto congelada)" : "Odoo total (foto)"}
-                    valor={n(f.odoo_total)}
-                    linea={d.formula?.odoo_congelado
-                      ? `congelado al ${d.formula.odoo_congelado}; lectura incompleta`
-                      : [f.odoo_hoy != null && f.odoo_hoy !== f.odoo_total ? `hoy ${n(f.odoo_hoy)}` : null,
-                        f.otras ? `fuera de las 3: ${conSigno(f.otras)}` : null].filter(Boolean).join(" · ") || "lo que leyó stock_watch"} />
+                  {/* Rótulo FIJO: la API de Odoo se cortó el 15-oct y ese número ya no se mueve
+                      (la última lectura fue parcial): que nadie lo lea como el Odoo de hoy. */}
+                  <Cifra titulo={ODOO_ROTULO} valor={n(f.odoo_total)}
+                    linea="total de la foto de stock_watch; lectura incompleta" />
                   {cBodegas.map((c) => (
                     <Cifra key={c} titulo={`kubera ${c}`} valor={n(f.kubera[c].libre)} cls="bg-indigo-50 text-indigo-950"
                       linea={`físico ${n(f.kubera[c].fisico)} · apartado ${n(f.kubera[c].apartado)}`} />

@@ -2190,6 +2190,23 @@ class ApagadasConStock(Arnes):
         self.assertEqual(len(self.de(S.ACC_SIN_CAMBIO)), 2)
         self.assertEqual([a[0] for a in self.avisos], ["seguro_cero_con_stock:temu"])
 
+    def test_con_el_libro_el_aviso_dice_de_donde_sale_el_numero(self):
+        # Con `FANOUT_FUENTE=kubera` el número sale del libro (`_col_foto`): el aviso y la
+        # fila lo dicen con `stock_rotulo` (contrato con el panel). El prefijo `CON_STOCK`
+        # no cambia: la deduplicación del día sigue igual.
+        self.sembrar_marca()
+        self.en_ensayo()
+        self.aplicar(plan(accion("temu", 0, estado="3/2"), objetivo=15))
+        self.foto[SKU] = 15
+        with mock.patch.object(S.settings, "fanout_fuente", "kubera"):
+            _barrer()
+        (f,) = self.de(S.ACC_SIN_CAMBIO)
+        self.assertTrue(f["resultado"].startswith(S.CON_STOCK + ": Libro de kubera ya tiene 15"), f["resultado"])
+        (a,) = [x for x in self.avisos if x[0] == "seguro_cero_con_stock:temu"]
+        self.assertIn(f"{SKU} (Libro de kubera 15)", a[1])
+        self.assertIn("Libro de kubera ya tiene stock", a[1])
+        self.assertNotIn("Woo", a[1])
+
     def test_si_ya_vende_o_woo_sigue_en_cero_no_dice_nada(self):
         self.sembrar_marca()
         self.en_ensayo()

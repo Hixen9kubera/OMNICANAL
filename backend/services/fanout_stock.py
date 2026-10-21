@@ -3,7 +3,7 @@ fanout_stock.py — Fan-out del stock DROP hacia los canales.
 
 PROBLEMA QUE RESUELVE: hoy una venta no-FULL descuenta en WooCommerce (30→29)
 pero NADIE le avisa a los demás canales — SANCORFASHION y Amazon siguen
-ofreciendo 30. Verificado 2026-07-24: `sync_woo.py` solo empuja Odoo→Woo y el
+ofreciendo 30. Verificado 2026-07-24: `sync_woo.py` (retirado en la v0.694.0) solo empuja Odoo→Woo y el
 sync de 15 min solo LEE los canales. Riesgo real de sobreventa.
 
 QUÉ HACE: cuando el stock DROP de un SKU cambia, lo replica a todas las
@@ -1229,17 +1229,41 @@ def _bloqueo_canal(canal: str | None) -> str | None:
     return None
 
 
+# La acción del fan-out cuando el SKU no tiene número (`plan`): `_stock_drop` dio None.
+# Hoy eso SÓLO pasa leyendo Woo (no hay producto con ese `_sku` o no gestiona su
+# `_stock`). Con el libro (`FANOUT_FUENTE=kubera`, D4) un SKU que el libro no trae vale
+# 0 —se reparte como 0— y uno ilegible lanza `LibroNoDisponible` (lectura fallida, más
+# abajo): ninguno de los dos es «sin número». `SIN_NUMERO_LIBRO` queda por si
+# `stock_libro` volviera a devolver None. No es «ya repartido»: `fanout_recuperar` lo
+# cuenta aparte (y sólo si la marca es de la fuente que se lee hoy).
+ACC_SIN_NUMERO = "sin_numero"
+SIN_NUMERO_LIBRO = "sin número en el libro"
+SIN_NUMERO_WOO = "sin stock legible en WooCommerce"
+
+
 def plan(sku: str) -> dict[str, Any]:
     """
     Qué haría el fan-out con este SKU AHORA MISMO. No escribe ni encola nada:
     es lo que consume el dry-run, el endpoint de simulación y el worker.
+
+    Sin número (`sin_numero`) sólo leyendo Woo. Con el libro, un SKU que el libro
+    no conoce sale con número 0 (D4: se reparte el 0 a sus publicaciones vivas) y un
+    libro ilegible LANZA `LibroNoDisponible` hasta aquí (`_procesar` lo anota como
+    lectura fallida y lo reintenta): nunca un número viejo ni un 0 inventado.
     """
     stock = _stock_drop(sku)
     if stock is None:
         from services import stock_libro
-        donde = "el libro de kubera" if stock_libro.lee_libro() else "WooCommerce"
+        libro = stock_libro.lee_libro()
+        donde = "el libro de kubera" if libro else "WooCommerce"
+        # «Sin número» NO es «sin destinos»: el SKU puede tener publicaciones vivas y
+        # el fan-out no les escribe nada porque no sabe qué número darles. La bitácora
+        # lo anota con su acción propia (`_persistir`: 'sin_numero' con este texto) y
+        # el recuperador lo cuenta aparte en vez de darlo por repartido. Hoy sólo con
+        # Woo: con el libro `_stock_drop` no devuelve None (D4); la rama del libro
+        # queda por si eso cambiara.
         return {"sku": sku, "ok": False, "motivo": f"sin stock legible en {donde}",
-                "acciones": []}
+                "acciones": [], "sin_numero": SIN_NUMERO_LIBRO if libro else SIN_NUMERO_WOO}
     objetivo = max(0, stock - _reserva())
     acciones: list[dict[str, Any]] = []
     for d in _destinos(sku):
@@ -1326,8 +1350,12 @@ def _persistir(evento: dict[str, Any]) -> None:
             for a in (evento.get("acciones") or [])
         ] or [(evento["ts_dt"], evento["sku"], (evento.get("motivo") or "")[:160],
                1 if evento["dry_run"] else 0, evento.get("stock_drop"),
-               evento.get("objetivo"), None, None, "", "sin_destinos", None,
-               str(evento.get("detalle") or "sin publicaciones vivas")[:255],
+               evento.get("objetivo"), None, None, "",
+               # Sin número (`plan`) no es «sin destinos»: el recuperador no lo da por
+               # repartido. La fila lleva su acción y su texto propios.
+               ACC_SIN_NUMERO if evento.get("sin_numero") else "sin_destinos", None,
+               str(evento.get("sin_numero") or evento.get("detalle")
+                   or "sin publicaciones vivas")[:255],
                evento.get("ms"))]
         # ESPEJO PRIMERO, Y APARTE. La leccion de `imagenes_amazon._cache_put`
         # (20-ago): si el espejo va DENTRO del try del INSERT a MySQL y DESPUES
@@ -1679,9 +1707,20 @@ def _accion(sku: str, motivo: str, a: dict[str, Any], seg: Any, rancios: dict,
 
 
 def _aplicar(sku: str, motivo: str) -> None:
-    """Calcula el plan y (si no es dry-run) lo ejecuta. Registra siempre."""
+    """Calcula el plan y (si no es dry-run) lo ejecuta. Registra siempre.
+
+    Si `plan` no pudo LEER (el número o los destinos), todavía no se escribió nada: un
+    `LibroNoDisponible` sube tal cual y cualquier otra falla sube como `LecturaFallida`;
+    `_procesar` las anota y las reintenta. Lo que falla después (escrituras, bitácora)
+    sube como siempre."""
+    from services.stock_libro import LibroNoDisponible
     inicio = time.time()
-    p = plan(sku)
+    try:
+        p = plan(sku)
+    except LibroNoDisponible:
+        raise
+    except Exception as exc:  # noqa: BLE001 — antes de escribir nada: se reintenta
+        raise LecturaFallida(f"{type(exc).__name__}: {exc}") from exc
     simulacion = dry_run()
     seg = _seguro("abrir", sku, motivo, p)
     rancios = _rancios(sku, p.get("acciones", []))
@@ -1703,7 +1742,7 @@ def _aplicar(sku: str, motivo: str) -> None:
         "ts_dt": ahora.replace(tzinfo=None),
         "sku": sku, "motivo": motivo, "dry_run": simulacion,
         "stock_drop": p.get("stock_drop"), "objetivo": p.get("objetivo"),
-        "ok": p.get("ok"), "detalle": p.get("motivo"),
+        "ok": p.get("ok"), "detalle": p.get("motivo"), "sin_numero": p.get("sin_numero"),
         "acciones": resultados, "ms": round((time.time() - inicio) * 1000, 1),
     }
     _eventos.appendleft({k: v for k, v in evento.items() if k != "ts_dt"})
@@ -1826,19 +1865,184 @@ _TEMU_A_LA_VENTA = "2/8"      # = fanout_vivo._TEMU_A_LA_VENTA
 _clasif_lock = threading.Lock()
 
 
+# ── Lectura fallida: el número no se pudo leer ───────────────────────────────
+#
+# Con Woo (`FANOUT_FUENTE=woo`, hoy) también: si la MySQL de WordPress parpadea
+# (`_stock_drop`) o kubera no contesta al buscar los destinos, `plan` revienta ANTES de
+# escribir nada. Antes eso caía en el `except` genérico —un WARNING y el SKU soltado: en
+# una ráfaga de ventas, bajadas que no llegaban a ningún canal—. Ahora sube como
+# `LecturaFallida` y sigue el mismo camino (bitácora, reintento con espera, aviso).
+#
+# Con `FANOUT_FUENTE=kubera`, `plan` → `_stock_drop` → `stock_libro.numero` LANZA
+# `LibroNoDisponible` cuando el libro no se puede leer con confianza (la base cayó, la
+# vista no existe, el libro viene a medio cargar, una errata en la variable). Antes
+# `_procesar` sólo dejaba un WARNING y SOLTABA el SKU: el cambio no llegaba a ningún
+# canal y nadie volvía por él. Ahora:
+#   · anota `lectura_fallida` en la bitácora (canal '*', el error en `resultado`, a lo
+#     más UNA por SKU cada `_LECTURA_ANOTA_S`): el recuperador la ve y no la da por
+#     repartida;
+#   · lo DEVUELVE a la cola con espera creciente (60 s, 120 s… tope 15 min), una sola
+#     entrada por SKU: si llegó otra vez mientras se procesaba, se queda la que había
+#     con la espera más larga;
+#   · tras `_LECTURA_AVISO_TRAS` fallas SEGUIDAS (de cualquier SKU) avisa por Slack
+#     (`alertas.avisar_estado`, tipo `fanout_lectura_fallida`) y avisa también cuando
+#     una lectura vuelve a salir. Corre en los hilos del worker, nunca en el loop.
+ACC_LECTURA_FALLIDA = "lectura_fallida"
+
+
+class LecturaFallida(Exception):
+    """`plan` no pudo leer (el `_stock` de Woo, los destinos en kubera…) con una falla que
+    no es `LibroNoDisponible`. Nada se escribió: se reintenta como una lectura fallida."""
+
+_LECTURA_ESPERA_S = 60.0
+_LECTURA_ESPERA_MAX_S = 900.0
+_LECTURA_ANOTA_S = 600.0
+_LECTURA_AVISO_TRAS = 3
+_LECTURA_AVISO_TIPO = "fanout_lectura_fallida"
+_lectura_lock = threading.Lock()
+_lectura_intentos: dict[str, int] = {}      # sku → fallas seguidas de ESE SKU
+_lectura_anotada: dict[str, float] = {}     # sku → cuándo se anotó su última fila
+_lectura: dict[str, Any] = {"racha": 0, "avisado": False, "ultima": None}
+_contadores.setdefault("lecturas_fallidas", 0)
+
+
+# Un error de la base puede traer la cadena de conexión: a la bitácora y a Slack va sin ella.
+_URL_RE = re.compile(r"\b[a-z][a-z0-9+.-]*://\S+", re.I)
+_CLAVE_RE = re.compile(r"\b(password|passwd|pwd|token|apikey|api_key|secret)\s*[=:]\s*\S+", re.I)
+
+
+def _sin_secretos(texto: str) -> str:
+    return _CLAVE_RE.sub(lambda m: f"{m.group(1)}=***", _URL_RE.sub("<url>", texto))
+
+
+def _lectura_espera(intentos: int) -> float:
+    """60 s, 120 s, 240 s, 480 s y de ahí 15 min."""
+    return min(_LECTURA_ESPERA_MAX_S, _LECTURA_ESPERA_S * 2 ** max(0, intentos - 1))
+
+
+def _reencolar_lectura(sku: str, motivo: str, info: dict[str, Any] | None) -> float:
+    """De vuelta a `_pendientes` tras una lectura fallida. Se llama CON `_lock` tomado,
+    en el mismo bloque que lo saca de `_en_proceso`: nunca queda fuera de la cola."""
+    with _lectura_lock:
+        n = _lectura_intentos.get(sku, 0) + 1
+        _lectura_intentos[sku] = n
+    espera = _lectura_espera(n)
+    if not habilitado():
+        return espera
+    ahora = time.time()
+    desde = float((info or {}).get("desde", ahora))
+    previo = _pendientes.get(sku)
+    if previo is not None:
+        previo["listo_en"] = max(float(previo.get("listo_en", 0.0)), ahora + espera)
+        previo["desde"] = min(float(previo.get("desde", desde)), desde)
+    else:
+        _pendientes[sku] = {"listo_en": ahora + espera, "motivo": motivo, "desde": desde}
+    return espera
+
+
+def _lectura_fallida(sku: str, motivo: str, exc: Exception, espera: float) -> None:
+    """La bitácora y el aviso de una lectura fallida (fuera de `_lock`: escribe en la base)."""
+    _contadores["lecturas_fallidas"] += 1
+    error = _sin_secretos(" ".join(str(exc).split()))[:200] or type(exc).__name__
+    ahora = time.time()
+    with _lectura_lock:
+        _lectura["racha"] += 1
+        racha = _lectura["racha"]
+        _lectura["ultima"] = {"sku": sku, "ts": ahora, "error": error, "espera_s": espera}
+        anotar = ahora - _lectura_anotada.get(sku, 0.0) >= _LECTURA_ANOTA_S
+        if anotar:
+            _lectura_anotada[sku] = ahora
+            if len(_lectura_anotada) > 5000:        # que no crezca sin fin
+                for s in [s for s, t in _lectura_anotada.items() if ahora - t >= _LECTURA_ANOTA_S]:
+                    _lectura_anotada.pop(s, None)
+        avisar = racha >= _LECTURA_AVISO_TRAS and not _lectura["avisado"]
+        if avisar:
+            _lectura["avisado"] = True
+    log.warning("fan-out %s: no se pudo leer su número (%s); vuelve a la cola en %.0f s",
+                sku, error, espera)
+    if anotar:
+        dt = datetime.now(timezone.utc)
+        from services.stock_libro import LibroNoDisponible
+        que = "del libro" if isinstance(exc, LibroNoDisponible) else "del número"
+        resultado = f"lectura {que} fallida (reintento en {espera:.0f} s): {error}"
+        evento = {
+            "ts": dt.isoformat(timespec="seconds"), "ts_dt": dt.replace(tzinfo=None),
+            "sku": sku, "motivo": motivo, "dry_run": dry_run(), "stock_drop": None,
+            "objetivo": None, "ok": False, "detalle": resultado,
+            "acciones": [{"canal": "*", "cuenta": None, "item_id": None,
+                          "accion": ACC_LECTURA_FALLIDA, "stock_actual_canal": None,
+                          "objetivo": None, "resultado": resultado}],
+            "ms": None,
+        }
+        _eventos.appendleft({k: v for k, v in evento.items() if k != "ts_dt"})
+        _persistir(evento)
+    if avisar:
+        from services import alertas
+        alertas.avisar_estado(
+            _LECTURA_AVISO_TIPO, "fallando",
+            f"*Fan-out*: {racha} lecturas seguidas del número del stock fallaron "
+            f"(`FANOUT_FUENTE={getattr(settings, 'fanout_fuente', '')}`). Los SKUs vuelven a la "
+            f"cola con espera creciente (hasta {_LECTURA_ESPERA_MAX_S / 60:.0f} min) y nada se "
+            f"reparte con un número inventado. Última: `{sku}` — {error}")
+
+
+def _lectura_ok(sku: str) -> None:
+    """Una lectura que salió: borra los reintentos del SKU, corta la racha y, si se había
+    avisado, avisa que volvió. Sin base ni red mientras no haya habido aviso."""
+    with _lectura_lock:
+        _lectura_intentos.pop(sku, None)
+        _lectura["racha"] = 0
+        volvio = _lectura["avisado"]
+        _lectura["avisado"] = False
+    if volvio:
+        from services import alertas
+        alertas.avisar_estado(_LECTURA_AVISO_TIPO, "ok", "", texto_ok=(
+            f"*Fan-out*: el número del stock se vuelve a leer (`{sku}`); "
+            f"los SKUs en espera salen en su turno."))
+
+
+def lectura_estado() -> dict[str, Any]:
+    """Para el panel: la racha de lecturas fallidas y los SKUs esperando reintento."""
+    with _lectura_lock:
+        return {"racha": _lectura["racha"], "avisado": _lectura["avisado"],
+                "ultima": dict(_lectura["ultima"]) if _lectura["ultima"] else None,
+                "en_reintento": len(_lectura_intentos)}
+
+
 def _procesar(sku: str, motivo: str) -> None:
     """Un SKU de punta a punta. Quien lo toma ya lo puso en `_en_proceso`; sale de ahí
-    cuando `_aplicar` terminó (con su bitácora y el cierre del seguro)."""
+    cuando `_aplicar` terminó (con su bitácora y el cierre del seguro). Si el número no
+    se pudo leer (`LibroNoDisponible`, o `LecturaFallida`: otra falla de `plan`, antes de
+    escribir nada), vuelve a la cola con espera (ver arriba). Una falla DESPUÉS de leer
+    (una escritura, la bitácora) se suelta como siempre, y la lectura cuenta como buena."""
+    from services.stock_libro import LibroNoDisponible
     inicio = time.time()
+    fallo: Exception | None = None
+    espera = 0.0
     try:
         _aplicar(sku, motivo)
+        _lectura_ok(sku)
+    except (LibroNoDisponible, LecturaFallida) as exc:
+        fallo = exc
     except Exception as exc:  # noqa: BLE001
         _contadores["errores"] += 1
         log.warning("fan-out %s falló: %s", sku, exc)
+        # El plan sí leyó: no deja al SKU «esperando reintento» (`lectura_estado`).
+        try:
+            _lectura_ok(sku)
+        except Exception as exc2:  # noqa: BLE001 — el aviso no tumba al worker
+            log.warning("fan-out %s: aviso de lectura: %s", sku, exc2)
     finally:
         with _lock:
-            _en_proceso.pop(sku, None)
+            info = _en_proceso.pop(sku, None)
             _duraciones.append(time.time() - inicio)
+            if fallo is not None:
+                espera = _reencolar_lectura(sku, motivo, info)
+    if fallo is not None:
+        try:
+            _lectura_fallida(sku, motivo, fallo, espera)
+        except Exception as exc:  # noqa: BLE001 — la bitácora o el aviso no tumban al worker
+            log.warning("fan-out %s: no se pudo anotar la lectura fallida: %s", sku, exc)
 
 
 def _drenar_lote() -> None:

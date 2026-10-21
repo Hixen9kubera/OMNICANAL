@@ -7,6 +7,85 @@
 export type Tono = "mal" | "ok" | "full" | "omit";
 export type Kind = "ok" | "mal" | "full" | "omit" | "nopub" | "igual" | "sim" | "apag";
 
+/**
+ * De dónde salió un cambio de stock que se reparte: `odoo` (`odoo_delta`), `woo`
+ * (`woo_cambio`) o `libro` (`vendible_cambio`: el vendible del libro de kubera).
+ * Un backend anterior a la salida de Woo sólo manda odoo/woo.
+ */
+export type OrigenStock = "odoo" | "woo" | "libro";
+
+/**
+ * El rótulo de Odoo es FIJO: su API se cortó el 15-oct (última actividad de stock
+ * 16:48:47 UTC) y lo que queda de él es una foto que ya no se mueve. No depende de
+ * `odoo_vivo()` ni del `odoo_rotulo` que mande el backend.
+ */
+export const ODOO_ROTULO = "Odoo (congelado al 15-oct)";
+export const LIBRO_ROTULO = "Libro de kubera";
+
+/** Texto, chip y color de punto de cada origen (contraste del chip ≥ 4.5:1 sobre su fondo). */
+export const ORIGEN_STOCK: Record<OrigenStock, { texto: string; chip: string; color: string }> = {
+  odoo: { texto: ODOO_ROTULO, chip: "bg-indigo-50 text-indigo-800", color: "#4f46e5" },
+  woo: { texto: "Woo", chip: "bg-cyan-50 text-cyan-800", color: "#4f46e5" },
+  libro: { texto: LIBRO_ROTULO, chip: "bg-violet-50 text-violet-800", color: "#7c3aed" },
+};
+
+/** Lo que lee el fan-out para repartir: el `stock_rotulo` del backend, o «Woo» con uno anterior. */
+export const rotuloStock = (r: string | null | undefined): string => r || "Woo";
+
+/** ¿El número que se reparte es el del libro de kubera? */
+export const esLibro = (r: string | null | undefined): boolean => rotuloStock(r) === LIBRO_ROTULO;
+
+/** Qué lee stock_watch (`STOCK_WATCH_FUENTE`: odoo | woo | libro). Un backend anterior no la manda: odoo
+ *  (con el rótulo FIJO: Odoo ya no se mueve). */
+export function nombreFuenteSw(f: string | null | undefined): string {
+  const v = (f || "odoo").toLowerCase();
+  return v === "libro" ? LIBRO_ROTULO : v === "woo" ? "Woo" : v === "odoo" ? ODOO_ROTULO : v;
+}
+
+/** Qué lee el fan-out al repartir (`FANOUT_FUENTE`: woo | kubera). Sin el dato: Woo. */
+export function nombreFuenteFanout(f: string | null | undefined): string {
+  const v = (f || "woo").toLowerCase();
+  return v === "kubera" ? LIBRO_ROTULO : v === "woo" ? "Woo" : v;
+}
+
+/** Lo que reparte el fan-out en el Dashboard: `foto.stock_rotulo`; sin él, `stock_watch.fuente_fanout`; sin nada, Woo. */
+export const reparteVivo = (d: Pick<Vivo, "foto" | "stock_watch">): string =>
+  d.foto.stock_rotulo || nombreFuenteFanout(d.stock_watch.fuente_fanout);
+
+/** `fanout_fuentes.estado()`: ¿lo que vigila stock_watch y lo que reparte el fan-out van juntos?
+ *  Coherentes: (odoo, woo) hoy · (libro, woo) sombra · (libro, kubera) T0. Con una combinación
+ *  incoherente el scheduler NO registra stock_watch (el fan-out por ventas sigue). */
+export interface FuentesStock {
+  ok: boolean;
+  motivo?: string | null;
+  /** hoy | sombra | t0 | t0_sin_encolar (T0 con stock_watch que sólo registra o apagado: el libro
+   *  no llega a los canales; `ok` es false); null si no es coherente. */
+  momento?: string | null;
+  /** Sinónimo de `momento` por si el backend lo nombra así. */
+  etapa?: string | null;
+  stock_watch_fuente?: string | null;
+  fanout_fuente?: string | null;
+  /** «registrado» | «apagado» | «NO registrado: fuentes incoherentes»; null si el scheduler no ha validado. */
+  stock_watch_job?: string | null;
+  /** ¿Se puede registrar el job de stock_watch con esta combinación? */
+  registra?: boolean;
+  avisa?: boolean;
+  validado_en?: string | null;
+}
+
+/** `fanout_stock.lectura_estado()`: el fan-out no pudo leer el número del libro (`LibroNoDisponible`)
+ *  y el SKU vuelve a la cola con espera; «no sé» nunca es 0. */
+export interface LecturaLibro {
+  /** Lecturas fallidas seguidas (0 = la última leyó bien). */
+  racha: number;
+  /** Ya se avisó por alertas (3 seguidas). */
+  avisado?: boolean;
+  /** La última falla: `ts` en segundos epoch. */
+  ultima?: { sku: string; ts: number; error?: string | null; espera_s?: number | null } | null;
+  /** SKUs esperando reintento. */
+  en_reintento?: number;
+}
+
 export interface Celda {
   k: Kind;
   texto: string;
@@ -27,7 +106,8 @@ export interface Evento {
   sku: string;
   fin: string;
   hora: string;
-  origen: "odoo" | "woo" | "venta" | "otro";
+  /** `libro`: el motivo de la cola empieza con «cambio de vendible en kubera» (`cambio` = «Vendible X → Y»). */
+  origen: OrigenStock | "venta" | "otro";
   cambio: string;
   woo_antes: number | null;
   woo_despues: number | null;
@@ -48,6 +128,12 @@ export interface Coincidencia {
   de_mas: number;
   de_menos: number;
   causas?: { c: string; t: string; n: number }[]; // por qué no coinciden las que están a la venta
+  /** De las `vivas`, cuántas se compararon contra la foto que ya nadie mueve (del 15-oct, o sin
+   *  pasada del libro): su «igual» no prueba que coincidan hoy. Ausente = backend anterior. */
+  foto_congelada?: number;
+  /** De las `vivas`, cuántas se compararon contra el 0 de un SKU que el libro no trae (D4): van en
+   *  los conteos (ofrecer piezas de algo que el libro no tiene es ofrecer de más). Ausente = 0. */
+  libro_no_trae?: number;
 }
 
 /** Por qué una publicación no coincide con Woo (lo arma `fanout_vivo._causas`). */
@@ -100,22 +186,44 @@ export interface Vivo {
     piezas_sin_odoo: number;
     ultima: string | null;
     peor: { sku: string; stock_odoo: number; stock_woo: number } | null;
-    /** «Odoo», o «Odoo (congelado al 15-oct 18:34, incompleto)» con `STOCK_WATCH_FUENTE` woo/libro. */
+    /** Lo manda el backend, pero en pantalla el rótulo de Odoo es el FIJO (`ODOO_ROTULO`). */
     odoo_rotulo?: string;
     /** Desde cuándo el Odoo de la foto no se mueve; null/ausente = Odoo vivo (y `distintos` cuenta). */
     odoo_congelado?: string | null;
+    /** «Libro de kubera» si el fan-out reparte el número del libro; si no, «Woo». Ausente = «Woo». */
+    stock_rotulo?: string;
   };
   stock_watch: {
     habilitado: boolean;
     modo: string | null;
     /** `odoo` | `woo` | `libro` (`STOCK_WATCH_FUENTE`). Un backend anterior no la manda: odoo. */
     fuente?: string;
+    /** `woo` | `kubera` (`FANOUT_FUENTE`, `stock_libro.fuente_fanout()`): lo que lee el fan-out al repartir. */
+    fuente_fanout?: string;
     en_memoria: boolean;
     segundos: number | null;
+    /** odoo_deltas + woo_cambios + vendible_cambios de la última pasada. */
     cambios: number;
+    /** Cambios del vendible del libro en la última pasada (FUENTE=libro). */
+    vendible_cambios?: number | null;
+    /** De los `vendible_cambios`, los SKUs que el libro dejó de traer en la última pasada: van a 0
+     *  y se reparten (D4: lo que el libro no conoce sale en 0). El nombre viene del contrato. En
+     *  sombra y en una pasada que abortó es 0: no se repartió nada. */
+    vendible_sin_numero?: number | null;
+    /** Cambios del vendible que la sombra sólo registró (no se repartieron). */
+    vendible_registro?: number | null;
+    /** Cómo terminó la última pasada de este proceso (`ok`, `foto_base`, `frenado`, `libro_no_disponible`…). */
+    estado?: string | null;
+    /** La última pasada abortó sin repartir: sus conteos van en 0 y el porqué en `nota`. */
+    aborta?: boolean;
+    nota?: string | null;
     ultima: string;
     pendientes_ventas: number | null;
     mas_vieja_h: number | null;
+    /** Si las fuentes del stock son coherentes (`fanout_fuentes.estado()`). Ausente = backend anterior. */
+    fuentes?: FuentesStock | null;
+    /** Lecturas fallidas del libro en el fan-out (`fanout_stock.lectura_estado()`). Ausente = backend anterior. */
+    lectura?: LecturaLibro | null;
   };
   fanout: { habilitado: boolean; dry_run: boolean; cola: number; debounce_s: number; reserva: number };
   /** El seguro «stock 0 ⇒ fuera de la venta». null si el backend no pudo leerlo. */
@@ -206,8 +314,13 @@ export interface Matriz {
   columnas: Columna[];
   barras: Coincidencia[];
   filas: FilaMatriz[];
-  /** «Odoo», o «Odoo (congelado al 15-oct 18:34, incompleto)» cuando stock_watch ya no lee Odoo (`STOCK_WATCH_FUENTE`). */
+  /** Lo manda el backend, pero en pantalla el rótulo de Odoo es el FIJO (`ODOO_ROTULO`). */
   odoo_rotulo?: string;
+  /** De dónde sale la columna «Woo»: «Libro de kubera» o «Woo» (ausente = «Woo»). */
+  stock_rotulo?: string;
+  /** ¿La columna Odoo se compara? false = congelada al 15-oct (o el fan-out en el libro): las
+   *  vendidas sin orden no se pintan contra ella. Ausente = backend anterior (como antes). */
+  odoo_comparable?: boolean;
 }
 
 /** Color de cada resultado en el horario y el rastro (contraste ≥ 4.5:1). */
@@ -282,15 +395,21 @@ export const CELDA_MATRIZ_PUNTEADO: Partial<Record<CeldaMatriz["k"], string>> = 
 
 /** Un renglón de la línea de trazabilidad (lo arma `fanout_vivo.historia`). */
 export type ItemTraza =
-  | { tipo: "woo"; ts: string; hora: string; origen: "odoo" | "woo"; de: number | null; a: number | null;
+  | { tipo: "woo"; ts: string; hora: string; origen: OrigenStock; de: number | null; a: number | null;
       fallo: boolean; motivo: string;
+      /** El libro ya no trae el SKU. Siempre con `origen` "libro". Desde D4 es un cambio a 0 que SÍ
+       *  se reparte (`vendible_cambio` con «(libro: no lo trae)»: `de` = lo que tenía, `a` = 0).
+       *  En filas viejas `vendible_sin_numero` (ya no nacen) `a` = null: no se repartió nada. */
+      sin_numero?: boolean;
       /** La foto de Odoo del `odoo_delta` (`de`/`a` es lo que quedó en Woo). Con ésta se mide
        *  si Odoo subió: Woo también sube cuando stock_watch le devuelve lo que Odoo ya tenía. */
       odoo_de?: number | null; odoo_a?: number | null;
       /** Subida de Odoo que coincide (por fecha, no liga dura) con el reingreso de devoluciones. */
       devoluciones?: { id: string; nombre: string; piezas: number }[]; liga_txt?: string; liga_nota?: string }
   | { tipo: "reparto"; ts: string; fin: string; hora: string; motivo: string;
-      origen: "venta" | "recuperado" | "excedente" | "seguro" | "reenvio" | "cambio"; tono: Tono; destinos: Destino[]; sin_destinos: boolean }
+      origen: "venta" | "recuperado" | "excedente" | "seguro" | "reenvio" | "cambio"; tono: Tono; destinos: Destino[]; sin_destinos: boolean;
+      /** Acción `sin_numero` del plan (sólo con Woo: no gestiona su _stock): no se escribió a ningún canal. */
+      sin_numero?: boolean }
   | { tipo: "canal"; ts: string; hora: string; canal: string; nombre: string; campo: string; via: string;
       relacion: "coincide" | "su_cuenta" | "sin_escritura" | "estado";
       de?: number | null; a?: number | null; ref?: { valor: number | null; hora: string } | null;
@@ -354,8 +473,10 @@ export interface Historia {
   ahora: string;
   existe: boolean;
   odoo: string;
-  /** «Odoo», o «Odoo (congelado al 15-oct 18:34, incompleto)» cuando stock_watch ya no lee Odoo (`STOCK_WATCH_FUENTE`). */
+  /** Lo manda el backend, pero en pantalla el rótulo de Odoo es el FIJO (`ODOO_ROTULO`). */
   odoo_rotulo?: string;
+  /** De dónde sale `woo`: «Libro de kubera» o «Woo» (ausente = «Woo»). */
+  stock_rotulo?: string;
   woo: string;
   woo_de?: string;
   sin_orden?: SinOrden | null;
@@ -614,9 +735,14 @@ export interface RecepcionSubida {
   txt: string;
 }
 
-/** Un renglón `odoo_delta` de `ops.fanout_log` con las recepciones validadas antes de él. */
+/**
+ * Un renglón `odoo_delta` de `ops.fanout_log` con las recepciones validadas antes de él.
+ * Odoo está congelado desde el 15-oct: después de esa fecha no nace ninguna.
+ */
 export interface SubidaOdoo {
   hora: string;
+  /** Ausente = `odoo` (el único que manda hoy el backend). Con `libro`, `de`/`a` son el vendible de kubera. */
+  origen?: OrigenStock;
   de: number | null;
   a: number | null;
   sube: number;
@@ -792,7 +918,10 @@ export interface ResumenBodegas {
     modo: string | null;
     /** `odoo` | `woo` | `libro` (`STOCK_WATCH_FUENTE`). Un backend anterior no la manda: odoo. */
     fuente?: string;
+    /** Lo manda el backend, pero en pantalla el rótulo de Odoo es el FIJO (`ODOO_ROTULO`). */
     odoo_rotulo?: string;
+    /** Lo que lee el fan-out para repartir a los canales: «Libro de kubera» o «Woo» (ausente = «Woo»). */
+    stock_rotulo?: string;
     /** Desde cuándo el Odoo de la foto no se mueve; null con fuente odoo. */
     odoo_congelado?: string | null;
     absoluto: boolean;

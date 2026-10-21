@@ -11,7 +11,7 @@
  */
 import { Renglon } from "./SaludFull";
 import type { AlmacenBodega, BanderaBodega, ResumenBodegas } from "./tipos";
-import { haceSegundos, horaCorta } from "./tipos";
+import { haceSegundos, horaCorta, rotuloStock } from "./tipos";
 
 const n = (v: number | null | undefined) => (v == null ? "—" : v.toLocaleString("es-MX"));
 const pl = (k: number, uno: string, varios: string) => `${k.toLocaleString("es-MX")} ${k === 1 ? uno : varios}`;
@@ -103,7 +103,9 @@ function TarjetaBanderas({ banderas, hoy }: { banderas: BanderaBodega[]; hoy: st
 function TarjetaSalud({ d }: { d: ResumenBodegas }) {
   const sw = d.stock_watch;
   const edad = sw.edad_s;
-  const puntoSw = edad == null ? "mal" : edad <= 45 * 60 ? "bien" : edad <= 2 * 3600 ? "ojo" : "mal";
+  // Apagado a propósito (acta P2): ámbar, no rojo — la foto vieja es lo esperado, no una falla.
+  const puntoSw = !sw.habilitado ? "ojo"
+    : edad == null ? "mal" : edad <= 45 * 60 ? "bien" : edad <= 2 * 3600 ? "ojo" : "mal";
   const pe = sw.pendientes;
   const c = d.conteos;
   const o = d.odoo;
@@ -111,16 +113,20 @@ function TarjetaSalud({ d }: { d: ResumenBodegas }) {
     <section aria-labelledby="t-salud-bodegas" className="flex flex-col gap-3 rounded-2xl bg-white p-5 shadow-sm">
       <div className="flex items-baseline justify-between gap-2">
         <h2 id="t-salud-bodegas" className="text-[15px] font-bold text-slate-900">Sincronización</h2>
-        <span className="text-xs text-slate-600">{sw.odoo_congelado ? "Woo → canales" : "Odoo → Woo"}</span>
+        {/* Lo que reparte el fan-out (`stock_rotulo`): Woo o el libro de kubera. Odoo está congelado al 15-oct. */}
+        <span className="text-xs text-slate-600">{rotuloStock(sw.stock_rotulo)} → canales</span>
       </div>
       <ul className="flex flex-col gap-2.5">
         <Renglon punto={puntoSw}
           titulo={`Última pasada de stock_watch: ${sw.ultima ? horaCorta(sw.ultima, d.hoy) : "nunca"}`}
           texto={<>
-            {haceSegundos(edad)} · pasa cada 20 min · {sw.odoo_congelado ? sw.modo : sw.absoluto ? "modo absoluto (Woo copia a Odoo)" : "modo delta"}
-            {sw.solo_registro ? " · solo registro: anota sin escribir" : ""}
-            {!sw.habilitado ? " · este proceso no lo corre" : ""}
-            {puntoSw !== "bien" ? ". Una foto vieja es un freno (más de 300 cambios) o una pasada abortada." : ""}
+            {/* El acta P2 apaga stock_watch (STOCK_WATCH_ENABLED=false): ni «pasa cada 20 min» ni modo. */}
+            {haceSegundos(edad)} · {sw.habilitado
+              ? <>pasa cada 20 min · {sw.odoo_congelado ? sw.modo : sw.absoluto ? "modo absoluto (Woo copia a Odoo)" : "modo delta"}
+                {sw.solo_registro ? " · solo registro: anota sin escribir" : ""}</>
+              : "apagado (acta P2): no corre"}
+            {/* Apagado, una foto vieja es lo esperado: la pista de freno o aborto sólo confunde. */}
+            {puntoSw !== "bien" && sw.habilitado ? ". Una foto vieja es un freno (más de 300 cambios) o una pasada abortada." : ""}
           </>} />
         <Renglon punto={pe.ciega ? "mal" : "bien"}
           titulo={!pe.aplica ? "No se restan vendidas sin orden" : pe.ciega ? "Vendidas sin orden: no se pudieron medir"

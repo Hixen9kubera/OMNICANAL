@@ -5,15 +5,17 @@
  * contestó cada canal. Las filas que llegan en el sondeo entran llenándose canal
  * por canal. Tocar una fila abre su rastro.
  */
-import { Check, ChevronRight, X } from "lucide-react";
+import { BookOpen, Check, ChevronRight, X } from "lucide-react";
 import type { Celda, Columna, Evento } from "./tipos";
-import { CELDA_CLS } from "./tipos";
+import { CELDA_CLS, ORIGEN_STOCK } from "./tipos";
 
-const ORIGEN: Record<Evento["origen"], string> = {
-  odoo: "bg-indigo-50 text-indigo-800",
-  woo: "bg-cyan-50 text-cyan-800",
-  venta: "bg-amber-50 text-amber-800",
-  otro: "bg-slate-100 text-slate-700",
+// Un origen que este frontend no conoce (backend más nuevo) cae en «otro».
+const ORIGEN: Record<Evento["origen"], { cls: string; titulo?: string }> = {
+  odoo: { cls: ORIGEN_STOCK.odoo.chip, titulo: `Vino de ${ORIGEN_STOCK.odoo.texto}` },
+  woo: { cls: ORIGEN_STOCK.woo.chip, titulo: "stock_watch lo vio en Woo" },
+  libro: { cls: ORIGEN_STOCK.libro.chip, titulo: "Cambió el vendible del libro de kubera" },
+  venta: { cls: "bg-amber-50 text-amber-800" },
+  otro: { cls: "bg-slate-100 text-slate-700" },
 };
 
 function CeldaChip({ c, demora, nueva }: { c: Celda; demora: number; nueva: boolean }) {
@@ -69,7 +71,14 @@ export default function HorarioTrenes({ eventos, columnas, nuevos, ocultos, onAb
               <span className="flex min-w-0 flex-col">
                 <span className="truncate font-mono text-xs font-semibold leading-4 text-slate-900">{e.sku}</span>
                 <span className="mt-0.5 flex items-center gap-1.5">
-                  <span className={`rounded px-1.5 text-[11px] font-medium leading-4 ${ORIGEN[e.origen]}`}>{e.cambio}</span>
+                  <span title={(ORIGEN[e.origen] ?? ORIGEN.otro).titulo}
+                    className={`inline-flex min-w-0 items-center gap-1 rounded px-1.5 text-[11px] font-medium leading-4 ${(ORIGEN[e.origen] ?? ORIGEN.otro).cls}`}>
+                    {e.origen === "libro" && <>
+                      <BookOpen size={11} strokeWidth={2.25} className="shrink-0" aria-hidden />
+                      <span className="sr-only">{ORIGEN_STOCK.libro.texto}: </span>
+                    </>}
+                    <span className="truncate">{e.cambio}</span>
+                  </span>
                 </span>
               </span>
               {columnas.map((c, i) => (

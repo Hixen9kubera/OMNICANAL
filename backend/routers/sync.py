@@ -25,15 +25,20 @@ sync.py — Endpoints del sistema de sincronización de inventario.
          (`/item/{id}/performance` → `enrich.listing_health`, 0053). El GET es
          lectura pura. Ver services/calidad_ml.py; el scheduler lo corre solo
          si CALIDAD_ML_ENABLED=true (y SYNC_ENABLED).
+
+  POST /api/sync/woo · GET /api/sync/woo/progreso
+       → RETIRADOS (410 Gone, plan de salida de Odoo/Woo, 20-oct-2026). Copiaban
+         el stock ABSOLUTO de Odoo a Woo (`services/sync_woo.py`, borrado): una
+         puerta para resucitar mercancía vendida. Odoo salió el 15-oct.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from config import settings
 from core.marketplaces import Canal, subcuentas
 from services import (alertas, channel_read, db, inventario, lecturas_fuente,
-                      sync_woo, woocommerce)
+                      woocommerce)
 
 router = APIRouter(prefix="/api/sync", tags=["sincronizacion"])
 
@@ -80,25 +85,35 @@ async def cobertura_sync(horas: int = Query(24, ge=1, le=168)):
             "min_cobertura": settings.vigilante_sync_min_cobertura, "filas": filas}
 
 
+# RETIRADO (20-oct-2026, 1.9-b del plan de salida de Odoo/Woo). `POST /woo` lanzaba
+# `sync_woo.sincronizar_stock_y_costos`: leía `qty_available` de Odoo y lo ESCRIBÍA
+# tal cual en el `_stock` de Woo para todo el catálogo. Eso es copiar un número
+# ABSOLUTO encima de la fuente de las ventas: cada pieza vendida desde la última
+# foto de Odoo volvía a ofrecerse (la misma resurrección que bloqueó el `auto_push`
+# de `odoo_watch`, también retirado). Con la API de Odoo cortada el 15-oct ya sólo
+# podía fallar o —peor— copiar una foto vieja. Su otra mitad (el costo de
+# `costos_finales` a la meta `costo` de Woo) no se pierde: el guardado de un costo
+# lo empuja SKU por SKU (`crear._sync_woo_costo`). Las rutas contestan 410 (y no 404) para
+# que quien tenga el botón o un script viejo lea POR QUÉ, en vez de creer que se
+# equivocó de URL. La regla de RBAC (`admin`) se conserva: la ruta sigue declarada.
+_SYNC_WOO_RETIRADO = {
+    "retirado": True,
+    "motivo": ("retirado: copiaba el stock absoluto de Odoo a Woo; Odoo salió el "
+               "15-oct. El stock de los canales lo reparte el fan-out "
+               "(/api/fanout) y su número lo vigila stock_watch."),
+}
+
+
 @router.post("/woo")
-async def sincronizar_woo(
-    limite: int | None = Query(None, ge=1, description="Máx. de SKUs (para pruebas); vacío = todos"),
-):
-    """
-    Lanza en segundo plano la sincronización masiva hacia WooCommerce:
-    stock de Odoo (todos los status, nivel variante) + costo de costos_finales
-    (meta `costo`). Avance en GET /api/sync/woo/progreso.
-    """
-    import asyncio
-    if sync_woo.progreso().get("estado") == "corriendo":
-        return {"ok": False, "motivo": "Ya hay una sincronización corriendo.", "progreso": sync_woo.progreso()}
-    asyncio.create_task(sync_woo.sincronizar_stock_y_costos(limite))
-    return {"ok": True, "mensaje": "Sincronización de stock y costos iniciada.", "progreso_en": "/api/sync/woo/progreso"}
+async def sincronizar_woo():
+    """RETIRADO (410). Copiaba el stock absoluto de Odoo a Woo; Odoo salió el 15-oct."""
+    raise HTTPException(status_code=410, detail=_SYNC_WOO_RETIRADO)
 
 
 @router.get("/woo/progreso")
 def progreso_woo():
-    return sync_woo.progreso()
+    """RETIRADO (410), junto con `POST /api/sync/woo`."""
+    raise HTTPException(status_code=410, detail=_SYNC_WOO_RETIRADO)
 
 
 @router.post("/leer")

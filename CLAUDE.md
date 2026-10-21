@@ -24,7 +24,7 @@ BEKURA="Kubera" y SANCORFASHION="San Corpe")**, **Amazon** (San Corpe) y, vía
   para siempre) y **no veía las RESERVAS**: `VIA-0024-NEG` tenía 30 piezas con
   29 comprometidas en borradores —1 vendible— y Woo ofrecía 14. Se vuelve a
   delta con la misma variable, sin deploy, si Odoo dejara de registrar salidas.
-  `odoo_watch` (cada 30 min) sigue solo AVISANDO por la campana.
+  `odoo_watch` se RETIRÓ en la v0.694.0 (Odoo salió el 15-oct-2026; ruta directa al libro de kubera).
 - **Cada venta se congela como PEDIDO de WooCommerce** con el precio real de
   venta, comisión y neto en metas `_ml_*` (los precios de catálogo cambian a
   diario; el pedido es el registro histórico). Tabla de control: `pedidos_ml`
@@ -36,7 +36,7 @@ BEKURA="Kubera" y SANCORFASHION="San Corpe")**, **Amazon** (San Corpe) y, vía
   | Ventas Amazon → pedidos | Sondeo SP-API Orders (`pedidos_amazon.py`) | 5 min |
   | Ventas Temu/TikTok → pedidos | Sondeo M2E `order/find` (`pedidos_m2e.py`) | 10 min |
   | Sync inventario ML+Amazon → `canal_inventario` | `scheduler._job` | 15 min |
-  | Vigilante Odoo | `odoo_watch.revisar` | 30 min |
+  | ~~Vigilante Odoo~~ | ~~`odoo_watch.revisar`~~ RETIRADO en v0.694.0 (Odoo salió el 15-oct) | — |
   | Copia de Odoo de TEXCO II → `almacen.locations` + `almacen.historial_movimientos` | `almacen_odoo.vigilar` | 30 min |
 - **Stock en pedidos**: ML FULL (`logistic_type=fulfillment`) y Amazon FBA
   (canal AFN) nacen con `_order_stock_reduced=yes` → NO tocan bodega (salen del
@@ -168,12 +168,12 @@ BEKURA="Kubera" y SANCORFASHION="San Corpe")**, **Amazon** (San Corpe) y, vía
 | Pedidos Amazon | `backend/services/pedidos_amazon.py` | Poll SP-API; FBA protegido / MFN descuenta; `creado`=PurchaseDate |
 | Pedidos Temu/TikTok | `backend/services/pedidos_m2e.py` | Poll M2E `order/find`; esquema de orden se confirma con la 1ª venta real (log de crudos) |
 | Tab Ventas | `backend/services/ventas_ml.py` + `frontend/app/ventas/page.tsx` | `resumen_pedidos` (fuente pedidos_ml) + vista ML histórica con caché (`ventas_horarias`/`ventas_sync`) |
-| Vigilante Odoo | `backend/services/odoo_watch.py` | Foto vs foto de qty_available → campana; auto_push opcional |
+| ~~Vigilante Odoo~~ | ~~`backend/services/odoo_watch.py`~~ | RETIRADO en v0.694.0 (tarea 1.9: podía revivir el stock de Odoo) |
 | Imágenes Amazon | `backend/services/imagenes_amazon.py` | WebP→JPEG, ≥1000px (Lanczos, fallback Real-ESRGAN), caché `amazon_imagenes` |
 | Editor imágenes IA | `backend/services/imagenes_editor.py` | Flags fondo/traducir/logos/modelo; un solo PUT a la galería. Con `OPENROUTER_API_KEY` (v0.668.0): fondo → FLUX Klein ($0.009), lo demás → Seedream ($0.018), sube a Gemini 3 Pro si falla; 401/402 o sin clave → Gemini directo |
 | Atributos ML (IA) | `backend/services/ml_atributos.py` | Prompt canónico + DeepSeek; guarda metas `ml_attr_<ID>` (lo que lee el publisher) |
 | Tipo Amazon (picker) | `backend/routers/publicar.py` + `frontend/components/TipoAmazonPicker.tsx` | Ver/buscar/guardar product type; prioridad panel |
-| Sync Odoo→Woo | `backend/services/sync_woo.py` (`POST /api/sync/woo`) | Barrido stock+costos, solo diferencias |
+| ~~Sync Odoo→Woo~~ | ~~`backend/services/sync_woo.py`~~ (`POST /api/sync/woo` responde 410) | RETIRADO en v0.694.0 (copiaba el stock absoluto de Odoo a Woo) |
 | Fan-out stock DROP | `backend/services/fanout_stock.py` + `routers/fanout.py` + `docs/AUDITORIA_FANOUT.md` | Woo→canales por evento (cola+debounce). ARQUITECTURA 18-ago: ML/Amazon/Walmart = fulfillment (Amazon FUERA de FANOUT_CANALES); TikTok/Temu(/SHEIN) = DROP-only. TikTok con auto-refresh 105002 (v0.207); Temu espera sondeo de `stock.edit` (`FANOUT_TEMU` off). Alineación inicial: `POST /api/fanout/alinear` |
 | Órdenes de venta propias | `backend/services/ordenes_venta.py` + `ov_auto.py` + `ov_bus.py` + `routers/ordenes_venta.py` + `frontend/app/inventario/ordenes/` + `docs/ORDENES_VENTA.md` | OV-00001… en kubera contra el esquema de Eduardo (`0064` + `0065`: `ventas.ov_*`, `almacen.almacenes`, `almacen.stock_almacen`, `almacen.stock_mov`; **aplicadas en producción el 6-oct-2026 17:40 UTC** con el acta `_paso_prod_ov_0064_0065`, vacías y con TEX3 apagada). La pestaña Operaciones › Bodegas (`services/fanout_bodegas.py`, v0.620.0) muestra ese inventario contra Odoo por bodega y contra Woo, sólo lectura. Borrador → confirmada (aparta TODO O NADA, bodega por renglón) → DELIVERED por renglón (parcial). Una confirmada se puede EDITAR (0071: puerta `app.ov_edicion` en las guardias; re-aparta por la diferencia, todo o nada; deja `editada` en la bitácora) y la cancela cualquiera que escribe; entregada y cancelada siguen inmutables. El barrido (3 min) aplica la cancelación del canal y, si ya iba en camino, le pregunta a Bodega «¿salió?». ÚNICO escritor de `ventas.ov_*`; no escribe en Odoo/Woo/marketplaces. El contrato es `docs/MIGRACION_0064_0065_GUIA_AGENTE.md`. Chat por long-poll; traza en Web Worker. Claude manda `X-Origen: claude` |
 | Almacén · copia de Odoo (TEXCO II) | `backend/services/almacen_odoo.py` + `backend/scripts/copiar_almacen_odoo.py` + `supabase/migrations/0069` y `0070` + `docs/MIGRACION_0069_NOTA_EDUARDO.md` y `…_0070_…` | Lo que sólo vivía en Odoo y kubera necesita para operar TEXCO II: `almacen.locations` (dónde está cada SKU; un renglón por SKU y ubicación, sin rack = `SIN UBICAR`) y `almacen.historial_movimientos` (un renglón por línea de movimiento hecha; `delta` + entra / − sale / 0 adentro). `cedis` obligatorio en las dos. **NO se traen productos archivados** (Brandon: «pueden ser error»). **Vivas en producción desde el 9-oct-2026**: el job `almacen_odoo` (cada 30 min) pide a Odoo lo escrito desde la última línea vista, concilia la foto y mide el cuadre Σ delta = Σ piezas (1,225 de 1,225 SKUs al cargar). Sin variable: se calla solo cuando `almacen.almacenes.fuente` de TEX2 deje de ser `odoo`; freno `ALMACEN_ODOO_ENABLED=false`. `piezas` de la foto es INFORMATIVA (el saldo oficial es `almacen.stock_almacen.fisico`) y el historial NO es el libro de kubera (ése es `almacen.stock_mov`). Sólo lee Odoo; no toca Woo ni canales; nadie decide con ellas todavía |
@@ -264,7 +264,7 @@ drenando lo ya encolado — el flag corta lo que ENTRA, no lo que ya está dentr
 No asumir que un flag apagado significa "detenido ya".
 
 `core` y `categorías` nunca tuvieron espejo inverso (el único `UPDATE` a
-`productos` es `odoo_watch.py:57`, stock de Odoo; `categorias_ml` no la escribe
+`productos` era `odoo_watch.py:57`, stock de Odoo —retirado en la v0.694.0, ya nadie la escribe—; `categorias_ml` no la escribe
 nadie desde el 22-jul).
 
 **La reversa sigue siendo una variable**, por dominio y sin deploy.
@@ -378,7 +378,8 @@ kubera.
    FINAL a propósito: debe seguir funcionando aunque kubera esté caída, así que
    se mueve cuando ya no haya nada que rescatar.
 
-1b. **La foto de stock de Odoo NO tiene casa en kubera.** `odoo_watch` compara
+1b. **RESUELTO en la v0.694.0: `odoo_watch` se retiró** (tarea 1.9; Odoo salió el 15-oct). Lo de abajo queda como historia.
+   **La foto de stock de Odoo NO tiene casa en kubera.** `odoo_watch` comparaba
    contra `productos.stock_odoo` (MySQL) y la escribe cada 30 min — o sea que
    `productos` NO está del todo congelada. `core.products` no tiene esa columna.
    Al retirar el esquema, ese vigilante se queda sin dónde guardar.
@@ -386,7 +387,7 @@ kubera.
    **Medido el 16-ago**: vigila **5,381 SKUs** (los 5,381 tienen foto), y está
    **vivo**: 518 avisos de campana en total, **76 en los últimos 7 días**, el
    más reciente el 15-ago 17:27. Su `auto_push` está apagado **y no se puede
-   encender**: `odoo_watch.py:159` lo bloquea si `stock_watch` está encendido,
+   encender**: `odoo_watch.py:159` (ya retirado) lo bloqueaba si `stock_watch` estaba encendido,
    porque este empuje manda el valor ABSOLUTO de Odoo y resucitaría mercancía
    vendida. **Su único producto son los avisos.**
 

@@ -49,7 +49,8 @@ def me(request: Request):
         "puede": {
             "publicar": rbac.permite(quien.rol, "POST", "/api/publicar/confirmar"),
             "precios_masivos": rbac.permite(quien.rol, "POST", "/api/crear/costos/bulk"),
-            "sync_masivo": rbac.permite(quien.rol, "POST", "/api/sync/woo"),
+            # `sync_masivo` (POST /api/sync/woo) se fue con esa ruta: hoy contesta
+            # 410 (salida de Odoo/Woo, 20-oct-2026) y el panel nunca leyó la llave.
             "ver_costos": rbac.permite(quien.rol, "GET", "/api/crear/costos"),
             "editar_contenido": rbac.permite(quien.rol, "POST", "/api/productos/x/contenido"),
             "ver_auditoria": rbac.permite(quien.rol, "GET", "/api/auditoria"),

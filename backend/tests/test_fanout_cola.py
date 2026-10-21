@@ -1050,8 +1050,12 @@ class Matriz(Cola):
         hora = (cambio - timedelta(hours=6)).strftime("%Y-%m-%d %H:%M:%S")
 
         def fetch_all(sql, params=None):
-            if "accion in ('odoo_delta', 'woo_cambio')" in sql:
-                return [{"sku": "ZZZ-0500-NEG", "ts": cambio, "resultado": "Woo 4 -> 1", "hora": hora}]
+            # El SQL de los cambios de stock_watch se reconoce por su PARÁMETRO: la lista
+            # es `stock_watch.ACCIONES_CAMBIO` y nunca va escrita en el SQL.
+            if (params or {}).get("acc") == list(SW.ACCIONES_CAMBIO):
+                self.assertIn("accion = any(%(acc)s)", sql)
+                return [{"sku": "ZZZ-0500-NEG", "ts": cambio, "accion": "woo_cambio",
+                         "resultado": "Woo 4 -> 1", "hora": hora}]
             return []                    # sin evento del fan-out después
 
         def fetch_one(sql, params=None):

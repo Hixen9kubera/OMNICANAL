@@ -41,7 +41,7 @@ FULL, la compensación FULL/FBA o una edición a mano en wp-admin. Al ser
 foto-contra-foto **no se puede evadir**, que es la diferencia con enganchar cada
 escritor uno por uno.
 
-COBERTURA: la foto de `odoo_watch` vive en `productos.stock_odoo`, que solo cubre
+COBERTURA: la foto de `odoo_watch` (retirado en la v0.694.0) vive en `productos.stock_odoo`, que solo cubre
 5,381 SKUs (tabla legada del robot, congelada). Ésta cubre el catálogo completo
 (13,000 de Odoo / 14,422 de Woo), por eso guarda su propia foto.
 
@@ -243,7 +243,11 @@ def _ventana_pendientes() -> int:
 
 def estado() -> dict[str, Any]:
     f = fuente()
-    if f == "libro":
+    if not habilitado():
+        # El acta P2 lo apaga (STOCK_WATCH_ENABLED=false): sin job no corre en ningún modo, y
+        # el pie del Dashboard ya no puede decir «modo absoluto (Odoo master)».
+        modo = "apagado (STOCK_WATCH_ENABLED=false)"
+    elif f == "libro":
         modo = "libro (reparte los cambios del vendible de kubera; ni Woo ni Odoo)"
     elif f != "odoo":
         modo = f"{f} (no existe: no corre)"

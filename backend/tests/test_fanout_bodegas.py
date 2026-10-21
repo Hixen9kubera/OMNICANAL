@@ -903,7 +903,7 @@ class Ruta(unittest.TestCase):
 # ── STOCK_WATCH_FUENTE=woo (15-oct): sin copia de Odoo y sin preguntarle ──────
 
 CFG_WOO = {**CFG, "modo": "woo (reparte los cambios de Woo; Odoo congelado)", "resta": False,
-           "fuente": "woo", "odoo_rotulo": "Odoo (congelado al 15-oct 18:34, incompleto)",
+           "fuente": "woo", "odoo_rotulo": "Odoo (congelado al 15-oct)", "stock_rotulo": "Woo",
            "odoo_congelado": "15-oct 18:34", "odoo_vivo": False}
 
 
@@ -932,7 +932,9 @@ class FuenteWoo(ConMocks):
         self.assertTrue(d["universo_parcial"])
         self.assertEqual((d["formula"]["fuente"], d["formula"]["odoo_congelado"]), ("woo", "15-oct 18:34"))
         self.assertIn("ya no copia Odoo", d["formula"]["texto"])
-        self.assertEqual(d["stock_watch"]["odoo_rotulo"], "Odoo (congelado al 15-oct 18:34, incompleto)")
+        self.assertEqual(d["stock_watch"]["odoo_rotulo"], "Odoo (congelado al 15-oct)")
+        self.assertIn("Woo es la fuente", d["formula"]["texto"])
+        self.assertEqual(d["formula"]["stock_rotulo"], "Woo")
 
     def test_el_cajon_no_pinta_el_odoo_congelado_como_base(self):
         f = fb.detalle_sku("SKU-A")["fila"]
@@ -947,6 +949,53 @@ class FuenteWoo(ConMocks):
             f = fb.detalle_sku("SKU-A")["fila"]
         self.assertEqual((f["odoo_total"], f["odoo_base"]), (10, 10))
         self.assertNotEqual(self.odoo.llamadas, [])
+
+
+# ── FANOUT_FUENTE=kubera (ruta directa, 20-oct): el libro es la fuente ─────────
+
+CFG_LIBRO = {**CFG_WOO, "modo": "libro (reparte los cambios del vendible de kubera; ni Woo ni Odoo)",
+             "fuente": "libro", "stock_rotulo": "Libro de kubera"}
+
+
+class FuenteLibro(ConMocks):
+    """Con el fan-out en el libro, el aviso del encabezado ya no dice que Woo es la
+    fuente: lo dice el libro. Las fórmulas no cambian (sin copia de Odoo no hay esperado)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        p = mock.patch.object(fb, "_config_stock_watch", side_effect=lambda: dict(CFG_LIBRO))
+        p.start()
+        self._parches.append(p)
+
+    def test_el_aviso_dice_que_el_libro_es_la_fuente(self):
+        d = fb.resumen()
+        self.assertIn("El libro de kubera es la fuente", d["formula"]["texto"])
+        self.assertIn("Woo ya no está en el camino del stock", d["formula"]["texto"])
+        self.assertNotIn("Woo es la fuente", d["formula"]["texto"])
+        self.assertEqual((d["formula"]["stock_rotulo"], d["stock_watch"]["stock_rotulo"]),
+                         ("Libro de kubera", "Libro de kubera"))
+        self.assertEqual(self.odoo.llamadas, [])
+
+    def test_la_fila_no_cambia_de_formula(self):
+        f = fb.detalle_sku("SKU-A")["fila"]
+        self.assertEqual((f["esperado"], f["esperado_motivo"], f["coincide"]), (None, "sin_copia", "no_toca"))
+
+
+class RotulosDeLaConfig(unittest.TestCase):
+    """`_config_stock_watch` (sin suplantar): el rótulo de Odoo es FIJO aunque stock_watch
+    diga otra cosa, y `stock_rotulo` sale de `FANOUT_FUENTE`."""
+
+    def config(self, fanout_fuente: str) -> dict:
+        from services import stock_watch as sw
+        with mock.patch.object(sw, "estado", return_value={"fuente": "odoo", "odoo_rotulo": "Odoo",
+                                                            "odoo_congelado": None, "habilitado": True}), \
+                mock.patch.multiple(fb.settings, fanout_fuente=fanout_fuente, stock_watch_fuente="odoo"):
+            return fb._config_stock_watch()
+
+    def test_odoo_fijo_y_stock_segun_el_fanout(self):
+        self.assertEqual({k: self.config("woo")[k] for k in ("odoo_rotulo", "stock_rotulo")},
+                         {"odoo_rotulo": "Odoo (congelado al 15-oct)", "stock_rotulo": "Woo"})
+        self.assertEqual(self.config("kubera")["stock_rotulo"], "Libro de kubera")
 
 
 if __name__ == "__main__":

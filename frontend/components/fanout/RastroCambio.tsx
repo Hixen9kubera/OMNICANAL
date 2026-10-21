@@ -2,15 +2,16 @@
 
 /**
  * RastroCambio — panel lateral con un cambio salto por salto: cuándo cambió
- * Woo, cuánto esperó su turno, cuánto tardó en escribirse y qué contestó cada
- * canal. El registro guarda UN tiempo por cambio (no uno por canal), así que
- * el tramo de cada canal va rayado: se sabe que pasó ahí dentro, no cuánto duró.
+ * Woo (o el vendible del libro de kubera, con `origen` "libro"), cuánto esperó su
+ * turno, cuánto tardó en escribirse y qué contestó cada canal. El registro guarda
+ * UN tiempo por cambio (no uno por canal), así que el tramo de cada canal va
+ * rayado: se sabe que pasó ahí dentro, no cuánto duró.
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { CheckCircle2, Info, X, XCircle } from "lucide-react";
 import { API_BASE, fetchSesion } from "@/lib/api";
 import type { Destino, Rastro } from "./tipos";
-import { CELDA_CLS, TONO_COLOR } from "./tipos";
+import { CELDA_CLS, ORIGEN_STOCK, TONO_COLOR } from "./tipos";
 
 const RAYA = "repeating-linear-gradient(135deg, #a5b4fc 0 3px, #eef2ff 3px 7px)";
 const RAYA_MAL = "repeating-linear-gradient(135deg, #fb7185 0 3px, #fff1f2 3px 7px)";
@@ -18,6 +19,13 @@ const RAYA_MAL = "repeating-linear-gradient(135deg, #fb7185 0 3px, #fff1f2 3px 7
 function lista(nombres: string[]): string {
   if (nombres.length <= 1) return nombres.join("");
   return `${nombres.slice(0, -1).join(", ")} y ${nombres[nombres.length - 1]}`;
+}
+
+/** Dónde nació el cambio que vio stock_watch: el libro de kubera o Woo (también cuando Odoo movió Woo). */
+function fuenteDe(r: Rastro): { corto: string; frase: string } {
+  return r.origen === "libro"
+    ? { corto: "Libro", frase: "El vendible del libro de kubera" }
+    : { corto: "Woo", frase: "Woo" };
 }
 
 function diagnostico(r: Rastro): { tono: "mal" | "ok" | "full"; titulo: string; texto: string } {
@@ -29,7 +37,7 @@ function diagnostico(r: Rastro): { tono: "mal" | "ok" | "full"; titulo: string; 
   const esc = (r.ms / 1000).toLocaleString("es-MX", { maximumFractionDigits: 1 });
   const partes: string[] = [];
   if (r.woo_hora && r.espera_s != null) {
-    partes.push(`Woo cambió a las ${r.woo_hora}. Esperó ${Math.round(r.espera_s)} s su turno y se resolvió en ${esc} s.`);
+    partes.push(`${fuenteDe(r).frase} cambió a las ${r.woo_hora}. Esperó ${Math.round(r.espera_s)} s su turno y se resolvió en ${esc} s.`);
   } else {
     partes.push(`Se resolvió en ${esc} s${r.origen === "venta" ? "; vino de una venta, no de una pasada de stock_watch" : ""}.`);
   }
@@ -135,7 +143,7 @@ export default function RastroCambio({ sel, onCerrar, onIr, onTrazabilidad }: {
             </div>
             {r && (
               <div className="mt-0.5 text-[13px] text-slate-600">
-                {r.woo_hora ? `Woo ${r.woo_hora} → terminó ${r.hora}` : `Terminó ${r.hora}`}
+                {r.woo_hora ? `${fuenteDe(r).corto} ${r.woo_hora} → terminó ${r.hora}` : `Terminó ${r.hora}`}
                 {r.total_s != null ? ` · ${Math.round(r.total_s)} s en total` : ""}
               </div>
             )}
@@ -184,10 +192,14 @@ export default function RastroCambio({ sel, onCerrar, onIr, onTrazabilidad }: {
                   </div>
                   <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Resultado</span>
                 </div>
-                {r.woo_hora && fila("Woo cambia", `stock_watch · ${r.woo_hora}`,
-                  <span className="absolute top-[14px] -ml-[7px] h-3.5 w-3.5 rounded-full border-[3px] border-white bg-indigo-600 shadow-[0_0_0_1px_#4f46e5]" style={{ left: 0 }} />,
-                  <span className="rounded-lg bg-slate-50 px-2 py-1 text-xs font-semibold text-slate-700 ring-1 ring-inset ring-slate-200">{r.cambio}</span>)}
-                {r.woo_hora && fila("Esperando turno", "de Woo al fan-out",
+                {r.woo_hora && fila(r.origen === "libro" ? "El libro cambia" : "Woo cambia",
+                  r.origen === "libro" ? `${ORIGEN_STOCK.libro.texto} · ${r.woo_hora}` : `stock_watch · ${r.woo_hora}`,
+                  <span className="absolute top-[14px] -ml-[7px] h-3.5 w-3.5 rounded-full border-[3px] border-white"
+                    style={{ left: 0, background: ORIGEN_STOCK[r.origen === "libro" ? "libro" : "woo"].color,
+                      boxShadow: `0 0 0 1px ${ORIGEN_STOCK[r.origen === "libro" ? "libro" : "woo"].color}` }} />,
+                  <span className={`rounded-lg px-2 py-1 text-xs font-semibold ring-1 ring-inset ${
+                    r.origen === "libro" ? `${ORIGEN_STOCK.libro.chip} ring-violet-200` : "bg-slate-50 text-slate-700 ring-slate-200"}`}>{r.cambio}</span>)}
+                {r.woo_hora && fila("Esperando turno", r.origen === "libro" ? "del libro al fan-out" : "de Woo al fan-out",
                   <span className="absolute top-[13px] h-4 min-w-1 rounded bg-slate-300" style={{ left: 0, width: pct(espera) }} />,
                   <span className="rounded-lg bg-slate-50 px-2 py-1 text-xs font-semibold text-slate-700 ring-1 ring-inset ring-slate-200">{Math.round(espera)} s</span>)}
                 {fila("Escribe en los canales", "un solo tiempo para todos",

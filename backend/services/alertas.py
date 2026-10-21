@@ -658,7 +658,8 @@ def _revisar_duplicados() -> None:
 # que nadie tocara este archivo.
 #
 # A KUBERA SE ESCRIBE DIRECTO, NO POR EL ESPEJO. `odoo_watch._avisar_campana`
-# manda su evento con `kubera_mirror.espejar(...)`, y eso HOY NO LLEGA: `espejar`
+# (retirado el 20-oct-2026 con todo el vigilante de Odoo; la lección queda)
+# mandaba su evento con `kubera_mirror.espejar(...)`, y eso NO LLEGABA: `espejar`
 # empieza por `activo("webhook_eventos")`, que consulta `KUBERA_MIRROR_TABLAS`, y
 # esa tabla no está en el CSV. Por eso `ops.webhook_events` tiene **0 filas de
 # canal 'odoo'** (medido el 26-ago) mientras MySQL acumula 754. Copiar ese patrón

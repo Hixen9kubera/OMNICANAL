@@ -100,7 +100,9 @@ ninguna, va a `sin_subida` con `espera=true` si se validó después de la últim
 de stock_watch (aún no la copia) y si no, false (una salida en la misma pasada pudo
 compensarla). Las de SCRAP no suben el stock y no se cuelgan de ninguna subida: van
 en `a_scrap`. `reparto_txt` resume lo que hizo el fan-out con ese cambio (las filas
-del mismo pase en la bitácora).
+del mismo pase en la bitácora). Un `vendible_cambio` del libro NO es subida: su
+motivo no dice por qué subió el vendible; con el libro, la liga dura vendrá del
+movimiento (`almacen.stock_mov`), no de la fecha.
 
 Las funciones puras (sin lecturas) van separadas para probarlas:
 `tokens`, `guias`, `recepciones_de`, `tokens_devolucion`, `ligar_duro`,
@@ -826,17 +828,31 @@ def _ligar_aprox(vivas: list[dict], recs: list[dict], por_dev: dict[str, dict],
 # ── Subidas de Odoo y su reparto (FUNCIONES PURAS) ───────────────────────────
 
 def _woo_de(bitacora: list[dict]) -> list[dict]:
-    """Los renglones `odoo_delta` de stock_watch como los «woo» de la trazabilidad
-    (la foto de Odoo del motivo y si falló la escritura a Woo), del más viejo al más nuevo."""
-    filas = sorted((f for f in bitacora if f.get("accion") == "odoo_delta"
+    """Los renglones de cambio de stock_watch (`stock_watch.ACCIONES_CAMBIO`: `odoo_delta`,
+    `woo_cambio`, `vendible_cambio`) como los «woo» de la trazabilidad, del más viejo al más
+    nuevo: su `origen` (odoo | woo | libro), el X → Y del RESULTADO (`de`/`a`, con
+    `fanout_vivo._FLECHA`), la foto de Odoo del motivo (sólo un `odoo_delta` la trae) y si
+    falló la escritura. Sólo los de origen Odoo cuentan como subida (`_subidas_odoo`): un
+    `vendible_cambio` no dice por qué subió. Un `vendible_registro` (sombra) no entra."""
+    from services import stock_watch
+    acc = set(stock_watch.ACCIONES_CAMBIO)
+    filas = sorted((f for f in bitacora if f.get("accion") in acc
                     and (f.get("canal") or "woocommerce") == "woocommerce"),
                    key=lambda f: (f.get("hora") or "", f.get("id") or 0))
     salida = []
     for f in filas:
-        de, a = V._foto_odoo(f.get("motivo") or "")
-        salida.append({"tipo": "woo", "hora": f.get("hora"), "origen": "odoo", "odoo_de": de, "odoo_a": a,
-                       "fallo": "FALLÓ" in (f.get("resultado") or ""), "ts": f.get("ts"), "id": f.get("id"),
-                       "resultado": f.get("resultado") or ""})
+        res = f.get("resultado") or ""
+        odoo = f.get("accion") == "odoo_delta"
+        de, a = V._foto_odoo(f.get("motivo") or "") if odoo else (None, None)
+        m = V._FLECHA.search(res)
+        it = {"tipo": "woo", "hora": f.get("hora"), "origen": V._origen_accion(f.get("accion") or ""),
+              "de": int(m.group(1)) if m else None, "a": int(m.group(2)) if m else None,
+              "odoo_de": de, "odoo_a": a,
+              "fallo": "FALLÓ" in res, "ts": f.get("ts"), "id": f.get("id"),
+              "resultado": res}
+        if f.get("accion") == "vendible_cambio" and V._sale_del_libro(f.get("motivo")):
+            it["sin_numero"] = True     # D4: el libro dejó de traer el SKU → 0 (una BAJADA)
+        salida.append(it)
     return salida
 
 
@@ -1035,7 +1051,8 @@ def armar_bandeja(devs: list[dict], odoo: dict[str, Any], bitacora: list[dict], 
     `devs`: filas de `_SQL_DEVOLUCIONES` (una por devolución y SKU, todas las cuentas
             y destinos, con las de antes del periodo para el índice de guías).
     `odoo`: {ok, recepciones, leido, error} de `leer_odoo`.
-    `bitacora`: los `odoo_delta` de los SKUs con devolución (`_SQL_SUBIDAS`)."""
+    `bitacora`: los cambios de stock_watch de los SKUs con devolución (`_SQL_SUBIDAS`;
+            sólo los `odoo_delta` son subidas)."""
     hoy = ahora[:10]
     desde = _menos(ahora, dias=dias)
     odoo_ok = bool(odoo.get("ok"))
@@ -1456,12 +1473,15 @@ select r.cuenta, r.id, r.estado, r.estado_canal, r.destino, r.es_fulfillment, r.
   from r join it on it.cuenta = r.cuenta and it.id = r.id
  order by r.abierta_at desc, r.id, it.sku""".replace("{DESTINO}", V._SQL_DESTINO)
 
+# Los cambios de stock_watch de los SKUs con devolución. `%(acc)s` es
+# `stock_watch.ACCIONES_CAMBIO` (parámetro, nunca literal); de ahí `_woo_de` sólo toma
+# como subidas las de Odoo.
 _SQL_SUBIDAS = """/* devoluciones:subidas */
 select sku::text as sku, id, ts, to_char(ts at time zone %(z)s, 'YYYY-MM-DD HH24:MI:SS') as hora,
        'woocommerce' as canal, accion, coalesce(motivo, '') as motivo,
        left(coalesce(resultado, ''), 300) as resultado
   from ops.fanout_log
- where canal = 'woocommerce' and accion = 'odoo_delta'
+ where canal = 'woocommerce' and accion = any(%(acc)s)
    and sku = any(%(s)s::citext[]) and ts > now() - make_interval(days => %(d)s)
  order by ts, id"""
 
@@ -1638,7 +1658,10 @@ def bandeja(dias: int = 60, cuenta: str | None = None) -> dict[str, Any]:
     desde = _menos(ahora, dias=dias)
     skus = sorted({str(d.get("sku") or "") for d in devs
                    if d.get("destino") == "seller_address" and (d.get("abierta") or "") >= _menos(desde, dias=30)})
-    bitacora = sdb.fetch_all(_SQL_SUBIDAS, {"s": skus, "d": dias + 1, "z": ZONA}) if skus else []
+    from services import stock_watch
+    bitacora = (sdb.fetch_all(_SQL_SUBIDAS, {"s": skus, "d": dias + 1, "z": ZONA,
+                                             "acc": list(stock_watch.ACCIONES_CAMBIO)})
+                if skus else [])
     liga = max(0, min(int(settings.fanout_devol_liga_dias), 30))
     return armar_bandeja(devs, odoo, bitacora, ahora, dias, cuenta, liga)
 
