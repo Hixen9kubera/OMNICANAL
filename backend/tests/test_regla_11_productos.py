@@ -46,6 +46,7 @@ PERMITIDAS = {
     ("inventario_flujo", "ids_woo"),             # traducción SKU → wc_id, en memoria
     ("inventario_flujo", "sello"),               # el sello de una fila, puro
     ("modo_publicacion", "disponible"),          # bool(_dsn()): mira una variable
+    ("wp_db", "norma_titulo"),                   # texto puro: html.unescape + regex, sin base
 }
 
 

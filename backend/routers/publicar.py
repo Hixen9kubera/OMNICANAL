@@ -85,6 +85,9 @@ class PublicarRequest(BaseModel):
     wc_id: int | None = None
     item_id: str | None = None
     campos: CamposPublicar = Field(default_factory=CamposPublicar)
+    # Mercado Libre: la categoría que la persona REVISÓ y confirmó en la vista
+    # previa. Sin ella no se da de alta (`services/ml_revision_categoria.py`).
+    categoria_confirmada: str | None = None
 
     def a_dict(self) -> dict[str, Any]:
         d = self.model_dump()
@@ -195,7 +198,8 @@ async def confirmar(req: PublicarRequest) -> dict[str, Any]:
         _anotar_seguro(req, None, inicio, resultado=r,
                        canal=getattr(req, "canal", None),
                        cuenta=getattr(req, "cuenta", None),
-                       detalle={"wc_id": getattr(req, "wc_id", None)})
+                       detalle={"wc_id": getattr(req, "wc_id", None),
+                                "categoria_confirmada": getattr(req, "categoria_confirmada", None)})
         return r
     except HTTPException as exc:
         # Validación rechazada: es el caso más común y el que más dice al

@@ -1001,6 +1001,61 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.677.0 — Mercado Libre: doble validación de la categoría antes de publicar (se ve, se compara con lo que propone ML, se cambia ahí mismo y se confirma)
+
+**Qué pidió Brandon (21-oct-2026).** «Varias publicaciones de Mercado Libre tienen la categoría incorrecta y nos lo
+acepta Mercado Libre… que antes de que se mande a publicarse se haga un check visual de la categoría y de cuál
+podría pertenecer, así como dándome opción de cambiar la categoría antes de publicar». ML **no rechaza** una
+categoría equivocada: si los atributos obligatorios se llenan, la acepta. JUGU-0085-PLA salió en «Comidas
+Preparadas» (v0.675.0) y nada lo frenó.
+
+**Qué cambia en la pantalla** (modal de Publicar del Estudio, solo Mercado Libre y solo cuando hay ALTA: crear en
+las dos cuentas o re-crear donde la borraron; actualizar una viva no cambia su categoría y no lo pide):
+- Arriba del título, una tarjeta **«Categoría en Mercado Libre · revísala antes de publicar»** con la foto, la ruta
+  completa de la categoría que va a salir, su ID y de dónde sale (elegida en el panel, propuesta al crear el
+  producto, por la categoría de Woo, o ninguna).
+- **Lo que propone Mercado Libre para el título**: las 3 primeras del predictor de ML (`domain_discovery`), con su
+  ruta, y un veredicto en color: *coincide* (verde), *parecida* —misma categoría padre— (ámbar), *distinta* (rojo),
+  *no es publicable* (rama), *sin categoría*, o *ML no propuso nada*.
+- **Cambiarla ahí mismo**: «Usar esta» en una propuesta, o «Buscar otra categoría» (el mismo buscador del Estudio).
+  Se guarda como la elección del panel —`POST /api/crear/categoria-ml`, la que MANDA al publicar— y la vista previa
+  se regenera con ella, porque los atributos dependen de la categoría. Aparece un aviso: los atributos de la IA eran
+  para la anterior; si faltan, «Mejorar con IA».
+- **Confirmar no se habilita** hasta marcar «Revisé la categoría y es la correcta» (si ML sugiere otra: «… Mercado
+  Libre sugiere otra, pero esta es la correcta»). Cambiar la categoría desmarca la casilla. Sin categoría o en una
+  rama no se puede marcar.
+- De paso: el botón decía «Confirmar y actualizar» también en un alta nueva; ahora dice «publicar» cuando crea.
+
+**El candado está en el servidor, no solo en la pantalla.** El modal manda `categoria_confirmada`
+(`PublicarRequest`, `routers/publicar.py`) y `publicar_ready.crear_ml` —el embudo de toda alta de ML— **no llama al
+pipeline** si falta, o si ya no es la categoría que saldría (calculada con la misma regla del vendor:
+`ml_revision_categoria.categoria_de_alta` llama a `resolve_ml_category_from_wc`, `backend/vendor/` intacto). El
+mensaje dice qué pasó: «Falta confirmar la categoría…», «La categoría cambió desde la vista previa (revisaste X y
+saldría en Y)…» o «El producto no tiene categoría…». La bitácora de `confirmar` guarda la categoría confirmada.
+
+**Piezas.** `services/ml_revision_categoria.py` (nuevo: `revisar`, `veredicto`, `categoria_de_alta`, `origen`,
+`motivo_sin_confirmar`; `/categories` y `domain_discovery` son públicos, sin token; si ML no contesta, la tarjeta
+sale con lo que se sabe y el veredicto «ML no propuso nada»). `services/publicar.py`: `_revision_categoria_ml` en la
+vista previa y la confirmación hasta `crear_ml` en los tres caminos de alta. `frontend/components/RevisionCategoriaML.tsx`
+(nuevo), `ProductStudio.tsx`, `lib/types.ts`. Sin variable de entorno: es parte de la vista previa.
+
+**Medido antes de subirlo** (vista previa REAL del panel con este código, sin crear nada, SKUs sin publicar):
+- BABYDOLLS (ROP-0435-MOR-XL) iba a «Lencería > Conjuntos»; ML propone «Lencería > Baby Dolls» → *parecida*.
+- «BOLSO BAND» (TEC-0118-CAF) iba a «Computación > … > Porta Laptops > Maletines» (propuesta de Crear) → *distinta*.
+- Pantuflas de cerdito (CALZ-0016-ROS-27) iban a «Bebés > Calzado» → *distinta*.
+- Un body (ROP-0496-NEG-XL) no tenía categoría → *sin categoría*, ML propone «Lencería > Bodies».
+- Collar para perro (ACC-0312-PLA-DOR-S) → *coincide*.
+
+**Pruebas.** `tests/test_ml_revision_categoria.py` (22, sin red): el veredicto, el candado (sin confirmar u otra
+categoría → el pipeline no se llama; la correcta → sí), la regla del vendor sin bajar el mapeo de Woo cuando hay meta,
+el origen, y `revisar` con ML contestando y caído. `tests/test_regla_11_productos.py`: `wp_db.norma_titulo` a
+`PERMITIDAS` (texto puro; esa prueba ya fallaba en `main` desde v0.623.0). Suite completa: 3,122 pruebas OK (141 omitidas). Frontend:
+`next build` limpio; la tarjeta se probó en el navegador con los tres casos (casilla, «Usar esta», sin categoría).
+
+**Lo que no hace.** No revisa ni cambia la categoría de las publicaciones que ya están vivas (ML no deja cambiarla en
+una con ventas); el predictor de ML se equivoca a veces (a las pantuflas les propone «Tenis»): el veredicto informa,
+decide la persona.
+
 ### v0.676.0 — PRICING: Alejandro ve y mueve precios y ofertas, y Operaciones → Monitoreo cuenta lo que se hace en PRICING
 
 **Qué pidió Brandon (21-oct-2026).** Darle a Alejandro (`alejandro@kubera.mx`, operador) acceso a PRICING y que lo

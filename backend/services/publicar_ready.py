@@ -24,7 +24,7 @@ from typing import Any
 
 import requests
 
-from services import db, meli, wp_db
+from services import db, meli, ml_revision_categoria, wp_db
 from vendor.amazon_ready import attribute_mapper as amz_mapper
 from vendor.ml_ready import ml_api, publisher_core
 
@@ -636,13 +636,18 @@ async def preview_crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
 
 
 async def crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
-                   cuentas: list[str] | None = None) -> dict[str, Any]:
+                   cuentas: list[str] | None = None,
+                   categoria_confirmada: str | None = None) -> dict[str, Any]:
     """
     Crea la publicación usando `publisher_core.publish_product`, con pre-upload
     de imágenes, cadena de GTIN y todos sus reintentos.
 
     Por omisión crea en AMBAS cuentas; `cuentas` la restringe (p. ej. re-crear
     solo donde la publicación anterior fue eliminada en ML).
+
+    `categoria_confirmada` es la categoría que una persona revisó en la vista
+    previa (`ml_revision_categoria`). Sin ella, o si ya no es la que saldría,
+    NO se da de alta: ML acepta categorías equivocadas sin quejarse.
     """
     configurar()
     objetivo = list(cuentas or _CUENTAS_ML)
@@ -667,6 +672,14 @@ async def crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
     # ACTUALIZACIÓN de una publicación viva no pasa por aquí ni toca stock.
     if _stock_real(prod) < 1:
         return _rechazo(_motivo_sin_stock(prod))
+    # DOBLE VALIDACIÓN DE LA CATEGORÍA (Brandon, 21-oct-2026). La vista previa
+    # enseña la categoría contra lo que propone ML y la persona la confirma; aquí
+    # se exige que la confirmada sea la que de verdad va a salir.
+    categoria = await asyncio.to_thread(ml_revision_categoria.categoria_de_alta, prod)
+    motivo = ml_revision_categoria.motivo_sin_confirmar(categoria_confirmada, categoria)
+    if motivo:
+        log.info("alta ML frenada (%s): %s", sku, motivo)
+        return _rechazo(motivo)
 
     resultados: list[dict[str, Any]] = []
     for cuenta in objetivo:

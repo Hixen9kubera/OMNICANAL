@@ -359,6 +359,52 @@ async def _payload_crear_ml(req: dict[str, Any]) -> dict[str, Any] | None:
         return None
 
 
+def _primera_foto(payload: dict[str, Any], prod: dict[str, Any]) -> str | None:
+    for f in list(payload.get("pictures") or []) + list(prod.get("images") or []):
+        url = f.get("source") or f.get("src") if isinstance(f, dict) else f
+        if isinstance(url, str) and url.startswith("http"):
+            return url
+    return None
+
+
+async def _revision_categoria_ml(req: dict[str, Any],
+                                 r_crear: dict[str, Any] | None) -> dict[str, Any] | None:
+    """
+    La DOBLE VALIDACIÓN de la categoría (`services/ml_revision_categoria.py`) para la
+    vista previa de un ALTA: la categoría que va a salir, de dónde sale, y las que
+    propone ML para el título. El modal la pinta, la persona la confirma y esa
+    confirmación viaja de vuelta en `categoria_confirmada` (sin ella no se crea).
+
+    Con el payload del pipeline (alta en las dos cuentas) la categoría es la del
+    payload; si no lo hay (re-crear solo en la cuenta donde la borraron, o el dry-run
+    falló) se calcula con la misma regla. None si ni el producto se pudo leer.
+    """
+    from services import ml_revision_categoria, publicar_ready
+
+    payload = (r_crear or {}).get("payload") or {}
+    prod = (r_crear or {}).get("prod")
+    if prod is None:
+        sku, wc_id = req.get("sku"), req.get("wc_id")
+        if not (sku and wc_id and wp_db_disponible()):
+            return None
+        try:
+            prod = await asyncio.to_thread(publicar_ready.construir_prod, str(sku),
+                                           int(wc_id), req.get("campos") or {})
+        except Exception as exc:  # noqa: BLE001
+            log.warning("revisión de categoría (%s): no se pudo leer el producto: %s", sku, exc)
+            return None
+    cid = str(payload.get("category_id") or "").strip()
+    if not cid:
+        cid = await asyncio.to_thread(ml_revision_categoria.categoria_de_alta, prod)
+    titulo = payload.get("title") or prod.get("title") or ""
+    rev = await ml_revision_categoria.revisar(cid, titulo)
+    rev["origen"] = ml_revision_categoria.origen(prod, cid)
+    rev["origen_texto"] = ml_revision_categoria.ORIGENES[rev["origen"]]
+    rev["titulo"] = titulo
+    rev["imagen"] = _primera_foto(payload, prod)
+    return rev
+
+
 async def _preview_ml(req: dict[str, Any]) -> dict[str, Any]:
     campos = req.get("campos") or {}
     title = (campos.get("titulo") or "").strip()
@@ -395,6 +441,7 @@ async def _preview_ml(req: dict[str, Any]) -> dict[str, Any]:
             f"{p['cuenta']}: la publicación anterior ({p['item_id']}) fue eliminada "
             "en Mercado Libre — se CREARÁ una nueva (pausada)."
         )
+    r: dict[str, Any] | None = None
     if not pubs or not vivos:
         if not pubs:
             avisos.append("No está publicado en ML: se CREARÁ una nueva publicación (pausada) en ambas cuentas.")
@@ -411,9 +458,15 @@ async def _preview_ml(req: dict[str, Any]) -> dict[str, Any]:
     if len(title) > ML_TITULO_MAX:
         avisos.append(f"El título tiene {len(title)} caracteres (Mercado Libre máx {ML_TITULO_MAX}).")
 
+    # Habrá ALTA (en las dos cuentas, o re-crear donde la borraron): la categoría se
+    # revisa y se confirma antes de enviar. Actualizar una viva no cambia su categoría.
+    categoria = None
+    if not vivos or muertos:
+        categoria = await _revision_categoria_ml(req, r if (r and r.get("ok")) else None)
+
     return {
         "ok": True, "canal": "mercado_libre", "sku": req.get("sku"), "modo": modo,
-        "cuentas": cuentas, "publicaciones": pubs,
+        "cuentas": cuentas, "publicaciones": pubs, "categoria": categoria,
         "titulo": title or None, "descripcion": desc or None,
         "cambios": [{"etiqueta": a["id"], "valor": a["value_name"]} for a in attrs],
         "operaciones": {"titulo": bool(title), "atributos": len(attrs), "descripcion": bool(desc)},
@@ -979,7 +1032,8 @@ async def _update_ml_una(cuenta: str, item_id: str, title: str, attrs: list[dict
 
 
 async def _crear_ml(sku: str, wc_id, campos: dict,
-                    cuentas: list[str] | None = None) -> dict[str, Any]:
+                    cuentas: list[str] | None = None,
+                    categoria_confirmada: str | None = None) -> dict[str, Any]:
     """
     Crear publicación nueva en ML → delega en el pipeline de `publicaciones_ready`
     (vendorizado en `backend/vendor/ml_ready/`), que es el que logró 1200+ altas.
@@ -998,7 +1052,8 @@ async def _crear_ml(sku: str, wc_id, campos: dict,
     if not wp_db_disponible():
         return {"ok": False, "motivo": "Sin conexión a la BD de WordPress (configura WPDB_* en Railway)."}
 
-    return await publicar_ready.crear_ml(sku, int(wc_id), campos, cuentas)
+    return await publicar_ready.crear_ml(sku, int(wc_id), campos, cuentas,
+                                         categoria_confirmada=categoria_confirmada)
 
 
 def wp_db_disponible() -> bool:
@@ -1019,6 +1074,8 @@ async def _confirmar_ml(req: dict[str, Any]) -> dict[str, Any]:
     desc = _plain(campos.get("descripcion"))
     if not title and not attrs and not desc:
         return {"ok": False, "motivo": "No había nada que enviar."}
+    # La categoría que la persona revisó en la vista previa (ver `_revision_categoria_ml`).
+    confirmada = req.get("categoria_confirmada")
 
     es_padre = bool(req.get("_hijas"))
     pubs = _ml_publicaciones(sku)
@@ -1028,7 +1085,7 @@ async def _confirmar_ml(req: dict[str, Any]) -> dict[str, Any]:
             from fastapi import HTTPException
             from services.publicar_ready import MSG_PADRE
             raise HTTPException(409, MSG_PADRE)
-        return await _crear_ml(sku, wc_id, campos)
+        return await _crear_ml(sku, wc_id, campos, categoria_confirmada=confirmada)
 
     # Verificación EN VIVO: items borrados en ML se re-crean (solo en esa
     # cuenta) en vez de intentar actualizarlos; el hook de creación pisa la
@@ -1043,7 +1100,8 @@ async def _confirmar_ml(req: dict[str, Any]) -> dict[str, Any]:
             from services.publicar_ready import MSG_PADRE
             raise HTTPException(409, MSG_PADRE)
         return await _crear_ml(sku, wc_id, campos,
-                               cuentas=[p["cuenta"] for p in muertos])
+                               cuentas=[p["cuenta"] for p in muertos],
+                               categoria_confirmada=confirmada)
 
     # SKU padre con publicación VIVA: se deja actualizar (es la única forma de
     # tocar esas 638 desde el panel), pero se dice que hay que reemplazarla.
@@ -1077,7 +1135,8 @@ async def _confirmar_ml(req: dict[str, Any]) -> dict[str, Any]:
 
     if muertos:
         r_crear = await _crear_ml(sku, wc_id, campos,
-                                  cuentas=[p["cuenta"] for p in muertos])
+                                  cuentas=[p["cuenta"] for p in muertos],
+                                  categoria_confirmada=confirmada)
         filas = r_crear.get("resultados") or []
         for f in filas:
             f["modo"] = "crear"

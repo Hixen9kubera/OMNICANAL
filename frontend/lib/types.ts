@@ -744,6 +744,33 @@ export interface PublicarReq {
     ancho?: number | null;
     alto?: number | null;
   };
+  /** Mercado Libre: la categoría que la persona revisó en la vista previa. Sin
+   *  ella el backend no da de alta (`ml_revision_categoria.py`). */
+  categoria_confirmada?: string | null;
+}
+
+/** Una categoría de ML tal como la enseña la revisión previa al alta. */
+export interface CategoriaRevisada {
+  category_id: string;
+  name: string;
+  ruta: string;
+  niveles: { id: string; name: string }[];
+  publicable: boolean;
+  dominio?: string;
+  /** ML no contestó por ella: se sabe el ID, no la ruta. */
+  ilegible?: boolean;
+}
+
+/** La DOBLE VALIDACIÓN de la categoría antes de dar de alta en Mercado Libre. */
+export interface RevisionCategoriaML {
+  actual: CategoriaRevisada | null;
+  /** Lo que propone el predictor de ML para el título (las 3 primeras). */
+  sugeridas: CategoriaRevisada[];
+  veredicto: "coincide" | "parecida" | "distinta" | "sin_sugerencia" | "no_publicable" | "sin_categoria";
+  origen: "panel" | "crear" | "woo" | "ninguna";
+  origen_texto: string;
+  titulo: string;
+  imagen?: string | null;
 }
 
 export interface PublicarPreview {
@@ -769,6 +796,8 @@ export interface PublicarPreview {
   modo?: string;
   payload?: Record<string, unknown> | null;
   avisos?: string[];
+  // ML con ALTA (crear, o re-crear donde la borraron): la categoría a revisar.
+  categoria?: RevisionCategoriaML | null;
 }
 
 export interface PublicarResultadoCuenta {

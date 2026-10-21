@@ -89,6 +89,7 @@ import { aNumero } from "@/lib/numeros";
 import { enlacePublicacion } from "@/lib/enlaces";
 import { ChipMoneda, TONO, type Moneda } from "@/components/Moneda";
 import CategoriaMLPicker from "./CategoriaMLPicker";
+import RevisionCategoriaML from "./RevisionCategoriaML";
 import GaleriaVariante from "./GaleriaVariante";
 import { useDetalleProducto } from "@/lib/useDetalleProducto";
 import {
@@ -543,6 +544,12 @@ export default function ProductStudio({
   const [publicando, setPublicando] = useState(false);
   const [resultadoPub, setResultadoPub] = useState<PublicarResultado | null>(null);
   const [amazonPublicadoOk, setAmazonPublicadoOk] = useState(false);
+  // Doble validación de la categoría de ML antes de un alta (Brandon, 21-oct-2026):
+  // Confirmar no se habilita hasta marcar la categoría como revisada.
+  const [catRevisada, setCatRevisada] = useState(false);
+  const [cambiandoCatPub, setCambiandoCatPub] = useState(false);
+  const [errorCatPub, setErrorCatPub] = useState<string | null>(null);
+  const [catCambiadaPub, setCatCambiadaPub] = useState(false);
 
   // ── Bloque COSTOS (dims de pieza → CBM → costo → precios) ───────────
   // costo_producto se ingresa en USD (Alibaba/Odoo) y se convierte a MXN con el
@@ -1333,6 +1340,9 @@ export default function ProductStudio({
     setCargandoPreview(true);
     setResultadoPub(null);
     setPreviewPub(null);
+    setCatRevisada(false);
+    setErrorCatPub(null);
+    setCatCambiadaPub(false);
     try {
       setPreviewPub(await publicarPreview(reqPublicar()));
     } catch {
@@ -1342,10 +1352,49 @@ export default function ProductStudio({
     }
   }
 
+  // Cambiar la categoría DESDE la vista previa: se guarda como la elección del
+  // panel (la que MANDA al publicar, igual que el selector del Estudio) y se
+  // regenera la vista previa con ella, porque los atributos dependen de la
+  // categoría. La revisión se vuelve a pedir: lo confirmado era la anterior.
+  async function cambiarCategoriaPub(categoryId: string) {
+    const wcId = wcIdEscritura;
+    if (!wcId || soloVistaAgrupada) return;
+    setCambiandoCatPub(true);
+    setErrorCatPub(null);
+    setCatRevisada(false);
+    let guardada = false;
+    try {
+      const r = await guardarCategoriaML(wcId, categoryId);
+      guardada = true;
+      const nivelesSrv = r.niveles?.map((n) => n.name) ?? [r.name];
+      setCatMlId(r.category_id);
+      setCatMlNiveles(nivelesSrv);
+      setMeta((m) =>
+        m ? { ...m, categoria_ml: { category_id: r.category_id, ruta: r.path, niveles: nivelesSrv } } : m,
+      );
+      setCatCambiadaPub(true);
+      setPreviewPub(await publicarPreview(reqPublicar()));
+    } catch (e) {
+      // Guardada pero sin vista previa nueva: la tarjeta sigue enseñando la
+      // anterior, y confirmarla la rechazaría el servidor. Se dice cuál de las dos falló.
+      setErrorCatPub(guardada
+        ? "La categoría se guardó, pero no se pudo regenerar la vista previa: ciérrala y ábrela de nuevo."
+        : mensajeDeError(e, "No se pudo guardar la categoría. Intenta de nuevo."));
+    } finally {
+      setCambiandoCatPub(false);
+    }
+  }
+
   async function confirmarPublicar() {
     setPublicando(true);
     try {
-      const r = await publicarConfirmar(reqPublicar());
+      const r = await publicarConfirmar({
+        ...reqPublicar(),
+        // Lo que la persona revisó: el backend no da de alta si no es lo que sale.
+        categoria_confirmada: previewPub?.categoria && catRevisada
+          ? previewPub.categoria.actual?.category_id ?? null
+          : null,
+      });
       setResultadoPub(r);
       if (r.ok && canal === "amazon") setAmazonPublicadoOk(true);
     } catch {
@@ -3242,6 +3291,20 @@ export default function ProductStudio({
                     </div>
                   )}
 
+                  {previewPub.categoria && (
+                    <RevisionCategoriaML
+                      revision={previewPub.categoria}
+                      revisada={catRevisada}
+                      onRevisada={setCatRevisada}
+                      onCambiar={cambiarCategoriaPub}
+                      cambiando={cambiandoCatPub}
+                      error={errorCatPub}
+                      cambiada={catCambiadaPub}
+                      bloqueado={soloVistaAgrupada || !wcIdEscritura || !!resultadoPub}
+                      acento={tema.acento}
+                    />
+                  )}
+
                   {previewPub.titulo && (
                     <div>
                       <div className="mb-1 text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">Título</div>
@@ -3401,15 +3464,22 @@ export default function ProductStudio({
               ) : (
                 <>
                   <button onClick={cerrarPreview} className="rounded-lg px-4 py-2 text-sm font-semibold text-slate-500 hover:bg-slate-100">Cancelar</button>
+                  {previewPub.ok && previewPub.categoria && !catRevisada && (
+                    <span className="text-[11px] text-slate-400">Marca «Revisé la categoría» para continuar</span>
+                  )}
                   {previewPub.ok && (
                     <button
                       onClick={confirmarPublicar}
-                      disabled={publicando}
+                      disabled={publicando || cambiandoCatPub || (!!previewPub.categoria && !catRevisada)}
                       className="flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-bold text-white shadow-sm disabled:opacity-60"
                       style={{ background: `linear-gradient(120deg, ${tema.color}, ${tema.acento})`, color: tema.texto }}
                     >
                       {publicando ? <Loader2 size={15} className="animate-spin" /> : <UploadCloud size={15} />}
-                      {publicando ? (esML ? "Actualizando…" : "Publicando…") : `Confirmar y ${esML ? "actualizar" : "publicar"}`}
+                      {/* En ML decía «actualizar» también en un alta nueva: con la categoría
+                          confirmada justo arriba, el botón tiene que decir lo que va a pasar. */}
+                      {publicando
+                        ? (esML && previewPub.modo !== "crear" ? "Actualizando…" : "Publicando…")
+                        : `Confirmar y ${esML && previewPub.modo !== "crear" ? "actualizar" : "publicar"}`}
                     </button>
                   )}
                 </>
