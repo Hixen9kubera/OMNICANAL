@@ -1001,6 +1001,68 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.678.0 — PRICING: «Seguimiento semanal · ¿se movieron?» — ventas y visitas, semana por semana, de lo que se cambió
+
+**Qué pidió Brandon (21-oct-2026).** Un monitoreo para ver cada semana si las publicaciones a las que se les aplicó
+un cambio tuvieron ventas o más visitas: «para ver si hay movimientos».
+
+**Dónde está.** En la cabecera de PRICING hay un botón **«Seguimiento semanal · ¿se movieron?»**. Abre una ventana
+con:
+- **Filtros:** grupo de cambios («Descuentos del 15 oct» o «Desde el panel»), cuenta y buscador por SKU o título.
+- **Cuatro tarjetas:**
+  - cuántas publicaciones tienen cambio;
+  - cuántas **vendieron desde el cambio**, junto a cuántas vendían en sus 28 días previos;
+  - cuántas tienen **más visitas por semana** (+10 % o más);
+  - cuántas siguen **sin movimiento** (ni venta ni más visitas).
+- **Semana por semana** (las últimas 8, de lunes a domingo, hora de México):
+  - piezas vendidas, publicaciones con venta, visitas y conversión;
+  - el cambio contra la semana anterior;
+  - la semana del cambio, marcada.
+
+  La semana en curso dice cuántos días lleva y se compara por su **ritmo** (lo que lleva × 7 ÷ días). Si no, un
+  miércoles siempre parecería una caída.
+- **Por publicación:**
+  - el cambio: fecha, tipo, precio antes → después, y quién lo hizo si fue desde el panel;
+  - barritas de piezas y de visitas de las 8 semanas (la en curso, rayada);
+  - piezas y visitas por semana, **antes** (28 días previos) contra **después** (desde el cambio);
+  - etiquetas «Vendió», «Más visitas» y «Sin movimiento».
+
+  Se puede filtrar por cada etiqueta.
+
+**De dónde sale** (`services/pricing_seguimiento.py`, `GET /api/pricing/seguimiento`; solo lee):
+- **Qué cuenta como cambio:**
+  - los descuentos por lote de la columna «Hecho» (`hechos.json`: los 253 del 15-oct);
+  - lo movido desde el panel (bitácora del esquema `pricing`, v0.673.0: cambiar precio, deshacer, tomar y quitar
+    ofertas).
+
+  Si una publicación tiene varios, manda el más reciente y se dice cuántos lleva.
+- **Piezas por día:** kubera `channel.order_items` + `channel.orders`, sin canceladas. Son piezas y no pesos, porque
+  en SANCORFASHION parte de las líneas guardan el neto.
+- **Visitas por día:** Mercado Libre `/items/{id}/visits/time_window` (60 días), leídas en segundo plano, seis a la
+  vez, y recordadas 3 horas. Medido: 253 publicaciones en 14 s. Mientras se leen, la ventana dice cuántas lleva y
+  vuelve a preguntar cada 5 s. Una publicación sin visitas de ML no se marca «Sin movimiento»: no se sabe.
+- Es la misma ventana para quien ve PRICING (admin e invitados).
+
+**Lo que se ve hoy** (21-oct, con datos reales). Los 253 descuentos del 15-oct:
+
+| Semana | Piezas | Publicaciones con venta | Visitas |
+|---|---|---|---|
+| W39 a W41 (antes del cambio) | 0 | 0 | 1,070 · 2,610 · 2,849 |
+| W42 (12–18 oct, la del cambio) | 115 | 37 | 4,851 |
+| W43 (lunes a miércoles) | 216 | 36 | 4,457 |
+
+56 vendieron desde el cambio, 201 tienen más visitas por semana y 50 no se han movido.
+
+**Pruebas.** +7 en `tests/test_pricing_seguimiento.py` (76 con las de PRICING):
+- semanas ISO y la semana en curso;
+- sumas por semana;
+- ventanas antes / después (el día del cambio cuenta como después; después topa en 28 días);
+- movimiento, incluido «sin visitas de ML»;
+- manda el cambio más reciente;
+- acceso: lo ve quien ve PRICING; sin sesión, 401.
+
+`tsc` limpio.
+
 ### v0.677.0 — Mercado Libre: doble validación de la categoría antes de publicar (se ve, se compara con lo que propone ML, se cambia ahí mismo y se confirma)
 
 **Qué pidió Brandon (21-oct-2026).** «Varias publicaciones de Mercado Libre tienen la categoría incorrecta y nos lo

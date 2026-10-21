@@ -37,6 +37,7 @@ import {
 } from "./reglas";
 import Ofertas from "./Ofertas";
 import Rivales from "./Rivales";
+import Seguimiento from "./Seguimiento";
 import { CLUSTERS, clusterizar, type Cluster } from "./clusters";
 
 const LLAVE_REGLAS = "pricing-reglas-v1";
@@ -268,6 +269,10 @@ export default function Monitor({
   // «Ofertas de ML» (v0.672.0): se monta al abrirla por primera vez; lee ML solo entonces.
   const [verOfertas, setVerOfertas] = useState(false);
   const [ofertasUsadas, setOfertasUsadas] = useState(false);
+  // «Seguimiento semanal» (v0.678.0): igual, se monta al abrirlo por primera vez.
+  const [verSeguimiento, setVerSeguimiento] = useState(false);
+  const [seguimientoUsado, setSeguimientoUsado] = useState(false);
+  const titulos = useMemo(() => new Map(foto.pubs.map((p) => [p.id, p.t])), [foto.pubs]);
 
   useEffect(() => setR(leerReglas()), []);
   const cambiarReglas = (parcial: Partial<Reglas> | null) => {
@@ -479,6 +484,16 @@ export default function Monitor({
             }}
           >
             Ofertas de ML · relámpago, Buen Fin y campaña propia
+          </button>
+          <button
+            type="button"
+            className="of-abrir sg-abrir"
+            onClick={() => {
+              setSeguimientoUsado(true);
+              setVerSeguimiento(true);
+            }}
+          >
+            Seguimiento semanal · ¿se movieron?
           </button>
           <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
             <Info size={14} aria-hidden />{" "}
@@ -793,6 +808,7 @@ export default function Monitor({
 
       <Rivales sku={rivSku} filas={filas} riv={foto.riv} series={series} onCerrar={() => setRivSku(null)} />
       {ofertasUsadas && <Ofertas abierto={verOfertas} onCerrar={() => setVerOfertas(false)} esAdmin={esAdmin} />}
+      {seguimientoUsado && <Seguimiento abierto={verSeguimiento} onCerrar={() => setVerSeguimiento(false)} titulos={titulos} />}
     </div>
   );
 }

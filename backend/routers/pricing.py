@@ -30,6 +30,10 @@ pricing.py — La pestaña PRICING (v0.650.0): el «Monitor de precios FULL».
   bitácora del esquema `pricing` (services/pricing_bitacora.py) con lo que la pantalla veía. Sin
   motivo: desde v0.674.0 no se pregunta (Brandon: solo se guarda lo que se hizo).
 
+  GET  /api/pricing/seguimiento          → «¿Se movieron?»: semana por semana, ventas y visitas de las
+                                  publicaciones a las que se les aplicó un cambio, antes y después
+                                  (v0.678.0; SELECT a kubera y GET de visitas a ML en segundo plano)
+
 SOLO LECTURA, salvo `/precio` (v0.665.0, pedido de Brandon 19-oct-2026: cambiar a
 mano el precio de una publicación de ML, con bitácora y «Deshacer») y
 `/ofertas/tomar|quitar` (v0.672.0, pedido de Brandon 20-oct-2026: tomar y quitar
@@ -60,6 +64,7 @@ from core import identidad as core_identidad
 from core import rbac
 from services import pricing_monitor as pm
 from services import pricing_ofertas as po
+from services import pricing_seguimiento as ps
 from services import pricing_precio as pp
 
 log = logging.getLogger("omnicanal.pricing")
@@ -280,3 +285,12 @@ async def ofertas_quitar(req: PedidoOferta, quien=Depends(solo_admin)) -> dict:
                                bitacora=_bitacora(req, "pricing_ofertas"))
     except po.ErrorOferta as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+# ── SEGUIMIENTO SEMANAL (v0.678.0) ───────────────────────────────────────────
+
+@router.get("/seguimiento")
+async def seguimiento(fresco: bool = False, quien=Depends(acceso_pricing)) -> dict:
+    """Solo lee: ventas y visitas por semana de lo que se cambió, y el antes / después de cada publicación.
+    Las visitas se leen de ML en segundo plano: mientras `visitas.estado` diga «leyendo», volver a preguntar."""
+    return await ps.seguimiento(fresco)

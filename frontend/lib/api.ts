@@ -2966,6 +2966,54 @@ export function pricingOfertaQuitar(pedido: PedidoOfertaML): Promise<ResultadoOf
   return postJSON<ResultadoOfertaML>("/api/pricing/ofertas/quitar", pedido);
 }
 
+// ── PRICING: seguimiento semanal de lo que se cambió (v0.678.0; solo lee) ──
+
+export interface PricingSemana {
+  clave: string;
+  inicio: string;
+  fin: string;
+  en_curso: boolean;
+  /** Días que lleva la semana (7 si ya cerró). */
+  dias: number;
+}
+
+export interface PricingVentana {
+  dias: number;
+  piezas: number;
+  visitas: number | null;
+  piezas_sem: number | null;
+  visitas_sem: number | null;
+}
+
+export interface PricingSeguimientoPub {
+  id: string;
+  cuenta: string | null;
+  sku: string | null;
+  grupo: string;
+  cambio: { fecha: string; tipo: string; antes: number | null; nuevo: number | null; quien: string | null; n: number; regla?: string | null };
+  /** Por semana, alineado con `semanas`; null = sin dato (visitas que ML no dio). */
+  semanas: { piezas: (number | null)[]; visitas: (number | null)[] };
+  antes: PricingVentana;
+  despues: PricingVentana;
+  mov: { vendio: boolean; vende_mas: boolean; mas_visitas: boolean | null; sin_movimiento: boolean };
+}
+
+export interface PricingSeguimiento {
+  hoy: string;
+  leido: string;
+  kubera: boolean;
+  semanas: PricingSemana[];
+  ventana_dias: number;
+  grupos: { clave: string; nombre: string; n: number }[];
+  visitas: { estado: "listo" | "leyendo"; con_serie: number; total: number; hechas: number; fallas: number };
+  pubs: PricingSeguimientoPub[];
+}
+
+/** Solo lee: ventas y visitas por semana de las publicaciones cambiadas (las visitas llegan en segundo plano). */
+export function pricingSeguimiento(fresco = false, signal?: AbortSignal): Promise<PricingSeguimiento> {
+  return getJSON<PricingSeguimiento>(`/api/pricing/seguimiento${fresco ? "?fresco=true" : ""}`, signal);
+}
+
 /** Calidad y experiencia de compra de ML (lo que guarda el barrido de calidad). Solo lee. */
 export function pricingSalud(signal?: AbortSignal): Promise<PricingSalud> {
   return getJSON<PricingSalud>("/api/pricing/salud", signal);
