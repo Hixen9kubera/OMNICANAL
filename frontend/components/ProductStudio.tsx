@@ -90,6 +90,7 @@ import { enlacePublicacion } from "@/lib/enlaces";
 import { ChipMoneda, TONO, type Moneda } from "@/components/Moneda";
 import CategoriaMLPicker from "./CategoriaMLPicker";
 import RevisionCategoriaML from "./RevisionCategoriaML";
+import ExplicacionErrorML from "./ExplicacionErrorML";
 import GaleriaVariante from "./GaleriaVariante";
 import { useDetalleProducto } from "@/lib/useDetalleProducto";
 import {
@@ -3418,7 +3419,17 @@ export default function ProductStudio({
                           <div>
                             <strong>{r.cuenta}:</strong>{" "}
                             {!r.ok
-                              ? (r.error || `HTTP ${r.ml_status ?? "?"}`)
+                              ? (r.explicacion?.length
+                                  ? (
+                                    <ExplicacionErrorML
+                                      items={r.explicacion}
+                                      // Las dos cuentas suelen fallar por lo mismo: no se repite.
+                                      mismoQue={i > 0 && JSON.stringify(resultadoPub.resultados?.[i - 1]?.explicacion)
+                                        === JSON.stringify(r.explicacion)
+                                        ? resultadoPub.resultados?.[i - 1]?.cuenta : undefined}
+                                    />
+                                  )
+                                  : (r.error || `HTTP ${r.ml_status ?? "?"}`))
                               : (r.modo ?? resultadoPub.modo) === "crear"
                                 ? (
                                   <>

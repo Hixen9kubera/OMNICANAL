@@ -1001,6 +1001,41 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.682.0 — Mercado Libre: cuando rechaza una publicación, el panel dice POR QUÉ y QUÉ HACER (ya no solo «HTTP 400: Validation error»)
+
+**Qué pidió Brandon (22-oct-2026).** «En los errores puedes integrar el porqué del error porque veo únicamente los
+400, y la solución en caso de que sea posible». El pipeline vendorizado resume cualquier rechazo de ML como
+`HTTP 400: Validation error`, aunque la respuesta de ML trae la causa exacta. TEC-1439-BLN falló así seis veces
+(tres por cuenta): la causa, que solo se veía en los logs de Railway, era «Attribute POWER with value 0 W was
+omitted» — una cortadora MANUAL con «Potencia» en 0 W.
+
+**Qué cambia.**
+- `services/ml_errores.py` (nuevo, puro): por cada causa de tipo `error` de la respuesta de ML, `porque` y
+  `solucion`. Nombra el atributo con su nombre de la categoría («Potencia» (POWER)) y el valor que se mandó. Cubre
+  los rechazos REALES de los logs de producción del 23-sep al 22-oct (391 respuestas): medidas en cero (156), GTIN
+  obligatorio (72), atributo obligatorio faltante (61), fotos de menos de 500×250 (40), guía de tallas (32), precio
+  mínimo de la categoría (24), sin fotos (6), título contra género (4), `family_name` (1), GTIN con formato malo y
+  la categoría sin Mercado Envíos 2. Un código nuevo sale con el texto de ML tal cual y **sin solución inventada**;
+  la guía de tallas tampoco la trae (todavía no se arregla desde el panel). Los avisos que ML manda junto a todo
+  (envío gratis, ME1 junto a otro error…) no cuentan como causa.
+- `publicar_ready.crear_ml`: cada cuenta devuelve `explicacion` y el `error` dice «Mercado Libre la rechazó. Por
+  qué: … Solución: …». `_backlog_ml` guarda lo mismo en `ml_backlog.error` y en `ops.channel_submissions`
+  (`error_resumen`), después de la etiqueta del vendor, así que Monitoreo y la bitácora también lo enseñan.
+- **Un 400 con causas ya no se reintenta**: es validación, el mismo payload da el mismo rechazo. Antes eran tres
+  intentos por cuenta con 2 y 4 s de espera.
+- Modal de Publicar (`ExplicacionErrorML.tsx`): por cuenta, «Por qué» en rojo y «Solución» en verde, una causa por
+  renglón; si la segunda cuenta falla por lo mismo, solo dice «mismo motivo que en SANCORFASHION».
+
+Los nombres de los atributos salen de lo que el pipeline ya bajó al armar el payload (`publisher_core._attr_cache`,
+solo lectura, sin red); si no está, el atributo se nombra por su ID. `backend/vendor/` intacto. Sin variable: es
+un fix.
+
+**Pruebas.** `tests/test_ml_errores.py` (18, sin red), con las respuestas de ML copiadas de los logs: TEC-1439-BLN,
+dos medidas en cero a la vez, el texto en español («Entrada de aire»), GTIN, GENDER con el aviso de ME1 al lado,
+fotos, precio mínimo, guía de tallas, ME1 solo, código desconocido; `crear_ml` intenta una vez por cuenta y
+devuelve la explicación; `_backlog_ml` la guarda. Suite completa: 3,157 OK (142 omitidas). Frontend: `next build`
+limpio; el bloque se revisó en el navegador con TEC-1439-BLN en las dos cuentas y un rechazo de dos causas.
+
 ### v0.681.0 — Editor de imágenes: cuando OpenRouter falla, el error dice por qué (y las AVIF se mandan como JPEG)
 
 **Qué pasó (21-oct-2026).** «Procesar con IA» empezó a fallar en DEPO-0048-MET, ACC-0418-NEG, TEC-1631-PLA,

@@ -24,7 +24,7 @@ from typing import Any
 
 import requests
 
-from services import db, meli, ml_revision_categoria, wp_db
+from services import db, meli, ml_errores, ml_revision_categoria, wp_db
 from vendor.amazon_ready import attribute_mapper as amz_mapper
 from vendor.ml_ready import ml_api, publisher_core
 
@@ -82,6 +82,14 @@ def _backlog_ml(backlog_key: str, entry: dict[str, Any]) -> None:
     """
     resultado = entry.get("result") or {}
     success = bool(resultado.get("success"))
+    # El vendor resume cualquier rechazo como «HTTP 400: Validation error»; se le
+    # agrega el porqué y la solución (`ml_errores`) para que la bitácora sirva sola.
+    error = resultado.get("error")
+    if not success and error:
+        cid = str((entry.get("payload") or {}).get("category_id") or "")
+        explicacion = ml_errores.explicar(entry.get("ml_response"), _nombres_atributos(cid))
+        if explicacion:
+            error = f"{error} · {ml_errores.mensaje(explicacion)}"
     cuenta = entry.get("cuenta") or ""
     sku = backlog_key.split(":", 1)[-1] if ":" in backlog_key else backlog_key
     item_id = entry.get("ml_item_id")
@@ -99,7 +107,7 @@ def _backlog_ml(backlog_key: str, entry: dict[str, Any]) -> None:
                     f"studio:{cuenta}:{sku}", cuenta, sku, wc_id, item_id,
                     entry.get("ml_url"),
                     1 if success else 0,
-                    resultado.get("error"),
+                    error,
                     entry.get("ml_status"),
                     entry.get("desc_status"),
                     entry.get("pics_preuploaded") or 0,
@@ -118,7 +126,7 @@ def _backlog_ml(backlog_key: str, entry: dict[str, Any]) -> None:
             {"canal": "mercado_libre", "cuenta": cuenta, "sku": sku,
              "submission_id": item_id, "operacion": "alta",
              "status": entry.get("ml_status"), "success": success,
-             "error_resumen": resultado.get("error"),
+             "error_resumen": error,
              "detail_ref": f"mysql:ml_backlog:{backlog_id}" if backlog_id else None,
              "submitted_at": datetime.now(),
              "published_at": datetime.now() if success else None},
@@ -148,6 +156,17 @@ def _backlog_ml(backlog_key: str, entry: dict[str, Any]) -> None:
             "mercado_libre", cuenta, sku, listing_id=str(item_id),
             url=entry.get("ml_url"))
         _marcar_publicado_en_woo(sku, wc_id)
+
+
+def _nombres_atributos(category_id: str) -> dict[str, str]:
+    """{ID: nombre} de los atributos de la categoría, de lo que el pipeline YA bajó al
+    armar el payload (`publisher_core._attr_cache`). Sin red: si no está, sale vacío y
+    el error nombra el atributo por su ID."""
+    try:
+        attrs = getattr(publisher_core, "_attr_cache", {}).get(category_id) or []
+        return {a["id"]: a.get("name") or a["id"] for a in attrs if isinstance(a, dict) and a.get("id")}
+    except Exception:  # noqa: BLE001
+        return {}
 
 
 def _errores_reales_ml(respuesta: Any) -> list[str]:
@@ -711,19 +730,31 @@ async def crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
                 log.info("publish %s/%s: error determinista (%s) — no se reintenta",
                          cuenta, sku, r.get("error"))
                 break
+            # Un 400 con causas de ML es VALIDACIÓN: el mismo payload da el mismo
+            # rechazo. TEC-1439-BLN (22-oct) gastó seis intentos en «POWER 0 W».
+            if r.get("ml_status") == 400 and ml_errores.explicar(r.get("ml_response")):
+                log.info("publish %s/%s: rechazo de validación (%s) — no se reintenta",
+                         cuenta, sku, r.get("error"))
+                break
             if intento < MAX_INTENTOS_ML:
                 log.warning("publish %s/%s falló (intento %d/%d): %s — reintentando",
                             cuenta, sku, intento, MAX_INTENTOS_ML, r.get("error"))
                 await asyncio.sleep(2.0 * intento)  # backoff 2s, 4s
 
         item_id = r.get("ml_item_id") or ""
-        if r.get("error"):
+        # El porqué y la solución (Brandon, 22-oct-2026: «veo únicamente los 400»).
+        explicacion = [] if r.get("success") else ml_errores.explicar(
+            r.get("ml_response"), _nombres_atributos(categoria))
+        if explicacion:
+            r["error"] = ml_errores.mensaje(explicacion)
+        elif r.get("error"):
             r["error"] = _traducir_error_ml(r["error"], prod, r.get("ml_response"))
         fila: dict[str, Any] = {
             "cuenta":    cuenta,
             "item_id":   item_id,
             "ok":        bool(r.get("success")),
             "error":     r.get("error"),
+            "explicacion": explicacion,
             "ml_status": r.get("ml_status"),
             "url":       r.get("ml_url"),
             "intentos":  intentos,

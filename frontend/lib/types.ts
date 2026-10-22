@@ -800,11 +800,21 @@ export interface PublicarPreview {
   categoria?: RevisionCategoriaML | null;
 }
 
+/** Una causa del rechazo de ML, en palabras (`backend/services/ml_errores.py`). */
+export interface ExplicacionErrorML {
+  codigo: string;
+  porque: string;
+  /** null: no hay un arreglo conocido desde el panel. */
+  solucion: string | null;
+}
+
 export interface PublicarResultadoCuenta {
   cuenta: string;
   item_id: string;
   ok: boolean;
   error?: string | null;
+  /** El porqué y la solución de cada causa del rechazo (Brandon, 22-oct-2026). */
+  explicacion?: ExplicacionErrorML[];
   ml_status?: number | null;
   // ML ignora el `status: paused` del POST: el backend verifica y reintenta.
   pausado?: boolean;
