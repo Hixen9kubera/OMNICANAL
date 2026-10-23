@@ -758,6 +758,8 @@ export interface PrecioSugeridoResp {
   iva: number;
   piso: number | null;
   referencia: (PrecioResumen & { grupo: "foto" | "titulo" | "mas_vendidos"; etiqueta: string; pocos: boolean }) | null;
+  /** Todos los más vendidos de la categoría, SIN filtrar por producto: solo contexto (v0.687.0). */
+  categoria?: PrecioResumen | null;
   sugerido: {
     precio: number | null;
     estado: PrecioEstado;

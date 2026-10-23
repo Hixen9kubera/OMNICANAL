@@ -8,6 +8,8 @@
 4. **El juez de fotos**: se lee su JSON, y un rival del mismo modelo con OTRA cantidad de piezas no entra.
 5. **El modo rápido** filtra los más vendidos por parecido de título y no llama a nada que cobre.
 6. **Permisos**: las rutas piden `operador`, como Competencia.
+7. **Búsqueda corta** (v0.687.0): nunca el título entero, lo del usuario manda, y el completo pide 3 reintentos.
+8. **Avisos de datos** (v0.687.0): VAR-0549-NEG (costo $456.45, 20 kg) avisa del peso y del costo; TEC-0605 no.
 
 Sin red: nada aquí habla con ML, Apify, OpenRouter ni kubera.
 
@@ -200,6 +202,110 @@ class ModoRapido(unittest.TestCase):
         self.assertEqual(r["sugerido"]["precio"], 209)
         self.assertAlmostEqual(r["sugerido"]["desglose"]["envio"], 35.0)
         self.assertEqual(len(anotado), 1)
+        # v0.687.0: la categoría completa viaja como contexto, y unos datos sanos no levantan avisos.
+        self.assertEqual(r["categoria"]["n"], 4)
+        self.assertFalse([a for a in r["avisos"] if a.startswith(("El envío", "El piso"))])
+
+
+class Cliente:
+    async def aclose(self):
+        pass
+
+
+class TerminosDeBusqueda(unittest.TestCase):
+    """v0.687.0: ML bloqueó el título LARGO en las dos primeras consultas reales (TEC-0605 y VAR-0549-NEG) y cada
+    bloqueo se reintentaba 8 veces: 3 min 43 s. Ahora se busca corto y con 3 reintentos."""
+
+    BOLSAS = "Bolsas plasticas thank you para regalo y tienda 50 pzas"
+
+    def test_titulo_recortado(self):
+        self.assertEqual(ps.termino_corto(self.BOLSAS), "Bolsas plasticas thank you regalo")
+        self.assertEqual(ps.termino_corto("2 Pack Micrófono Inalambrico De Solapa Cancelacion Ruido Negro"),
+                         "Micrófono Inalambrico Solapa Cancelacion Ruido")
+        self.assertEqual(ps.termino_corto(""), "")
+
+    def test_lo_del_usuario_manda(self):
+        self.assertEqual(ps.terminos_busqueda(["bolsa thank you", "bolsa regalo", "otra"], "x", self.BOLSAS),
+                         ["bolsa thank you", "bolsa regalo"])
+
+    def test_ia_y_titulo_cortos_sin_repetir(self):
+        t = ps.terminos_busqueda(None, "bolsas thank you regalo", self.BOLSAS)
+        self.assertEqual(t, ["bolsas thank you regalo", "Bolsas plasticas thank you regalo"])
+        for termino in t:
+            self.assertLessEqual(len(termino.split()), ps.PALABRAS_TERMINO + 1)
+        self.assertEqual(ps.terminos_busqueda(None, "Bolsas plasticas thank you regalo", self.BOLSAS),
+                         ["Bolsas plasticas thank you regalo"])          # el mismo término no se busca dos veces
+        self.assertEqual(ps.terminos_busqueda(None, None, self.BOLSAS), ["Bolsas plasticas thank you regalo"])
+
+    def test_completo_busca_corto_con_3_reintentos(self):
+        from services import competencia_scraper, competencia_terminos
+        datos = {"sku": "VAR-0549-NEG", "titulo": self.BOLSAS, "costo": 456.45, "ml_cat_id": None, "imagen": None,
+                 "peso_kg": 20.0, "envio_panel": None, "margen": 0.30}
+        buscar = mock.AsyncMock(return_value={})
+        with mock.patch.object(ps, "datos_sku", mock.AsyncMock(return_value=datos)), \
+                mock.patch.object(ps, "_cliente_ml", mock.AsyncMock(return_value=None)), \
+                mock.patch.object(ps, "_anotar", lambda res, dur: None), \
+                mock.patch.object(ps, "_gasto_apify_desde", lambda t0: 0.0), \
+                mock.patch.object(competencia_terminos, "proponer",
+                                  lambda prods: {"VAR-0549-NEG": "bolsas thank you regalo"}), \
+                mock.patch.object(competencia_scraper, "buscar_terminos", buscar):
+            r = asyncio.run(ps.completo({"sku": "VAR-0549-NEG", "terminos": []}))
+        args, kw = buscar.call_args
+        self.assertEqual(args[0], ["bolsas thank you regalo", "Bolsas plasticas thank you regalo"])
+        self.assertEqual(kw["reintentos"], 3)
+        self.assertEqual(r["terminos"], args[0])
+
+
+class AvisosDeDatos(unittest.TestCase):
+    """v0.687.0: VAR-0549-NEG (50 bolsas) salió en $1,139 con costo $456.45 y 20 kg, cuando la categoría vende a
+    ~$159. La pantalla debe decir que lo raro son los datos, no el mercado."""
+
+    def _avisos(self, precio, peso, piso_, costo, mediana, estado):
+        return ps.revisar_datos(precio, costos.calc_fee_envio_ml(peso, precio), costos.calc_fee_envio_ml(0.1, precio),
+                                peso, piso_, costo, {"mediana": mediana}, estado)
+
+    def test_var_0549_avisa_peso_y_costo(self):
+        a = self._avisos(1139, 20.0, 1138.0, 456.45, 159.0, "sin_mercado")
+        self.assertEqual(len(a), 2)
+        self.assertIn("20 kg", a[0])
+        self.assertIn("7.2×", a[1])
+
+    def test_tec_0605_no_avisa(self):
+        # $35 de $209 es el 17 %, pero es lo que paga CUALQUIER paquete ligero a ese precio: no es error.
+        self.assertEqual(self._avisos(209, 0.132, 208.0, COSTO, 119.89, "no_compite"), [])
+
+    def test_pesado_y_caro_no_avisa_por_envio(self):
+        self.assertEqual(self._avisos(3999, 20.0, 3990.0, 2000.0, 3500.0, "compite"), [])
+
+    def test_el_piso_vs_categoria_solo_sin_mercado_o_sin_competir(self):
+        self.assertEqual(self._avisos(1139, 0.3, 1138.0, 456.45, 159.0, "compite"), [])
+        self.assertEqual(len(self._avisos(1139, 0.3, 1138.0, 456.45, 159.0, "no_compite")), 1)
+
+    def test_rapido_de_var_0549(self):
+        top = [{"id": f"MLM{i}", "titulo": t, "precio": p} for i, (t, p) in enumerate([
+            ("Pack 30 Bolsas De Regalo Transparentes De PVC Con Asa Para Eventos,bolsas de plastico transparentes",
+             159.0),                                                    # el de la captura: parecido 0.17 < 0.2
+            ("Bolsa De Papel Kraft Con Asa 25 Piezas", 189.0),
+            ("Papel China Colores Surtidos 100 Hojas", 99.0),
+            ("Moño Para Regalo Satinado 50 Piezas", 120.0)])]
+        datos = {"sku": "VAR-0549-NEG", "titulo": TerminosDeBusqueda.BOLSAS, "costo": 456.45, "ml_cat_id": "MLM1",
+                 "imagen": None, "peso_kg": 20.0, "envio_panel": None, "margen": 0.30}
+
+        async def bandas(cli, cat):
+            return [{"hasta": None, "pct": 0.145, "fijo": 0}]
+
+        with mock.patch.object(ps, "datos_sku", mock.AsyncMock(return_value=datos)), \
+                mock.patch.object(ps, "_cliente_ml", mock.AsyncMock(return_value=Cliente())), \
+                mock.patch.object(ps, "mas_vendidos", mock.AsyncMock(return_value=top)), \
+                mock.patch.object(ps, "comisiones", bandas), \
+                mock.patch.object(ps, "_anotar", lambda res, dur: None):
+            r = asyncio.run(ps.rapido({"sku": "VAR-0549-NEG"}))
+        self.assertIsNone(r["referencia"])
+        self.assertEqual(r["sugerido"]["estado"], "sin_mercado")
+        self.assertEqual(r["piso"], 1138.0)                               # lo que dio producción el 23-oct
+        self.assertEqual(r["categoria"]["mediana"], 139.5)
+        self.assertTrue(any("20 kg" in a for a in r["avisos"]))
+        self.assertTrue(any(a.startswith("El piso ($1,138)") for a in r["avisos"]))
 
 
 class Permisos(unittest.TestCase):

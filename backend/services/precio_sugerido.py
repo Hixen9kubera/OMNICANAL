@@ -16,9 +16,15 @@ Prueba del 22-oct-2026 con TEC-0605 (2 pack de micrófonos lavalier, costo $82.0
 ── DOS MODOS ───────────────────────────────────────────────────────────────────
   rápido   (gratis, segundos): los más vendidos de la categoría en ML (API con nuestro token) filtrados por
            parecido de título + comisión real + piso. Es una primera referencia, no el precio final.
-  completo ($0.02–0.10, 1–3 min): búsqueda raspada de ML (Apify, la misma de Competencia) → juez por título
-           (`competencia_juez.juzgar_lote`) → juez por FOTO, pareja por pareja (visión por OpenRouter) →
-           mediana de los del mismo modelo → piso → sugerencia. Corre en segundo plano (POST da un `jid`).
+  completo ($0.02–0.10, ~1–2 min): búsqueda raspada de ML (Apify, la misma de Competencia) con términos CORTOS y
+           3 reintentos → juez por título (`competencia_juez.juzgar_lote`) → juez por FOTO, pareja por pareja
+           (visión por OpenRouter) → mediana de los del mismo modelo → piso → sugerencia. Corre en segundo plano
+           (POST da un `jid`).
+
+── CUANDO LOS DATOS NO CUADRAN (v0.687.0) ──────────────────────────────────────
+  El piso es tan bueno como el costo y el peso del Estudio. VAR-0549-NEG (50 bolsas, 23-oct) salió en $1,139 con
+  costo $456.45 y 20 kg, cuando la categoría vende a ~$159. La respuesta trae `categoria` (todos los más vendidos,
+  sin filtrar: solo de contexto) y avisa si el envío pesa demasiado o si el piso queda muy arriba de la categoría.
 
 ── EL PISO ─────────────────────────────────────────────────────────────────────
     utilidad(P) = P/1.16 − comisión(P) − envío(P) − costo
@@ -67,6 +73,14 @@ MAX_FOTOS = 30                # rivales que pasan al juez de fotos (~$0.0003 cad
 MIN_GRUPO = 3                 # con menos, la mediana no es referencia
 UMBRAL_PARECIDO = 0.2         # modo rápido: parecido de título mínimo (Jaccard de palabras)
 _BANDAS = ((499.99, 300.0), (1000.0, 750.0), (math.inf, 1500.0))   # (hasta, precio con el que se pregunta)
+# Búsqueda del modo completo. ML bloqueó el término LARGO (el título casi entero) en las dos primeras consultas
+# reales —TEC-0605 y VAR-0549-NEG, 23-oct— y cada bloqueo se reintentaba 8 veces: 3 min 43 s y $0.07 de Apify.
+PALABRAS_TERMINO = 5          # el título recortado a sus primeras palabras con significado
+REINTENTOS_BUSQUEDA = 3       # Competencia (en lote) sigue con 8
+# Avisos de datos que no cuadran (v0.687.0).
+UMBRAL_ENVIO = 0.15           # el envío se lleva ≥ 15 % del precio…
+FACTOR_ENVIO = 2.0            # …y cuesta ≥ 2× lo de un paquete ligero al mismo precio → revisar el peso
+FACTOR_CATEGORIA = 2.5        # piso > 2.5× la mediana de los más vendidos de la categoría → revisar costo y peso
 
 ETIQUETAS = {
     "foto": "Mismo modelo por foto",
@@ -192,6 +206,56 @@ def parecido(a: str | None, b: str | None) -> float:
     return len(pa & pb) / len(pa | pb) if pa and pb else 0.0
 
 
+def termino_corto(titulo: str | None, n: int = PALABRAS_TERMINO) -> str:
+    """El título como búsqueda CORTA: sus primeras `n` palabras con significado, en orden y con sus acentos
+    («Bolsas plasticas thank you para regalo y tienda 50 pzas» → «Bolsas plasticas thank you regalo»)."""
+    out = []
+    for w in str(titulo or "").split():
+        if palabras(w):          # tiene al menos una palabra de 3+ letras que no es de relleno
+            out.append(w.strip(".,;:()[]\"'«»"))
+        if len(out) == n:
+            break
+    return " ".join(out)
+
+
+def terminos_busqueda(del_usuario: list[str] | None, de_ia: str | None, titulo: str | None) -> list[str]:
+    """Lo que se busca en ML: lo que escribió el usuario (manda, hasta 2); si no, el término de la IA y el título
+    recortado, los dos cortos y sin repetir. Nunca el título entero: es el que ML bloquea."""
+    propios = [t.strip() for t in del_usuario or [] if t and t.strip()]
+    if propios:
+        return propios[:2]
+    vistos: dict[frozenset[str], str] = {}
+    for t in (termino_corto(de_ia, PALABRAS_TERMINO + 1), termino_corto(titulo)):
+        clave = frozenset(palabras(t))
+        if clave and clave not in vistos:
+            vistos[clave] = t
+    return list(vistos.values())[:2]
+
+
+def revisar_datos(precio: float | None, envio_precio: float | None, envio_ligero: float | None,
+                  peso_kg: float | None, piso_: float | None, costo: float | None,
+                  categoria: dict[str, Any] | None, estado: str | None) -> list[str]:
+    """
+    Avisos cuando lo que manda en el piso parece un error de captura, no el mercado:
+      · el envío se lleva ≥ UMBRAL_ENVIO del precio Y cuesta ≥ FACTOR_ENVIO × lo de un paquete ligero al mismo
+        precio (un producto barato y ligero paga $35 de $209 —17 %— y está bien; 20 kg en 50 bolsas, no);
+      · sin mercado o sin competir, el piso queda > FACTOR_CATEGORIA × la mediana de TODOS los más vendidos de la
+        categoría.
+    """
+    out: list[str] = []
+    if (precio and envio_precio and envio_ligero and envio_precio / precio >= UMBRAL_ENVIO
+            and envio_precio >= FACTOR_ENVIO * envio_ligero):
+        donde = (f"se calcula con {peso_kg:g} kg. Revisa el «Peso (kg)» del Estudio" if peso_kg
+                 else "revisa el peso del producto")
+        out.append(f"El envío (${envio_precio:,.2f}) se lleva el {round(envio_precio / precio * 100)} % del precio: "
+                   f"{donde}.")
+    med = (categoria or {}).get("mediana")
+    if piso_ and med and estado in ("sin_mercado", "no_compite") and piso_ > FACTOR_CATEGORIA * med:
+        out.append(f"El piso (${piso_:,.0f}) es {piso_ / med:.1f}× la mediana de los más vendidos de la categoría "
+                   f"(${med:,.0f}): revisa el costo (${costo or 0:,.2f}) y el peso antes de usarlo.")
+    return out
+
+
 def leer_veredicto_foto(texto: str | None) -> dict[str, Any]:
     """{veredicto, razon, piezas} de la respuesta del juez de fotos. Lo que no se pueda leer queda «error»."""
     t = str(texto or "")
@@ -241,7 +305,7 @@ PASOS = {
     "encolado": "En cola…",
     "datos": "Leyendo el producto…",
     "mas_vendidos": "Leyendo los más vendidos de la categoría…",
-    "buscando": "Buscando en Mercado Libre (1 a 3 min)…",
+    "buscando": "Buscando en Mercado Libre (alrededor de 1 min)…",
     "juez_titulo": "Separando los que son el mismo producto…",
     "juez_fotos": "Comparando fotos…",
     "calculando": "Calculando comisión, piso y sugerencia…",
@@ -540,8 +604,9 @@ def _gasto_apify_desde(t0: datetime) -> float:
 
 async def _cerrar(d: dict[str, Any], modo: str, rivales: list[dict[str, Any]], grupos: dict[str, list[float]],
                   cli: httpx.AsyncClient | None, avisos: list[str], costo_consulta: dict[str, float],
-                  extra: dict[str, Any]) -> dict[str, Any]:
-    """Comisión real, piso, referencia y sugerencia: lo que comparten los dos modos."""
+                  extra: dict[str, Any], top: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Comisión real, piso, referencia y sugerencia: lo que comparten los dos modos. `top` son los más vendidos de
+    la categoría SIN filtrar: su resumen viaja como `categoria`, solo de contexto (no entra a la sugerencia)."""
     bandas = await comisiones(cli, d["ml_cat_id"]) if cli and d["ml_cat_id"] else []
     if not bandas:
         avisos.append("No se pudo leer la comisión de ML para la categoría: sin piso de rentabilidad.")
@@ -576,6 +641,10 @@ async def _cerrar(d: dict[str, Any], modo: str, rivales: list[dict[str, Any]], g
         desglose = {"comision": round(pct * precio + fijo, 2), "pct": pct, "envio": round(envio(precio), 2),
                     "iva": round(precio - precio / (1 + IVA), 2), "costo": d["costo"], "utilidad": round(u, 2),
                     "pct_sobre_costo": round(u / d["costo"] * 100, 1)}
+    categoria = resumen([t["precio"] for t in top or [] if t.get("precio")])
+    avisos.extend(revisar_datos(precio, envio(precio) if precio else None,
+                                costos.calc_fee_envio_ml(0.1, precio) if precio else None,
+                                d["peso_kg"], piso_, d["costo"], categoria, s["estado"]))
     for r in rivales:
         r["en_referencia"] = bool(ref and r.get("_grupos") and ref["grupo"] in r["_grupos"])
         r.pop("_grupos", None)
@@ -587,7 +656,7 @@ async def _cerrar(d: dict[str, Any], modo: str, rivales: list[dict[str, Any]], g
         # teclee sin volver a preguntar (misma fórmula que `utilidad`).
         "comision": bandas, "tabla_envio": costos._fila_tarifa_ml(d["peso_kg"]) if d["peso_kg"] else None,
         "tramos_envio": list(costos._TRAMOS_PRECIO), "envio_fijo": None if d["peso_kg"] else d["envio_panel"],
-        "iva": IVA, "piso": piso_, "referencia": ref,
+        "iva": IVA, "piso": piso_, "referencia": ref, "categoria": categoria,
         "sugerido": {**s, "texto": ESTADOS[s["estado"]], "desglose": desglose},
         "grupos": {g: resumen(v) for g, v in grupos.items()}, "rivales": rivales, "avisos": avisos,
         "costo_consulta": costo_consulta, "consultado": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -614,7 +683,8 @@ async def rapido(entrada: dict[str, Any]) -> dict[str, Any]:
         if top and len(grupos["mas_vendidos"]) < MIN_GRUPO:
             avisos.append(f"Solo {len(grupos['mas_vendidos'])} de los {len(top)} más vendidos se parecen por título: "
                           "usa el modo completo para buscar el producto exacto.")
-        res = await _cerrar(d, "rapido", top, grupos, cli, avisos, {"apify": 0.0, "juez": 0.0, "fotos": 0.0}, {})
+        res = await _cerrar(d, "rapido", top, grupos, cli, avisos, {"apify": 0.0, "juez": 0.0, "fotos": 0.0}, {},
+                            top=top)
     finally:
         if cli:
             await cli.aclose()
@@ -624,7 +694,7 @@ async def rapido(entrada: dict[str, Any]) -> dict[str, Any]:
 
 async def completo(entrada: dict[str, Any], avisar: Callable[[str], None] = lambda _p: None) -> dict[str, Any]:
     """$0.02–0.10 (Apify cobra por cómputo: un término bloqueado se reintenta y encarece): búsqueda raspada + juez por título + juez por foto + comisión real + piso."""
-    from services import competencia, competencia_juez, competencia_scraper, competencia_terminos
+    from services import competencia_juez, competencia_scraper, competencia_terminos
 
     t0, desde = time.monotonic(), datetime.now(timezone.utc)
     avisar("datos")
@@ -632,11 +702,10 @@ async def completo(entrada: dict[str, Any], avisar: Callable[[str], None] = lamb
     avisos: list[str] = []
     gasto = {"apify": 0.0, "juez": 0.0, "fotos": 0.0}
 
-    terminos = [t.strip() for t in entrada.get("terminos") or [] if t and t.strip()]
-    if not terminos:
+    terminos = terminos_busqueda(entrada.get("terminos"), None, d["titulo"])
+    if not any(t and t.strip() for t in entrada.get("terminos") or []):
         prop = await asyncio.to_thread(competencia_terminos.proponer, [{"sku": d["sku"], "nombre": d["titulo"]}])
-        terminos = [t for t in dict.fromkeys([prop.get(d["sku"]), competencia._query({"nombre": d["titulo"]})]) if t]
-    terminos = terminos[:2]
+        terminos = terminos_busqueda(None, prop.get(d["sku"]), d["titulo"])
 
     cli = await _cliente_ml()
     try:
@@ -645,9 +714,11 @@ async def completo(entrada: dict[str, Any], avisar: Callable[[str], None] = lamb
 
         avisar("buscando")
         bloqueados: set[str] = set()
-        crudos = await competencia_scraper.buscar_terminos(terminos, limite=48, bloqueados=bloqueados)
+        crudos = await competencia_scraper.buscar_terminos(terminos, limite=48, bloqueados=bloqueados,
+                                                           reintentos=REINTENTOS_BUSQUEDA)
         if bloqueados:
-            avisos.append(f"ML bloqueó la búsqueda de: {', '.join(sorted(bloqueados))}.")
+            avisos.append(f"ML bloqueó la búsqueda de: {', '.join(sorted(bloqueados))} "
+                          f"({REINTENTOS_BUSQUEDA} intentos). Si faltan comparables, prueba con otro término.")
         vistos: dict[str, dict[str, Any]] = {}
         for termino, filas in crudos.items():
             for f in filas:
@@ -693,7 +764,7 @@ async def completo(entrada: dict[str, Any], avisar: Callable[[str], None] = lamb
         avisar("calculando")
         gasto["apify"] = await asyncio.to_thread(_gasto_apify_desde, desde)
         res = await _cerrar(d, "completo", rivales, grupos, cli, avisos, gasto,
-                            {"terminos": terminos, "unidades_nuestras": unidades, "mas_vendidos": top})
+                            {"terminos": terminos, "unidades_nuestras": unidades, "mas_vendidos": top}, top=top)
     finally:
         if cli:
             await cli.aclose()

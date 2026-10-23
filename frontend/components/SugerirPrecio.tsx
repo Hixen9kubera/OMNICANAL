@@ -220,7 +220,7 @@ export default function SugerirPrecio({
             type="button"
             onClick={correrCompleto}
             disabled={disabled || corriendo}
-            title="Busca el producto en ML, separa por título y compara las FOTOS. Tarda 1 a 3 minutos. Cuesta ~$0.02; hasta ~$0.10 si ML bloquea un término y Apify reintenta."
+            title="Busca el producto en ML, separa por título y compara las FOTOS. Tarda alrededor de 1 minuto. Cuesta ~$0.02; más (hasta ~$0.10) si ML bloquea un término y Apify reintenta."
             className="flex items-center gap-1.5 rounded-lg bg-amber-600 px-3 py-2 text-sm font-bold text-white shadow-sm hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {jid ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />}
@@ -305,6 +305,17 @@ export default function SugerirPrecio({
                       normal {mxn(res.referencia.p25)}–{mxn(res.referencia.p75)} · todo {mxn(res.referencia.min)}–
                       {mxn(res.referencia.max)}
                       {res.referencia.pocos && " · pocos datos"}
+                    </div>
+                  </>
+                ) : res.categoria ? (
+                  // Sin comparables, al menos lo que cobra la categoría: si el piso queda muy arriba, salta a la vista.
+                  <>
+                    <div className="text-base font-bold text-slate-800">
+                      categoría: mediana {mxn(res.categoria.mediana)}
+                    </div>
+                    <div className="text-slate-400">
+                      los {res.categoria.n} más vendidos, sin filtrar por producto · {mxn(res.categoria.min)}–
+                      {mxn(res.categoria.max)}. Solo de referencia.
                     </div>
                   </>
                 ) : (

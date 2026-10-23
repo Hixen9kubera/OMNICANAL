@@ -1001,6 +1001,48 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.687.0 — «Sugerir precio»: el completo busca corto (≈1 min) y avisa cuando el costo o el peso no cuadran con la categoría
+
+**El caso (Brandon, 23-oct-2026).** VAR-0549-NEG, «Bolsas plasticas thank you para regalo y tienda 50 pzas»:
+- **Rápido sugirió $1,139.** Ninguno de los 14 más vendidos se parecía por título, así que salió solo el piso, y el piso
+  lo empujaban dos datos del Estudio: **costo $456.45** y **peso 20 kg** (envío $222.50). Los más vendidos de la
+  categoría cobran ~$159. La pantalla no decía que lo raro eran los datos.
+- **Completo tardó 4 min.** Logs de Railway: arrancó 20:14:42; la búsqueda terminó 20:18:25 porque ML bloqueó el término
+  largo («Bolsas plasticas thank you para regalo tienda pzas») y Apify lo reintentó **8 veces**; los jueces tardaron
+  ~17 s. Con TEC-0605 pasó lo mismo: el título largo bloqueado y el término corto de la IA bien.
+
+**Qué cambia.**
+- **Búsqueda corta.** El completo busca con lo que escribas (manda, hasta 2) o con el término de la IA más el título
+  recortado a sus primeras 5 palabras con significado (`termino_corto`: «Bolsas plasticas thank you regalo»), sin
+  repetir. Nunca el título entero.
+- **3 reintentos.** `competencia_scraper.buscar_terminos` acepta `reintentos` (por omisión 8: Competencia, que corre en
+  lote, no cambia); «Sugerir precio» pide 3. Si un término se bloquea igual, el aviso lo dice y sugiere otro término.
+  La barra dice «alrededor de 1 min».
+- **Avisos de datos** (`revisar_datos`):
+  - **Envío:** cuando se lleva ≥ 15 % del precio **y** cuesta ≥ 2× lo de un paquete ligero al mismo precio → «El envío
+    ($222.50) se lleva el 20 % del precio: se calcula con 20 kg. Revisa el «Peso (kg)» del Estudio». Las dos
+    condiciones a propósito: TEC-0605 paga $35 de $209 (17 %) y es lo que paga cualquier paquete ligero a ese precio.
+  - **Piso contra la categoría:** sin mercado o sin competir, si el piso pasa de 2.5× la mediana de todos los más
+    vendidos de la categoría → «El piso ($1,138) es 7.2× la mediana de los más vendidos de la categoría ($159): revisa
+    el costo ($456.45) y el peso antes de usarlo».
+- **La categoría como contexto.** La respuesta trae `categoria` (resumen de todos los más vendidos, sin filtrar por
+  producto). Cuando no hay comparables, la tarjeta «Mercado» la muestra («categoría: mediana $…, solo de referencia») en
+  vez de «No hubo publicaciones comparables». No entra a la sugerencia.
+
+**Lo que NO cambia:** la fórmula del piso ni la sugerencia. Con un peso realista (0.5 kg), VAR-0549 seguiría pidiendo
+~$900: lo que manda es el costo de $456.45, que parece por caja o lote y no por paquete. Eso se corrige en Costos, no
+aquí.
+
+**Pruebas.** `tests/test_precio_sugerido.py` ahora 29 (9 nuevas, sin red): `termino_corto` con los dos títulos reales,
+lo del usuario manda, IA + título sin repetir y nunca más de 6 palabras, el completo pide `reintentos=3` con los términos
+cortos; avisos de VAR-0549 (los dos) y de TEC-0605 (ninguno), un producto pesado y caro no avisa por envío, el aviso de
+categoría solo sin mercado o sin competir, y el rápido de VAR-0549 completo, que reproduce el piso de **$1,138** que
+dio producción. Suite: 3,218 OK + la de siempre que falla solo en Windows por la consola (`test_competencia_juez_rutas`),
+142 omitidas. `tsc` limpio.
+
+**Sin probar en el panel:** el backend local necesita las llaves nuevas, que se borraron al terminar la prueba de
+v0.686.0. Se verifica en producción repitiendo el rápido de VAR-0549 (gratis).
+
 ### v0.686.0 — Estudio: «Sugerir precio» — a cuánto vende la competencia el MISMO producto en ML y qué precio compite sin bajar del margen
 
 **El pedido (Brandon, 22/23-oct-2026).** El panel «PRECIO DE COMPETENCIA» del Estudio inventaba: corría con «Mejorar con

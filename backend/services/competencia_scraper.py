@@ -326,6 +326,7 @@ def _bloqueado_en(pag: dict[str, Any]) -> str | None:
 
 async def buscar_terminos(terminos: list[str], limite: int = 10,
                           bloqueados: set[str] | None = None,
+                          reintentos: int = 8,
                           ) -> dict[str, list[dict[str, Any]]]:
     """
     Búsqueda de varios términos con el navegador GENÉRICO. → { termino: [filas] }
@@ -345,6 +346,10 @@ async def buscar_terminos(terminos: list[str], limite: int = 10,
     verificarse las búsquedas pedidas como página indexable. Quien pase un set en
     `bloqueados` recibe ahí los términos que aun así no se pudieron ver — el muro
     intermitente sigue existiendo y hay que poder distinguirlo de «no hay nada».
+
+    `reintentos`: cuántas veces se vuelve a pedir una página que ML bloqueó. Competencia usa 8 (corre en lote, no
+    hay nadie esperando); «Sugerir precio» del Estudio usa 3 porque hay alguien frente a la pantalla: un término
+    bloqueado con 8 reintentos se llevó 3 min 43 s de la consulta de VAR-0549-NEG (23-oct-2026).
     """
     consultas = [t.strip() for t in dict.fromkeys(terminos) if t and t.strip()]
     if not consultas:
@@ -364,7 +369,7 @@ async def buscar_terminos(terminos: list[str], limite: int = 10,
         "maxRequestsPerCrawl": len(urls),
         # Igual que en el ranking: ML bloquea de forma intermitente y cada intento
         # fallido aborta en segundos, así que reintentar sale casi gratis.
-        "maxRequestRetries": 8,
+        "maxRequestRetries": reintentos,
         "maxConcurrency": 2,
         "headless": True,
         "launcher": "chromium",
