@@ -689,6 +689,136 @@ export function mejorarIA(p: { canal: string; producto: ProductoIA; cuenta?: str
   return postJSON<MejorarResp>(`/api/ia/mejorar`, p);
 }
 
+// ── «Sugerir precio» del Estudio (v0.686.0) ─────────────────────────────────
+// La competencia REAL del mismo producto en ML contra el piso de rentabilidad.
+// Ver backend/services/precio_sugerido.py. Solo sugiere: no escribe precios.
+
+export interface PrecioSugeridoEntrada {
+  sku: string;
+  titulo?: string | null;
+  ml_cat_id?: string | null;
+  costo?: number | null;
+  imagen?: string | null;
+  peso_kg?: number | null;
+  /** Margen mínimo sobre el COSTO (0.30 = 30 %). */
+  margen?: number;
+  terminos?: string[] | null;
+}
+
+export interface PrecioResumen {
+  n: number;
+  min: number;
+  p25: number;
+  mediana: number;
+  media: number;
+  p75: number;
+  max: number;
+}
+
+export interface PrecioRival {
+  id: string;
+  titulo: string | null;
+  precio: number;
+  imagen?: string | null;
+  url?: string | null;
+  posicion?: number | null;
+  fuente: "busqueda" | "mas_vendidos";
+  termino?: string;
+  mas_vendido?: boolean;
+  /** Modo rápido: parecido de título con el nuestro (0–1). */
+  parecido?: number;
+  clase_titulo?: string;
+  motivo_titulo?: string;
+  unidades?: number | null;
+  foto?: "mismo_modelo" | "mismo_diseno" | "diferente" | "error";
+  foto_razon?: string;
+  foto_piezas?: number | null;
+  /** Pasó el filtro pero su precio cae fuera de 2.5× la mediana de su grupo: no cuenta. */
+  extremo?: boolean;
+  en_referencia: boolean;
+}
+
+export type PrecioEstado = "compite" | "arriba_mediana" | "no_compite" | "sin_mercado" | "sin_piso";
+
+export interface PrecioSugeridoResp {
+  ok: boolean;
+  modo: "rapido" | "completo";
+  sku: string;
+  titulo: string;
+  imagen: string | null;
+  costo: number | null;
+  ml_cat_id: string | null;
+  margen: number;
+  peso_kg: number | null;
+  envio_origen: "peso" | "panel" | "sin_dato";
+  comision: { hasta: number | null; pct: number; fijo: number }[];
+  tabla_envio: number[] | null;
+  tramos_envio: number[];
+  envio_fijo: number | null;
+  iva: number;
+  piso: number | null;
+  referencia: (PrecioResumen & { grupo: "foto" | "titulo" | "mas_vendidos"; etiqueta: string; pocos: boolean }) | null;
+  sugerido: {
+    precio: number | null;
+    estado: PrecioEstado;
+    texto: string;
+    desglose: {
+      comision: number;
+      pct: number;
+      envio: number;
+      iva: number;
+      costo: number;
+      utilidad: number;
+      pct_sobre_costo: number;
+    } | null;
+  };
+  grupos: Record<string, PrecioResumen | null>;
+  rivales: PrecioRival[];
+  mas_vendidos?: PrecioRival[];
+  terminos?: string[];
+  unidades_nuestras?: number;
+  avisos: string[];
+  costo_consulta: { apify: number; juez: number; fotos: number; total: number };
+  consultado: string;
+}
+
+export interface PrecioSugeridoTrabajo {
+  id: string;
+  sku: string;
+  paso: string;
+  paso_label: string;
+  error: string | null;
+  resultado: PrecioSugeridoResp | null;
+}
+
+export function precioSugeridoRapido(e: PrecioSugeridoEntrada): Promise<PrecioSugeridoResp> {
+  return postJSON<PrecioSugeridoResp>(`/api/precio-sugerido/rapido`, e);
+}
+
+export function precioSugeridoCompleto(e: PrecioSugeridoEntrada): Promise<PrecioSugeridoTrabajo> {
+  return postJSON<PrecioSugeridoTrabajo>(`/api/precio-sugerido/completo`, e);
+}
+
+export function precioSugeridoTrabajo(jid: string, signal?: AbortSignal): Promise<PrecioSugeridoTrabajo> {
+  return getJSON<PrecioSugeridoTrabajo>(`/api/precio-sugerido/trabajo/${encodeURIComponent(jid)}`, signal);
+}
+
+export function precioSugeridoUltimo(sku: string, signal?: AbortSignal): Promise<{ resultado: PrecioSugeridoResp | null }> {
+  return getJSON<{ resultado: PrecioSugeridoResp | null }>(`/api/precio-sugerido/ultimo/${encodeURIComponent(sku)}`, signal);
+}
+
+/** Lo que queda por pieza a un precio, con la MISMA fórmula del backend (`precio_sugerido.utilidad`). */
+export function utilidadAPrecio(r: PrecioSugeridoResp, precio: number): number | null {
+  if (!r.costo || !r.comision.length || !(precio > 0)) return null;
+  const banda = r.comision.find((b) => b.hasta == null || precio <= b.hasta) ?? r.comision[r.comision.length - 1];
+  let envio = r.envio_fijo ?? 0;
+  if (r.tabla_envio) {
+    const i = r.tramos_envio.findIndex((tope) => precio <= tope);
+    envio = r.tabla_envio[i === -1 ? r.tramos_envio.length : i];
+  }
+  return precio / (1 + r.iva) - (banda.pct * precio + banda.fijo) - envio - r.costo;
+}
+
 export function precioCompetencia(
   p: { producto: ProductoIA; con_lista?: boolean },
 ): Promise<CompetenciaResp> {

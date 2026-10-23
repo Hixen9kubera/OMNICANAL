@@ -9,7 +9,6 @@ import {
   Wand2,
   Loader2,
   Link2,
-  TrendingUp,
   UploadCloud,
   CheckCircle2,
   AlertTriangle,
@@ -37,7 +36,6 @@ import type {
   AtributoProducto,
   CanalInfo,
   CategoriaMLResult,
-  CompetenciaResp,
   CostoCalculo,
   CostoOverrides,
   DetalleCanal,
@@ -75,7 +73,6 @@ import {
   leerContenidoCanal,
   mejorarIA,
   mensajeDeError,
-  precioCompetencia,
   procesarImagenesIA,
   progresoImagenes,
   publicarConfirmar,
@@ -92,12 +89,11 @@ import CategoriaMLPicker from "./CategoriaMLPicker";
 import RevisionCategoriaML from "./RevisionCategoriaML";
 import ExplicacionErrorML from "./ExplicacionErrorML";
 import GaleriaVariante from "./GaleriaVariante";
+import SugerirPrecio from "./SugerirPrecio";
 import { useDetalleProducto } from "@/lib/useDetalleProducto";
 import {
   getMejora,
   setMejora as saveMejora,
-  getCompetencia as getCompStore,
-  setCompetencia as saveCompetencia,
   limpiarBorrador,
 } from "@/lib/studioStore";
 
@@ -548,7 +544,6 @@ export default function ProductStudio({
 
   // IA
   const [mejorando, setMejorando] = useState(false);
-  const [competencia, setCompetencia] = useState<CompetenciaResp | null>(null);
   // El parte del generador de Amazon: qué NO se aplicó y por qué, qué marcas
   // registradas se sustituyeron y qué exige su categoría. Sin esto, el
   // validador rechazaría campos en silencio — que es justo lo que hace Amazon
@@ -633,7 +628,6 @@ export default function ProductStudio({
     setImgActiva(0);
     setMeta(null);
     setCampos(CAMPOS_VACIOS);
-    setCompetencia(sku ? getCompStore(sku) ?? null : null);
     setPreviewPub(null);
     setResultadoPub(null);
     setAmazonPublicadoOk(false);
@@ -1045,12 +1039,14 @@ export default function ProductStudio({
       sku,
       atributos,
     };
-    const [mej, comp] = await Promise.allSettled([
+    // El precio de competencia ya NO va aquí (v0.686.0): dependía de SerpApi
+    // —agotado— y la IA lo estimaba sin datos ($399 para un producto que se vende
+    // a $96–$245). Ahora es el panel «Sugerir precio», junto a los precios.
+    const [mej] = await Promise.allSettled([
       // `cuenta`: la MISMA con la que se lee y guarda el contenido del canal
       // (sólo ML la distingue). Sin ella, lo que la IA guardara de ML caía en
       // la fila sin cuenta y la tarjeta de la cuenta abierta no lo veía.
       mejorarIA({ canal, producto: ctx, cuenta: esML ? cuentaSel || "" : "" }),
-      precioCompetencia({ producto: ctx, con_lista: true }),
     ]);
 
     // ¿El usuario sigue en el mismo producto+canal? Si no, descartar TODO —
@@ -1092,13 +1088,6 @@ export default function ProductStudio({
       };
     }
     setMejorando(false);
-
-    if (comp.status === "fulfilled") {
-      setCompetencia(comp.value);
-      if (comp.value.ok) saveCompetencia(sku, comp.value);
-    } else {
-      setCompetencia({ ok: false, motivo: "No se pudo consultar la competencia." });
-    }
   }, [data, sku, canal, titulo, descripcion, atributos, campos.precioRegular, campos.costo, categoriaMLTexto, categoriaWC,
       esML, cuentaSel, soloVistaAgrupada]);
 
@@ -2063,7 +2052,7 @@ export default function ProductStudio({
           </button>
           <p className="mt-1.5 text-center text-[11px] text-slate-400">
             <strong>Publicar</strong> envía los datos actuales al canal (revisas antes).{" "}
-            <strong>Mejorar con IA</strong> optimiza título, descripción y atributos{esAmazon ? " + highlights, bullets y términos de búsqueda" : esTikTok ? " + puntos clave, con los atributos reales de su categoría de TikTok" : ""} y sugiere precio de competencia (no toca precio/costo/dimensiones).
+            <strong>Mejorar con IA</strong> optimiza título, descripción y atributos{esAmazon ? " + highlights, bullets y términos de búsqueda" : esTikTok ? " + puntos clave, con los atributos reales de su categoría de TikTok" : ""} (no toca precio/costo/dimensiones; el precio lo sugiere <strong>Sugerir precio</strong>, junto a los precios).
           </p>
 
           {/* EL PARTE DEL GENERADOR (Amazon).
@@ -2295,52 +2284,6 @@ export default function ProductStudio({
                   onCambio={() => setCatWalmartVer((v) => v + 1)} />
               )}
               </fieldset>
-              )}
-
-              {/* PRECIO DE COMPETENCIA */}
-              {competencia && (
-                <section className="overflow-hidden rounded-2xl border-2 border-amber-200 bg-amber-50/50">
-                  <header className="flex items-center gap-2 border-b border-amber-200 bg-amber-100/60 px-4 py-2">
-                    <TrendingUp size={16} className="text-amber-600" />
-                    <span className="text-sm font-bold text-amber-800">Precio de competencia sugerido</span>
-                    {competencia.proveedor && <span className="text-[10px] uppercase tracking-wide text-amber-500">{competencia.proveedor}</span>}
-                  </header>
-                  {competencia.ok ? (
-                    <div className="space-y-2 px-4 py-3">
-                      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-                        <span className="text-2xl font-black text-slate-800">
-                          {competencia.precio_sugerido != null ? precioMXN(competencia.precio_sugerido) : "—"}
-                        </span>
-                        {competencia.rango && (
-                          <span className="text-xs text-slate-500">
-                            rango {precioMXN(competencia.rango.min)}–{precioMXN(competencia.rango.max)} · mediana {precioMXN(competencia.rango.mediana)}
-                          </span>
-                        )}
-                        {/* "Usar como precio" se retiró: solo escribía el campo
-                            espejo, que no persiste y se repuebla desde Woo — el
-                            precio parecía aplicado y se publicaba el viejo. */}
-                      </div>
-                      {competencia.razonamiento && <p className="text-xs leading-relaxed text-slate-600">{competencia.razonamiento}</p>}
-                      {competencia.aviso && <p className="text-[11px] italic text-amber-600">⚠ {competencia.aviso}</p>}
-                      {!!competencia.fuentes?.length && (
-                        <details className="text-xs">
-                          <summary className="cursor-pointer font-semibold text-slate-500">Fuentes ({competencia.fuentes_encontradas ?? competencia.fuentes.length})</summary>
-                          <ul className="mt-1 space-y-0.5">
-                            {competencia.fuentes.slice(0, 10).map((f, i) => (
-                              <li key={i} className="flex items-center justify-between gap-2 text-slate-500">
-                                <span className="truncate">{f.marketplace} · {f.titulo}</span>
-                                <span className="shrink-0 font-semibold text-slate-700">{precioMXN(f.precio)}</span>
-                              </li>
-                            ))}
-                          </ul>
-                        </details>
-                      )}
-                      <p className="text-[11px] text-slate-400">Solo informativo — no cambia el precio. Para aplicarlo, ajusta costo o margen en <strong>COSTOS</strong> y pulsa <strong>Guardar costo y precios</strong>.</p>
-                    </div>
-                  ) : (
-                    <div className="px-4 py-3 text-sm text-amber-700">{competencia.motivo ?? "No se pudo calcular."}</div>
-                  )}
-                </section>
               )}
 
               {/* CATEGORÍA (Mercado Libre editable + WooCommerce)
@@ -2810,6 +2753,23 @@ export default function ProductStudio({
                     </div>
                   )}
                 </section>
+              )}
+
+              {/* SUGERIR PRECIO (v0.686.0): la competencia REAL del mismo
+                  producto en ML (búsqueda + juez por título y por FOTO) contra
+                  el piso de rentabilidad. «Usar en Precio oferta» solo llena el
+                  campo de abajo; se guarda con «Guardar precio y costo». */}
+              {sku && (
+                <SugerirPrecio
+                  sku={sku}
+                  titulo={titulo || data?.nombre || sku}
+                  mlCatId={catMlId || meta?.categoria_ml?.category_id || null}
+                  costo={Number(campos.costo) || null}
+                  imagen={data?.imagen ?? data?.imagenes?.[0] ?? null}
+                  pesoKg={Number(campos.peso) || null}
+                  disabled={soloVistaAgrupada}
+                  onUsar={(precio) => setCampo("precioOferta", String(precio))}
+                />
               )}
 
               {/* PRECIOS + COSTO + STOCK.

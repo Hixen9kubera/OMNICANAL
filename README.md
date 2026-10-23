@@ -1001,6 +1001,67 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.686.0 — Estudio: «Sugerir precio» — a cuánto vende la competencia el MISMO producto en ML y qué precio compite sin bajar del margen
+
+**El pedido (Brandon, 22/23-oct-2026).** El panel «PRECIO DE COMPETENCIA» del Estudio inventaba: corría con «Mejorar con
+IA», SerpApi está agotado y la IA ponía un número sin fuente. Se probó a mano con TEC-0605 (2 pack micrófono lavalier,
+costo $82.08) qué método da un precio defendible: el que sirve es buscar el producto en ML, quedarse con los que son el
+MISMO modelo **por foto** (no por título: el título deja pasar otros modelos y otros paquetes) y compararlo con un piso de
+rentabilidad que incluya comisión real, envío e IVA.
+
+**Cómo funciona** (sección «Sugerir precio» del Estudio, arriba de Precios; solo Mercado Libre).
+- **Rápido · gratis (segundos).** Los más vendidos de la categoría (`/highlights/MLM/category/{cat}` y
+  `/products/{id}/items` con nuestro token, solo lectura) → precio más bajo de cada producto de catálogo → filtro por
+  parecido de título (≥ 0.2) → recorte de extremos → piso → sugerencia. Es una primera referencia, no el precio final.
+- **Completo · $0.02–0.10 (1–3 min, en segundo plano).** Búsqueda raspada de ML (Apify, la misma de Competencia; 1–2
+  términos: los que escribas o los que propone la IA) → juez por título (`competencia_juez.juzgar_lote`, DeepSeek) → juez
+  por **FOTO**, pareja por pareja: nuestra foto contra cada rival (Gemini 2.5 Flash por OpenRouter, hasta 30, ~$0.0003 cada
+  una; mismo modelo / mismo diseño / diferente + piezas visibles) → mediana de los del mismo modelo. Con menos de 3 por foto
+  cae a título y luego a más vendidos, y lo dice. Un rival con distinto número de piezas en la foto no cuenta.
+- **Recorte de extremos.** Dentro del grupo de referencia, lo que esté a más de 2.5× (o a menos de 1/2.5) de la mediana
+  sale de la cuenta y se marca «precio fuera de rango» (un kit profesional de $1,600 entre lavaliers de $100).
+- **Piso de rentabilidad.** El menor precio entero P con utilidad(P) ≥ margen × costo, donde
+  `utilidad(P) = P/1.16 − comisión(P) − envío(P) − costo`. Comisión **real** de la categoría
+  (`/sites/MLM/listing_prices`, `gold_pro` + `fulfillment`, por bandas de precio); envío de la tabla oficial por peso
+  (`costos.calc_fee_envio_ml`; ojo con el escalón de $299). El peso es el «Peso (kg)» del Estudio (el que se guarda y
+  usa costos); vacío → el atributo «Peso» de Woo; sin ninguno → el envío del panel, con aviso. Las dimensiones NO se usan
+  (son CBM reconstruido). Margen por omisión **30 % sobre el costo**, editable.
+- **Sugerencia.** La mediana redondeada hacia abajo a …9; si queda bajo el piso, el piso hacia arriba a …9. Estados:
+  compite / arriba de la mediana (≤ P75) / no compite / sin mercado / sin piso (falta costo).
+- **Solo sugiere.** «Usar $X en Precio oferta» llena el campo y se guarda con «Guardar costo y precios», como cualquier
+  precio tecleado. «Probar otro precio» calcula la utilidad de cualquier precio con la misma fórmula en el navegador
+  (`utilidadAPrecio`). La lista de rivales muestra foto, precio, veredicto por foto y por título, y enlace.
+- **Se guarda cada consulta** en `ops.process_log` (proceso `precio_sugerido`, con su costo), y al abrir el Estudio se
+  muestra la última del SKU para no volver a pagar. El costo real (Apify, juez, fotos) sale al pie.
+
+**El costo del completo depende de ML.** Apify cobra por cómputo y el buscador reintenta hasta 8 veces cuando ML bloquea un
+término. Con los dos términos pasando a la primera son ~$0.02; con uno bloqueado, ~$0.09 (medido: Apify $0.072 de $0.085).
+La etiqueta del botón dice el rango, no un promedio.
+
+**Lo que se quitó.** El panel «PRECIO DE COMPETENCIA» del Estudio y su llamada desde «Mejorar con IA». El endpoint viejo
+sigue existiendo; el Estudio ya no lo usa.
+
+**Endpoints.** `POST /api/precio-sugerido/rapido` · `POST /api/precio-sugerido/completo` (devuelve `jid`) ·
+`GET /api/precio-sugerido/trabajo/{jid}` · `GET /api/precio-sugerido/ultimo/{sku}`. Permiso: operador (como Competencia).
+I/O de red y base en `asyncio.to_thread` / cliente async (regla 11).
+
+**Medido con TEC-0605 (23-oct, datos reales, backend local con las bitácoras a archivo).**
+- Rápido: 18 más vendidos, 9 en la referencia tras recortar un JBL de $705 y un Hollyland de $1,624; mediana $119.89.
+- Completo (2 veces): 48 resultados; 5 y 7 del mismo modelo por foto, mediana **$159** en las dos — coincide con la
+  revisión a mano.
+- Piso al 30 % = **$208** → sugiere $209, «no compite»: con este costo, competir en $159 deja menos del 30 %.
+- Corrección al cálculo del 22-oct («$169–179 con 33–36 % de margen»): omitía IVA y envío. Con todo: equilibrio $168,
+  10 % → $180, 20 % → $192, 30 % → $208.
+
+**Sin variables:** es lectura y UI; no cambia ningún precio ni enciende flujos.
+
+**Pruebas.** `tests/test_precio_sugerido.py` (20, sin red): resumen y redondeos, utilidad, piso (208 al 30 %, escalón de
+$299, caso imposible), bandas de comisión, envío, formatos de peso (`name/options` y `nombre/valor` normalizado), referencia
+foto → título → más vendidos, recorte de extremos, juez de fotos (veredictos y piezas), modo rápido con ML simulado,
+permisos. Suite completa: 3,189 OK + 1 que falla solo en Windows por la codificación de la consola
+(`test_competencia_juez_rutas`, también en `main`), 142 omitidas. `tsc` limpio. UI probada en local: los dos modos, la
+barra de avance, «Usar en Precio oferta» (sin guardar) y la calculadora (a $189 quedan $14.83, igual que el backend).
+
 ### v0.685.0 — Mercado Libre: un atributo OPCIONAL con formato que ML no acepta ya no tumba el alta (se quita, se reintenta una vez y se avisa)
 
 **El caso (Brandon, 23-oct-2026).** TEC-1875-MUL, «Rotuladores Acuarela Doble Punta…» en Marcadores y Marcatextos

@@ -247,6 +247,10 @@ REGLAS: tuple[tuple[str, str, str], ...] = (
     ("GET", "/api/competencia", "operador"),
     ("POST", "/api/competencia", "operador"),
     ("PATCH", "/api/competencia", "operador"),
+    # Estudio · «Sugerir precio» (v0.686.0): el modo completo PAGA (Apify, IA), igual que medir un término de
+    # Competencia, y la respuesta trae costo y margen. Mismo nivel que Competencia.
+    ("GET", "/api/precio-sugerido", "operador"),
+    ("POST", "/api/precio-sugerido", "operador"),
 
     # ══ LECTURA — mirar ventas e inventario, sin costos ══════════════════════
     ("GET", "/api/productos", "lectura"),

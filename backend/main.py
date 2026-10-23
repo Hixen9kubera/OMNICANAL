@@ -28,8 +28,8 @@ from routers import (alertas as r_alertas, auth, automatizacion, canales, checkl
                      crear, fanout,
                      fba, fulfillment, fulfillment_envios, fulfillment_full, ia, imagenes, inventario, investigacion, metricas, migracion,
                      ordenes_venta,
-                     pricing, productos, publicaciones, publicar, publico, radar_precios, resolver, sync, ventas,
-                     tiktok, webhooks)
+                     pricing, precio_sugerido, productos, publicaciones, publicar, publico, radar_precios, resolver,
+                     sync, ventas, tiktok, webhooks)
 from services import db, odoo, scheduler, woocommerce
 
 logging.basicConfig(
@@ -233,7 +233,7 @@ app = FastAPI(
         "Temu, Shein)."
     ),
 
-    version="0.685.0",
+    version="0.686.0",
     lifespan=lifespan,
     # /docs, /redoc y /openapi.json publican el mapa COMPLETO de los 84
     # endpoints: rutas, parámetros y esquemas. Con la API abierta eso es un
@@ -336,6 +336,9 @@ app.include_router(radar_precios.router)
 # del Radar en la barra. SOLO LECTURA y sólo admin con sesión: sirve una FOTO
 # (las reglas de «Qué hacer» corren en la pantalla) — ver routers/pricing.py.
 app.include_router(pricing.router)
+# Estudio · «Sugerir precio» (v0.686.0): la competencia REAL del mismo producto en ML (búsqueda + juez por título y
+# por foto) contra el piso de rentabilidad. Solo sugiere; escribe únicamente su bitácora (ops.process_log).
+app.include_router(precio_sugerido.router)
 # Inventario · Órdenes de venta PROPIAS (folio OV-00001…): el documento que
 # hasta hoy sólo vivía en Odoo. Sólo escribe en `ventas.ov_*`; no toca Odoo, Woo
 # ni ningún marketplace. Confirmar/reservar/entregar, detrás de
@@ -352,7 +355,7 @@ def raiz():
     return {
         "app": "OMNICANAL Â· Kubera",
 
-        "version": "0.685.0",
+        "version": "0.686.0",
         "docs": "/docs",
         "canales": [c["id"] for c in lista_canales()],
     }
