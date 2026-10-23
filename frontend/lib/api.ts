@@ -778,9 +778,21 @@ export interface PrecioSugeridoResp {
   rivales: PrecioRival[];
   mas_vendidos?: PrecioRival[];
   terminos?: string[];
+  /** Términos que salieron del caché de Competencia → días que tiene la búsqueda (v0.688.0). */
+  cache?: Record<string, number>;
+  /** Publicaciones nuestras que salieron en la búsqueda y no cuentan como rivales (v0.688.0). */
+  propias_fuera?: number;
   unidades_nuestras?: number;
   avisos: string[];
-  costo_consulta: { apify: number; juez: number; fotos: number; total: number };
+  costo_consulta: {
+    apify: number;
+    juez: number;
+    fotos: number;
+    total: number;
+    /** false = Apify todavía no cobraba el proxy al guardarse: el monto es preliminar (se corrige al reabrir). */
+    apify_final?: boolean;
+    apify_runs?: string[];
+  };
   consultado: string;
 }
 

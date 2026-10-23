@@ -179,7 +179,7 @@ class MedirBusquedasEscribeSiempre(unittest.TestCase):
     puerta. Antes ninguno se anotaba y el término volvía a la cola."""
 
     def _correr(self, res_scraper, bloqueados_del_scraper):
-        async def falso_buscar(terminos, limite=10, bloqueados=None):
+        async def falso_buscar(terminos, limite=10, bloqueados=None, **_kw):
             if bloqueados is not None:
                 bloqueados |= bloqueados_del_scraper
             return res_scraper
@@ -213,7 +213,7 @@ class MedirBusquedasEscribeSiempre(unittest.TestCase):
     def test_que_falle_la_anotacion_no_tumba_la_tanda(self):
         """Los otros términos del lote ya se rasparon y hay que guardarlos: un
         error al ANOTAR el vacío no puede llevárselos."""
-        async def falso_buscar(terminos, limite=10, bloqueados=None):
+        async def falso_buscar(terminos, limite=10, bloqueados=None, **_kw):
             return {}
 
         with mock.patch.object(CC.competencia_scraper, "buscar_terminos", falso_buscar), \

@@ -16,10 +16,23 @@ Prueba del 22-oct-2026 con TEC-0605 (2 pack de micrófonos lavalier, costo $82.0
 ── DOS MODOS ───────────────────────────────────────────────────────────────────
   rápido   (gratis, segundos): los más vendidos de la categoría en ML (API con nuestro token) filtrados por
            parecido de título + comisión real + piso. Es una primera referencia, no el precio final.
-  completo ($0.02–0.10, ~1–2 min): búsqueda raspada de ML (Apify, la misma de Competencia) con términos CORTOS y
-           3 reintentos → juez por título (`competencia_juez.juzgar_lote`) → juez por FOTO, pareja por pareja
-           (visión por OpenRouter) → mediana de los del mismo modelo → piso → sugerencia. Corre en segundo plano
-           (POST da un `jid`).
+  completo ($0.01–0.10, ~30 s–2 min): búsqueda de ML con UN término corto → juez por título
+           (`competencia_juez.juzgar_lote`) → juez por FOTO, pareja por pareja (visión por OpenRouter) → mediana de
+           los del mismo modelo → piso → sugerencia. Corre en segundo plano (POST da un `jid`).
+
+── LA BÚSQUEDA SE PAGA UNA VEZ (v0.688.0) ──────────────────────────────────────
+  Usa el caché de términos de Competencia (`enrich.market_search_term` / `market_search_results`): si el término
+  se midió hace menos de DIAS_CACHE días con al menos MIN_CACHE resultados, se reusa sin raspar —los productos
+  parecidos y las variantes comparten el término corto—. Si no, se mide con la receta de Competencia
+  (`competencia_captura.medir_busquedas`: raspa, reseñas, visitas, marca lo nuestro y GUARDA), y así queda para
+  el siguiente. Nuestras propias publicaciones salen de los rivales.
+  Un término por omisión: el segundo solo si el primero trae menos de MIN_RESULTADOS.
+
+── LO QUE COBRA APIFY (medido en su facturación, 23-oct) ───────────────────────
+  ~80 % es PROXY RESIDENCIAL ($8/GB), y Apify lo cobra MINUTOS DESPUÉS de que la corrida termina. Una página de
+  búsqueda de ML: $0.0505 con imágenes, $0.038 sin ellas (`sin_media`). Un término bloqueado se reintenta y
+  cada intento suma. El costo que se anota al terminar es PRELIMINAR; `competencia_scraper._cobro_final` lo
+  corrige a los 3 min y `ultimo` relee el definitivo.
 
 ── CUANDO LOS DATOS NO CUADRAN (v0.687.0) ──────────────────────────────────────
   El piso es tan bueno como el costo y el peso del Estudio. VAR-0549-NEG (50 bolsas, 23-oct) salió en $1,139 con
@@ -77,6 +90,9 @@ _BANDAS = ((499.99, 300.0), (1000.0, 750.0), (math.inf, 1500.0))   # (hasta, pre
 # reales —TEC-0605 y VAR-0549-NEG, 23-oct— y cada bloqueo se reintentaba 8 veces: 3 min 43 s y $0.07 de Apify.
 PALABRAS_TERMINO = 5          # el título recortado a sus primeras palabras con significado
 REINTENTOS_BUSQUEDA = 3       # Competencia (en lote) sigue con 8
+DIAS_CACHE = 7                # una búsqueda guardada de hace menos de 7 días se reusa (Brandon, 23-oct)
+MIN_CACHE = 20                # con menos filas guardadas (Competencia suele medir 10) se vuelve a raspar con 48
+MIN_RESULTADOS = 15           # el 2.º término solo se busca si el 1.º trae menos que esto
 # Avisos de datos que no cuadran (v0.687.0).
 UMBRAL_ENVIO = 0.15           # el envío se lleva ≥ 15 % del precio…
 FACTOR_ENVIO = 2.0            # …y cuesta ≥ 2× lo de un paquete ligero al mismo precio → revisar el peso
@@ -221,14 +237,16 @@ def termino_corto(titulo: str | None, n: int = PALABRAS_TERMINO) -> str:
 def terminos_busqueda(del_usuario: list[str] | None, de_ia: str | None, titulo: str | None) -> list[str]:
     """Lo que se busca en ML: lo que escribió el usuario (manda, hasta 2); si no, el término de la IA y el título
     recortado, los dos cortos y sin repetir. Nunca el título entero: es el que ML bloquea."""
-    propios = [t.strip() for t in del_usuario or [] if t and t.strip()]
+    propios = [" ".join(t.split()).lower() for t in del_usuario or [] if t and t.strip()]
     if propios:
         return propios[:2]
+    # En minúsculas: el caché de Competencia es UNIQUE (canal, termino) sensible a mayúsculas, y «Bolsas…» y
+    # «bolsas…» serían dos términos pagados dos veces. A ML le da igual.
     vistos: dict[frozenset[str], str] = {}
     for t in (termino_corto(de_ia, PALABRAS_TERMINO + 1), termino_corto(titulo)):
         clave = frozenset(palabras(t))
         if clave and clave not in vistos:
-            vistos[clave] = t
+            vistos[clave] = t.lower()
     return list(vistos.values())[:2]
 
 
@@ -524,6 +542,56 @@ async def juez_fotos(nuestra_url: str, rivales: list[dict[str, Any]]) -> dict[st
 
 # ── Datos del SKU, bitácora y caché ──────────────────────────────────────────
 
+def _del_cache(termino: str) -> dict[str, Any] | None:
+    """
+    BLOQUEANTE (kubera, SELECT). La búsqueda guardada del término, si sirve: medida hace menos de DIAS_CACHE días
+    y con al menos MIN_CACHE filas, o medida 'vacio' (ML no tenía nada: no se vuelve a pagar). → {filas, dias}.
+    None = hay que raspar (no existe, es vieja, quedó bloqueada, tiene pocas filas, o kubera no contestó).
+    """
+    from services import competencia_store
+
+    try:
+        est = competencia_store.estado_termino(termino)
+        if not est or est.get("dias") is None or int(est["dias"]) >= DIAS_CACHE:
+            return None
+        if est.get("estado") == "vacio":
+            return {"filas": [], "dias": int(est["dias"])}
+        if est.get("estado") not in (None, "ok") or int(est.get("resultados") or 0) < MIN_CACHE:
+            return None
+        filas = competencia_store.busqueda(est["termino"], 48)
+    except Exception as exc:  # noqa: BLE001 — sin caché se raspa, como antes
+        log.warning("precio sugerido: no se pudo leer el caché de %r: %s", termino, exc)
+        return None
+    return {"filas": filas, "dias": int(est["dias"])} if len(filas) >= MIN_CACHE else None
+
+
+async def buscar(terminos: list[str], bloqueados: set[str],
+                 avisos: list[str]) -> tuple[dict[str, list[dict[str, Any]]], dict[str, int]]:
+    """Cada término: del caché si sirve; si no, se mide con la receta de Competencia y queda guardado.
+    → ({término: filas}, {término reusado: días que tiene})."""
+    from services import competencia_captura
+
+    crudos: dict[str, list[dict[str, Any]]] = {}
+    reusados: dict[str, int] = {}
+    faltan: list[str] = []
+    for t in terminos:
+        c = await asyncio.to_thread(_del_cache, t)
+        if c is None:
+            faltan.append(t)
+        else:
+            crudos[t], reusados[t] = c["filas"], c["dias"]
+    if faltan:
+        medidas: dict[str, list[dict[str, Any]]] = {}
+        try:
+            await competencia_captura.medir_busquedas(faltan, limite=48, bloqueados=bloqueados,
+                                                      reintentos=REINTENTOS_BUSQUEDA, filas_out=medidas)
+        except Exception as exc:  # noqa: BLE001 — lo raspado (ya pagado) se usa aunque no se haya guardado
+            log.warning("precio sugerido: la búsqueda no se guardó en el caché: %s", exc)
+            avisos.append("La búsqueda no se pudo guardar en el caché de Competencia: la próxima se vuelve a pagar.")
+        crudos.update(medidas)
+    return crudos, reusados
+
+
 def _costo_panel(sku: str) -> dict[str, Any]:
     """BLOQUEANTE (kubera, SELECT). Costo, categoría y envío del panel para el SKU (canal mercado_libre)."""
     from services import supabase_db as sdb
@@ -584,20 +652,52 @@ def ultimo(sku: str) -> dict[str, Any] | None:
     if not fila:
         return None
     d = fila["detalle"] if isinstance(fila["detalle"], dict) else json.loads(fila["detalle"])
+    cc = d.get("costo_consulta") or {}
+    if cc.get("apify_runs") and not cc.get("apify_final"):
+        # Al guardarse, Apify todavía no cobraba el proxy: se relee el cobro definitivo.
+        g = _cobro_de_corridas(cc["apify_runs"])
+        if g:
+            cc.update(apify=g["usd"], apify_final=g["final"])
+            cc["total"] = total_consulta(cc)
     return {**d, "consultado": fila["created_at"].isoformat() if fila.get("created_at") else d.get("consultado")}
 
 
-def _gasto_apify_desde(t0: datetime) -> float:
-    """BLOQUEANTE (kubera, SELECT). Lo que Apify cobró desde `t0` según su propia bitácora (`_registrar_gasto`)."""
+def _sumar_apify(filas: list[dict[str, Any]]) -> dict[str, Any]:
+    dets = [f["detalle"] if isinstance(f["detalle"], dict) else json.loads(f["detalle"]) for f in filas]
+    return {"usd": round(sum(float(d.get("usd") or 0) for d in dets), 6),
+            "runs": [d["run_id"] for d in dets if d.get("run_id")],
+            "final": all(d.get("usd_final") for d in dets)}
+
+
+def _gasto_apify_desde(t0: datetime) -> dict[str, Any]:
+    """BLOQUEANTE (kubera, SELECT). Lo que Apify cobró desde `t0` según `competencia_scraper._registrar_gasto`,
+    con los ids de sus corridas. `final` = Apify ya asentó el cobro de todas (el proxy llega minutos después)."""
     from services import supabase_db as sdb
 
     try:
-        v = sdb.fetch_scalar(
-            "select coalesce(sum((detalle->>'usd')::numeric), 0) from ops.process_log "
-            "where proceso = 'competencia' and origen = 'apify' and created_at >= %s", (t0,))
-        return round(float(v or 0), 6)
+        return _sumar_apify(sdb.fetch_all(
+            "select detalle from ops.process_log "
+            "where proceso = 'competencia' and origen = 'apify' and created_at >= %s", (t0,)))
     except Exception:  # noqa: BLE001
-        return 0.0
+        return {"usd": 0.0, "runs": [], "final": True}
+
+
+def _cobro_de_corridas(runs: list[str]) -> dict[str, Any] | None:
+    """BLOQUEANTE (kubera, SELECT). El cobro de esas corridas tal como está HOY en la bitácora (ya corregido por
+    `_cobro_final` si pasaron sus 3 minutos)."""
+    from services import supabase_db as sdb
+
+    try:
+        filas = sdb.fetch_all(
+            "select detalle from ops.process_log where proceso = 'competencia' and origen = 'apify' "
+            "and detalle->>'run_id' = any(%s)", (list(runs),))
+    except Exception:  # noqa: BLE001
+        return None
+    return _sumar_apify(filas) if filas else None
+
+
+def total_consulta(cc: dict[str, Any]) -> float:
+    return round(sum(float(cc.get(k) or 0) for k in ("apify", "juez", "fotos")), 6)
 
 
 # ── Los dos modos ────────────────────────────────────────────────────────────
@@ -648,7 +748,7 @@ async def _cerrar(d: dict[str, Any], modo: str, rivales: list[dict[str, Any]], g
     for r in rivales:
         r["en_referencia"] = bool(ref and r.get("_grupos") and ref["grupo"] in r["_grupos"])
         r.pop("_grupos", None)
-    costo_consulta["total"] = round(sum(v for k, v in costo_consulta.items() if k != "total"), 6)
+    costo_consulta["total"] = total_consulta(costo_consulta)
     return {
         "ok": True, "modo": modo, "sku": d["sku"], "titulo": d["titulo"], "imagen": d["imagen"], "costo": d["costo"],
         "ml_cat_id": d["ml_cat_id"], "margen": d["margen"], "peso_kg": d["peso_kg"], "envio_origen": origen_envio,
@@ -693,8 +793,9 @@ async def rapido(entrada: dict[str, Any]) -> dict[str, Any]:
 
 
 async def completo(entrada: dict[str, Any], avisar: Callable[[str], None] = lambda _p: None) -> dict[str, Any]:
-    """$0.02–0.10 (Apify cobra por cómputo: un término bloqueado se reintenta y encarece): búsqueda raspada + juez por título + juez por foto + comisión real + piso."""
-    from services import competencia_juez, competencia_scraper, competencia_terminos
+    """$0.01–0.10: búsqueda (del caché de Competencia o raspada) + juez por título + juez por foto + comisión real +
+    piso. Lo caro es Apify, y solo cuando hay que raspar (ver «LO QUE COBRA APIFY» arriba)."""
+    from services import competencia_juez, competencia_terminos
 
     t0, desde = time.monotonic(), datetime.now(timezone.utc)
     avisar("datos")
@@ -702,8 +803,9 @@ async def completo(entrada: dict[str, Any], avisar: Callable[[str], None] = lamb
     avisos: list[str] = []
     gasto = {"apify": 0.0, "juez": 0.0, "fotos": 0.0}
 
+    propios = any(t and t.strip() for t in entrada.get("terminos") or [])
     terminos = terminos_busqueda(entrada.get("terminos"), None, d["titulo"])
-    if not any(t and t.strip() for t in entrada.get("terminos") or []):
+    if not propios:
         prop = await asyncio.to_thread(competencia_terminos.proponer, [{"sku": d["sku"], "nombre": d["titulo"]}])
         terminos = terminos_busqueda(None, prop.get(d["sku"]), d["titulo"])
 
@@ -714,14 +816,24 @@ async def completo(entrada: dict[str, Any], avisar: Callable[[str], None] = lamb
 
         avisar("buscando")
         bloqueados: set[str] = set()
-        crudos = await competencia_scraper.buscar_terminos(terminos, limite=48, bloqueados=bloqueados,
-                                                           reintentos=REINTENTOS_BUSQUEDA)
+        # Lo que escribió el usuario se busca completo; lo propuesto, de uno en uno: el 2.º solo si hace falta.
+        buscados = terminos if propios else terminos[:1]
+        crudos, reusados = await buscar(buscados, bloqueados, avisos)
+        if not propios and terminos[1:] and sum(len(v) for v in crudos.values()) < MIN_RESULTADOS:
+            mas, mas_reusados = await buscar(terminos[1:], bloqueados, avisos)
+            crudos.update(mas)
+            reusados.update(mas_reusados)
+            buscados = terminos
         if bloqueados:
             avisos.append(f"ML bloqueó la búsqueda de: {', '.join(sorted(bloqueados))} "
                           f"({REINTENTOS_BUSQUEDA} intentos). Si faltan comparables, prueba con otro término.")
         vistos: dict[str, dict[str, Any]] = {}
+        propias = 0
         for termino, filas in crudos.items():
             for f in filas:
+                if f.get("es_nuestro"):          # nuestra propia publicación no es competencia
+                    propias += 1
+                    continue
                 if f.get("externo_id") and f.get("precio") and f["externo_id"] not in vistos:
                     vistos[f["externo_id"]] = {"id": f["externo_id"], "titulo": f.get("titulo"),
                                                "precio": float(f["precio"]), "imagen": f.get("imagen"),
@@ -762,9 +874,13 @@ async def completo(entrada: dict[str, Any], avisar: Callable[[str], None] = lamb
                   "mas_vendidos": [t["precio"] for t in top if parecido(d["titulo"], t["titulo"]) >= UMBRAL_PARECIDO]}
 
         avisar("calculando")
-        gasto["apify"] = await asyncio.to_thread(_gasto_apify_desde, desde)
+        raspados = [t for t in buscados if t not in reusados]
+        g = (await asyncio.to_thread(_gasto_apify_desde, desde) if raspados
+             else {"usd": 0.0, "runs": [], "final": True})
+        gasto.update(apify=g["usd"], apify_runs=g["runs"], apify_final=g["final"])
         res = await _cerrar(d, "completo", rivales, grupos, cli, avisos, gasto,
-                            {"terminos": terminos, "unidades_nuestras": unidades, "mas_vendidos": top}, top=top)
+                            {"terminos": buscados, "cache": reusados, "propias_fuera": propias,
+                             "unidades_nuestras": unidades, "mas_vendidos": top}, top=top)
     finally:
         if cli:
             await cli.aclose()

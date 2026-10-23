@@ -1292,7 +1292,9 @@ async def capturar_rankings_categorias(periodo: str | None = None,
 
 
 async def medir_busquedas(terminos: list[str], limite: int = 10,
-                          bloqueados: set[str] | None = None) -> dict[str, int]:
+                          bloqueados: set[str] | None = None,
+                          reintentos: int = 8,
+                          filas_out: dict[str, list[dict[str, Any]]] | None = None) -> dict[str, int]:
     """
     Mide la BÚSQUEDA GENERAL de estos términos y la guarda. → {término: filas}.
 
@@ -1337,12 +1339,17 @@ async def medir_busquedas(terminos: list[str], limite: int = 10,
 
     Quien pase un set en `bloqueados` recibe ahí los términos que ML no dejó ver;
     es lo que el botón del panel usa para cambiar el mensaje.
+
+    TERCER CONSUMIDOR (v0.688.0): «Sugerir precio» del Estudio. Mide con esta MISMA receta para que su búsqueda
+    quede en el caché de términos y la reusen Competencia y los SKUs parecidos. Pasa `reintentos` (3: hay alguien
+    esperando frente a la pantalla) y `filas_out`, que recibe las filas ya enriquecidas de cada término ANTES de
+    guardarlas: si el guardado falla, lo que se pagó no se pierde.
     """
     if not terminos:
         return {}
     murados: set[str] = bloqueados if bloqueados is not None else set()
     res = await competencia_scraper.buscar_terminos(terminos, limite=limite,
-                                                   bloqueados=murados)
+                                                   bloqueados=murados, reintentos=reintentos)
     periodo = competencia_store.periodo_actual()
     nuestras = await asyncio.to_thread(_nuestras_publicaciones)
     guardadas: dict[str, int] = {}
@@ -1380,6 +1387,8 @@ async def medir_busquedas(terminos: list[str], limite: int = 10,
                 f["rating"] = f.get("rating") or r.get("rating")
         await enriquecer_visitas(filas, nuestras)
         _marcar(filas, nuestras)
+        if filas_out is not None:
+            filas_out[termino] = filas
         guardadas[termino] = await asyncio.to_thread(
             competencia_store.reemplazar_busqueda, termino, periodo, filas)
     return guardadas

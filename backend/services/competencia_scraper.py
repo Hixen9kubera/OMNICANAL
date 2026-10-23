@@ -44,6 +44,7 @@ import logging
 import urllib.parse
 import re
 import threading
+import time
 from typing import Any
 
 import httpx
@@ -115,14 +116,20 @@ def _registrar_gasto(actor: str, datos: dict[str, Any],
     importan, porque gastan igual y no traen nada.
 
     Nunca revienta: una bitácora que tumba la captura es peor que no tenerla.
+
+    EL MONTO DE AQUÍ ES PRELIMINAR (v0.688.0). Apify cobra el proxy residencial DESPUÉS de que la corrida
+    termina, y el proxy es casi todo el costo: el 23-oct una corrida anotó $0.072 al terminar y Apify acabó
+    cobrando $0.0988; otra, $0.0077 → final más alto. `_cobro_final` vuelve a leer la corrida a los
+    `_ESPERA_COBRO` segundos y corrige la fila (`usd` = lo cobrado; `usd_al_terminar` = lo de aquí;
+    `usd_final` = true).
     """
     try:
         st = datos.get("stats") or {}
         urls = len((payload or {}).get("startUrls") or []) or None
-        supabase_db.execute(
+        fila = supabase_db.execute_returning(
             "INSERT INTO ops.process_log "
             "  (proceso, origen, accion, estado, detalle, duracion_s, actor) "
-            "VALUES ('competencia', 'apify', 'raspado', %s, %s::jsonb, %s, %s)",
+            "VALUES ('competencia', 'apify', 'raspado', %s, %s::jsonb, %s, %s) RETURNING id",
             (str(datos.get("status") or "?").lower(),
              json.dumps({"usd": datos.get("usageTotalUsd"),
                          "compute_units": st.get("computeUnits"),
@@ -131,8 +138,36 @@ def _registrar_gasto(actor: str, datos: dict[str, Any],
                          "dataset": datos.get("defaultDatasetId")}),
              round((st.get("durationMillis") or 0) / 1000, 1),
              actor))
+        if fila and datos.get("id"):
+            threading.Thread(target=_cobro_final, args=(int(fila["id"]), str(datos["id"]),
+                                                        datos.get("usageTotalUsd")),
+                             name="apify-cobro-final", daemon=True).start()
     except Exception as exc:  # noqa: BLE001
         log.warning("no se pudo registrar el gasto de Apify: %s", exc)
+
+
+_ESPERA_COBRO = 180   # s: lo que tarda Apify en asentar el cobro del proxy (medido el 23-oct: < 2.5 min)
+
+
+def _cobro_final(fila_id: int, run_id: str, usd_al_terminar: Any) -> None:
+    """
+    BLOQUEANTE, en su propio hilo. Espera a que Apify asiente el cobro de la corrida y corrige su fila en
+    `ops.process_log`. Si el proceso termina antes (un script), la fila se queda con el preliminar: mejor eso
+    que detener a quien llamó. Nunca revienta.
+    """
+    time.sleep(_ESPERA_COBRO)
+    try:
+        r = httpx.get(f"{_APIFY}/actor-runs/{run_id}",
+                      headers={"Authorization": f"Bearer {settings.apify_api_key}"}, timeout=30)
+        usd = (r.json().get("data") or {}).get("usageTotalUsd")
+        if usd is None:
+            return
+        supabase_db.execute(
+            "UPDATE ops.process_log SET detalle = detalle || %s::jsonb "
+            " WHERE id = %s AND proceso = 'competencia' AND origen = 'apify'",
+            (json.dumps({"usd": usd, "usd_al_terminar": usd_al_terminar, "usd_final": True}), fila_id))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("no se pudo leer el cobro final de Apify %s: %s", run_id, exc)
 
 
 async def _correr_actor(actor: str, payload: dict[str, Any],
@@ -327,6 +362,7 @@ def _bloqueado_en(pag: dict[str, Any]) -> str | None:
 async def buscar_terminos(terminos: list[str], limite: int = 10,
                           bloqueados: set[str] | None = None,
                           reintentos: int = 8,
+                          sin_media: bool = True,
                           ) -> dict[str, list[dict[str, Any]]]:
     """
     Búsqueda de varios términos con el navegador GENÉRICO. → { termino: [filas] }
@@ -350,6 +386,11 @@ async def buscar_terminos(terminos: list[str], limite: int = 10,
     `reintentos`: cuántas veces se vuelve a pedir una página que ML bloqueó. Competencia usa 8 (corre en lote, no
     hay nadie esperando); «Sugerir precio» del Estudio usa 3 porque hay alguien frente a la pantalla: un término
     bloqueado con 8 reintentos se llevó 3 min 43 s de la consulta de VAR-0549-NEG (23-oct-2026).
+
+    `sin_media` (v0.688.0): el navegador NO baja imágenes, fuentes ni CSS. Lo que cobra Apify aquí es sobre todo el
+    PROXY RESIDENCIAL ($8/GB), no el cómputo: medido el 23-oct en la facturación de Apify, una página de búsqueda
+    de ML pesaba ~6 MB por el proxy (≈ $0.047) y era el 80 % del costo de la corrida. La foto de cada publicación
+    se lee del atributo `src` del HTML, así que bajarla no aporta nada.
     """
     consultas = [t.strip() for t in dict.fromkeys(terminos) if t and t.strip()]
     if not consultas:
@@ -373,6 +414,8 @@ async def buscar_terminos(terminos: list[str], limite: int = 10,
         "maxConcurrency": 2,
         "headless": True,
         "launcher": "chromium",
+        "downloadMedia": not sin_media,
+        "downloadCss": not sin_media,
     }, limite_lectura=len(urls),
         util=lambda fs: any((p.get("items") or []) for p in fs))
 

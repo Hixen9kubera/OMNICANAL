@@ -2,7 +2,7 @@
 precio_sugerido.py — «Sugerir precio» del Estudio (v0.686.0). Ver `services/precio_sugerido.py`.
 
   POST /api/precio-sugerido/rapido          → GRATIS, segundos: más vendidos de la categoría + comisión real + piso
-  POST /api/precio-sugerido/completo        → $0.02–0.10, ~1–2 min: arranca el trabajo y devuelve su `jid`
+  POST /api/precio-sugerido/completo        → $0.01–0.10, 30 s–2 min: arranca el trabajo y devuelve su `jid`
   GET  /api/precio-sugerido/trabajo/{jid}   → cómo va (y el resultado al terminar)
   GET  /api/precio-sugerido/ultimo/{sku}    → la última consulta del SKU, para no volver a pagar
 

@@ -6,9 +6,10 @@
  * A cuánto se vende de verdad EL MISMO producto en Mercado Libre y qué precio
  * compite sin bajar del piso de rentabilidad. Dos modos:
  *   · Rápido (gratis): los más vendidos de la categoría + comisión real + piso.
- *   · Completo ($0.02–0.10): búsqueda en ML + juez por título + juez por FOTO.
- *     Lo que más pesa es Apify (cobra por cómputo): si ML bloquea un término, los
- *     reintentos lo encarecen. El costo real de cada consulta sale al pie.
+ *   · Completo ($0.01–0.10): búsqueda en ML + juez por título + juez por FOTO.
+ *     Lo que más pesa es Apify (sobre todo su proxy residencial). La búsqueda se
+ *     guarda 7 días y la reusan los productos parecidos: entonces cuesta ~$0.01.
+ *     El costo de cada consulta sale al pie (preliminar hasta que Apify cobra).
  *
  * Solo sugiere. «Usar en Precio oferta» llena el campo y el precio se guarda con
  * «Guardar precio y costo», como cualquier precio tecleado.
@@ -220,11 +221,15 @@ export default function SugerirPrecio({
             type="button"
             onClick={correrCompleto}
             disabled={disabled || corriendo}
-            title="Busca el producto en ML, separa por título y compara las FOTOS. Tarda alrededor de 1 minuto. Cuesta ~$0.02; más (hasta ~$0.10) si ML bloquea un término y Apify reintenta."
+            title={
+              "Busca el producto en ML, separa por título y compara las FOTOS. " +
+              "~$0.01 y ~30 s si la búsqueda ya está guardada (7 días, la comparten productos parecidos); " +
+              "~$0.05 y ~1–1.5 min si hay que buscar; hasta ~$0.10 si ML bloquea y se reintenta o hace falta un 2.º término."
+            }
             className="flex items-center gap-1.5 rounded-lg bg-amber-600 px-3 py-2 text-sm font-bold text-white shadow-sm hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {jid ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />}
-            Completo · $0.02–0.10
+            Completo · $0.01–0.10
           </button>
           <label className="min-w-[240px] flex-1 text-xs font-semibold text-slate-600">
             Términos de búsqueda (completo; vacío = los propone la IA)
@@ -403,9 +408,17 @@ export default function SugerirPrecio({
 
             <p className="text-[11px] text-slate-400">
               {res.modo === "completo" ? "Completo" : "Rápido"} · {haceCuanto(res.consultado)}
-              {res.terminos?.length ? ` · buscó «${res.terminos.join("», «")}»` : ""} · costó {usd(res.costo_consulta.total)}
+              {res.terminos?.length ? ` · buscó «${res.terminos.join("», «")}»` : ""}
+              {res.cache && Object.keys(res.cache).length > 0 &&
+                ` · reusó la búsqueda guardada (${Object.values(res.cache)
+                  .map((d) => (d === 0 ? "de hoy" : `de hace ${d} d`))
+                  .join(", ")}), sin pagar Apify`}
+              {res.propias_fuera ? ` · ${res.propias_fuera} publicación(es) nuestra(s) fuera de los rivales` : ""}
+              {" · "}costó {usd(res.costo_consulta.total)}
               {res.costo_consulta.total > 0 &&
                 ` (búsqueda ${usd(res.costo_consulta.apify)}, título ${usd(res.costo_consulta.juez)}, fotos ${usd(res.costo_consulta.fotos)})`}
+              {res.costo_consulta.apify > 0 && res.costo_consulta.apify_final === false &&
+                " — la búsqueda es preliminar: Apify cobra el proxy unos minutos después; al reabrir sale el monto final"}
               . Solo informativo: no cambia ningún precio.
             </p>
           </div>

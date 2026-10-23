@@ -10,6 +10,9 @@
 6. **Permisos**: las rutas piden `operador`, como Competencia.
 7. **Búsqueda corta** (v0.687.0): nunca el título entero, lo del usuario manda, y el completo pide 3 reintentos.
 8. **Avisos de datos** (v0.687.0): VAR-0549-NEG (costo $456.45, 20 kg) avisa del peso y del costo; TEC-0605 no.
+9. **La búsqueda se paga una vez** (v0.688.0): caché de Competencia de 7 días, un término por omisión (el 2.º
+   solo si faltan resultados), nuestras publicaciones fuera, y el costo de Apify se corrige con su cobro final.
+10. **El raspador** (v0.688.0): sin imágenes ni CSS, reintentos configurables y relectura del cobro final.
 
 Sin red: nada aquí habla con ML, Apify, OpenRouter ni kubera.
 
@@ -18,6 +21,7 @@ Sin red: nada aquí habla con ML, Apify, OpenRouter ni kubera.
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -230,30 +234,192 @@ class TerminosDeBusqueda(unittest.TestCase):
 
     def test_ia_y_titulo_cortos_sin_repetir(self):
         t = ps.terminos_busqueda(None, "bolsas thank you regalo", self.BOLSAS)
-        self.assertEqual(t, ["bolsas thank you regalo", "Bolsas plasticas thank you regalo"])
+        self.assertEqual(t, ["bolsas thank you regalo", "bolsas plasticas thank you regalo"])
         for termino in t:
             self.assertLessEqual(len(termino.split()), ps.PALABRAS_TERMINO + 1)
         self.assertEqual(ps.terminos_busqueda(None, "Bolsas plasticas thank you regalo", self.BOLSAS),
-                         ["Bolsas plasticas thank you regalo"])          # el mismo término no se busca dos veces
-        self.assertEqual(ps.terminos_busqueda(None, None, self.BOLSAS), ["Bolsas plasticas thank you regalo"])
+                         ["bolsas plasticas thank you regalo"])          # el mismo término no se busca dos veces
+        self.assertEqual(ps.terminos_busqueda(None, None, self.BOLSAS), ["bolsas plasticas thank you regalo"])
+        self.assertEqual(ps.terminos_busqueda(["  Bolsa  Thank You "], None, self.BOLSAS), ["bolsa thank you"])
 
-    def test_completo_busca_corto_con_3_reintentos(self):
-        from services import competencia_scraper, competencia_terminos
-        datos = {"sku": "VAR-0549-NEG", "titulo": self.BOLSAS, "costo": 456.45, "ml_cat_id": None, "imagen": None,
-                 "peso_kg": 20.0, "envio_panel": None, "margen": 0.30}
-        buscar = mock.AsyncMock(return_value={})
-        with mock.patch.object(ps, "datos_sku", mock.AsyncMock(return_value=datos)), \
+
+
+def _filas(n: int, desde: int = 0, **extra) -> list[dict]:
+    return [{"externo_id": f"MLM{desde + i}", "titulo": f"Bolsa regalo {desde + i}", "precio": 100.0 + i,
+             "imagen": None, "url": f"https://x/{desde + i}", "posicion": i + 1, **extra} for i in range(n)]
+
+
+class BusquedaSePagaUnaVez(unittest.TestCase):
+    """v0.688.0: la búsqueda de un término se reusa 7 días desde el caché de Competencia, se busca UN término por
+    omisión, nuestras publicaciones no son rivales, y el costo de Apify es el que Apify termina cobrando."""
+
+    BOLSAS = TerminosDeBusqueda.BOLSAS
+    DATOS = {"sku": "VAR-0549-NEG", "titulo": BOLSAS, "costo": 456.45, "ml_cat_id": None, "imagen": None,
+             "peso_kg": 20.0, "envio_panel": None, "margen": 0.30}
+
+    def _completo(self, cache=None, medidas=None, terminos=None, gasto=None):
+        """Corre `completo` sin red. `cache`: {término: {filas, dias}}; `medidas`: {término: filas} que «raspa»."""
+        from services import competencia_captura, competencia_juez, competencia_terminos
+        cache, medidas = cache or {}, medidas or {}
+
+        async def medir(terms, limite=10, bloqueados=None, reintentos=8, filas_out=None):
+            for t in terms:
+                if t in medidas:
+                    filas_out[t] = medidas[t]
+            return {t: len(medidas.get(t, [])) for t in terms}
+
+        medir_mock = mock.AsyncMock(side_effect=medir)
+        gasto_mock = mock.Mock(return_value=gasto or {"usd": 0.038, "runs": ["R1"], "final": False})
+        anotado = []
+        with mock.patch.object(ps, "datos_sku", mock.AsyncMock(return_value=self.DATOS)), \
                 mock.patch.object(ps, "_cliente_ml", mock.AsyncMock(return_value=None)), \
-                mock.patch.object(ps, "_anotar", lambda res, dur: None), \
-                mock.patch.object(ps, "_gasto_apify_desde", lambda t0: 0.0), \
+                mock.patch.object(ps, "_anotar", lambda res, dur: anotado.append(res)), \
+                mock.patch.object(ps, "_gasto_apify_desde", gasto_mock), \
+                mock.patch.object(ps, "_del_cache", lambda t: cache.get(t)), \
                 mock.patch.object(competencia_terminos, "proponer",
                                   lambda prods: {"VAR-0549-NEG": "bolsas thank you regalo"}), \
-                mock.patch.object(competencia_scraper, "buscar_terminos", buscar):
-            r = asyncio.run(ps.completo({"sku": "VAR-0549-NEG", "terminos": []}))
-        args, kw = buscar.call_args
-        self.assertEqual(args[0], ["bolsas thank you regalo", "Bolsas plasticas thank you regalo"])
-        self.assertEqual(kw["reintentos"], 3)
-        self.assertEqual(r["terminos"], args[0])
+                mock.patch.object(competencia_juez, "juzgar_lote",
+                                  lambda *a, **k: {"veredictos": {}, "usd": 0.0035, "unidades_nuestras": 1}), \
+                mock.patch.object(competencia_captura, "medir_busquedas", medir_mock):
+            r = asyncio.run(ps.completo({"sku": "VAR-0549-NEG", "terminos": terminos or []}))
+        return r, medir_mock, gasto_mock
+
+    def test_un_termino_con_3_reintentos_y_queda_guardado(self):
+        r, medir, gasto = self._completo(medidas={"bolsas thank you regalo": _filas(30)})
+        medir.assert_called_once()
+        args, kw = medir.call_args
+        self.assertEqual(args[0], ["bolsas thank you regalo"])     # el 2.º no hizo falta
+        self.assertEqual((kw["limite"], kw["reintentos"]), (48, 3))
+        self.assertEqual(r["terminos"], ["bolsas thank you regalo"])
+        self.assertEqual(r["cache"], {})
+        self.assertEqual(len(r["rivales"]), 30)
+        self.assertEqual(r["costo_consulta"]["apify"], 0.038)
+        self.assertEqual(r["costo_consulta"]["apify_runs"], ["R1"])
+        self.assertFalse(r["costo_consulta"]["apify_final"])
+        self.assertAlmostEqual(r["costo_consulta"]["total"], 0.0415)
+
+    def test_segundo_termino_solo_si_faltan_resultados(self):
+        r, medir, _ = self._completo(medidas={"bolsas thank you regalo": _filas(5),
+                                              "bolsas plasticas thank you regalo": _filas(20, desde=100)})
+        self.assertEqual([c.args[0] for c in medir.call_args_list],
+                         [["bolsas thank you regalo"], ["bolsas plasticas thank you regalo"]])
+        self.assertEqual(r["terminos"], ["bolsas thank you regalo", "bolsas plasticas thank you regalo"])
+        self.assertEqual(len(r["rivales"]), 25)
+
+    def test_del_cache_no_raspa_ni_cobra_apify(self):
+        r, medir, gasto = self._completo(cache={"bolsas thank you regalo": {"filas": _filas(25), "dias": 2}})
+        medir.assert_not_called()
+        gasto.assert_not_called()
+        self.assertEqual(r["cache"], {"bolsas thank you regalo": 2})
+        self.assertEqual(r["costo_consulta"]["apify"], 0.0)
+        self.assertEqual(len(r["rivales"]), 25)
+
+    def test_lo_que_escribe_el_usuario_se_busca_completo(self):
+        _, medir, _ = self._completo(medidas={"bolsa a": _filas(30)}, terminos=["Bolsa A", "bolsa b"])
+        self.assertEqual(medir.call_args.args[0], ["bolsa a", "bolsa b"])
+
+    def test_nuestras_publicaciones_no_son_rivales(self):
+        filas = _filas(20) + _filas(2, desde=500, es_nuestro=1, sku_nuestro="VAR-0549-NEG")
+        r, _, _ = self._completo(medidas={"bolsas thank you regalo": filas})
+        self.assertEqual(len(r["rivales"]), 20)
+        self.assertEqual(r["propias_fuera"], 2)
+
+    def test_reglas_del_cache(self):
+        from services import competencia_store
+        casos = [({"termino": "t", "dias": 8, "estado": "ok", "resultados": 48}, None, None),      # viejo
+                 ({"termino": "t", "dias": 2, "estado": "bloqueado", "resultados": 0}, None, None),  # no se vio
+                 ({"termino": "t", "dias": 2, "estado": "ok", "resultados": 10}, None, None),        # pocas filas
+                 ({"termino": "t", "dias": 2, "estado": "vacio", "resultados": 0}, None, []),        # no repagar
+                 ({"termino": "T", "dias": 6, "estado": "ok", "resultados": 48}, _filas(48), 48)]
+        for est, filas, esperado in casos:
+            with mock.patch.object(competencia_store, "estado_termino", return_value=est), \
+                    mock.patch.object(competencia_store, "busqueda", return_value=filas) as leer:
+                c = ps._del_cache("t")
+            if esperado is None:
+                self.assertIsNone(c, est)
+            else:
+                self.assertEqual(len(c["filas"]), len(esperado) if isinstance(esperado, list) else esperado)
+                self.assertEqual(c["dias"], est["dias"])
+                if filas:
+                    leer.assert_called_once_with("T", 48)   # con el texto tal como está en el catálogo
+        with mock.patch.object(competencia_store, "estado_termino", side_effect=RuntimeError("kubera caída")):
+            self.assertIsNone(ps._del_cache("t"))       # sin caché se raspa, como antes
+
+    def test_ultimo_relee_el_cobro_final_de_apify(self):
+        from services import supabase_db
+        guardado = {"sku": "X", "ok": True, "costo_consulta": {"apify": 0.0077, "juez": 0.0035, "fotos": 0.009,
+                                                                "total": 0.0202, "apify_runs": ["R1"],
+                                                                "apify_final": False}}
+        with mock.patch.object(supabase_db, "fetch_one", return_value={"detalle": guardado, "created_at": None}), \
+                mock.patch.object(ps, "_cobro_de_corridas",
+                                  return_value={"usd": 0.038, "runs": ["R1"], "final": True}) as relee:
+            r = ps.ultimo("X")
+        relee.assert_called_once_with(["R1"])
+        self.assertEqual(r["costo_consulta"]["apify"], 0.038)
+        self.assertTrue(r["costo_consulta"]["apify_final"])
+        self.assertAlmostEqual(r["costo_consulta"]["total"], 0.0505)
+
+    def test_suma_de_corridas(self):
+        g = ps._sumar_apify([{"detalle": {"usd": 0.03, "run_id": "A", "usd_final": True}},
+                             {"detalle": '{"usd": 0.008, "run_id": "B"}'}])
+        self.assertEqual(g, {"usd": 0.038, "runs": ["A", "B"], "final": False})
+
+
+class Raspador(unittest.TestCase):
+    """v0.688.0 en `competencia_scraper`: lo que cobra Apify es el proxy, y llega después."""
+
+    def test_busqueda_sin_imagenes_y_con_reintentos(self):
+        from services import competencia_scraper as cs
+        visto = {}
+
+        async def correr(payload, limite_lectura, util):
+            visto.update(payload)
+            return []
+
+        with mock.patch.object(cs, "_con_respaldo", correr):
+            asyncio.run(cs.buscar_terminos(["bolsas thank you regalo"], reintentos=3))
+        self.assertEqual((visto["downloadMedia"], visto["downloadCss"], visto["maxRequestRetries"]), (False, False, 3))
+        with mock.patch.object(cs, "_con_respaldo", correr):
+            asyncio.run(cs.buscar_terminos(["x"], sin_media=False))
+        self.assertEqual((visto["downloadMedia"], visto["maxRequestRetries"]), (True, 8))   # Competencia: igual
+
+    def test_el_gasto_se_corrige_con_el_cobro_final(self):
+        from services import competencia_scraper as cs
+        with mock.patch.object(cs.supabase_db, "execute_returning", return_value={"id": 7}), \
+                mock.patch.object(cs.threading, "Thread") as hilo:
+            cs._registrar_gasto("apify/playwright-scraper", {"id": "R1", "status": "SUCCEEDED",
+                                                             "usageTotalUsd": 0.0077, "stats": {}})
+        hilo.assert_called_once()
+        self.assertEqual(hilo.call_args.kwargs["args"], (7, "R1", 0.0077))
+        self.assertTrue(hilo.call_args.kwargs["daemon"])
+
+        resp = mock.Mock()
+        resp.json.return_value = {"data": {"usageTotalUsd": 0.038}}
+        with mock.patch.object(cs.time, "sleep") as dormir, \
+                mock.patch.object(cs.httpx, "get", return_value=resp), \
+                mock.patch.object(cs.supabase_db, "execute") as escribir:
+            cs._cobro_final(7, "R1", 0.0077)
+        dormir.assert_called_once_with(cs._ESPERA_COBRO)
+        sql, params = escribir.call_args.args
+        self.assertIn("UPDATE ops.process_log", sql)
+        self.assertEqual(json.loads(params[0]), {"usd": 0.038, "usd_al_terminar": 0.0077, "usd_final": True})
+        self.assertEqual(params[1], 7)
+
+    def test_medir_busquedas_pasa_reintentos_y_entrega_filas(self):
+        from services import competencia_captura as cc
+        filas = [{"externo_id": "MLM1", "precio": 100}]
+        with mock.patch.object(cc.competencia_scraper, "buscar_terminos",
+                               mock.AsyncMock(return_value={"t": filas})) as buscar, \
+                mock.patch.object(cc, "_nuestras_publicaciones", return_value={}), \
+                mock.patch.object(cc.competencia_ml, "reviews", return_value={}), \
+                mock.patch.object(cc, "enriquecer_visitas", mock.AsyncMock()), \
+                mock.patch.object(cc.competencia_store, "periodo_actual", return_value="2026-10-01"), \
+                mock.patch.object(cc.competencia_store, "reemplazar_busqueda", side_effect=RuntimeError("caída")):
+            out = {}
+            with self.assertRaises(RuntimeError):
+                asyncio.run(cc.medir_busquedas(["t"], limite=48, reintentos=3, filas_out=out))
+        self.assertEqual(buscar.call_args.kwargs["reintentos"], 3)
+        self.assertEqual(out["t"], filas)      # lo pagado llegó aunque el guardado falló
 
 
 class AvisosDeDatos(unittest.TestCase):

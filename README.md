@@ -1001,6 +1001,59 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.688.0 — «Sugerir precio»: la búsqueda se paga una vez (caché de Competencia, 7 días), un término, sin imágenes y con el costo REAL de Apify
+
+**El pedido (Brandon, 23-oct-2026):** «Recuerda guardar la búsqueda de competencia para que no vuelva a scrapear para
+productos muy similares», y cuánto cuesta Apify de verdad.
+
+**Lo que cobra Apify, medido en su facturación (no en nuestra bitácora).**
+| Corrida (23-oct) | Cobro final | Tiempo |
+|---|---|---|
+| VAR-0549-NEG, producción, 2 términos (uno bloqueado ×8) | $0.1354 | 216 s |
+| TEC-0605, 2 términos (uno bloqueado) | $0.0988 | 233 s |
+| TEC-0605, 1 término a la primera, con imágenes | $0.0505 | 23 s |
+| «bolsas thank you regalo», 1 término, **sin imágenes** | **$0.038** | 77 s |
+
+- **~80 % es el proxy residencial** ($8/GB). Una página de búsqueda de ML pesa 5.9 MB con imágenes y 3.6 MB sin ellas;
+  el HTML y el JavaScript de ML no se pueden quitar (sin JS, ML no deja pasar). El cómputo es $0.003–0.025.
+- **Nuestra bitácora anotaba de menos:** el gasto se registraba al terminar la corrida, y Apify cobra el proxy MINUTOS
+  después ($0.072 anotado → $0.0988 cobrado). Afectaba también a Competencia. Las corridas de $0.0031 que se ven en la
+  cuenta son del raspador de Alibaba, no de esto.
+
+**Qué cambia.**
+1. **Caché de Competencia (7 días).** Antes de raspar, cada término se busca en `enrich.market_search_term` /
+   `market_search_results`: medido hace menos de 7 días con ≥ 20 resultados → se reusa (sin Apify, sin esperar); medido
+   'vacio' → tampoco se repaga; viejo, 'bloqueado', con pocas filas (Competencia suele medir 10) o kubera sin contestar
+   → se raspa. Lo raspado se mide con la receta de Competencia (`competencia_captura.medir_busquedas`: raspa, reseñas,
+   visitas, marca lo nuestro y guarda), así que queda para Competencia y para el siguiente SKU parecido: las variantes
+   comparten el término corto. Los términos van en minúsculas (el catálogo es único por texto exacto).
+   `medir_busquedas` acepta `reintentos` y `filas_out` (las filas enriquecidas antes de guardar: si el guardado falla,
+   lo pagado se usa igual y se avisa). Competencia la llama igual que antes.
+2. **Nuestras publicaciones ya no son rivales.** La receta marca `es_nuestro`; esas filas salen de la mediana
+   (`propias_fuera` en la respuesta).
+3. **Un término por omisión.** El de la IA; el título recortado solo si el primero trae menos de 15 resultados. Lo que
+   escribe el usuario se busca completo (hasta 2).
+4. **Sin imágenes ni CSS.** `competencia_scraper.buscar_terminos(sin_media=True)` manda `downloadMedia: false` y
+   `downloadCss: false`. Las fotos se leen del `src` del HTML: en la prueba, 48 de 48 resultados con precio y foto.
+   Aplica también a Competencia (−25 % por término).
+5. **Costo real.** `_registrar_gasto` guarda la fila con `RETURNING id` y un hilo (`_cobro_final`) relee la corrida a
+   los 180 s y corrige `usd` (deja `usd_al_terminar` y `usd_final: true`). «Sugerir precio» guarda los ids de corrida
+   (`apify_runs`) y `ultimo` relee el cobro definitivo al reabrir el SKU; mientras tanto el pie dice que es preliminar.
+6. **Etiqueta:** «Completo · $0.01–0.10». Detalle en el botón: ~$0.01 y ~30 s si la búsqueda está en caché; ~$0.05 y
+   ~1–1.5 min si hay que buscar; hasta ~$0.10 si ML bloquea o hace falta un 2.º término. El pie dice si reusó la
+   búsqueda guardada y de cuándo es.
+
+**Pruebas.** `tests/test_precio_sugerido.py`: 39 (10 nuevas, sin red): un término con 3 reintentos y guardado; el 2.º
+solo si faltan resultados; del caché no raspa ni cobra Apify; lo del usuario se busca completo; lo nuestro fuera; reglas
+del caché (viejo, bloqueado, pocas filas, vacío, kubera caída); `ultimo` relee el cobro final; suma de corridas;
+raspador sin imágenes y con reintentos (Competencia conserva 8 y puede pedir media); corrección del cobro final;
+`medir_busquedas` pasa reintentos y entrega las filas aunque falle el guardado. `test_competencia_bloqueo`: sus dobles
+de `buscar_terminos` aceptan el parámetro nuevo. Suite: 3,228 OK + la que falla solo en Windows (consola), 142 omitidas.
+`tsc` limpio. Prueba real en Apify: corrida `D1CHvakw7LHe7oa8R`, 48 resultados, $0.038.
+
+**Sin probar en el panel:** el backend local necesita las llaves rotadas. Se verifica en producción con un completo de
+un SKU y otro de su variante (la segunda debe decir «reusó la búsqueda guardada»).
+
 ### v0.687.0 — «Sugerir precio»: el completo busca corto (≈1 min) y avisa cuando el costo o el peso no cuadran con la categoría
 
 **El caso (Brandon, 23-oct-2026).** VAR-0549-NEG, «Bolsas plasticas thank you para regalo y tienda 50 pzas»:
