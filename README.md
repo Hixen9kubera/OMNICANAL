@@ -1001,6 +1001,37 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.685.0 — Mercado Libre: un atributo OPCIONAL con formato que ML no acepta ya no tumba el alta (se quita, se reintenta una vez y se avisa)
+
+**El caso (Brandon, 23-oct-2026).** TEC-1875-MUL, «Rotuladores Acuarela Doble Punta…» en Marcadores y Marcatextos
+(MLM167976), fallaba en las dos cuentas: «El valor que ingresaste en "Grosor del trazo" es incorrecto»
+(`item.attribute.number_invalid_format`, seis veces entre 17:57 y 18:00 UTC). `STROKE_THICKNESS` es **opcional** y la
+categoría lo declara **texto libre**, pero ML lo valida como número con unidad: nadie podía saberlo antes de enviar. Desde
+v0.684.0 la IA llena todos los secundarios (antes solo 15), así que estos casos van a aparecer más.
+
+**Qué cambia.**
+- `publicar_ready.crear_ml`: si ML rechaza SOLO el formato de atributos OPCIONALES (identificados por el nombre del
+  mensaje o por el aviso `item.attributes.omitted`), se quitan de `ml_attrs` y de lo que el vendor mapea de Woo, se
+  intenta **una vez más** y la fila dice «Se publicó sin «Grosor del trazo»: Mercado Libre no aceptó su valor…». La
+  otra cuenta ya sale sin él. Un **obligatorio nunca se quita** (ML lo pediría después, como el Género de
+  ACC-0446-MUL), ni se toca nada si hay otro error o un atributo que no se identifica, ni se reintenta si quitarlo no
+  cambia lo que se manda.
+- La IA tiene la regla 16: medidas en texto (grosor, ancho, espesor, diámetro…) van como UN número con unidad
+  («0.5 mm»), sin rangos ni palabras; si no sabe el número, omite el atributo.
+- El mensaje de este rechazo dice qué escribir: «Mercado Libre no acepta el valor de «Grosor del trazo»: espera UN
+  número con su unidad» / «escribe un solo número con unidad (por ejemplo «0.5 mm»)».
+
+`backend/vendor/` intacto. Sin variables: es un fix.
+
+**Pruebas.** `tests/test_ml_atributo_opcional.py` (10, sin red) con la respuesta real de TEC-1875-MUL: identificar por
+nombre y por `omitted`; un obligatorio, otro error o un atributo desconocido no se tocan; `_sin_atributos` saca el
+atributo de las dos fuentes; `crear_ml` reintenta una vez en SANCORFASHION y BEKURA sale ya sin él; textos de error y
+regla de la IA. Suite completa: 3,190 OK (142 omitidas).
+
+**Sin prueba en vivo.** Las credenciales de producción no se pudieron traer: el conector de Railway solo entrega
+nombres de variables y la CLI quedó bloqueada por el control de permisos. No se vio qué valor exacto de «Grosor del
+trazo» se mandó (ML no lo devuelve).
+
 ### v0.684.0 — Mercado Libre: «Mejorar con IA» ve TODOS los atributos y lo que propone ya no lo rechaza ML; al publicar, lo del Estudio gana a los atributos viejos de WordPress
 
 **Qué pidió Brandon (23-oct-2026).** «Checa la mejora con IA para que estos errores no se produzcan; hay que enviar

@@ -270,6 +270,74 @@ def _instalar_anotador() -> None:
         ml_api.create_item = _create_item_que_anota
 
 
+# ── Un atributo OPCIONAL con formato que ML no acepta no tumba el alta ─────────────
+#
+# TEC-1875-MUL (23-oct-2026): «El valor que ingresaste en "Grosor del trazo" es
+# incorrecto». `STROKE_THICKNESS` es opcional y la categoría lo declara TEXTO, pero ML lo
+# valida como número con unidad; nadie puede saberlo antes de enviar. Desde v0.684.0 la IA
+# llena todos los secundarios, así que esto va a pasar más. Un opcional mal formado no
+# vale una publicación: se quita, se intenta UNA vez más y la fila dice qué se dejó fuera.
+# Un OBLIGATORIO nunca se quita (ML lo pediría después: el caso del Género de
+# ACC-0446-MUL).
+_FORMATO_RECHAZADO = {"item.attribute.number_invalid_format"}
+
+
+def _opcionales_rechazados(respuesta: Any, categoria: str) -> list[str]:
+    """
+    IDs de los atributos OPCIONALES cuyo formato rechazó ML, si son lo ÚNICO que falló.
+    Lista vacía si hay otro error, si un atributo no se identifica o si es obligatorio:
+    no se arregla a medias.
+    """
+    if not isinstance(respuesta, dict):
+        return []
+    crudos = getattr(publisher_core, "_attr_cache", {}).get(categoria) or []
+    por_nombre = {_plano(a.get("name")): a for a in crudos if isinstance(a, dict) and a.get("id")}
+    por_id = {a["id"]: a for a in crudos if isinstance(a, dict) and a.get("id")}
+    causas = [c for c in respuesta.get("cause") or [] if isinstance(c, dict)]
+    errores = [c for c in causas if c.get("type") == "error"
+               and c.get("code") != "shipping.lost_me1_by_user"]
+    if not errores or any(c.get("code") not in _FORMATO_RECHAZADO for c in errores):
+        return []
+    omitidos = [m.group(1) for c in causas if c.get("code") == "item.attributes.omitted"
+                for m in [re.search(r"Attribute (\w+) with value", c.get("message") or "")] if m]
+    ids: list[str] = []
+    for c in errores:
+        nombre = re.search(r'"([^"]+)"', c.get("message") or "")
+        a = por_nombre.get(_plano(nombre.group(1))) if nombre else None
+        if a is None:
+            pendientes = [i for i in omitidos if i not in ids]
+            a = por_id.get(pendientes[0]) if pendientes else None
+        if a is None or (a.get("tags") or {}).get("required"):
+            return []
+        if a["id"] not in ids:
+            ids.append(a["id"])
+    return ids
+
+
+def _plano(texto: Any) -> str:
+    import unicodedata
+    t = unicodedata.normalize("NFD", str(texto or "").lower())
+    return "".join(c for c in t if unicodedata.category(c) != "Mn").strip()
+
+
+def _sin_atributos(prod: dict[str, Any], ids: list[str]) -> dict[str, Any]:
+    """El `prod` sin esos atributos, ni en `ml_attrs` ni en lo que el vendor mapea de Woo."""
+    from vendor.ml_ready.attribute_mapper import WC_TO_ML_ID
+    fuera = set(ids)
+    fuera_bajo = {i.lower() for i in ids}
+
+    def _mapea_a(nombre_wc: str) -> bool:
+        destino = WC_TO_ML_ID.get(nombre_wc)
+        destinos = destino if isinstance(destino, list) else [destino]
+        return any(d in fuera for d in destinos if d)
+
+    ml = {k: v for k, v in (prod.get("ml_attrs") or {}).items()
+          if k not in fuera and k.lower() not in fuera_bajo}
+    wc = {k: v for k, v in (prod.get("wc_attrs") or {}).items()
+          if k.lower() not in fuera_bajo and not _mapea_a(k)}
+    return {**prod, "ml_attrs": ml, "wc_attrs": wc}
+
+
 def _genero_legible(anotadas: list[dict[str, Any]]) -> str | None:
     """El Género que se mandó en el primer intento, por su nombre («Mujer»)."""
     for x in anotadas or []:
@@ -858,6 +926,7 @@ async def crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
         # solo spamearía a ML — esos necesitan acción humana, no otro intento.
         r = {"success": False}
         intentos = 0
+        quitados: list[str] = []
         for intento in range(1, MAX_INTENTOS_ML + 1):
             intentos = intento
             try:
@@ -874,6 +943,20 @@ async def crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
             # Un 400 con causas de ML es VALIDACIÓN: el mismo payload da el mismo
             # rechazo. TEC-1439-BLN (22-oct) gastó seis intentos en «POWER 0 W».
             if r.get("ml_status") == 400 and ml_errores.explicar(r.get("ml_response")):
+                # Salvo un opcional con formato rechazado: se quita y va una vez más
+                # (TEC-1875-MUL, «Grosor del trazo»). `prod` sigue sin él para la otra cuenta.
+                quitar = [] if quitados else _opcionales_rechazados(r.get("ml_response"), categoria)
+                sin = _sin_atributos(prod, quitar) if quitar else prod
+                # Solo si quitarlo CAMBIA lo que se manda; si no venía de aquí, otro
+                # intento daría lo mismo.
+                cambia = quitar and (sin["ml_attrs"] != (prod.get("ml_attrs") or {})
+                                     or sin["wc_attrs"] != (prod.get("wc_attrs") or {}))
+                if cambia and intento < MAX_INTENTOS_ML:
+                    prod = sin
+                    quitados = quitar
+                    log.info("publish %s/%s: ML no aceptó el formato de %s (opcional) — se quita y se "
+                             "reintenta", cuenta, sku, ", ".join(quitar))
+                    continue
                 log.info("publish %s/%s: rechazo de validación (%s) — no se reintenta",
                          cuenta, sku, r.get("error"))
                 break
@@ -913,6 +996,12 @@ async def crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
                     f"La publicación se creó pero quedó {pausa['status'] or 'en estado desconocido'}: "
                     f"páusala a mano en Mercado Libre ({item_id})."
                 )
+        if quitados and fila["ok"]:
+            nombres = _nombres_atributos(categoria)
+            sin = ("Se publicó sin " + ", ".join(f"«{nombres.get(i, i)}»" for i in quitados)
+                   + ": Mercado Libre no aceptó su valor (espera un número con unidad, p. ej. "
+                   "«0.5 mm»). Si importa, agrégalo después en Mercado Libre.")
+            fila["aviso"] = f"{fila['aviso']} {sin}" if fila.get("aviso") else sin
 
         resultados.append(fila)
 

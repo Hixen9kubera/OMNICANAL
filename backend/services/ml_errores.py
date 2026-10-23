@@ -81,10 +81,13 @@ def _una(c: dict[str, Any], causas: list[dict[str, Any]], nombres: dict[str, str
                                 "real. Después vuelve a publicar."}
         campo = re.search(r'"([^"]+)"', texto)
         n = f"«{campo.group(1)}»" if campo else "un atributo numérico"
+        # TEC-1875-MUL (23-oct): «Grosor del trazo» se declara TEXTO en la categoría,
+        # pero ML lo valida como número con unidad. Un rango («0.5-2 mm») o palabras
+        # («fino y grueso») no pasan.
         return {"codigo": codigo,
-                "porque": f"El valor de {n} no es válido para Mercado Libre ({texto}).",
-                "solucion": f"{_DONDE}: corrige {n} con un número real mayor que cero, o déjalo vacío "
-                            "si no aplica."}
+                "porque": f"Mercado Libre no acepta el valor de {n}: espera UN número con su unidad.",
+                "solucion": f"{_DONDE}: escribe en {n} un solo número con unidad (por ejemplo «0.5 mm»), "
+                            "sin rangos ni palabras, o déjalo vacío si no aplica."}
 
     if codigo == "item.attribute.missing_conditional_required":
         ids = _ids(texto)

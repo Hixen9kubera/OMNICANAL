@@ -226,6 +226,10 @@ DEBES INTENTAR LLENAR CADA ATRIBUTO. Solo omite si es absolutamente imposible de
     valor que no sea mayor que cero.
 15. LISTA CERRADA: copia el valor EXACTO de "Valores válidos", uno solo salvo que el
     atributo diga "admite varios valores".
+16. MEDIDAS EN TEXTO (grosor, ancho, largo, alto, espesor, diametro, calibre, capacidad):
+    aunque el tipo diga "string", Mercado Libre las valida como NUMERO CON UNIDAD. Escribe
+    UN solo numero con su unidad (ej: "0.5 mm"), sin rangos ("0.5-2 mm") ni palabras
+    ("fino y grueso"). Si no conoces el numero, OMITE el atributo.
 
 ## RESTRICCION ABSOLUTA
 - Las UNICAS claves permitidas en "atributos" son los IDs listados arriba + "BRAND" y "MODEL"
