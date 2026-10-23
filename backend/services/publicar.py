@@ -451,6 +451,9 @@ async def _preview_ml(req: dict[str, Any]) -> dict[str, Any]:
             payload = r["payload"]
             n_pics = len(payload.get("pictures") or [])
             avisos.append(f"{n_pics} imagen(es) se pre-subirán a ML (escaladas a ≥500×250) al confirmar.")
+            # Lo que se ajustó en los atributos para que ML no lo rechace (Género que
+            # pide el título, medidas en 0…): `publicar_ready._atributos_ml_para_alta`.
+            avisos.extend(r.get("avisos") or [])
         elif r and r.get("motivo"):
             avisos.append(r["motivo"])
     elif len(pubs) == 1:

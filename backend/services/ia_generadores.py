@@ -398,6 +398,7 @@ async def mejorar(canal: str, producto: dict[str, Any], *,
 
     # Mercado Libre: reemplaza los atributos por los REALES de la categoría
     # (principales + secundarios), con nombre legible + valor.
+    reporte_ml: dict[str, Any] = {}
     if canal == "mercado_libre" and str(producto.get("ml_cat_id") or "").strip():
         try:
             from services import ia_variante, ml_atributos
@@ -407,7 +408,9 @@ async def mejorar(canal: str, producto: dict[str, Any], *,
             )
             r = await ml_atributos.generar_atributos(
                 cat_id=str(producto["ml_cat_id"]).strip(),
-                nombre=producto.get("nombre", ""),
+                # El título que SE VA A PUBLICAR: el que la IA acaba de proponer.
+                # ML compara el Género contra él (`invalid.title.gender`).
+                nombre=str(data.get("titulo") or producto.get("nombre", "")),
                 alibaba_titulo=producto.get("nombre", ""),
                 atributos_actuales=attrs_actuales,
                 caracteristicas_clave=_sin_html(str(producto.get("descripcion") or ""))[:1500],
@@ -426,11 +429,30 @@ async def mejorar(canal: str, producto: dict[str, Any], *,
                     {"nombre": nombre_por_id.get(k, k), "campo": k, "valor": v}
                     for k, v in r["atributos"].items()
                 ]
+            # El parte para el Estudio, con el MISMO contrato que Amazon y TikTok
+            # (23-oct-2026): cuántos obligatorios quedaron, qué no se aplicó y por qué
+            # (lo que ML rechazaría: «0 W», un valor fuera de la lista) y qué se
+            # corrigió (el Género que pide el título). Ver `ml_atributos.depurar`.
+            principales = r["meli_attrs"]["principales"]
+            faltan = set(r.get("faltan") or [])
+            reporte_ml = {
+                "product_type": producto.get("categoria") or str(producto["ml_cat_id"]),
+                "requisitos": {
+                    "estado": "ok" if not faltan else "incompleto",
+                    "obligatorios": len(principales),
+                    "cubiertos": [a["id"] for a in principales if a["id"] not in faltan],
+                    "sin_cubrir": [f"{nombre_por_id.get(i, i)} ({i})" for i in r.get("faltan") or []],
+                } if principales else {"estado": "sin_requisitos", "obligatorios": 0,
+                                       "cubiertos": [], "sin_cubrir": []},
+                "rechazados": r.get("rechazados") or [],
+                "avisos": r.get("avisos") or [],
+            }
         except Exception as exc:  # noqa: BLE001
             log.warning("mejorar ML atributos: %s", exc)
 
     salida: dict[str, Any] = {"ok": True, "canal": canal,
-                              "proveedor": res.get("proveedor"), "campos": data}
+                              "proveedor": res.get("proveedor"), "campos": data,
+                              **reporte_ml}
     # ML guarda como los demás canales. Hasta aquí era el ÚNICO (con General)
     # que tiraba lo generado al cerrar el Estudio: Amazon, TikTok, Temu y
     # Walmart lo dejaban en `enrich.channel_content`. General NO se guarda: su

@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import re
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -87,7 +88,8 @@ def _backlog_ml(backlog_key: str, entry: dict[str, Any]) -> None:
     error = resultado.get("error")
     if not success and error:
         cid = str((entry.get("payload") or {}).get("category_id") or "")
-        explicacion = ml_errores.explicar(entry.get("ml_response"), _nombres_atributos(cid))
+        explicacion = _explicar_rechazo(getattr(_registro_ml, "respuestas", None) or [],
+                                        entry.get("ml_response"), cid)
         if explicacion:
             error = f"{error} · {ml_errores.mensaje(explicacion)}"
     cuenta = entry.get("cuenta") or ""
@@ -167,6 +169,140 @@ def _nombres_atributos(category_id: str) -> dict[str, str]:
         return {a["id"]: a.get("name") or a["id"] for a in attrs if isinstance(a, dict) and a.get("id")}
     except Exception:  # noqa: BLE001
         return {}
+
+
+# ── Atributos de un ALTA en ML: lo del panel manda y se revisa antes de enviar ──
+#
+# Brandon, 23-oct-2026 (ACC-0446-MUL, Thalia: «ya se le puso el género MUJER y NIÑAS
+# pero ninguno lo toma en cuenta»). Dos defectos:
+#   1. El vendor toma los atributos PRIMERO de las metas `ml_attr_*` de WordPress (las que
+#      dejó Crear) y lo del Estudio solo si la meta no existe: lo que corrige una persona,
+#      Bodega o «Mejorar con IA» perdía siempre. Ya estaba escrito como pendiente en
+#      `services/specs_editor.py` («en altas nuevas, lo que capture Bodega NO gana»).
+#   2. Nadie revisaba lo que ML rechaza sin falta: medidas en 0 (TEC-1439-BLN, «0 W»), un
+#      valor fuera de la lista cerrada, o un Género que contradice el título.
+# Aquí, solo en el ALTA de ML (Temu, TikTok y Amazon no pasan por aquí): lo del Estudio que
+# trae su ID de ML pisa la meta, y todo pasa por `ml_atributos.depurar`, la MISMA revisión
+# que se le aplica a la IA.
+_ID_ML = re.compile(r"^[A-Z][A-Z0-9_]+$")
+
+
+def _ids_del_panel(atributos: Any, ids_categoria: set[str]) -> dict[str, str]:
+    """
+    De `campos.atributos` (el formulario del Estudio), los que traen el ID de ML: `campo`
+    (lo que dejó «Mejorar con IA» o Bodega) o `nombre` cuando ES el ID. Los que solo traen
+    la etiqueta legible («Color», de los atributos de Woo) NO entran: en una variante esa
+    lista suele ser la de la familia entera («Rojo, Azul») y no se adivina cuál es.
+    """
+    salida: dict[str, str] = {}
+    for a in atributos or []:
+        if not isinstance(a, dict):
+            continue
+        valor = str(a.get("valor") or "").strip()
+        if not valor:
+            continue
+        for llave in (a.get("campo"), a.get("nombre")):
+            aid = str(llave or "").strip()
+            if _ID_ML.match(aid) and aid in ids_categoria:
+                salida[aid] = valor
+                break
+    return salida
+
+
+def _atributos_ml_para_alta(prod: dict[str, Any], campos: dict[str, Any] | None,
+                            cuenta: str) -> tuple[dict[str, Any], list[str]]:
+    """
+    (prod con `ml_attrs` listos para el alta, avisos para la vista previa).
+
+    SÍNCRONA: lee el token y, si no están en la caché del pipeline, los atributos de la
+    categoría. Desde una corrutina va en `asyncio.to_thread` (regla 11). Si algo falla,
+    devuelve el `prod` tal cual: el alta sigue como antes.
+    """
+    try:
+        from services import ml_atributos
+        categoria = ml_revision_categoria.categoria_de_alta(prod)
+        token = meli._access_token(cuenta)
+        if not (categoria and token):
+            return prod, []
+        crudos = publisher_core.get_category_attrs_cached(categoria, token) or []
+        ids = {a["id"] for a in crudos if isinstance(a, dict) and a.get("id")}
+        if not ids:
+            return prod, []
+        attrs = dict(prod.get("ml_attrs") or {})
+        attrs.update(_ids_del_panel((campos or {}).get("atributos"), ids))
+        rev = ml_atributos.depurar(attrs, ml_atributos.clasificar(crudos), titulo=prod.get("title") or "")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("atributos del alta ML (%s): %s", prod.get("sku"), exc)
+        return prod, []
+    avisos = list(rev["avisos"]) + [f"No se manda {r['campo']}: {r['motivo']}" for r in rev["rechazados"]]
+    return {**prod, "ml_attrs": rev["atributos"]}, avisos
+
+
+# ── Cada respuesta de ML del intento, no solo la última ──────────────────────────
+#
+# El pipeline reintenta solo y cada reintento cambia el payload (quita el Género, la
+# guía, el GTIN…): la última respuesta puede no ser la causa (ver
+# `ml_errores.explicar_varias`). Se envuelve `ml_api.create_item` para ANOTAR cada
+# respuesta, sin cambiar nada de lo que hace; la anotación es por HILO porque cada alta
+# corre en su propio `asyncio.to_thread`.
+_registro_ml = threading.local()
+_create_item_original = None
+
+
+def _create_item_que_anota(payload: dict, token: str):
+    respuesta = _create_item_original(payload, token)
+    lista = getattr(_registro_ml, "respuestas", None)
+    if lista is not None:
+        try:
+            genero = next((a for a in (payload or {}).get("attributes") or []
+                           if isinstance(a, dict) and a.get("id") == "GENDER"), None)
+            lista.append({"respuesta": respuesta[0] if isinstance(respuesta, tuple) else None,
+                          "genero": genero, "categoria": (payload or {}).get("category_id")})
+        except Exception:  # noqa: BLE001 — anotar jamás tumba un alta
+            pass
+    return respuesta
+
+
+def _instalar_anotador() -> None:
+    global _create_item_original
+    if ml_api.create_item is not _create_item_que_anota:
+        _create_item_original = ml_api.create_item
+        ml_api.create_item = _create_item_que_anota
+
+
+def _genero_legible(anotadas: list[dict[str, Any]]) -> str | None:
+    """El Género que se mandó en el primer intento, por su nombre («Mujer»)."""
+    for x in anotadas or []:
+        g = x.get("genero")
+        if not g:
+            continue
+        if g.get("value_name"):
+            return str(g["value_name"])
+        for a in getattr(publisher_core, "_attr_cache", {}).get(x.get("categoria") or "", []) or []:
+            if isinstance(a, dict) and a.get("id") == "GENDER":
+                for v in a.get("values") or []:
+                    if str(v.get("id")) == str(g.get("value_id")):
+                        return v.get("name")
+    return None
+
+
+def _explicar_rechazo(anotadas: list[dict[str, Any]], ultima: Any, categoria: str) -> list[dict[str, Any]]:
+    respuestas = [x["respuesta"] for x in anotadas or [] if isinstance(x.get("respuesta"), dict)]
+    if not respuestas:
+        respuestas = [ultima]
+    return ml_errores.explicar_varias(respuestas, _nombres_atributos(categoria), _genero_legible(anotadas))
+
+
+def _publicar_anotando(prod: dict[str, Any], token: str, cuenta: str) -> dict[str, Any]:
+    """`publish_product` con el registro de respuestas encendido para ESTE hilo."""
+    _registro_ml.respuestas = []
+    try:
+        r = publisher_core.publish_product(prod, token, False, cuenta)
+    finally:
+        anotadas, _registro_ml.respuestas = _registro_ml.respuestas, None
+    if isinstance(r, dict):
+        r["_respuestas_ml"] = anotadas
+    return r
 
 
 def _errores_reales_ml(respuesta: Any) -> list[str]:
@@ -305,6 +441,7 @@ def configurar() -> None:
     # por el CDN de Hostinger. El GTIN encontrado se usa igual en la publicación,
     # solo no se persiste de vuelta en WC.
     publisher_core.configurar(save_backlog_fn=_backlog_ml)
+    _instalar_anotador()
     _configurado = True
 
 
@@ -637,6 +774,8 @@ async def preview_crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
     token = meli._access_token(cuenta)
     if not token:
         return {"ok": False, "motivo": f"Sin token de Mercado Libre para {cuenta}."}
+    # Lo mismo que hará `crear_ml`: lo que se revisa es lo que sale.
+    prod, avisos_atributos = await asyncio.to_thread(_atributos_ml_para_alta, prod, campos, cuenta)
 
     payload = await asyncio.to_thread(
         publisher_core.build_payload, prod, token, True, cuenta
@@ -651,7 +790,8 @@ async def preview_crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
             faltantes.append("precio")
         return {"ok": False, "motivo": "Faltan datos: " + ", ".join(faltantes)}
 
-    return {"ok": True, "cuenta": cuenta, "payload": payload, "prod": prod}
+    return {"ok": True, "cuenta": cuenta, "payload": payload, "prod": prod,
+            "avisos": avisos_atributos}
 
 
 async def crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
@@ -699,6 +839,9 @@ async def crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
     if motivo:
         log.info("alta ML frenada (%s): %s", sku, motivo)
         return _rechazo(motivo)
+    prod, avisos_atributos = await asyncio.to_thread(_atributos_ml_para_alta, prod, campos, objetivo[0])
+    if avisos_atributos:
+        log.info("alta ML %s — atributos ajustados: %s", sku, " | ".join(avisos_atributos))
 
     resultados: list[dict[str, Any]] = []
     for cuenta in objetivo:
@@ -718,9 +861,7 @@ async def crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
         for intento in range(1, MAX_INTENTOS_ML + 1):
             intentos = intento
             try:
-                r = await asyncio.to_thread(
-                    publisher_core.publish_product, dict(prod), token, False, cuenta
-                )
+                r = await asyncio.to_thread(_publicar_anotando, dict(prod), token, cuenta)
             except Exception as exc:  # noqa: BLE001
                 log.exception("publish_product reventó (%s / %s, intento %d)", cuenta, sku, intento)
                 r = {"success": False, "error": f"{type(exc).__name__}: {exc}"}
@@ -743,8 +884,8 @@ async def crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
 
         item_id = r.get("ml_item_id") or ""
         # El porqué y la solución (Brandon, 22-oct-2026: «veo únicamente los 400»).
-        explicacion = [] if r.get("success") else ml_errores.explicar(
-            r.get("ml_response"), _nombres_atributos(categoria))
+        explicacion = [] if r.get("success") else _explicar_rechazo(
+            r.get("_respuestas_ml") or [], r.get("ml_response"), categoria)
         if explicacion:
             r["error"] = ml_errores.mensaje(explicacion)
         elif r.get("error"):

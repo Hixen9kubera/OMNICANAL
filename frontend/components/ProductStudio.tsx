@@ -2080,9 +2080,10 @@ export default function ProductStudio({
             </div>
           )}
 
-          {/* ML no trae parte de generador, pero si el backend guarda lo que
-              generó, `guardado` llega igual y se tiene que ver. */}
-          {reporteIA && (conParteIA || (esML && reporteIA.guardado)) && (
+          {/* ML trae su parte desde el 23-oct-2026: obligatorios cubiertos, lo que
+              no se aplicó porque ML lo rechazaría y lo que se corrigió (Género que
+              pide el título). Ver backend/services/ml_atributos.depurar. */}
+          {reporteIA && (conParteIA || esML) && (
             <div className="mt-2 space-y-1.5 rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-[11px] leading-relaxed">
               {reporteIA.product_type && (
                 <div className="text-slate-500">
@@ -2114,7 +2115,9 @@ export default function ProductStudio({
                   <strong>No se aplicó</strong>{" "}
                   {esWalmart
                     ? "(Walmart lo publicaría mal o tumbaría el artículo)"
-                    : "(Amazon lo truncaría o lo ignoraría)"}:
+                    : esML
+                      ? "(Mercado Libre lo rechazaría)"
+                      : "(Amazon lo truncaría o lo ignoraría)"}:
                   <ul className="ml-3 list-disc">
                     {reporteIA.rechazados.map((r) => (
                       <li key={r.campo}>{r.campo}: {r.motivo}</li>

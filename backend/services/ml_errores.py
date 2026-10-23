@@ -170,6 +170,35 @@ def explicar(respuesta: Any, nombres: dict[str, str] | None = None) -> list[dict
     return salida
 
 
+def explicar_varias(respuestas: list[Any], nombres: dict[str, str] | None = None,
+                    genero_enviado: str | None = None) -> list[dict[str, Any]]:
+    """
+    Las causas de TODAS las respuestas de ML de un intento, en orden y sin repetir.
+
+    El pipeline reintenta solo y cada reintento cambia el payload, así que la última
+    respuesta puede no ser la causa: ACC-0446-MUL (22-oct) mandó Género «Mujer», ML dijo
+    que el título («Niña Bebé») no concordaba, el pipeline QUITÓ el Género y reintentó, y
+    ML contestó «falta Género». Solo la última se veía. Si en el intento hubo
+    `invalid.title.gender`, el «falta Género» que le sigue es su consecuencia y no se
+    cuenta aparte.
+    """
+    salida: list[dict[str, Any]] = []
+    for r in respuestas or []:
+        for e in explicar(r, nombres):
+            if e not in salida:
+                salida.append(e)
+    if any(e["codigo"] == "invalid.title.gender" for e in salida):
+        salida = [e for e in salida if not (e["codigo"] == "item.attributes.missing_required"
+                                             and "GENDER" in e["porque"])]
+        if genero_enviado:
+            for e in salida:
+                if e["codigo"] == "invalid.title.gender":
+                    e["porque"] = (f"El título no concuerda con el Género que se mandó («{genero_enviado}»). "
+                                   "Mercado Libre lo rechazó; el publicador quitó el Género y reintentó, "
+                                   "pero en esta categoría el Género es obligatorio.")
+    return salida
+
+
 def mensaje(explicacion: list[dict[str, Any]]) -> str:
     """El texto que se guarda y se enseña: «Mercado Libre la rechazó. Por qué: … Solución: …»."""
     partes = []

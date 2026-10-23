@@ -1001,6 +1001,51 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.684.0 — Mercado Libre: «Mejorar con IA» ve TODOS los atributos y lo que propone ya no lo rechaza ML; al publicar, lo del Estudio gana a los atributos viejos de WordPress
+
+**Qué pidió Brandon (23-oct-2026).** «Checa la mejora con IA para que estos errores no se produzcan; hay que enviar
+los atributos obligatorios para que la IA pueda llenar los campos, y al igual los secundarios; realiza la prueba».
+Thalia, ACC-0446-MUL: «ya se le puso el género MUJER y NIÑAS pero ninguno lo toma en cuenta».
+
+**Lo que de verdad pasó con ACC-0446-MUL** (logs de Railway, 23-oct 03:42 UTC). «Moños para Cabello Niña Bebé…» en
+«Tocados, Tiaras y Diademas» (MLM190885, Género obligatorio: Mujer, Niñas, Bebés, Sin género, Sin género infantil):
+1. El primer envío SÍ llevaba Género, y era «Mujer» → ML: `invalid.title.gender` (el título dice «niña»).
+2. El pipeline vendorizado, ante ese rechazo, QUITA el Género y reintenta → ML: «falta Género». Eso fue lo que se vio.
+3. Lo que Thalia corrigió en el Estudio no contaba: al CREAR, el vendor toma primero las metas `ml_attr_*` que dejó
+   Crear producto, y lo del Estudio solo si no hay meta. Ya estaba escrito como pendiente en `specs_editor.py`.
+
+**Qué cambia.**
+- **La IA ve todos los secundarios** (`ml_atributos.MAX_SECUNDARIAS` 15 → 80): en categorías de 60 atributos no veía
+  la mayoría. Los obligatorios ya viajaban; ahora cada atributo dice si es lista cerrada, si admite varios valores y
+  sus unidades, y el prompt trae tres reglas nuevas: Género de UNA opción y coherente con el título; números con
+  unidad que no apliquen se OMITEN, nunca 0; lista cerrada = valor exacto.
+- **Lo que contesta la IA se revisa sin IA** (`ml_atributos.depurar`, pura): Género = el que nombra el título (gana
+  la primera palabra; «niños y niñas» → Sin género infantil); «Mujer y Niñas» → una sola; «0 W» y cualquier número
+  ≤ 0 fuera; valores fuera de la lista cerrada fuera; obligatorios que quedaron vacíos. También lo usa Crear producto.
+- **El Estudio enseña el parte de ML** (como Amazon y TikTok): «N/N obligatorios cubiertos», «Sin cubrir», «No se
+  aplicó (Mercado Libre lo rechazaría)» con el motivo, y los avisos («Género: «Niñas» porque el título lo dice»).
+  El Género se compara contra el título NUEVO que propone la IA, que es el que se publica.
+- **Al publicar (solo altas de ML)**, `publicar_ready._atributos_ml_para_alta`: lo del Estudio que trae su ID de ML
+  (lo que dejó «Mejorar con IA» o Bodega) gana a la meta vieja, y todo pasa por la misma `depurar`; la vista previa
+  dice qué se ajustó. Lo que solo trae la etiqueta legible (los atributos de Woo, p. ej. «Color: Rojo, Azul» de la
+  familia) no pisa nada, para no elegir mal en una variante. Si algo falla, el alta sigue como antes.
+- **El rechazo se explica con todas las respuestas del intento**: se anota cada `ml_api.create_item` (sin cambiar lo
+  que hace; por hilo) y `ml_errores.explicar_varias` junta las causas. Con ACC-0446-MUL diría «El título no concuerda
+  con el Género que se mandó («Mujer»)…» y no «Falta Género».
+
+`backend/vendor/` intacto. Sin variables: es un fix. Temu, TikTok y Amazon no pasan por aquí.
+
+**Pruebas.** `tests/test_ml_atributos_revision.py` (24, sin red): clasificación de la categoría, prompt con 40
+secundarios y las reglas, Género contra el título (ACC-0446-MUL), un solo valor, «0 W» (TEC-1439-BLN), lista cerrada,
+obligatorios, `generar_atributos` revisado, alta con meta vieja «Mujer» → «Niñas», lo del Estudio con ID gana y la
+etiqueta legible no, el anotador y la explicación con las dos respuestas, y el parte de «Mejorar con IA».
+Suite completa: 3,181 OK (142 omitidas). Frontend: `next build` limpio sobre v0.683.0.
+
+**Lo que NO se pudo probar en vivo.** Las claves locales de MySQL, kubera y las de IA quedaron inválidas tras el
+incidente de Railway del 21-oct, y la búsqueda de ML pide token: no hubo vista previa real, ni llamada a la IA, ni
+`/items/validate`. En particular, que ML acepte «Niñas» con un título que dice «Niña Bebé» está sin comprobar; si no,
+el error ahora lo dirá con su causa real.
+
 ### v0.683.0 — Publicar en Walmart ya no tumba la página («Application error: a client-side exception»)
 
 Reporte del 23-oct: al publicar en Walmart desde el Publicador, la página quedaba en blanco con «Application error: a
