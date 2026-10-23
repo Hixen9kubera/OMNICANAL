@@ -222,6 +222,25 @@ const LIMITE_TITULO: Record<string, number> = {
   amazon: 200,
 };
 
+/**
+ * La revisión de categoría de MERCADO LIBRE de una vista previa, o null.
+ *
+ * `categoria` no significa lo mismo en todos los canales: ML manda el objeto de
+ * revisión (`actual`, `sugeridas`, `veredicto`…), pero Walmart manda la
+ * categoría del feed como TEXTO («Juguetes»). Tratar ese texto como revisión
+ * leía `"Juguetes".actual.category_id` y tumbaba la página entera con
+ * "Application error: a client-side exception" al publicar en Walmart
+ * (22–23-oct, desde la v0.677.0).
+ */
+type RevisionCatML = NonNullable<PublicarPreview["categoria"]>;
+
+function revisionCatML(p: PublicarPreview | null | undefined): RevisionCatML | null {
+  const c = p?.categoria as unknown;
+  return c && typeof c === "object" && "veredicto" in (c as object)
+    ? (c as RevisionCatML)
+    : null;
+}
+
 export default function ProductStudio({
   sku: skuRaiz, producto, canales, estudioConfig, varianteInicial, onClose, onGuardado,
 }: Props) {
@@ -1392,8 +1411,8 @@ export default function ProductStudio({
       const r = await publicarConfirmar({
         ...reqPublicar(),
         // Lo que la persona revisó: el backend no da de alta si no es lo que sale.
-        categoria_confirmada: previewPub?.categoria && catRevisada
-          ? previewPub.categoria.actual?.category_id ?? null
+        categoria_confirmada: revisionCatML(previewPub) && catRevisada
+          ? revisionCatML(previewPub)?.actual?.category_id ?? null
           : null,
       });
       setResultadoPub(r);
@@ -3292,9 +3311,9 @@ export default function ProductStudio({
                     </div>
                   )}
 
-                  {previewPub.categoria && (
+                  {revisionCatML(previewPub) && (
                     <RevisionCategoriaML
-                      revision={previewPub.categoria}
+                      revision={revisionCatML(previewPub)!}
                       revisada={catRevisada}
                       onRevisada={setCatRevisada}
                       onCambiar={cambiarCategoriaPub}
@@ -3475,13 +3494,13 @@ export default function ProductStudio({
               ) : (
                 <>
                   <button onClick={cerrarPreview} className="rounded-lg px-4 py-2 text-sm font-semibold text-slate-500 hover:bg-slate-100">Cancelar</button>
-                  {previewPub.ok && previewPub.categoria && !catRevisada && (
+                  {previewPub.ok && revisionCatML(previewPub) && !catRevisada && (
                     <span className="text-[11px] text-slate-400">Marca «Revisé la categoría» para continuar</span>
                   )}
                   {previewPub.ok && (
                     <button
                       onClick={confirmarPublicar}
-                      disabled={publicando || cambiandoCatPub || (!!previewPub.categoria && !catRevisada)}
+                      disabled={publicando || cambiandoCatPub || (!!revisionCatML(previewPub) && !catRevisada)}
                       className="flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-bold text-white shadow-sm disabled:opacity-60"
                       style={{ background: `linear-gradient(120deg, ${tema.color}, ${tema.acento})`, color: tema.texto }}
                     >

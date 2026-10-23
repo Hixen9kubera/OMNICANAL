@@ -1001,6 +1001,22 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.683.0 — Publicar en Walmart ya no tumba la página («Application error: a client-side exception»)
+
+Reporte del 23-oct: al publicar en Walmart desde el Publicador, la página quedaba en blanco con «Application error: a
+client-side exception has occurred». No eran las credenciales de Walmart: el backend contestó 200 a todas las vistas
+previas y envíos.
+
+- **Causa.** La v0.677.0 (doble validación de categoría de Mercado Libre) pinta un bloque de revisión con
+  `previewPub.categoria`, que en ML es el objeto de revisión (`actual`, `sugeridas`, `veredicto`). La vista previa de
+  **Walmart** también trae `categoria`, pero como TEXTO («Juguetes»): el Estudio leía `"Juguetes".actual.category_id` y
+  React tumbaba la página entera. Pasaba desde el 22-oct en todo SKU de Walmart.
+- **Arreglo.** `revisionCatML()` en `ProductStudio.tsx`: solo un objeto con `veredicto` cuenta como revisión de ML. Se usa
+  en los cuatro lugares (el bloque, el aviso, el botón y `categoria_confirmada`). ML no cambia; Walmart vuelve a mostrar
+  su vista previa y su botón sin pedir revisar una categoría de ML.
+
+**Verificado:** `tsc --noEmit` y `next build` limpios. **Reversa:** revert del commit.
+
 ### v0.682.0 — Mercado Libre: cuando rechaza una publicación, el panel dice POR QUÉ y QUÉ HACER (ya no solo «HTTP 400: Validation error»)
 
 **Qué pidió Brandon (22-oct-2026).** «En los errores puedes integrar el porqué del error porque veo únicamente los
