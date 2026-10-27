@@ -1001,6 +1001,59 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.692.0 — Lo que ya pasó por Crear no se vuelve a enseñar en Crear: ni la variante creada, ni el padre con todas sus variantes hechas
+
+**El pedido (Brandon, 27-oct-2026):** *"siguen quedando muchos… todos los que han sido creados ya no deben estar en
+crear productos"* → *"corrige que cuando una variante pase por crear ya no se muestre en crear, y si todas las
+variantes del padre ya se crearon ya no sale en crear"*.
+
+**Lo medido antes del cambio (solo lectura: `ops.process_log` + WordPress).**
+- Monitoreo registra **1,523 altas completadas del 15-jul al 27-oct = 1,431 SKUs**. De esos, 1,415 ya estaban fuera
+  de Crear (41 viven con SKU con sufijo: la cola traía la base, p. ej. HERR-0047 → HERR-0047-PLA, en `pending`).
+- Crear «Por padre» listaba **3,774 borradores (3,751 grupos)**, y solo 26 eran de algo ya creado:
+  - **3,249** nunca trabajados;
+  - **498** con datos de Alibaba pero sin alta completada (307 de un lote del 14-jul);
+  - **11** con alta fallida;
+  - **17** creados que volvieron a `draft` desde FUERA del panel. TEC-2247 y TEC-0602-NEG pasaron de `pending` a
+    `draft` en el mismo segundo en que un script `python-requests` desde una IP de casa les puso stock «Agotado»
+    (WSAL 9018). Este cambio no los toca;
+  - **9 padres con TODAS sus variantes ya creadas** (ROP-0246 23/23, VAR-0004 15/15, ROP-0351 12/12, ROP-0676,
+    ROP-0458, ROP-0204, ROP-0647, ROP-0261-AZL-NEG-GRI, ROP-0163).
+- Crear no le cambia el estado al padre al procesar una variante, para no llevarse a las hermanas sin trabajar. Pero
+  nada lo sacaba al terminar la ÚLTIMA. Y en «Por padre» las variantes ya creadas seguían saliendo debajo del padre
+  (ROP-0371 enseñaba 11 y le faltaba 1).
+
+**Qué cambia.**
+1. **`wp_db.indice_drafts(..., sin_familias_terminadas=True)`.** En «Por padre» deja fuera al padre cuyas variantes
+   vivas llevan TODAS `_crear_procesada_at` (`_familia_terminada`: hay hijas y ninguna sin marca; mismo criterio
+   que `_estado_efectivo`). Crear Productos la pide. Por omisión va apagada: `variables.agrupar*` lee el mismo índice
+   para agrupar borradores, y ahí el padre sí cuenta.
+2. **`creacion.items_candidatos`.** Debajo de un padre que sigue en Crear, las variantes ya procesadas
+   (`wp_db.variantes_procesadas`, por SKU sin importar mayúsculas) ya no se enseñan, y el stock y el valor del renglón
+   son de lo que FALTA. Si la familia sale entera procesada (carrera entre índice y marca), el renglón no se pinta. Si
+   la base no contesta, la lista sale como antes.
+3. **No escribe nada.** El padre sigue en `draft` en Woo; se promueve al publicar, como siempre (`publicar_ready`).
+   Sus variantes siguen en el Publicador en «Por variante». «Por variante» de Crear no cambia: ya escondía las
+   variantes procesadas.
+
+**Verificado contra WordPress de producción (solo lectura, las funciones reales):**
+- «Por padre» pasa de **3,774 a 3,765**: salen exactamente las 9 familias terminadas, y la consulta sigue en ≈1 s.
+- ROP-0402, ROP-0207 y ROP-0371 se quedan, con sus 12 variantes hechas ocultas (1 + 1 + 10).
+- «Por variante» queda igual: 6,628.
+
+**Pruebas:** `tests/test_crear_familias_terminadas.py` (10):
+- La bandera agrega el filtro y por omisión no.
+- La expresión exige hijas y ninguna sin marca.
+- «Por variante» no cambia.
+- Crear pide el índice con la bandera.
+- Las procesadas salen y el stock y el valor son de lo que falta.
+- Mayúsculas y espacios en el SKU.
+- Familia entera → sin renglón.
+- Sin procesadas → igual.
+- Base caída → igual.
+
+Con las de títulos, estado de variante, SKU contenedor, atributos y checklist: 124 en verde.
+
 ### v0.691.0 — El semáforo de categoría del Estudio también enseña lo que propone Mercado Libre
 
 **El caso (Eduardo, 27-oct, primera hora de la sombra):** TEC-0191-PLA, un sensor MAP de auto publicado en «Agro ›

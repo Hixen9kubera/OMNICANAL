@@ -127,11 +127,17 @@ def _categorias_por_post(ids: list[int]) -> dict[int, list[str]]:
     return salida
 
 
-def indice_drafts(aplanar: bool = False) -> list[dict[str, Any]]:
+def indice_drafts(aplanar: bool = False,
+                  sin_familias_terminadas: bool = False) -> list[dict[str, Any]]:
     """
     Todo lo que le toca a CREAR PRODUCTOS en una consulta (reemplaza ~50
     requests HTTP): [{wc_id, sku, nombre, estado, stock, categorias}], más
     recientes primero.
+
+    `sin_familias_terminadas` (solo «Por padre»; lo pide Crear Productos): deja
+    fuera al padre cuyas variantes vivas YA pasaron TODAS por Crear (ver
+    `_familia_terminada`). Apagado por omisión porque `variables.agrupar*` lee
+    este mismo índice para agrupar borradores, y ahí el padre sí cuenta.
 
     Incluye `draft` E `inprogress` (regla de Brandon, 29-jul): la pestaña es "lo
     que falta trabajar". Antes traía solo `draft`, así que los ~229 `inprogress`
@@ -187,6 +193,7 @@ def indice_drafts(aplanar: bool = False) -> list[dict[str, Any]]:
                        ON stock.post_id = p.ID AND stock.meta_key = '_stock'
                 WHERE p.post_type = 'product'
                   AND p.post_status IN ('draft', 'inprogress')
+                  {f"AND NOT {_familia_terminada('p')}" if sin_familias_terminadas else ""}
                 ORDER BY p.post_date DESC"""
         )
     # La categoría de una variación es la de su PADRE: ninguna de las 7,477 tiene
@@ -1668,6 +1675,25 @@ def _estado_efectivo(alias_padre: str, alias_hija: str) -> str:
             f"     THEN 'pending' ELSE {alias_padre}.post_status END")
 
 
+def _familia_terminada(alias_padre: str) -> str:
+    """
+    Expresión SQL: el producto tiene variantes vivas y TODAS llevan
+    `META_PROCESADA`, o sea, ya pasaron todas por Crear.
+
+    POR QUÉ (Brandon, 27-oct-2026). Crear no le cambia el estado al padre al
+    procesar una variante —si lo pasara a `pending` se llevaría a las hermanas sin
+    trabajar—, pero nada lo sacaba de Crear al terminar la ÚLTIMA. Medido ese día:
+    9 familias (ROP-0246 con 23 de 23, VAR-0004 con 15 de 15…) seguían en «Por
+    padre» con todas sus variantes ya en Productos. Mismo criterio de marca que
+    `_estado_efectivo` (`IS NULL` = sin procesar; '' cuenta como procesada).
+    """
+    P = _prefix()
+    hijas = (f"SELECT 1 FROM {P}posts h WHERE h.post_parent = {alias_padre}.ID "
+             f"AND h.post_type = 'product_variation' AND h.post_status <> 'trash'")
+    return (f"(EXISTS ({hijas}) AND NOT EXISTS ({hijas} "
+            f"AND {_meta_sub('h.ID', META_PROCESADA)} IS NULL))")
+
+
 def indice_plano(
     vista: str = "productos",
     search: str | None = None,
@@ -1919,6 +1945,34 @@ def hermanas_pendientes(parent_ids: list[int]) -> dict[int, dict[str, int]]:
         except Exception as exc:  # noqa: BLE001
             log.warning("hermanas_pendientes falló: %s", exc)
             return salida
+    return salida
+
+
+def variantes_procesadas(parent_ids: list[int]) -> set[str]:
+    """
+    SKUs (en mayúsculas) de las variantes vivas de esos padres que YA pasaron por
+    Crear (`META_PROCESADA`). Crear Productos las quita de debajo del padre en
+    «Por padre»: ya están en Productos y enseñarlas ahí las hacía parecer
+    pendientes (Brandon, 27-oct-2026). Conjunto vacío si la base no contesta: la
+    lista sigue como antes.
+    """
+    ids = sorted({int(i) for i in (parent_ids or []) if i})
+    if not ids or not disponible():
+        return set()
+    P = _prefix()
+    salida: set[str] = set()
+    for i in range(0, len(ids), 500):
+        chunk = ids[i:i + 500]
+        ph = ",".join(["%s"] * len(chunk))
+        for r in _fetch_all(
+            f"""SELECT {_meta_sub('v.ID', '_sku')} AS sku
+                  FROM {P}posts v
+                 WHERE v.post_parent IN ({ph})
+                   AND v.post_type = 'product_variation'
+                   AND v.post_status <> 'trash'
+                   AND {_meta_sub('v.ID', META_PROCESADA)} IS NOT NULL""", tuple(chunk)):
+            if r.get("sku"):
+                salida.add(str(r["sku"]).strip().upper())
     return salida
 
 

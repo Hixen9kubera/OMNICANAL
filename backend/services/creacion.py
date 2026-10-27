@@ -425,7 +425,10 @@ async def listar_candidatos_agrupados(
         # Con MySQL, leer el índice es 1 consulta rápida: se lee FRESCO en cada
         # carga (búsqueda/filtro/status siempre reflejan el estado actual, sin
         # depender del cache del sync).
-        indice = await asyncio.to_thread(wp_db.indice_drafts, aplanar)
+        # Sin las familias cuyas variantes ya pasaron TODAS por Crear: lo creado
+        # no se vuelve a enseñar aquí (Brandon, 27-oct-2026).
+        indice = await asyncio.to_thread(wp_db.indice_drafts, aplanar,
+                                         sin_familias_terminadas=True)
         lista = await asyncio.to_thread(_armar_grupos, indice, aplanar)
     else:
         # Sin MySQL no hay aplanado posible: el escaneo por API lista PRODUCTOS y
@@ -536,6 +539,19 @@ async def items_candidatos(grupos: list[dict[str, Any]]) -> list[dict[str, Any]]
               else _contenedores_por_sku)
     contenedores = await asyncio.to_thread(lector, skus)
 
+    # Variantes que YA pasaron por Crear, para no enseñarlas debajo de su padre:
+    # están en Productos y aquí parecían pendientes (Brandon, 27-oct-2026). Si la
+    # base no contesta, la lista sale como antes.
+    padres_variables = [w for w, v in vivos.items()
+                        if v.get("tipo") == "variable" and v.get("variantes")]
+    procesadas: set[str] = set()
+    if padres_variables:
+        try:
+            from services import wp_db as _wpdb
+            procesadas = await asyncio.to_thread(_wpdb.variantes_procesadas, padres_variables)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("variantes procesadas no disponible (la lista sigue): %s", exc)
+
     items: list[dict[str, Any]] = []
     for g in grupos:
         miembros = g["miembros"]
@@ -561,6 +577,16 @@ async def items_candidatos(grupos: list[dict[str, Any]]) -> list[dict[str, Any]]
                 # reales son la SUMA de las variaciones (que `rep` ya trae), no el
                 # _stock del padre (0, porque no gestiona stock propio).
                 item["stock"] = rep.get("stock")
+                if procesadas:
+                    todas = rep.get("variantes") or []
+                    faltan = [v for v in todas
+                              if (v.get("sku") or "").strip().upper() not in procesadas]
+                    if todas and not faltan:
+                        continue  # la familia ya se creó entera: no es de Crear
+                    if len(faltan) < len(todas):
+                        # El stock y el valor son de lo que FALTA crear.
+                        item["variantes"] = faltan
+                        item["stock"] = sum((v.get("stock") or 0) for v in faltan)
                 if item.get("costo"):
                     item["valor"] = round((item["stock"] or 0) * item["costo"], 2)
             items.append(item)
