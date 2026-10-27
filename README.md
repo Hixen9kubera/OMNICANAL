@@ -1001,6 +1001,50 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.691.0 — El semáforo de categoría del Estudio también enseña lo que propone Mercado Libre
+
+**El caso (Eduardo, 27-oct, primera hora de la sombra):** TEC-0191-PLA, un sensor MAP de auto publicado en «Agro ›
+Repuestos Maquinaria Agrícola › Inyección › Sensores MAP». El semáforo del Estudio lo marcó bien en rojo, pero ninguna
+propuesta era la buena, «Autos y Camionetas › Inyección › Sensores › Sensor MAP» (MLM163963).
+
+**Por qué.**
+- La v0.690.0 dejó al Estudio solo con las propuestas de los vectores: 3 por texto y fotos y 3 por texto. El sensor
+  MAP quedó 4.º por texto y fotos.
+- El predictor de ML (`domain_discovery`) lo pone 1.º. La gemela de Agro, que es la elegida, es su 3.ª.
+- La vista previa sí junta las dos fuentes; el Estudio no. Y esa combinación es la que se había medido en la prueba.
+
+**Medido sin gastar**, con la caché de la prueba del 26/27-oct sobre los 50 errores revisados a mano. Columnas:
+la correcta es la 1.ª propuesta / está entre las 3 primeras / está en algún lugar de la lista.
+
+| Lista | 1.ª | En las 3 primeras | En la lista |
+|---|---|---|---|
+| Solo vectores (Estudio v0.690.0) | 36 % | 48 % | 60 % |
+| Solo el predictor de ML | 72 % | 80 % | 80 % |
+| **Predictor primero y después vectores** (como la vista previa) | **72 %** | **80 %** | **92 %** |
+| Predictor ordenado por los vectores | 64 % | 80 % | 92 % |
+
+Ordenar las del predictor según los vectores empeora la 1.ª: se respeta el orden de ML.
+
+**Qué cambia.**
+- `POST /api/publicar/categoria-ml/revision` suma `sugeridas_ml`: lo que propone el predictor de ML para el título.
+  - Usa la misma función que la tarjeta de la vista previa (`ml_revision_categoria.revisar`).
+  - Corre en paralelo con los vectores, con un tope de 10 s; si falla, la respuesta trae los vectores solos.
+  - Es GET público de ML, sin token y sin costo.
+  - Con `CATEGORIA_VEC_ENABLED` apagada no llama ni a OpenRouter ni a ML.
+- `SemaforoCategoriaML.tsx` arma una sola lista:
+  - primero las del predictor, en su orden («n.º 1 de Mercado Libre»), sin la categoría elegida, y marcadas «también
+    por texto y fotos» cuando coinciden;
+  - después las de los vectores.
+  - Se ven 3 y el resto tras «Ver más».
+- La vista previa no cambia: ya enseñaba las dos listas.
+
+**Pruebas.** `test_categoria_vectores`: 38. Tres nuevas de la ruta:
+- suma el predictor con `origen="estudio"`;
+- si el predictor falla, quedan los vectores;
+- apagada no llama a nadie.
+
+`tsc` limpio. En el sandbox, TEC-0191-PLA enseña primero «Sensor MAP» y después la gemela de Línea Pesada.
+
 ### v0.690.0 — Categoría de ML revisada por TEXTO y FOTO antes de publicar (sombra, apagada por omisión)
 
 (Nació como v0.689.0 en su rama; Brandon ocupó ese número el mismo día con «Crear vuelve a titular en español».)

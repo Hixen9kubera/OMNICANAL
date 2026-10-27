@@ -347,22 +347,42 @@ class Reuso(unittest.TestCase):
 class RutaEstudio(unittest.TestCase):
     """`POST /api/publicar/categoria-ml/revision`: el semáforo junto al selector del Estudio."""
 
-    def test_revisa_con_origen_estudio(self):
+    def _req(self):
         from routers import publicar as rp
-        vec = mock.AsyncMock(return_value={"color": "verde"})
-        req = rp.RevisionCategoriaIn(sku="X-1", wc_id=5, categoria_id="MLM3", titulo="Compresor",
-                                     descripcion="A/C", fotos=["https://f/1.jpg"])
-        with mock.patch.object(cv, "revisar", vec):
-            r = asyncio.run(rp.revision_categoria_ml(req))
-        self.assertEqual(r, {"vectores": {"color": "verde"}})
-        vec.assert_awaited_once_with("X-1", 5, "MLM3", "Compresor", "A/C", ["https://f/1.jpg"],
-                                     origen="estudio")
+        return rp, rp.RevisionCategoriaIn(sku="X-1", wc_id=5, categoria_id="MLM3", titulo="Sensor MAP",
+                                          descripcion="A/C", fotos=["https://f/1.jpg"])
 
-    def test_apagada_contesta_none(self):
-        from routers import publicar as rp
-        req = rp.RevisionCategoriaIn(sku="X-1", categoria_id="MLM3")
-        with _banderas(categoria_vec_enabled=False):
-            self.assertEqual(asyncio.run(rp.revision_categoria_ml(req)), {"vectores": None})
+    def test_revisa_con_origen_estudio_y_suma_el_predictor(self):
+        from services import ml_revision_categoria as rc
+        rp, req = self._req()
+        vec = mock.AsyncMock(return_value={"color": "rojo"})
+        pred = mock.AsyncMock(return_value={"sugeridas": [{"category_id": "MLM163963", "name": "Sensor MAP"}]})
+        with _banderas(), mock.patch.object(cv, "revisar", vec), mock.patch.object(rc, "revisar", pred):
+            r = asyncio.run(rp.revision_categoria_ml(req))
+        self.assertEqual(r["vectores"], {"color": "rojo"})
+        self.assertEqual([s["category_id"] for s in r["sugeridas_ml"]], ["MLM163963"])
+        vec.assert_awaited_once_with("X-1", 5, "MLM3", "Sensor MAP", "A/C", ["https://f/1.jpg"],
+                                     origen="estudio")
+        pred.assert_awaited_once_with("MLM3", "Sensor MAP")
+
+    def test_si_el_predictor_falla_quedan_los_vectores(self):
+        from services import ml_revision_categoria as rc
+        rp, req = self._req()
+        vec = mock.AsyncMock(return_value={"color": "verde"})
+        pred = mock.AsyncMock(side_effect=RuntimeError("ML caído"))
+        with _banderas(), mock.patch.object(cv, "revisar", vec), mock.patch.object(rc, "revisar", pred):
+            r = asyncio.run(rp.revision_categoria_ml(req))
+        self.assertEqual(r, {"vectores": {"color": "verde"}, "sugeridas_ml": []})
+
+    def test_apagada_no_llama_a_nadie(self):
+        from services import ml_revision_categoria as rc
+        rp, req = self._req()
+        vec, pred = mock.AsyncMock(), mock.AsyncMock()
+        with _banderas(categoria_vec_enabled=False), mock.patch.object(cv, "revisar", vec), \
+             mock.patch.object(rc, "revisar", pred):
+            self.assertEqual(asyncio.run(rp.revision_categoria_ml(req)), {"vectores": None, "sugeridas_ml": []})
+        vec.assert_not_called()
+        pred.assert_not_called()
 
 
 class VistaPrevia(unittest.TestCase):

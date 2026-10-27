@@ -115,6 +115,23 @@ class RevisionCategoriaIn(BaseModel):
     fotos: list[str] = Field(default_factory=list, max_length=12)
 
 
+# Lo más que el Estudio espera al predictor de ML (corre en paralelo con los vectores).
+ESPERA_PREDICTOR_S = 10.0
+
+
+async def _sugeridas_ml(categoria_id: str, titulo: str) -> list[dict[str, Any]]:
+    """Lo que propone el predictor de ML para el título (público, solo GET). Nunca lanza."""
+    import asyncio
+
+    from services import ml_revision_categoria
+
+    try:
+        rev = await asyncio.wait_for(ml_revision_categoria.revisar(categoria_id, titulo), ESPERA_PREDICTOR_S)
+        return list(rev.get("sugeridas") or [])
+    except Exception:  # noqa: BLE001 — sin predictor, el semáforo sale solo con los vectores
+        return []
+
+
 @router.post("/categoria-ml/revision")
 async def revision_categoria_ml(req: RevisionCategoriaIn) -> dict[str, Any]:
     """
@@ -123,14 +140,27 @@ async def revision_categoria_ml(req: RevisionCategoriaIn) -> dict[str, Any]:
     ANTES de llenar atributos y abrir la vista previa. La vista previa vuelve a revisar con
     lo que de verdad sale a ML (si es lo mismo, reusa esta revisión sin pagar otra vez).
 
-    `vectores` es None con `CATEGORIA_VEC_ENABLED` apagada: el Estudio no pinta nada.
+    `sugeridas_ml` (v0.691.0): lo que propone el predictor de ML para el título, como en la
+    tarjeta de la vista previa. Los vectores detectan la categoría equivocada; el predictor
+    casi siempre trae la buena (en la prueba, la correcta quedó en la lista 46 de 50 veces con
+    las dos fuentes, y 30 de 50 solo con los vectores). Caso real: TEC-0191-PLA, un sensor MAP
+    en «Agro › … › Sensores MAP»; el predictor pone primero «Autos › … › Sensor MAP».
+
+    Con `CATEGORIA_VEC_ENABLED` apagada contesta `vectores: null` sin llamar a nadie.
     No escribe en Woo ni en ML; guarda la revisión en `channel.ml_revision_categoria`.
     """
+    import asyncio
+
+    from config import settings
     from services import categoria_vectores
 
-    vec = await categoria_vectores.revisar(req.sku, req.wc_id, req.categoria_id, req.titulo,
-                                           req.descripcion, req.fotos, origen="estudio")
-    return {"vectores": vec}
+    if not settings.categoria_vec_enabled:
+        return {"vectores": None, "sugeridas_ml": []}
+    vec, sugeridas = await asyncio.gather(
+        categoria_vectores.revisar(req.sku, req.wc_id, req.categoria_id, req.titulo,
+                                   req.descripcion, req.fotos, origen="estudio"),
+        _sugeridas_ml(req.categoria_id, req.titulo))
+    return {"vectores": vec, "sugeridas_ml": sugeridas if vec is not None else []}
 
 
 def _leer_resultado(r: Any) -> tuple[str, dict[str, Any]]:

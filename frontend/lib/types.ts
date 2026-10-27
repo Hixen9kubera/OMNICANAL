@@ -804,6 +804,13 @@ export interface RevisionVectores {
   reusada?: boolean;
 }
 
+/** Lo que contesta la revisión del Estudio: los vectores y lo que propone el predictor de ML. */
+export interface RevisionCategoriaEstudio {
+  vectores: RevisionVectores | null;
+  /** El predictor de ML para el título, en su orden (como en la tarjeta de la vista previa). */
+  sugeridas_ml?: CategoriaRevisada[];
+}
+
 /** El semáforo de la categoría de ML junto al selector del Estudio. */
 export interface RevisarCategoriaMLReq {
   sku: string;
