@@ -1001,6 +1001,89 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.689.0 — Crear vuelve a titular en español: OpenRouter (GPT-6 Luna) ve la foto, y si ninguna IA contesta se dice en vez de copiar el título de Alibaba
+
+**El pedido (Brandon, 27-oct-2026):** al crear un producto con URL de Alibaba los datos llegaban en inglés (caso
+JUGU-0267-ROS: «Kids Pretend Play Cleaning Set … - Buy Product on Alibaba.com»). Se pidió el porqué, comparando por
+persona en Monitoreo, y después: *"si usa deepseek que es más barato"* → *"¿veía la imagen? si es así mejor usa
+openrouter"* → *"revisa cuál es el mejor modelo para ver la imagen y darme un título"*.
+
+**La causa, medida (solo lectura: logs de Railway + `ops.process_log`).**
+- El paso 2/5 (título y descripción) era **solo Claude** (Opus 4.8 directo, viendo la primera foto de Alibaba). Si
+  Claude no contestaba, `_procesar` hacía `titulo = scrape["titulo"]` y la descripción caía a la del proveedor: el
+  título crudo de Alibaba, en inglés, y el resumen decía «completado» sin avisar.
+- **Desde el 22-oct 02:02 UTC la llave de Anthropic de Railway responde `401 invalid x-api-key`** (horas después del
+  incidente de seguridad de Railway). 258 de 258 intentos fallaron. El corte cae a mitad de una tanda de Andrea:
+  TEC-0051-BLN a las 02:01 salió en español y ORG-0592-ROS a las 02:02, en inglés.
+- **No dependía de la persona.** Las 245 altas desde el corte nacieron en inglés, de las 7 KAMs (Valeria 89,
+  Gabriela 50, Andrea 46, Nancy 29, Denisse 14, Cinthya 11, Thalía 6). Del 15 al 21-oct, 191 de 191 salieron en
+  español. Las ~45 que hoy se ven en español las corrigieron después a mano en el Estudio Valeria, Andrea y Denisse.
+  El Estudio sí funcionaba porque `ia_generadores` pregunta a DeepSeek primero.
+- Los **atributos** de la misma alta salieron con 1 solo atributo del 22-oct 02:02 a las 19:12 y después se
+  recuperaron (16–26). `ml_atributos` también va con DeepSeek primero y ese día DeepSeek recibió llave.
+
+**El modelo se eligió midiendo.** 8 altas reales que salieron en inglés (foto de Woo, que es la de Alibaba tal cual,
+y el título de Alibaba) contra 8 modelos de visión de OpenRouter, con el prompt de Crear. Gasto total de la
+comparativa: $0.27.
+
+| Modelo | Títulos válidos | Costo por alta | Tiempo | Nota |
+|---|---|---|---|---|
+| claude-opus-4.8 (lo de antes) | 8/8 | $0.022 | 10.6 s | muy bueno; 60× más caro |
+| **openai/gpt-6-luna** | **8/8** | **$0.0004** | ~7 s | escribe como Opus («guantes de carnaza para soldar», «costal de box») |
+| google/gemini-2.5-flash | 8/8 con modo JSON | $0.0015 | ~4 s | el que ya usan `packing_sku` y «Sugerir precio» |
+| google/gemini-3.1-flash-lite | 8/8 | $0.0011 | ~3 s | Capitaliza Cada Palabra; un título de 63 caracteres |
+| google/gemini-2.5-flash-lite | 8/8 | $0.0004 | ~3 s | «pera box» por un soporte de costal |
+| anthropic/claude-haiku-5.5 | 7/8 | $0.0008 | ~7 s | una respuesta ilegible |
+| qwen3.8-flash · deepseek-v4.1-flash | 2/8 | — | — | respuestas vacías |
+
+Dos hallazgos de la comparativa:
+- **Luna exige la palabra «JSON» en el mensaje** para el modo JSON (si no, 400 «Response input messages must
+  contain the word 'json'»). Va en un mensaje de sistema.
+- **La regla vieja del prompt quitaba los acentos.** «NO usar ningún … carácter Unicode» hizo que Opus (antes) y Luna
+  escribieran «Proteccion», «algodon», «Diseno». Medido en las 8 descripciones: Opus, 38 palabras sin acento contra
+  18 letras acentuadas. La regla ahora prohíbe emojis, íconos y símbolos decorativos, y pide acentos y ñ. Con ella,
+  Luna escribió 109 letras acentuadas y 5 faltas.
+
+**Qué cambia (`services/crear_producto.py`).**
+1. **OpenRouter primero, viendo la foto** (`_seo_openrouter`). La foto se baja y se reduce a 1024 px en JPEG
+   (data-URL); si no se puede bajar, viaja la URL tal cual. Modelos en orden: `openai/gpt-6-luna` y, si falla,
+   `google/gemini-2.5-flash` (`OPENROUTER_MODELOS_SEO`). Modo JSON, `reasoning: low`. Un 401/402 corta (es la misma
+   cuenta para los dos modelos) y pasa al siguiente proveedor. El costo real (`usage.cost`) queda en el log.
+2. **DeepSeek de respaldo, solo con texto**, con la MISMA llamada de los atributos de esta alta
+   (`ml_atributos._deepseek_json`). Sirve si OpenRouter se queda sin crédito, que ya pasó el 21-oct. A DeepSeek se le
+   pasa la descripción del proveedor en texto plano (sin HTML, máx 1,500 caracteres) porque no ve la foto.
+3. **Claude directo, con la foto, al final**, igual que antes (con imagen, sin imagen y un segundo intento sin
+   imagen). Hoy su llave está muerta: no estorba, solo falla rápido.
+4. **Si ninguna IA contesta, NO se copia el título de Alibaba.** El borrador conserva su nombre de Odoo (no se manda
+   `name`), no se escribe la descripción en inglés, a la variante no se le guarda título en `channel_content`, y el
+   resumen dice **«falta: título en español»**. El acta de `core.products` y la bitácora llevan el nombre con que el
+   producto QUEDÓ (el que devuelve Woo tras el PUT). La categoría y los atributos siguen leyendo el título de
+   Alibaba como dato de entrada, igual que los generadores de Amazon/TikTok/Temu (apagados por bandera).
+5. **La bitácora dice quién escribió el título**: `ia_modelo` en el detalle del «completado».
+6. `_parse_seo_json` acepta saltos de línea crudos dentro de la descripción (`strict=False`): el prompt pide «\n» y
+   algunos modelos los escriben literales. Era la causa de 2 de los 8 fallos de Gemini 2.5 Flash sin modo JSON.
+
+**Prueba de punta a punta** (la función real contra OpenRouter real, sin escribir nada): JUGU-0267-ROS → «Set de
+limpieza de juguete para niñas y niños» (6.4 s, Luna); OFI-0428-EST → «Soporte De Pared Ajustable Para Costal De Box».
+
+**Lo que NO cambia.** No hay bandera nueva (es un fix). La llave de Anthropic sigue muerta en Railway: rotarla es
+variable de producción y va con su dale. Los ~196 productos que siguen en inglés no se tocan aquí: regenerarlos
+escribe en Woo y va aparte. OpenRouter es prepago y sin recarga automática: si se acaba el crédito, el título lo
+escribe DeepSeek (sin foto) y se ve en el log como «SEO OpenRouter HTTP 402 (sin crédito)».
+
+**Pruebas:** `tests/test_crear_titulo_espanol.py` (14):
+- Luna ve la foto (data-URL, ≤ 1024 px, modo JSON, «JSON» en el sistema, acentos en la regla) y nadie más se llama.
+- Si la foto no baja, viaja la URL.
+- Luna cae y contesta Gemini.
+- Un 402 no insiste con Gemini y pasa a DeepSeek (sin foto).
+- Saltos de línea crudos.
+- Sin llave de OpenRouter va a DeepSeek; DeepSeek sin título sigue con Claude con foto; sin llave de DeepSeek no se
+  intenta.
+- Ninguna IA → `None`.
+- Piezas: detalles, objetos raros, foto ilegible.
+
+Con las de atributos, SKU contenedor, `ia_json` y el editor de OpenRouter: 186 en verde.
+
 ### v0.688.0 — «Sugerir precio»: la búsqueda se paga una vez (caché de Competencia, 7 días), un término, sin imágenes y con el costo REAL de Apify
 
 **El pedido (Brandon, 23-oct-2026):** «Recuerda guardar la búsqueda de competencia para que no vuelva a scrapear para

@@ -5,7 +5,9 @@ Al dar "Crear productos" en Omnicanal, por cada SKU (draft en Woo + URL de
 Alibaba) se ejecuta en segundo plano:
 
   1. Apify        → scrape de la URL de Alibaba (título, precio, specs, imágenes)
-  2. Claude       → título SEO + descripción (usa título de Alibaba + imagen)
+  2. OpenRouter   → título SEO + descripción en español viendo la foto (GPT-6 Luna;
+                    respaldos: Gemini 2.5 Flash, DeepSeek sin foto, Claude directo;
+                    si ninguno responde, el borrador conserva su nombre y lo avisa)
   3. Gemini       → limpia logos/textos de hasta 10 imágenes → WordPress Media
   4. Mercado Libre→ categoría (ml_cat_id de costos_finales, o domain_discovery)
   5. MySQL        → precios (costos_finales) y costos (costos_validados)
@@ -367,7 +369,41 @@ def _spec_dims(v: Any) -> dict[str, float] | None:
     return None
 
 
-# ── Paso 2: Claude (título SEO + descripción) ───────────────────────────────────
+# ── Paso 2: OpenRouter → DeepSeek → Claude (título SEO + descripción en español) ─
+#
+# POR QUÉ (27-oct-2026). Este paso era SOLO Claude (Opus 4.8 directo, viendo la
+# primera foto) y, cuando Claude no contestaba, el alta se quedaba con el título
+# crudo de Alibaba —en inglés, a veces con "- Buy Product on Alibaba.com"— y decía
+# «completado». Desde el 22-oct 02:02 UTC la llave de Anthropic de Railway da 401:
+# 245 altas de 7 personas nacieron en inglés sin que el resumen lo dijera.
+#
+# EL MODELO SE ELIGIÓ MIDIENDO, no por catálogo. 8 altas reales que salieron en
+# inglés (foto + título de Alibaba) contra 8 modelos de OpenRouter, con este mismo
+# prompt:
+#   · claude-opus-4.8 (lo de antes)  8/8  $0.022 por alta  10.6 s
+#   · gpt-6-luna                     8/8  $0.0004          ~7 s   ← el primero
+#   · gemini-2.5-flash               8/8  $0.0015          ~4 s   ← su respaldo
+#   · gemini-3.1-flash-lite          8/8  $0.0011  Capitaliza Cada Palabra; 1 título de 63 car.
+#   · gemini-2.5-flash-lite          8/8  $0.0004  «pera box» por un soporte de costal
+#   · claude-haiku-5.5               7/8  $0.0008  una respuesta ilegible
+#   · qwen3.8-flash, deepseek-v4.1-flash  2/8  respuestas vacías
+# Luna escribe como Opus («guantes de carnaza para soldar») a 1/60 del costo.
+# Ojo: Luna pide la palabra «JSON» en el mensaje para el modo JSON (si no, 400), y
+# con la regla vieja «no usar carácter Unicode» quitaba los acentos —Opus también:
+# la regla ahora pide acentos y ñ—.
+#
+# DeepSeek queda de respaldo (solo texto: es la llamada de `ml_atributos`, que hoy
+# funciona) por si OpenRouter se queda sin crédito, que ya pasó el 21-oct; y
+# Claude directo, con la foto, al final.
+
+_OR_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_MODELOS_SEO = ("openai/gpt-6-luna", "google/gemini-2.5-flash")
+_SISTEMA_JSON = "Responde únicamente con un objeto JSON válido."
+_FOTO_PX = 1024  # lado mayor de la foto que se le manda al modelo
+
+# Lo que se le pasa al modelo de la descripción del proveedor. Es contexto para
+# las "características principales", no un texto a traducir completo.
+_DETALLES_MAX = 1500
 
 _ESQUEMA_SEO = {
     "type": "object",
@@ -380,58 +416,196 @@ _ESQUEMA_SEO = {
 }
 
 
-def _prompt_seo(titulo_alibaba: str, url: str) -> str:
+def _detalles_proveedor(descripcion: str) -> str:
+    """La descripción de Alibaba en texto plano y recortada (suele venir en HTML)."""
+    texto = re.sub(r"<[^>]+>", " ", descripcion or "")
+    texto = re.sub(r"\s+", " ", texto).strip()
+    return texto[:_DETALLES_MAX]
+
+
+def _prompt_seo(titulo_alibaba: str, url: str, con_imagen: bool = True,
+                detalles: str = "") -> str:
+    fuente = ("Observa la imagen del producto y usa el título de referencia de Alibaba"
+              if con_imagen else "Usa el título de referencia de Alibaba")
+    datos = (f"DATOS DEL PROVEEDOR (en inglés, solo como referencia): {detalles}\n"
+             if detalles else "")
     return (
         "Eres un experto en copywriting para MercadoLibre México.\n"
-        "Observa la imagen del producto y usa el título de referencia de Alibaba para crear\n"
+        f"{fuente} para crear\n"
         "un título y descripción optimizados para Mercado Libre México.\n\n"
         f"TÍTULO DE REFERENCIA (Alibaba): {titulo_alibaba}\n"
-        f"URL ALIBABA: {url}\n\n"
+        f"URL ALIBABA: {url}\n"
+        f"{datos}\n"
         "REGLAS TÍTULO: 100% español mexicano, máx 60 caracteres, palabras cotidianas "
         "generales con las que las personas buscan productos\n"
         "               (tenis / lentes / chamarra), función principal, sin mayúsculas excesivas.\n\n"
         "REGLAS DESCRIPCIÓN: español mexicano, 100-250 palabras, HTML básico (<p><strong><ul><li>),\n"
         "                    beneficios prácticos, tono cercano. Estructura clara con saltos de línea \\n."
-        "NO usar ningún emoji, ícono, símbolo especial o carácter Unicode. Agregar caracteristicas principales.\n\n"
+        "NO usar emojis, íconos ni símbolos decorativos (viñetas, palomitas, estrellas). "
+        "SÍ usar acentos y ñ: es español correcto. Agregar características principales.\n\n"
         "Responde EXACTAMENTE (sin markdown):\n"
         '{"titulo": "...", "descripcion": "..."}'
     )
 
 
+def _seo_de_objeto(data: Any) -> dict[str, str] | None:
+    """{titulo, descripcion} de un objeto ya parseado; None si no trae título."""
+    if not isinstance(data, dict):
+        return None
+    t = str(data.get("titulo") or "").strip()
+    d = str(data.get("descripcion") or "").strip()
+    return {"titulo": t, "descripcion": d} if t else None
+
+
 def _parse_seo_json(texto: str) -> dict[str, str] | None:
-    """Extrae {titulo, descripcion} del texto de Claude (JSON con o sin ruido)."""
+    """Extrae {titulo, descripcion} del texto del modelo (JSON con o sin ruido).
+
+    `strict=False` acepta saltos de línea crudos DENTRO de la descripción: el
+    prompt pide "saltos de línea \\n" y algunos modelos los escriben literales."""
     if not texto:
         return None
     try:
         m = re.search(r"\{.*\}", texto, re.DOTALL)
-        data = json.loads(m.group()) if m else json.loads(texto)
-        t = (data.get("titulo") or "").strip()
-        d = (data.get("descripcion") or "").strip()
-        return {"titulo": t, "descripcion": d} if t else None
+        return _seo_de_objeto(json.loads(m.group() if m else texto, strict=False))
     except Exception:  # noqa: BLE001
         return None
 
 
+def _foto_data_url(raw: bytes) -> str | None:
+    """JPEG de `_FOTO_PX` en data-URL (BLOQUEANTE: va en `asyncio.to_thread`)."""
+    import io
+
+    from PIL import Image
+
+    try:
+        im = Image.open(io.BytesIO(raw)).convert("RGB")
+        im.thumbnail((_FOTO_PX, _FOTO_PX))
+        b = io.BytesIO()
+        im.save(b, "JPEG", quality=85)
+        return "data:image/jpeg;base64," + base64.b64encode(b.getvalue()).decode()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+async def _seo_openrouter(cli: httpx.AsyncClient, prompt: str, imagen_url: str | None,
+                          url: str) -> dict[str, str] | None:
+    """El título y la descripción por OpenRouter, VIENDO la foto. None si no hay
+    llave o si ningún modelo de `OPENROUTER_MODELOS_SEO` contestó.
+
+    La foto se baja y se reduce aquí: así el modelo no depende de poder leer
+    alicdn, y cuesta menos. Si no se puede bajar, viaja la URL tal cual."""
+    if not settings.openrouter_api_key:
+        return None
+    foto = None
+    if imagen_url:
+        try:
+            r = await cli.get(imagen_url, follow_redirects=True,
+                              headers={"User-Agent": "Mozilla/5.0"})
+            if r.status_code == 200:
+                foto = await asyncio.to_thread(_foto_data_url, r.content)
+        except httpx.HTTPError as exc:
+            log.warning("SEO OpenRouter: no se pudo bajar la foto %s: %s", imagen_url, exc)
+        foto = foto or imagen_url
+    contenido: list[dict[str, Any]] = []
+    if foto:
+        contenido.append({"type": "image_url", "image_url": {"url": foto}})
+    contenido.append({"type": "text", "text": prompt})
+    for modelo in OPENROUTER_MODELOS_SEO:
+        body = {
+            "model": modelo, "max_tokens": 1500, "temperature": 0.3,
+            "reasoning": {"effort": "low", "exclude": True},
+            "response_format": {"type": "json_object"},
+            "messages": [{"role": "system", "content": _SISTEMA_JSON},
+                         {"role": "user", "content": contenido}],
+        }
+        try:
+            resp = await cli.post(_OR_URL, json=body, timeout=120, headers={
+                "Authorization": f"Bearer {settings.openrouter_api_key}",
+                "X-Title": "Kubera Omnicanal"})
+        except httpx.HTTPError as exc:
+            log.warning("SEO OpenRouter %s falló para %s: %s", modelo, url, exc)
+            continue
+        if resp.status_code in (401, 402):
+            # Llave mala o sin crédito: es la misma cuenta para todos los modelos.
+            log.warning("SEO OpenRouter HTTP %d (%s) para %s: %s", resp.status_code,
+                        "sin crédito" if resp.status_code == 402 else "llave rechazada",
+                        url, resp.text[:150])
+            return None
+        if resp.status_code != 200:
+            log.warning("SEO OpenRouter %s HTTP %d para %s: %s",
+                        modelo, resp.status_code, url, resp.text[:150])
+            continue
+        try:
+            d = resp.json()
+            texto = ((d.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+            usd = float((d.get("usage") or {}).get("cost") or 0)
+        except (ValueError, AttributeError, IndexError, TypeError):
+            texto, usd = "", 0.0
+        seo = _parse_seo_json(texto)
+        if seo:
+            log.info("SEO por OpenRouter %s ($%.5f) para %s", modelo, usd, url)
+            return {**seo, "modelo": modelo}
+        log.warning("SEO OpenRouter %s no trajo título para %s", modelo, url)
+    return None
+
+
+async def _seo_deepseek(prompt: str, url: str) -> dict[str, str] | None:
+    """El título y la descripción con DeepSeek. None si no hay llave o si falla.
+
+    Es la misma llamada de los atributos de esta alta (`ml_atributos`: modelo
+    `DEEPSEEK_MODEL`, modo JSON). Se pregunta por la llave ANTES porque, sin ella,
+    `_deepseek_json` cae sola a Claude sin imagen, y el respaldo de aquí es Claude
+    CON imagen."""
+    if not settings.deepseek_api_key:
+        return None
+    from services.ml_atributos import _deepseek_json  # noqa: PLC0415
+    try:
+        r = _seo_de_objeto(await _deepseek_json(_SISTEMA_JSON, prompt, max_tokens=2048))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("SEO DeepSeek falló para %s: %s", url, exc)
+        return None
+    if not r:
+        log.warning("SEO DeepSeek no trajo título para %s", url)
+        return None
+    log.info("SEO por DeepSeek (sin foto) para %s", url)
+    return {**r, "modelo": f"deepseek/{settings.deepseek_model}"}
+
+
 async def titulo_descripcion_ia(
-    titulo_alibaba: str, imagen_url: str | None, url: str
+    titulo_alibaba: str, imagen_url: str | None, url: str, descripcion_proveedor: str = ""
 ) -> dict[str, str] | None:
     """
-    Genera {titulo, descripcion} con Claude usando el título de Alibaba (+ imagen).
-    NO usa output_config (no existe en SDK anthropic viejos como el de Railway):
-    se pide el JSON en el prompt y se parsea con regex. Compatible con cualquier
-    versión del SDK. A prueba de fallos: si falla con imagen, reintenta texto.
+    Genera {titulo, descripcion, modelo} en español. En orden: OpenRouter viendo
+    la foto (`OPENROUTER_MODELOS_SEO`), DeepSeek solo con texto, y Claude directo
+    con la foto. None = NINGUNA IA respondió: quien llama NO debe caer al título
+    de Alibaba, que está en inglés (ver la nota del Paso 2).
+
+    Claude NO usa output_config (no existe en SDK anthropic viejos como el de
+    Railway): se pide el JSON en el prompt y se parsea con regex. Compatible con
+    cualquier versión del SDK. A prueba de fallos: si falla con imagen, reintenta texto.
     """
+    detalles = _detalles_proveedor(descripcion_proveedor)
+    async with httpx.AsyncClient(timeout=60) as hcli:
+        r = await _seo_openrouter(
+            hcli, _prompt_seo(titulo_alibaba, url, bool(imagen_url), detalles), imagen_url, url)
+    if r:
+        return r
+    r = await _seo_deepseek(_prompt_seo(titulo_alibaba, url, False, detalles), url)
+    if r:
+        return r
+
     from anthropic import AsyncAnthropic
 
     cli = AsyncAnthropic(api_key=settings.anthropic_api_key)
-    prompt = _prompt_seo(titulo_alibaba, url)
 
     async def _llamar(con_imagen: bool) -> dict[str, str] | None:
         contenido: list[dict[str, Any]] = []
-        if con_imagen and imagen_url:
+        con_imagen = bool(con_imagen and imagen_url)
+        if con_imagen:
             contenido.append({"type": "image",
                               "source": {"type": "url", "url": imagen_url}})
-        contenido.append({"type": "text", "text": prompt})
+        contenido.append({"type": "text",
+                          "text": _prompt_seo(titulo_alibaba, url, con_imagen, detalles)})
         resp = await cli.messages.create(
             model=CLAUDE_MODEL, max_tokens=2048,
             messages=[{"role": "user", "content": contenido}],
@@ -448,7 +622,7 @@ async def titulo_descripcion_ia(
         try:
             r = await _llamar(con_img)
             if r:
-                return r
+                return {**r, "modelo": CLAUDE_MODEL}
         except Exception as exc:  # noqa: BLE001
             ultimo = exc
             log.warning("SEO (imagen=%s) falló para %s: %s", con_img, url, exc)
@@ -1133,7 +1307,8 @@ async def _procesar(sku: str, wc_id: int | None, url: str,
 
             _set(sku, "procesando", "2/5 · Mejorando título y descripción con IA…", wc_id=wc_id)
             primera = scrape["imagenes"][0] if scrape["imagenes"] else None
-            ia = await titulo_descripcion_ia(scrape["titulo"], primera, url)
+            ia = await titulo_descripcion_ia(scrape["titulo"], primera, url,
+                                             scrape.get("descripcion_proveedor") or "")
 
             n_imgs = len(scrape["imagenes"])
             paso3 = (
@@ -1143,7 +1318,12 @@ async def _procesar(sku: str, wc_id: int | None, url: str,
             _set(sku, "procesando", paso3, wc_id=wc_id)
             imagenes, limpiadas = await procesar_imagenes(sku, scrape["imagenes"])
 
-            titulo = (ia or {}).get("titulo") or scrape["titulo"]
+            # `titulo_es` es None si NINGUNA IA respondió. Entonces NO se escribe el
+            # título de Alibaba (inglés): el borrador conserva su nombre de Odoo y
+            # el resumen dice «falta: título en español». `titulo` sigue
+            # alimentando a la categoría y a los atributos, que solo lo LEEN.
+            titulo_es = (ia or {}).get("titulo")
+            titulo = titulo_es or scrape["titulo"]
             _set(sku, "procesando", "4/6 · Categoría de Mercado Libre…", wc_id=wc_id)
             cat = await categoria_ml(sku, titulo)
             # Si el SKU no tiene precio en costos_finales, se calcula aquí desde
@@ -1174,8 +1354,8 @@ async def _procesar(sku: str, wc_id: int | None, url: str,
             if dinero.get("costo_comision") is not None:
                 meta.append({"key": "wc_kam_costo_comision", "value": str(dinero["costo_comision"])})
 
-            descripcion_final = ((ia or {}).get("descripcion")
-                                 or scrape["descripcion_proveedor"] or "")
+            # Sin la de la IA no se escribe nada: la del proveedor está en inglés.
+            descripcion_final = (ia or {}).get("descripcion") or ""
 
             payload: dict[str, Any] = {"meta_data": meta}
             # Galería que Crear le deja a una VARIANTE (None = no trajo fotos).
@@ -1205,7 +1385,8 @@ async def _procesar(sku: str, wc_id: int | None, url: str,
                         meta.append({"key": "_product_image_gallery",
                                      "value": ",".join(str(i) for i in ids_extra)})
             else:
-                payload["name"] = titulo
+                if titulo_es:
+                    payload["name"] = titulo_es
                 if imagenes:
                     payload["images"] = imagenes
             # Categoría ML → categoría de WooCommerce (reemplaza el departamento).
@@ -1337,7 +1518,8 @@ async def _procesar(sku: str, wc_id: int | None, url: str,
                     wc_id, wp_db.META_PROCESADA,
                     datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"))
                 # El título de la variante, donde sí cabe: por SKU y por canal.
-                await _guardar_titulo_variante(sku, titulo, descripcion_final)
+                if titulo_es:
+                    await _guardar_titulo_variante(sku, titulo_es, descripcion_final)
             else:
                 await _estado_wc(wc_id, status_final)
                 # Sin esto el producto no se ve en Productos hasta que expire el
@@ -1352,12 +1534,17 @@ async def _procesar(sku: str, wc_id: int | None, url: str,
             if not tiene_imgs: faltan.append("imágenes")
             if not tiene_attrs: faltan.append("atributos")
             if sin_costo: faltan.append("costo")
+            if not titulo_es: faltan.append("título en español")
             resumen = (f"{len(imagenes)} imgs · {len(atributos)} atributos · "
                        f"{('categoría ' + cat['category_id']) if cat else 'sin categoría'}")
             resumen += f" → {status_final.upper()}"
             if faltan:
                 resumen += f" (falta: {', '.join(faltan)})"
-            _set(sku, "completado", resumen, wc_id=wc_id, titulo=titulo, status_wc=status_final)
+            # El nombre con que el producto QUEDÓ: sin IA es el que ya tenía en Woo.
+            nombre = titulo_es or (wc_prod or {}).get("name") or titulo
+            # `ia_modelo`: quién escribió el título (auditoría y costo).
+            _set(sku, "completado", resumen, wc_id=wc_id, titulo=nombre, status_wc=status_final,
+                 ia_modelo=(ia or {}).get("modelo"))
             # Espejo kubera: el NACIMIENTO queda registrado en core.products
             # (registro civil del catálogo). Tras la desconexión del pipeline
             # externo, el panel es la única sala de partos: sin este seam cada
@@ -1371,7 +1558,7 @@ async def _procesar(sku: str, wc_id: int | None, url: str,
             from services import core_write
             core_write.registrar(
                 "services/crear_producto.py", "crear (nacimiento)",
-                {"sku": sku_real, "name": titulo, "wc_id": wc_id,
+                {"sku": sku_real, "name": nombre, "wc_id": wc_id,
                  "status": status_final, "source": "panel_crear"},
                 clave=sku_real)
 
