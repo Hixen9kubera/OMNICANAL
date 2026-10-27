@@ -3,6 +3,7 @@ publicar.py — Paso 4: actualizar la publicación en el canal seleccionado.
 
   POST /api/publicar/preview       → arma y devuelve el payload (NO escribe nada)
   POST /api/publicar/confirmar     → ejecuta el update en vivo + registra en bitácora
+  POST /api/publicar/categoria-ml/revision → semáforo de la categoría de ML en el Estudio
   GET  /api/publicar/amazon/tipos  → buscador de product types (como el picker de ML)
   POST /api/publicar/amazon/tipo   → guarda la elección (meta amz_product_type en Woo)
 """
@@ -88,6 +89,10 @@ class PublicarRequest(BaseModel):
     # Mercado Libre: la categoría que la persona REVISÓ y confirmó en la vista
     # previa. Sin ella no se da de alta (`services/ml_revision_categoria.py`).
     categoria_confirmada: str | None = None
+    # Por qué se publica en la categoría elegida aunque la revisión por texto y foto
+    # salió en ROJO (`services/categoria_vectores.py`). Con CATEGORIA_VEC_CANDADO es
+    # obligatorio en rojo; siempre queda guardado con la revisión.
+    categoria_motivo: str | None = None
 
     def a_dict(self) -> dict[str, Any]:
         d = self.model_dump()
@@ -98,6 +103,34 @@ class PublicarRequest(BaseModel):
 @router.post("/preview")
 async def preview(req: PublicarRequest) -> dict[str, Any]:
     return await publicar.preview(req.a_dict())
+
+
+class RevisionCategoriaIn(BaseModel):
+    sku: str = Field(..., min_length=1, max_length=80)
+    wc_id: int | None = None
+    categoria_id: str = Field(..., min_length=3, max_length=20)
+    titulo: str = Field("", max_length=500)
+    descripcion: str = Field("", max_length=50_000)
+    # Solo cuentan las 2 primeras (`categoria_vectores.MAX_FOTOS`).
+    fotos: list[str] = Field(default_factory=list, max_length=12)
+
+
+@router.post("/categoria-ml/revision")
+async def revision_categoria_ml(req: RevisionCategoriaIn) -> dict[str, Any]:
+    """
+    El semáforo de la categoría de ML junto al selector del Estudio (27-oct-2026): el
+    título con la descripción y las 2 primeras fotos de la galería contra todo el árbol,
+    ANTES de llenar atributos y abrir la vista previa. La vista previa vuelve a revisar con
+    lo que de verdad sale a ML (si es lo mismo, reusa esta revisión sin pagar otra vez).
+
+    `vectores` es None con `CATEGORIA_VEC_ENABLED` apagada: el Estudio no pinta nada.
+    No escribe en Woo ni en ML; guarda la revisión en `channel.ml_revision_categoria`.
+    """
+    from services import categoria_vectores
+
+    vec = await categoria_vectores.revisar(req.sku, req.wc_id, req.categoria_id, req.titulo,
+                                           req.descripcion, req.fotos, origen="estudio")
+    return {"vectores": vec}
 
 
 def _leer_resultado(r: Any) -> tuple[str, dict[str, Any]]:
@@ -199,7 +232,8 @@ async def confirmar(req: PublicarRequest) -> dict[str, Any]:
                        canal=getattr(req, "canal", None),
                        cuenta=getattr(req, "cuenta", None),
                        detalle={"wc_id": getattr(req, "wc_id", None),
-                                "categoria_confirmada": getattr(req, "categoria_confirmada", None)})
+                                "categoria_confirmada": getattr(req, "categoria_confirmada", None),
+                                "categoria_motivo": getattr(req, "categoria_motivo", None)})
         return r
     except HTTPException as exc:
         # Validación rechazada: es el caso más común y el que más dice al

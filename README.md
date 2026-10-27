@@ -1001,6 +1001,140 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.690.0 — Categoría de ML revisada por TEXTO y FOTO antes de publicar (sombra, apagada por omisión)
+
+(Nació como v0.689.0 en su rama; Brandon ocupó ese número el mismo día con «Crear vuelve a titular en español».)
+
+**El pedido (Eduardo, 27-oct-2026):** «implementarlo en el publicador para que antes de que salga la publicación estemos
+seguros de la categoría».
+
+**El problema, medido el 26-oct.**
+- ~7 % de las publicaciones activas en ML están en una categoría equivocada, y ML las acepta igual.
+- La tarjeta de v0.677.0 solo compara el **título** contra el predictor de ML. Como Crear eligió la categoría con ese
+  mismo predictor, casi siempre sale «coincide» (circular).
+
+**La prueba** (192 publicaciones revisadas a mano, US$0.098 en OpenRouter autorizados por Eduardo; `RESULTADOS_VECTORES.md`
+de la sesión). Se compara por significado el título con la descripción (qwen3-embedding-8b) y 2 fotos
+(voyage-multimodal-3.5) contra las ~10.7k hojas del árbol.
+- De 50 categorías equivocadas: 41 rojas, 7 ámbar, 2 verdes.
+- De 100 correctas: 72 verdes, 14 ámbar, 14 rojas.
+- La correcta queda entre las propuestas (con las del predictor) en 47 de 50.
+
+**Qué cambia.**
+1. **Migración 0078** (`channel.ml_category_vec` y `channel.ml_revision_categoria`, pgvector 0.8.2 en `extensions`):
+   - la huella de cada hoja publicable por modelo (halfvec 512 normalizado; 512 dims medían igual que 1024; ≈26 MB);
+   - cada revisión, con lo que dijo cada señal, el color, las propuestas, el costo y la decisión de quien publicó.
+     Hoy el veredicto no se guardaba en ningún lado.
+   - RLS sin políticas y grant a service_role en el mismo archivo.
+2. **`services/categoria_vectores.py`.** En la vista previa de un ALTA, en paralelo con el predictor:
+   - consulta = instrucción + título[:200] + descripción[:600], más las 2 primeras fotos que irían a ML;
+   - una sola consulta SQL calcula el lugar de la elegida por texto, por fotos y por su fusión (z por fila, mismo peso,
+     sin ajustar);
+   - color: **verde** ≤ 5, **ámbar** ≤ 20, **rojo** > 20; sin fotos decide el texto;
+   - propuestas: 3 por texto+fotos y 3 por texto;
+   - Costo por vista previa: ~US$0.00025 con fotos de ML de 500 px (sandbox). Con las originales de la tienda
+     (chunche.shop, que voyage sí lee: png, webp y jpg), US$0.0003–0.0006 por foto, porque voyage cobra por
+     píxel: ~US$0.0007–0.0013 por vista previa. El tope de 0.5 alcanza para ~400–700 al día.
+   - Si OpenRouter se cuelga, la vista previa espera como mucho 10 s: es un tope TOTAL por señal
+     (`asyncio.wait_for`), porque el timeout de httpx solo cuenta por etapa (conectar, leer…).
+   - Si el texto no contesta a tiempo pero las fotos sí (ya pagadas), decide con las fotos (`solo_fotos`, lo dice la
+     tarjeta). Pasó una vez en el sandbox: qwen3 tardó más de 10 s.
+   - Si no hay clave, no hay huellas, OpenRouter no contesta o se llega a `CATEGORIA_VEC_TOPE_DIARIO_USD` (0.5 por
+     omisión, suma de 24 h de la tabla): `sin_senal`, se guarda y la tarjeta queda como siempre (decisión de Eduardo).
+3. **El candado** (`CATEGORIA_VEC_CANDADO`). En rojo, `publicar_ready.crear_ml`, el embudo de toda alta, no da de alta
+   sin un **motivo** de ≥ 10 caracteres o sin cambiar a una propuesta (que regenera la revisión).
+   - Busca en el servidor la ÚLTIMA revisión de ese SKU y categoría (6 h): el cliente no se lo salta omitiendo un id.
+   - Sin revisión, no frena.
+   - Al dar de alta anota la decisión (`confirmada`, motivo, quién), también en modo sombra.
+4. **Tarjeta** (`RevisionCategoriaML.tsx`): debajo del predictor, «Revisión por texto y fotos».
+   - Muestra el semáforo con el lugar entre ~10,700.
+   - En ámbar y rojo, las propuestas con «Usar esta».
+   - Las que coinciden con ML se marcan arriba «también por texto y fotos» y no se repiten.
+   - En rojo pide «¿Por qué esta categoría es la correcta?»: obligatorio con candado, opcional en sombra.
+   - `categoria_motivo` viaja en `/api/publicar/confirmar` y queda en la bitácora de Publicar.
+5. **`scripts/vectorizar_arbol_ml.py`.**
+   - Vectoriza solo lo que falta o cambió (sha1 de la ruta) y borra lo que ya no es hoja.
+   - Ensayo por omisión; `--tope-usd` 0.06.
+   - Árbol completo ≈ US$0.037. Re-correrlo tras `cargar_arbol_ml` cuesta centavos.
+   - **Encadenado al cron de las 06:15** (`railway.etl-core.json`, después de `cargar_arbol_ml`) con `--cron` y
+     `--tope-usd 0.05`: si ML agrega o cambia hojas, vectoriza solo esas; si no, «al día» y US$0. Sin la tabla de la
+     0078, sin `OPENROUTER_API_KEY` en el servicio `etl-core-products` o sin la lista de precios de OpenRouter,
+     avisa y sale en 0: el paso no tumba el cron, sea cual sea el orden de la migración, el push y la variable.
+     Sin clave o sin nada que hacer, ni siquiera consulta la red. El build del cron suma `httpx` y
+     `pydantic-settings` (los pide `services/categoria_vectores`).
+6. **El semáforo también en el Estudio, junto al selector de categoría** (`SemaforoCategoriaML.tsx`, pedido de
+   Eduardo el mismo día). La vista previa es el último paso: si salía rojo ahí, los atributos de la IA ya eran de la
+   categoría equivocada.
+   - `POST /api/publicar/categoria-ml/revision` con el título y la descripción del Estudio y las 2 primeras fotos de
+     la galería. Devuelve `vectores: null` con la bandera apagada y el Estudio no pinta nada: ni «cargando» ni un
+     error si el POST falla, porque no pinta hasta saber que la revisión está encendida (la primera revisión de la
+     pestaña llega sin «cargando»). La descripción viaja recortada a 20,000 caracteres (el backend usa ~600).
+   - Se revisa al abrir el producto y al cambiar de categoría (también con «Usar esta», que hace lo mismo que el
+     selector y guarda `ml_categoria_id`).
+   - Editar el título, la descripción o las fotos no dispara otra revisión: se avisa «Cambiaste…» con «Revisar de
+     nuevo». Así teclear un título no paga una revisión por pausa.
+   - En ámbar y rojo enseña 3 propuestas (+ «Ver más»); en verde quedan tras «Ver otras parecidas».
+   - **Lo repetido no se paga.** Cada revisión guarda en `detalle` su `origen` (`estudio` o `vista_previa`) y la
+     firma de su entrada (sha1 de categoría, consulta y 2 fotos). Si esa misma firma se revisó en las últimas 6 h y
+     tuvo señal, se devuelve esa fila (`reusada`) sin llamar a OpenRouter ni guardar otra. Abrir el Estudio dos
+     veces, o el Estudio y luego la vista previa con lo mismo, cuesta una vez.
+   - La vista previa sigue revisando con lo que de verdad sale a ML, y el candado sigue leyendo la última revisión.
+     El Estudio es el aviso temprano, no el candado.
+
+**Variables** (las tres apagadas o por omisión: el deploy no cambia nada):
+- `CATEGORIA_VEC_ENABLED`: calcula, guarda y muestra.
+- `CATEGORIA_VEC_CANDADO`: frena el rojo sin motivo.
+- `CATEGORIA_VEC_TOPE_DIARIO_USD`.
+
+Plan acordado con Eduardo:
+1. Sandbox.
+2. Producción en **sombra** 2 semanas (ENABLED sin CANDADO) para fijar umbrales con publicaciones reales.
+3. Encender el candado.
+
+**Pruebas.** `tests/test_categoria_vectores.py`: 37 sin red ni BD.
+- Semáforo y umbrales.
+- Consulta sin HTML y recortes.
+- Normalización y promedio.
+- Propuestas sin repetir.
+- Candado:
+  - solo rojo y con bandera;
+  - el motivo destraba;
+  - en sombra anota;
+  - con la BD caída no frena.
+- `revisar`:
+  - apagado no hace nada;
+  - fusión con fotos y texto sin fotos;
+  - OpenRouter caído y sin clave dan `sin_senal`;
+  - tope de 24 h;
+  - categoría sin huella;
+  - lo guardado se puede pasar a JSON.
+- La vista previa pasa descripción y 2 fotos.
+- Reuso: la firma cambia con la categoría, el texto y el orden de las fotos, no con la 3.ª foto; una revisión igual
+  se devuelve sin OpenRouter ni fila nueva; sin SKU no busca ni guarda. Se guardan el origen y la firma.
+- La ruta del Estudio revisa con `origen="estudio"` y contesta `None` con la bandera apagada.
+- El tope total por señal: un texto lento se corta a los `TIMEOUT_S` y la revisión sigue con las fotos.
+- `tests/test_vectorizar_arbol_ml.py` (7): con `--cron`, sin tabla, sin clave o sin lista de precios sale en 0 sin
+  llamar a OpenRouter; sin clave no consulta precios; a mano aborta (2) o lanza. Probado además contra el sandbox con el entorno mínimo del cron: importa, lee 10,654 hojas al
+  día y sale en 0 sin gastar.
+- `crear_ml` con candado no llega al pipeline en rojo sin motivo.
+- `test_ml_revision_categoria` sigue verde. `tsc` limpio.
+
+**Verificado en el sandbox** (27-oct):
+- 0078 aplicada.
+- Árbol sembrado con las huellas ya pagadas de la prueba (US$0).
+- `vectorizar_arbol_ml --aplicar` sobre 2 hojas: US$0.000004.
+- `revisar` real contra OpenRouter: TEC-0571 (compresor del Mazda en Agro), MUE-0150 (grifo de baño en Cocinas),
+  TEC-0656 y TEC-1249 salen en **rojo** con la correcta como primera propuesta. JUGU-0271 y HERR-0383 en **verde**,
+  ACC-0069 en **ámbar**.
+- La tarjeta, con esas respuestas: sin motivo la casilla no se marca; con motivo, sí.
+- El Estudio, con la ruta real contra el sandbox y OpenRouter (selector y semáforo reales en una página de prueba
+  que no va en el commit): TEC-0571 rojo (lugar 534) → «Usar esta» en la primera propuesta → verde, lugar 1.
+  HERR-0383 verde. Editar el título enseña «Revisar de nuevo». Recargar reusa sin costo: 4 revisiones nuevas,
+  US$0.0009.
+
+**Sin probar en el panel completo:** abrir la vista previa desde el Estudio necesita la BD de WordPress (credencial rotada
+el 22-oct) y tokens de ML. La unión con `construir_prod` va cubierta por prueba.
+
 ### v0.689.0 — Crear vuelve a titular en español: OpenRouter (GPT-6 Luna) ve la foto, y si ninguna IA contesta se dice en vez de copiar el título de Alibaba
 
 **El pedido (Brandon, 27-oct-2026):** al crear un producto con URL de Alibaba los datos llegaban en inglés (caso

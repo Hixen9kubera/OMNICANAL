@@ -359,12 +359,21 @@ async def _payload_crear_ml(req: dict[str, Any]) -> dict[str, Any] | None:
         return None
 
 
-def _primera_foto(payload: dict[str, Any], prod: dict[str, Any]) -> str | None:
+def _fotos(payload: dict[str, Any], prod: dict[str, Any], n: int) -> list[str]:
+    """Las primeras `n` fotos que irían a ML (las del payload; si no, las del producto)."""
+    out: list[str] = []
     for f in list(payload.get("pictures") or []) + list(prod.get("images") or []):
         url = f.get("source") or f.get("src") if isinstance(f, dict) else f
-        if isinstance(url, str) and url.startswith("http"):
-            return url
-    return None
+        if isinstance(url, str) and url.startswith("http") and url not in out:
+            out.append(url)
+            if len(out) >= n:
+                break
+    return out
+
+
+def _primera_foto(payload: dict[str, Any], prod: dict[str, Any]) -> str | None:
+    fotos = _fotos(payload, prod, 1)
+    return fotos[0] if fotos else None
 
 
 async def _revision_categoria_ml(req: dict[str, Any],
@@ -378,8 +387,12 @@ async def _revision_categoria_ml(req: dict[str, Any],
     Con el payload del pipeline (alta en las dos cuentas) la categoría es la del
     payload; si no lo hay (re-crear solo en la cuenta donde la borraron, o el dry-run
     falló) se calcula con la misma regla. None si ni el producto se pudo leer.
+
+    Con `CATEGORIA_VEC_ENABLED` (27-oct-2026) se suma `vectores`: el título con la
+    descripción y 2 fotos contra todas las categorías (`services/categoria_vectores.py`),
+    en paralelo con el predictor. Apagada o si falla, la tarjeta es la de siempre.
     """
-    from services import ml_revision_categoria, publicar_ready
+    from services import categoria_vectores, ml_revision_categoria, publicar_ready
 
     payload = (r_crear or {}).get("payload") or {}
     prod = (r_crear or {}).get("prod")
@@ -397,7 +410,12 @@ async def _revision_categoria_ml(req: dict[str, Any],
     if not cid:
         cid = await asyncio.to_thread(ml_revision_categoria.categoria_de_alta, prod)
     titulo = payload.get("title") or prod.get("title") or ""
-    rev = await ml_revision_categoria.revisar(cid, titulo)
+    rev, vec = await asyncio.gather(
+        ml_revision_categoria.revisar(cid, titulo),
+        categoria_vectores.revisar(req.get("sku"), req.get("wc_id"), cid, titulo,
+                                   prod.get("description"),
+                                   _fotos(payload, prod, categoria_vectores.MAX_FOTOS)))
+    rev["vectores"] = vec
     rev["origen"] = ml_revision_categoria.origen(prod, cid)
     rev["origen_texto"] = ml_revision_categoria.ORIGENES[rev["origen"]]
     rev["titulo"] = titulo
@@ -1036,7 +1054,8 @@ async def _update_ml_una(cuenta: str, item_id: str, title: str, attrs: list[dict
 
 async def _crear_ml(sku: str, wc_id, campos: dict,
                     cuentas: list[str] | None = None,
-                    categoria_confirmada: str | None = None) -> dict[str, Any]:
+                    categoria_confirmada: str | None = None,
+                    categoria_motivo: str | None = None) -> dict[str, Any]:
     """
     Crear publicación nueva en ML → delega en el pipeline de `publicaciones_ready`
     (vendorizado en `backend/vendor/ml_ready/`), que es el que logró 1200+ altas.
@@ -1056,7 +1075,8 @@ async def _crear_ml(sku: str, wc_id, campos: dict,
         return {"ok": False, "motivo": "Sin conexión a la BD de WordPress (configura WPDB_* en Railway)."}
 
     return await publicar_ready.crear_ml(sku, int(wc_id), campos, cuentas,
-                                         categoria_confirmada=categoria_confirmada)
+                                         categoria_confirmada=categoria_confirmada,
+                                         categoria_motivo=categoria_motivo)
 
 
 def wp_db_disponible() -> bool:
@@ -1079,6 +1099,7 @@ async def _confirmar_ml(req: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "motivo": "No había nada que enviar."}
     # La categoría que la persona revisó en la vista previa (ver `_revision_categoria_ml`).
     confirmada = req.get("categoria_confirmada")
+    motivo_cat = req.get("categoria_motivo")
 
     es_padre = bool(req.get("_hijas"))
     pubs = _ml_publicaciones(sku)
@@ -1088,7 +1109,8 @@ async def _confirmar_ml(req: dict[str, Any]) -> dict[str, Any]:
             from fastapi import HTTPException
             from services.publicar_ready import MSG_PADRE
             raise HTTPException(409, MSG_PADRE)
-        return await _crear_ml(sku, wc_id, campos, categoria_confirmada=confirmada)
+        return await _crear_ml(sku, wc_id, campos, categoria_confirmada=confirmada,
+                               categoria_motivo=motivo_cat)
 
     # Verificación EN VIVO: items borrados en ML se re-crean (solo en esa
     # cuenta) en vez de intentar actualizarlos; el hook de creación pisa la
@@ -1104,7 +1126,8 @@ async def _confirmar_ml(req: dict[str, Any]) -> dict[str, Any]:
             raise HTTPException(409, MSG_PADRE)
         return await _crear_ml(sku, wc_id, campos,
                                cuentas=[p["cuenta"] for p in muertos],
-                               categoria_confirmada=confirmada)
+                               categoria_confirmada=confirmada,
+                               categoria_motivo=motivo_cat)
 
     # SKU padre con publicación VIVA: se deja actualizar (es la única forma de
     # tocar esas 638 desde el panel), pero se dice que hay que reemplazarla.
@@ -1139,7 +1162,8 @@ async def _confirmar_ml(req: dict[str, Any]) -> dict[str, Any]:
     if muertos:
         r_crear = await _crear_ml(sku, wc_id, campos,
                                   cuentas=[p["cuenta"] for p in muertos],
-                                  categoria_confirmada=confirmada)
+                                  categoria_confirmada=confirmada,
+                                  categoria_motivo=motivo_cat)
         filas = r_crear.get("resultados") or []
         for f in filas:
             f["modo"] = "crear"

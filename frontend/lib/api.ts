@@ -50,6 +50,8 @@ import type {
   PublicadosGuardado,
   PublicarPreview,
   PublicarReq,
+  RevisarCategoriaMLReq,
+  RevisionVectores,
   PublicarResultado,
   ResolverEdicion,
   ResolverEstado,
@@ -848,6 +850,12 @@ export function publicarPreview(req: PublicarReq): Promise<PublicarPreview> {
 
 export function publicarConfirmar(req: PublicarReq): Promise<PublicarResultado> {
   return postJSON<PublicarResultado>(`/api/publicar/confirmar`, req);
+}
+
+// Semáforo de la categoría de ML junto al selector del Estudio (título, descripción y
+// 2 fotos contra todo el árbol). `vectores` null = la revisión está apagada.
+export function revisarCategoriaML(req: RevisarCategoriaMLReq): Promise<{ vectores: RevisionVectores | null }> {
+  return postJSON<{ vectores: RevisionVectores | null }>(`/api/publicar/categoria-ml/revision`, req);
 }
 
 export interface NotificacionesResp {

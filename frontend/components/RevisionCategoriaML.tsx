@@ -3,7 +3,10 @@
 import { useState } from "react";
 import { AlertTriangle, CheckCircle2, ChevronRight, HelpCircle, Loader2, Search, XCircle } from "lucide-react";
 import CategoriaMLPicker from "./CategoriaMLPicker";
-import type { CategoriaRevisada, RevisionCategoriaML } from "@/lib/types";
+import type { CategoriaRevisada, RevisionCategoriaML, RevisionVectores } from "@/lib/types";
+
+/** Igual que `categoria_vectores.MOTIVO_MIN` en el backend. */
+const MOTIVO_MIN = 10;
 
 interface Props {
   revision: RevisionCategoriaML;
@@ -18,6 +21,9 @@ interface Props {
   cambiada?: boolean;
   /** No se puede cambiar la categoría aquí (vista agrupada, sin wc_id, o ya se publicó). */
   bloqueado?: boolean;
+  /** Por qué se publica aquí aunque la revisión por texto y fotos salió en rojo. */
+  motivo: string;
+  onMotivo: (v: string) => void;
   acento: string;
 }
 
@@ -54,6 +60,31 @@ const VEREDICTO: Record<RevisionCategoriaML["veredicto"], { tono: string; icono:
   },
 };
 
+export const SEMAFORO: Record<RevisionVectores["color"], { tono: string; icono: typeof CheckCircle2; texto: (n: number | null) => string }> = {
+  verde: {
+    tono: "bg-emerald-50 text-emerald-700",
+    icono: CheckCircle2,
+    texto: (n) => `El título, la descripción y las fotos se parecen a esta categoría (lugar ${n} de ~10,700).`,
+  },
+  ambar: {
+    tono: "bg-amber-50 text-amber-700",
+    icono: AlertTriangle,
+    texto: (n) => `Se parece, pero hay categorías más parecidas (lugar ${n}): compáralas.`,
+  },
+  rojo: {
+    tono: "bg-red-50 text-red-700",
+    icono: XCircle,
+    texto: (n) => `El producto NO se parece a esta categoría (lugar ${n} de ~10,700). Revisa las propuestas.`,
+  },
+  sin_senal: {
+    tono: "bg-slate-100 text-slate-600",
+    icono: HelpCircle,
+    texto: () => "No se pudo revisar con el texto y las fotos: revísala a ojo.",
+  },
+};
+
+export const FUENTE: Record<string, string> = { texto_y_fotos: "Texto y fotos", fotos: "Fotos", texto: "Texto" };
+
 function Ruta({ c, acento }: { c: CategoriaRevisada; acento: string }) {
   const niveles = c.niveles?.length ? c.niveles.map((n) => n.name) : c.ruta ? c.ruta.split(" > ") : [c.name];
   return (
@@ -81,13 +112,24 @@ function Ruta({ c, acento }: { c: CategoriaRevisada; acento: string }) {
  * vuelve a comprobar que la confirmada sea la que sale (`ml_revision_categoria.py`).
  */
 export default function RevisionCategoriaML({
-  revision, revisada, onRevisada, onCambiar, cambiando, error, cambiada, bloqueado, acento,
+  revision, revisada, onRevisada, onCambiar, cambiando, error, cambiada, bloqueado, motivo, onMotivo, acento,
 }: Props) {
   const [buscar, setBuscar] = useState(false);
-  const { actual, sugeridas, veredicto, origen_texto, imagen } = revision;
+  const { actual, sugeridas, veredicto, origen_texto, imagen, vectores } = revision;
   const v = VEREDICTO[veredicto] ?? VEREDICTO.sin_sugerencia;
   const Icono = v.icono;
-  const sePuedeConfirmar = !!actual && veredicto !== "no_publicable" && !cambiando;
+  const sem = vectores ? SEMAFORO[vectores.color] ?? SEMAFORO.sin_senal : null;
+  const IconoSem = sem?.icono;
+  const rojo = vectores?.color === "rojo";
+  // Con el candado, en rojo no se confirma sin un motivo que diga algo (el backend lo vuelve a exigir).
+  const faltaMotivo = !!vectores?.candado && rojo && motivo.trim().length < MOTIVO_MIN;
+  const sePuedeConfirmar = !!actual && veredicto !== "no_publicable" && !cambiando && !faltaMotivo;
+  const lugar = vectores ? (vectores.rango_fusion ?? vectores.rango_texto) : null;
+  // Lo que proponen ML Y el texto con las fotos se marca arriba y no se repite abajo:
+  // que las dos señales coincidan es la pista más fuerte de cuál es la buena.
+  const idsVec = new Set(vectores && vectores.color !== "verde" ? vectores.propuestas.map((p) => p.category_id) : []);
+  const idsPredictor = new Set(sugeridas.map((s) => s.category_id));
+  const propuestasVec = vectores ? vectores.propuestas.filter((p) => !idsPredictor.has(p.category_id)) : [];
 
   return (
     <div className="rounded-xl border-2 p-3" style={{ borderColor: revisada ? "#10b981" : acento }}>
@@ -129,6 +171,11 @@ export default function RevisionCategoriaML({
                   <div className="min-w-0">
                     <Ruta c={s} acento={acento} />
                     <span className="font-mono text-[10px] text-slate-400">{s.category_id}</span>
+                    {idsVec.has(s.category_id) && (
+                      <span className="ml-1.5 rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-bold text-violet-700">
+                        también por texto y fotos
+                      </span>
+                    )}
                   </div>
                   {esLaActual ? (
                     <span className="shrink-0 rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700">LA QUE VA</span>
@@ -145,6 +192,59 @@ export default function RevisionCategoriaML({
               );
             })}
           </div>
+        </div>
+      )}
+
+      {vectores && sem && IconoSem && (
+        <div className="mt-3 border-t border-slate-100 pt-2">
+          <div className="mb-1 text-[11px] font-semibold text-slate-500">
+            Revisión por texto y fotos{vectores.n_fotos ? ` (${vectores.n_fotos} foto${vectores.n_fotos > 1 ? "s" : ""})` : ""}
+            {vectores.solo_fotos && " · solo con las fotos: el texto no contestó a tiempo"}
+          </div>
+          <div className={`flex items-start gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium ${sem.tono}`}>
+            <IconoSem size={14} className="mt-0.5 shrink-0" /> {sem.texto(lugar)}
+          </div>
+          {vectores.color !== "verde" && propuestasVec.length > 0 && (
+            <div className="mt-1.5 space-y-1">
+              {propuestasVec.map((p) => (
+                <div key={p.category_id} className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs">
+                  <div className="min-w-0">
+                    <Ruta c={p} acento={acento} />
+                    <span className="font-mono text-[10px] text-slate-400">
+                      {p.category_id} · {FUENTE[p.fuente] ?? p.fuente}
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => onCambiar(p.category_id)}
+                    disabled={bloqueado || cambiando}
+                    className="shrink-0 rounded-lg border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                  >
+                    Usar esta
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          {rojo && (
+            <label className="mt-2 block text-xs">
+              <span className="font-semibold text-slate-600">
+                ¿Por qué esta categoría es la correcta?
+                {vectores.candado ? " (obligatorio para publicar aquí)" : " (opcional por ahora: ayuda a calibrar la revisión)"}
+              </span>
+              <textarea
+                value={motivo}
+                onChange={(e) => {
+                  onMotivo(e.target.value);
+                  if (vectores.candado && e.target.value.trim().length < MOTIVO_MIN && revisada) onRevisada(false);
+                }}
+                disabled={bloqueado || cambiando}
+                rows={2}
+                maxLength={1000}
+                placeholder="Ej.: es una herramienta de taller, no una refacción del auto"
+                className="mt-1 w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs text-slate-700 disabled:opacity-50"
+              />
+            </label>
+          )}
         </div>
       )}
 
@@ -192,9 +292,11 @@ export default function RevisionCategoriaML({
           onChange={(e) => onRevisada(e.target.checked)}
         />
         <span className="font-semibold text-slate-700">
-          {veredicto === "distinta"
-            ? "Revisé la categoría: Mercado Libre sugiere otra, pero esta es la correcta"
-            : "Revisé la categoría y es la correcta"}
+          {rojo
+            ? "Revisé la categoría: el texto y las fotos sugieren otra, pero esta es la correcta"
+            : veredicto === "distinta"
+              ? "Revisé la categoría: Mercado Libre sugiere otra, pero esta es la correcta"
+              : "Revisé la categoría y es la correcta"}
         </span>
       </label>
     </div>

@@ -86,6 +86,7 @@ import { aNumero } from "@/lib/numeros";
 import { enlacePublicacion } from "@/lib/enlaces";
 import { ChipMoneda, TONO, type Moneda } from "@/components/Moneda";
 import CategoriaMLPicker from "./CategoriaMLPicker";
+import SemaforoCategoriaML from "./SemaforoCategoriaML";
 import RevisionCategoriaML from "./RevisionCategoriaML";
 import ExplicacionErrorML from "./ExplicacionErrorML";
 import GaleriaVariante from "./GaleriaVariante";
@@ -562,6 +563,8 @@ export default function ProductStudio({
   // Doble validación de la categoría de ML antes de un alta (Brandon, 21-oct-2026):
   // Confirmar no se habilita hasta marcar la categoría como revisada.
   const [catRevisada, setCatRevisada] = useState(false);
+  // Por qué se publica aunque la revisión por texto y fotos salió en rojo (`categoria_vectores.py`).
+  const [motivoCat, setMotivoCat] = useState("");
   const [cambiandoCatPub, setCambiandoCatPub] = useState(false);
   const [errorCatPub, setErrorCatPub] = useState<string | null>(null);
   const [catCambiadaPub, setCatCambiadaPub] = useState(false);
@@ -1350,6 +1353,7 @@ export default function ProductStudio({
     setResultadoPub(null);
     setPreviewPub(null);
     setCatRevisada(false);
+    setMotivoCat("");
     setErrorCatPub(null);
     setCatCambiadaPub(false);
     try {
@@ -1371,6 +1375,7 @@ export default function ProductStudio({
     setCambiandoCatPub(true);
     setErrorCatPub(null);
     setCatRevisada(false);
+    setMotivoCat("");
     let guardada = false;
     try {
       const r = await guardarCategoriaML(wcId, categoryId);
@@ -1403,6 +1408,7 @@ export default function ProductStudio({
         categoria_confirmada: revisionCatML(previewPub) && catRevisada
           ? revisionCatML(previewPub)?.actual?.category_id ?? null
           : null,
+        categoria_motivo: revisionCatML(previewPub) && motivoCat.trim() ? motivoCat.trim() : null,
       });
       setResultadoPub(r);
       if (r.ok && canal === "amazon") setAmazonPublicadoOk(true);
@@ -2314,6 +2320,21 @@ export default function ProductStudio({
                         acento={tema.acento}
                       />
                     </fieldset>
+                    {/* El semáforo de esa categoría: el título, la descripción y las 2
+                        primeras fotos contra todo el árbol de ML, antes de llenar
+                        atributos. Nada si CATEGORIA_VEC_ENABLED está apagada. */}
+                    <SemaforoCategoriaML
+                      sku={sku}
+                      wcId={wcIdEscritura}
+                      categoriaId={catMlId}
+                      titulo={titulo || data?.nombre || ""}
+                      descripcion={descripcion}
+                      fotos={(galeria ?? []).map((g) => g.src)}
+                      listo={galeria !== null && !!(titulo || data?.nombre)}
+                      onUsar={elegirCategoriaML}
+                      bloqueado={soloVistaAgrupada}
+                      acento={tema.acento}
+                    />
                   </>
                 )}
                 {/* La categoría de WooCommerce SOLO en General. En un
@@ -3284,6 +3305,8 @@ export default function ProductStudio({
                       error={errorCatPub}
                       cambiada={catCambiadaPub}
                       bloqueado={soloVistaAgrupada || !wcIdEscritura || !!resultadoPub}
+                      motivo={motivoCat}
+                      onMotivo={setMotivoCat}
                       acento={tema.acento}
                     />
                   )}

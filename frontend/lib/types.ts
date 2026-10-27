@@ -747,6 +747,9 @@ export interface PublicarReq {
   /** Mercado Libre: la categoría que la persona revisó en la vista previa. Sin
    *  ella el backend no da de alta (`ml_revision_categoria.py`). */
   categoria_confirmada?: string | null;
+  /** Por qué se publica en la categoría elegida aunque la revisión por texto y
+   *  foto salió en ROJO (`categoria_vectores.py`; obligatorio con el candado). */
+  categoria_motivo?: string | null;
 }
 
 /** Una categoría de ML tal como la enseña la revisión previa al alta. */
@@ -771,6 +774,44 @@ export interface RevisionCategoriaML {
   origen_texto: string;
   titulo: string;
   imagen?: string | null;
+  /** La revisión por TEXTO y FOTO (`categoria_vectores.py`); null con la bandera apagada. */
+  vectores?: RevisionVectores | null;
+}
+
+/** Una categoría propuesta por la revisión por texto y foto. */
+export interface PropuestaVectores extends CategoriaRevisada {
+  fuente: "texto_y_fotos" | "fotos" | "texto";
+  /** Lugar entre todas las hojas del árbol (1 = la más parecida). */
+  rango: number | null;
+}
+
+/** El título con la descripción y 2 fotos, comparados por significado contra todo el árbol de ML. */
+export interface RevisionVectores {
+  color: "verde" | "ambar" | "rojo" | "sin_senal";
+  /** Lugar de la categoría elegida entre ~10.7k hojas (1 = la más parecida). */
+  rango_texto: number | null;
+  rango_fotos: number | null;
+  rango_fusion: number | null;
+  n_fotos: number;
+  propuestas: PropuestaVectores[];
+  /** En rojo, publicar exige elegir una propuesta o escribir el motivo. */
+  candado: boolean;
+  motivo_sin_senal: string | null;
+  /** El texto no contestó: se revisó solo con las fotos. */
+  solo_fotos?: boolean;
+  revision_id: number | null;
+  /** La misma entrada ya se había revisado (< 6 h): no se pagó otra vez. */
+  reusada?: boolean;
+}
+
+/** El semáforo de la categoría de ML junto al selector del Estudio. */
+export interface RevisarCategoriaMLReq {
+  sku: string;
+  wc_id: number | null;
+  categoria_id: string;
+  titulo: string;
+  descripcion: string;
+  fotos: string[];
 }
 
 export interface PublicarPreview {

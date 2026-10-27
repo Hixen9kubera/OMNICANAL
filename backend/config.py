@@ -138,6 +138,21 @@ class Settings(BaseSettings):
     # (`imagenes_editor`) edita por OpenRouter con el modelo más barato que
     # aguanta cada tipo de edición; sin ella, Gemini directo como siempre.
     openrouter_api_key: str = ""
+    # REVISIÓN DE CATEGORÍA DE ML POR TEXTO Y FOTO (Eduardo, 27-oct-2026; migración
+    # 0078, `services/categoria_vectores.py`). En la vista previa de un ALTA en ML
+    # compara por significado título+descripción (qwen3) y 2 fotos (voyage) contra
+    # todas las categorías, por OpenRouter, y pinta un semáforo con propuestas.
+    #   · _enabled → calcula, guarda y enseña. Con _candado apagado es el modo
+    #                SOMBRA: no frena nada (las 2 semanas para fijar umbrales).
+    #   · _candado → en ROJO, dar de alta exige elegir una propuesta o escribir
+    #                por qué la elegida es correcta (queda guardado).
+    # Si OpenRouter falla, no hay huellas o se llega al tope de 24 h, la tarjeta
+    # queda como siempre (`sin_senal`) y se publica con la revisión del predictor
+    # (decisión de Eduardo). Costo por vista previa: ~US$0.0003 con fotos de 500 px;
+    # ~US$0.0007–0.0013 con las originales de la tienda (voyage cobra por píxel).
+    categoria_vec_enabled: bool = False
+    categoria_vec_candado: bool = False
+    categoria_vec_tope_diario_usd: float = 0.5
     replicate_api_key: str = ""
     serpapi_key: str = ""
     # DeepSeek (API compatible con OpenAI). Si hay clave, los generadores de
