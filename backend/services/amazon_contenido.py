@@ -132,6 +132,16 @@ def validar(contenido: dict) -> tuple[dict, list[str]]:
     if len(desc) > DESCRIPCION_MAX:
         problemas.append(f"descripcion: {len(desc)} caracteres, máximo {DESCRIPCION_MAX}")
 
+    # GARANTÍA: ninguna, en ningún campo (Brandon, 28-oct-2026). La configuran las
+    # KAM; una escrita por la IA no se puede cumplir. Se REPORTA, no se recorta: un
+    # bullet sin su oración quedaría bajo los 150 caracteres. Ver `sin_garantia`.
+    from services import sin_garantia
+    campos = [("titulo", titulo), ("highlights", hl), ("descripcion", desc)]
+    campos += [(f"bullet {i}", b) for i, b in enumerate(bullets, 1)]
+    for nombre, texto in campos:
+        if sin_garantia.menciona(texto):
+            problemas.append(f"{nombre}: menciona una garantía (no se escribe: la ponen las KAM)")
+
     # ── El campo de los BYTES ────────────────────────────────────────────────
     st = (limpio.get("backend_search_terms") or "").strip()
     if st:

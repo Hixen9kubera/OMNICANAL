@@ -22,6 +22,7 @@ from typing import Any
 import httpx
 
 from config import settings
+from services import sin_garantia
 
 log = logging.getLogger("omnicanal.ia")
 
@@ -208,7 +209,8 @@ _ML_DESCRIPCION = (
     "Eres experto en Mercado Libre México. Genera una DESCRIPCIÓN en texto plano "
     "(sin HTML), clara y persuasiva, con párrafos cortos y viñetas simples con «- ». "
     "No incluyas teléfonos, correos, enlaces externos ni datos de contacto "
-    "(están prohibidos). Enfócate en beneficios, usos y características."
+    "(están prohibidos). Enfócate en beneficios, usos y características. "
+    + sin_garantia.REGLA
 )
 _GEN_TITULO = (
     "Eres redactor de e-commerce. Genera un título comercial claro y atractivo "
@@ -218,8 +220,8 @@ _GEN_TITULO = (
 _GEN_DESCRIPCION = (
     "Eres redactor de e-commerce. Genera una descripción de producto para "
     "WooCommerce en HTML simple (<p>, <ul>, <li>, <strong>): un párrafo de "
-    "introducción, una lista de características/beneficios y un cierre. Devuelve "
-    "solo el HTML."
+    "introducción, una lista de características/beneficios y un cierre. "
+    + sin_garantia.REGLA + " Devuelve solo el HTML."
 )
 
 
@@ -302,7 +304,7 @@ _MEJORAR: dict[str, dict[str, Any]] = {
             '"atributos": [{"nombre": "..", "valor": ".."}]}\n'
             "En atributos incluye los NECESARIOS de la categoría (marca, modelo, color, "
             "material, tamaño…) y los secundarios que ayuden a la ficha. No inventes datos "
-            "que no se puedan inferir del producto." + _NO_CONTRADECIR
+            "que no se puedan inferir del producto. " + sin_garantia.REGLA + _NO_CONTRADECIR
         ),
     },
     # AMAZON no está en este diccionario a propósito: `mejorar()` desvía el canal
@@ -316,7 +318,7 @@ _MEJORAR: dict[str, dict[str, Any]] = {
             "Eres redactor de e-commerce (WooCommerce). Devuelve SOLO JSON válido:\n"
             '{"titulo": "<título comercial claro>", '
             '"descripcion": "<HTML simple: <p>, <ul>, <li>, <strong>>", '
-            '"atributos": [{"nombre": "..", "valor": ".."}]}'
+            '"atributos": [{"nombre": "..", "valor": ".."}]}\n' + sin_garantia.REGLA
         ),
     },
     # TIKTOK tampoco está aquí desde v0.143.0: `mejorar()` lo desvía a
@@ -388,6 +390,10 @@ async def mejorar(canal: str, producto: dict[str, Any], *,
     if not data:
         return {"ok": False, "motivo": "La IA no devolvió JSON válido.",
                 "canal": canal, "crudo": res.get("texto", "")[:400]}
+    # La garantía la ponen las KAM en cada canal: aunque el modelo la escriba, no
+    # llega a la descripción (`sin_garantia`, 28-oct-2026).
+    if isinstance(data.get("descripcion"), str):
+        data["descripcion"] = sin_garantia.quitar(data["descripcion"])
 
     # Amazon: el título va SIN acentos (regla de negocio). El prompt ya lo pide,
     # pero los LLM a veces dejan una tilde suelta — se garantiza aquí quitándolas
@@ -557,6 +563,8 @@ def generar(canal: str, generador_id: str, producto: dict[str, Any]) -> dict[str
         "Genera el contenido solicitado siguiendo tus instrucciones."
     )
     res = _completar(g["system"], user, max_tokens=g.get("max_tokens", 900))
+    if generador_id == "descripcion" and res.get("ok"):
+        res["texto"] = sin_garantia.quitar(res.get("texto") or "")  # ver `sin_garantia`
     res.update({"canal": canal, "generador": generador_id, "label": g["label"],
                 "tipo": g.get("tipo", "texto")})
     return res

@@ -48,6 +48,7 @@ import re
 from typing import Any
 
 from config import settings
+from services import sin_garantia
 
 log = logging.getLogger("omnicanal.amazon_ia")
 
@@ -87,9 +88,10 @@ _SISTEMA = (
     "BULLET POINTS — exactamente 5, cada uno entre 150 y 200 caracteres. En "
     "este orden: (1) beneficio principal, no una característica; (2) material, "
     "durabilidad o construcción; (3) compatibilidad o casos de uso; (4) "
-    "facilidad de uso, instalación o mantenimiento; (5) garantía o propuesta "
-    "diferencial. Oraciones completas, mayúscula inicial, sin emojis y sin "
+    "facilidad de uso, instalación o mantenimiento; (5) propuesta diferencial. "
+    "Oraciones completas, mayúscula inicial, sin emojis y sin "
     "listas de keywords.\n\n"
+    "GARANTÍA — " + sin_garantia.REGLA + " Vale para TODOS los campos.\n\n"
     "DESCRIPCIÓN — máximo 2000 caracteres, en PÁRRAFOS (no listas): "
     "(1) propuesta de valor y contexto de uso; (2) características técnicas con "
     "su beneficio; (3) casos de uso y compatibilidades; cierre con una llamada "
@@ -440,6 +442,19 @@ async def mejorar(producto: dict[str, Any], *, guardar: bool = True,
         if reparado:
             data = _normalizar(reparado)
             _, problemas = amazon_contenido.validar(data)
+
+    # GARANTÍA que sobrevivió a la reparación: se QUITA de lo que admite recorte
+    # (descripción, highlights, bullets). Quedar corto es un AVISO y se publica;
+    # rechazar el campo entero por una oración obligaba a una persona a reescribir
+    # los 5 bullets. El título no se recorta: si la trae, se rechaza. Ver `sin_garantia`.
+    antes = (data.get("descripcion"), data.get("highlights"), data.get("bullets"))
+    for k in ("descripcion", "highlights"):
+        if isinstance(data.get(k), str):
+            data[k] = sin_garantia.quitar(data[k])
+    if isinstance(data.get("bullets"), list):
+        data["bullets"] = [b for b in (sin_garantia.quitar(str(x)) for x in data["bullets"]) if b]
+    if (data.get("descripcion"), data.get("highlights"), data.get("bullets")) != antes:
+        _, problemas = amazon_contenido.validar(data)
 
     # Marcas registradas: determinista, con lista, DESPUÉS de la IA y ANTES de
     # quitarle los acentos al título (el reemplazo puede traer acentos propios).

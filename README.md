@@ -1001,6 +1001,72 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.700.0 — La IA nunca escribe una garantía: ni en Crear, ni en el Estudio, ni en Amazon, TikTok o Walmart
+
+**El pedido (Brandon, 28-oct-2026):** *"en la descripción se genera la garantía pero hay que evitar «Garantía del
+vendedor: 30 días» porque eso lo mueven las KAMS, por lo que nunca se va a agregar garantía"*.
+
+**Lo medido (solo lectura).**
+- **334 de 4,099 descripciones de Woo** mencionaban una garantía que nadie dio: «Garantía de 3 años», «Garantia de
+  1 año por defectos de fabricacion», «Garantia de 24 meses», «Garantia: 30 días» (ORG-0021)…
+- En `enrich.channel_content`: 213 contenidos de Amazon, 71 de ML, 16 de TikTok y 4 de Walmart.
+- El prompt de Amazon la PEDÍA: la 5.ª viñeta era «garantía o propuesta diferencial».
+- Los demás prompts no la pedían, pero tampoco la prohibían, y los modelos la inventan.
+- **«Garantía del vendedor: 30 días» es OTRA cosa**: son las condiciones de venta (`sale_terms`) que el publicador de
+  ML pone al crear la publicación (`vendor/ml_ready/publisher_core.build_sale_terms`: 15 días ROP-/CALZ-, 30 el
+  resto). No es texto de la descripción. **Este cambio NO lo toca**: vive en `vendor/` y es el flujo vivo de
+  publicación.
+
+**Qué cambia.** El prompt pide y el código garantiza, como ya hacían Walmart, TikTok y Temu. Todo vive en el módulo
+nuevo **`services/sin_garantia.py`**:
+- `REGLA` es el texto para los prompts.
+- `menciona` detecta una garantía.
+- `quitar` saca la oración, la viñeta o el «Garantía: X» de un texto ya generado, sin llevarse lo de al lado.
+- El verbo «garantiza» no cuenta.
+
+Dónde se aplica:
+
+| Dónde | Prompt | Código |
+|---|---|---|
+| **Crear** (`crear_producto`) | `REGLA` en las reglas de la descripción | `_seo_de_objeto` la quita, para los 3 proveedores (OpenRouter, DeepSeek, Claude) |
+| **Estudio ML / General** (`ia_generadores`) | `REGLA` en «Descripción» y en «Mejorar con IA» | el botón «Descripción» y `mejorar()` la quitan |
+| **Amazon** (`amazon_ia` + `amazon_contenido`) | la 5.ª viñeta pasa a «propuesta diferencial»; `GARANTÍA — REGLA` para todos los campos | el validador la reporta en título, highlights, viñetas y descripción → la ronda de reparación la corrige |
+| **TikTok** (`tiktok_ia` + `tiktok_contenido`) | «NINGUNA garantía» | `garantia`/`garantias` entran a `_PROMO` (antes solo «garantía de por vida») |
+| **Walmart** (`walmart_contenido`) | «NINGUNA garantía» en la plantilla | `garantia`/`garantias` entran a `_PENALIZADAS`, como regla de Kubera y no de Walmart |
+
+**Si en Amazon la garantía sobrevive a la reparación,** se quita de lo que admite recorte (descripción, highlights,
+viñetas). Quedar corto es un AVISO y se publica. Rechazar el campo entero por una oración obligaba a una persona a
+reescribir las 5 viñetas. El título no se recorta: si trae garantía, se rechaza.
+
+**Lo que NO cambia.**
+- Las ~334 descripciones viejas siguen como están: limpiarlas escribe en Woo y va con su dale.
+- Los `sale_terms` de garantía del publicador de ML siguen igual.
+- No hay bandera: es un fix.
+
+**Pruebas:** `tests/test_sin_garantia.py` (19):
+- La limpieza:
+  - viñeta HTML y oración;
+  - la etiqueta de ORG-0021 sin llevarse «Uso: Profesional y doméstico»;
+  - texto plano de ML;
+  - la lista que queda vacía desaparece;
+  - `<br>` dentro del párrafo;
+  - inglés;
+  - el verbo no cuenta;
+  - vacío y `None`.
+- Crear: el prompt la prohíbe y la descripción sale sin garantía.
+- Estudio:
+  - los 4 prompts de descripción la prohíben;
+  - el botón «Descripción» la quita;
+  - otro botón no se toca.
+- Amazon:
+  - ya no la pide;
+  - el validador la reporta en descripción y en la viñeta 5;
+  - la que sobrevive a la reparación se quita sin rechazar el campo (de punta a punta con `mejorar`);
+  - el verbo pasa.
+- TikTok y Walmart la detectan, y el verbo no.
+
+Con las relacionadas: 272 en verde.
+
 ### v0.699.0 — Mercado Libre: los DATOS FISCALES no se llenan ni se tocan
 
 **Qué pidió Brandon (28-oct-2026):** «todos que sean datos fiscales NO SE LLENAN ni se tocan».

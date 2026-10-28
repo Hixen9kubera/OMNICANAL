@@ -55,6 +55,9 @@ _PROMO = {
     "promocion", "promoción", "liquidacion", "liquidación", "rebaja",
     "el mejor", "la mejor", "mejor precio", "barato", "100%", "garantizado",
     "garantia de por vida", "garantía de por vida", "numero 1", "número 1",
+    # NINGUNA garantía, de ningún plazo: la ponen las KAM (28-oct-2026, ver
+    # `sin_garantia`). El verbo «garantiza» no casa: va con límites de palabra.
+    "garantia", "garantias",
     "el mas vendido", "el más vendido", "original", "envio inmediato",
     "envío inmediato", "entrega en 24", "regalo",
 }

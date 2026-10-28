@@ -70,6 +70,9 @@ _PENALIZADAS = {
     "resultados garantizados", "efecto inmediato", "resultado inmediato",
     "efecto instantaneo", "arte de magia", "milagroso", "milagrosa",
     "infalible", "sin fallas", "de por vida",
+    # garantía de cualquier tipo y plazo — regla de KUBERA, no de Walmart: la
+    # ponen las KAM (28-oct-2026, ver `sin_garantia`). «garantiza» no casa.
+    "garantia", "garantias",
     # superlativo no comprobable — van los PLURALES y los femeninos también:
     # con solo "el mejor" en la lista, "Los Mejores Audífonos del Mercado"
     # pasaba limpio.
@@ -389,6 +392,8 @@ PRODUCTO
      "Funciona como por arte de magia", cualquier promesa absoluta, médica o de
      resultado no verificable, y superlativos no comprobables ("el mejor",
      "único en el mercado"). Tampoco precios, ofertas ni envíos.
+   · NINGUNA garantía (ni del vendedor, ni del fabricante, ni plazos): en ningún
+     campo. La configura el equipo en cada canal.
 
 SALIDA — SOLO JSON, sin texto alrededor:
 {{

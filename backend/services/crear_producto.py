@@ -32,7 +32,7 @@ import httpx
 from config import settings
 from core import actor
 from services import (categorias_write, channel_read, costing_read, costing_write,
-                      costos, db, meli, woocommerce, wp_db)
+                      costos, db, meli, sin_garantia, woocommerce, wp_db)
 
 log = logging.getLogger("omnicanal.crear_producto")
 
@@ -442,18 +442,22 @@ def _prompt_seo(titulo_alibaba: str, url: str, con_imagen: bool = True,
         "REGLAS DESCRIPCIÓN: español mexicano, 100-250 palabras, HTML básico (<p><strong><ul><li>),\n"
         "                    beneficios prácticos, tono cercano. Estructura clara con saltos de línea \\n."
         "NO usar emojis, íconos ni símbolos decorativos (viñetas, palomitas, estrellas). "
-        "SÍ usar acentos y ñ: es español correcto. Agregar características principales.\n\n"
+        "SÍ usar acentos y ñ: es español correcto. Agregar características principales.\n"
+        f"{sin_garantia.REGLA}\n\n"
         "Responde EXACTAMENTE (sin markdown):\n"
         '{"titulo": "...", "descripcion": "..."}'
     )
 
 
 def _seo_de_objeto(data: Any) -> dict[str, str] | None:
-    """{titulo, descripcion} de un objeto ya parseado; None si no trae título."""
+    """{titulo, descripcion} de un objeto ya parseado; None si no trae título.
+
+    La descripción sale SIN garantía aunque el modelo la escriba: la ponen las KAM
+    en cada canal (`sin_garantia`, 28-oct-2026). Vale para los tres proveedores."""
     if not isinstance(data, dict):
         return None
     t = str(data.get("titulo") or "").strip()
-    d = str(data.get("descripcion") or "").strip()
+    d = sin_garantia.quitar(str(data.get("descripcion") or "").strip())
     return {"titulo": t, "descripcion": d} if t else None
 
 
