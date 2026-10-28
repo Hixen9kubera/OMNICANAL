@@ -1030,8 +1030,18 @@ quedaba una venta reclamada sin pedido.
   caído; con `woo`, como siempre. La respuesta de `sincronizar` la trae en `"kubera"` para el planeador de OV.
 
 **Pruebas:** `test_pedidos_vigilante`, `test_pedidos_ml_sondeo`, `test_pedidos_amazon_ventana`, `test_kubera_primero`
-y `test_fanout_senal_kubera` (de INVENTARIO FANOUT, con la cola real del fan-out). Sandbox con el código real y
-ROLLBACK: 10/10.
+y `test_fanout_senal_kubera` (de INVENTARIO FANOUT, con la cola real del fan-out). Contra el Postgres del sandbox
+con el código real y ROLLBACK: `scripts/probar_kubera_primero_sandbox.py`, 9/9.
+
+**Revisión independiente de MAESTRO (28-oct), lo que corre con las banderas apagadas o en la etapa A:**
+- `orders_write._foto` toma la fila con `for no key update` (con `for update` chocaba con el `for key share`
+  de las FK de `order_items`: esperas o bloqueo, y la venta caía al respaldo de MySQL).
+- La señal se arma FUERA del `try` del registro: si fallara, ya no dispara un falso «cayó a MySQL».
+- El sondeo de ML no dice «ok» si no pudo leer ML (`sin_lectura`; `error` si falló en todas las cuentas), y su
+  aviso va en hilo (regla 11).
+- El sondeo de Amazon avisa si llega al tope de páginas y lee kubera en hilo (`_desde`, `estados_wc`).
+- El vigilante avisa si no puede leer kubera.
+- Lo que bloquea la etapa B (kubera primero) va en su propio commit, antes de su acta.
 
 ### v0.701.0 — «¿Es FBA?» se contestaba con «¿tiene piezas?»
 

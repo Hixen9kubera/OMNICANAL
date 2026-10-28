@@ -84,6 +84,13 @@ def revisar() -> dict[str, Any]:
         filas = pendientes(umbral)
     except Exception as exc:  # noqa: BLE001
         log.warning("pedidos_vigilante: no se pudo contar (%s)", exc)
+        # Revisión de MAESTRO, #9: un vigilante que no puede mirar tiene que decirlo.
+        from services import alertas
+        alertas.avisar_estado(
+            _TIPO, "sin_lectura",
+            f"*Vigilante de ventas reclamadas*: no pudo leer kubera ({type(exc).__name__}: "
+            f"{str(exc)[:120]}). Mientras tanto nadie cuenta las ventas sin pedido.",
+            texto_ok=f"*Ventas reclamadas:* ninguna sin pedido hace más de {umbral} min.")
         _ultimo = {"estado": "sin_lectura", "error": str(exc)[:200],
                    "revisado_at": datetime.now(timezone.utc).isoformat()}
         return _ultimo

@@ -146,7 +146,8 @@ async def revisar(proteger_stock: bool = False,
         tok = await amazon._access_token()
         async with httpx.AsyncClient(timeout=30.0) as cli:
             params = {"MarketplaceIds": settings.amazon_marketplace_id,
-                      "LastUpdatedAfter": desde_iso or _desde()}
+                      # En hilo (revisión de MAESTRO, #10): _desde lee kubera.
+                      "LastUpdatedAfter": desde_iso or await asyncio.to_thread(_desde)}
             cuota["desde"] = params["LastUpdatedAfter"]
             ordenes: list[dict] = []
             for _ in range(_MAX_PAGINAS):
@@ -157,11 +158,28 @@ async def revisar(proteger_stock: bool = False,
                     break
                 params = {"NextToken": nt}
                 await asyncio.sleep(0.6)
+            else:
+                # Revisión de MAESTRO, #9: el tope cortaba sin avisar. Lo que quedó después de
+                # la página _MAX_PAGINAS no se vio en esta pasada (la marca no avanza por eso, y
+                # la siguiente lo retoma), pero tiene que verse: con la ventana de ≥24 h, un tope
+                # alcanzado dice que la ventana es demasiado grande.
+                cuota["tope_paginas"] = True
+                log.warning("sondeo Amazon: llegó al tope de %d páginas (desde %s); el resto "
+                            "se verá en las siguientes pasadas", _MAX_PAGINAS, cuota.get("desde"))
+                try:
+                    from services import alertas
+                    await asyncio.to_thread(
+                        alertas.avisar, "amazon_tope_paginas",
+                        f"*Sondeo de Amazon*: llegó al tope de {_MAX_PAGINAS} páginas de getOrders "
+                        f"(desde {cuota.get('desde')}). Si se repite, bajar PEDIDOS_AMAZON_VENTANA_HORAS.",
+                        "🟡")
+                except Exception:  # noqa: BLE001
+                    pass
 
             # Dedupe contra el registro (ver orders_write): con el espejo
             # congelado, "sin cambio" nunca acertaba y se reprocesaba todo.
             from services import orders_write
-            previos = orders_write.estados_wc(("AMAZON",))
+            previos = await asyncio.to_thread(orders_write.estados_wc, ("AMAZON",))
 
             for o in ordenes:
                 oid = str(o.get("AmazonOrderId"))

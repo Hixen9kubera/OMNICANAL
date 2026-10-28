@@ -108,9 +108,27 @@ class Guardar(unittest.TestCase):
         with mock.patch.object(sdb, "get_cursor", gc):
             s = orders_write.guardar("x.py", "f", dict(ENC), {"lineas": []}, "BEKURA:1", lambda: None)
         fotos = [i for i, q in enumerate(cur.sql) if "from channel.orders o" in q]
-        self.assertTrue(cur.sql[fotos[0]].endswith("for update of o"))
+        # #6: no choca con el `for key share` de las FK de order_items
+        self.assertTrue(cur.sql[fotos[0]].endswith("for no key update of o"))
         self.assertLess(fotos[0], orden_de_llamadas[0][1])        # la foto de antes va primero
         self.assertTrue(s["nueva_en_kubera"])
+
+    def test_una_senal_que_falla_no_dispara_el_respaldo(self):
+        # #7: kubera YA escribió y confirmó; armar la señal fuera del try.
+        cur = CursorFalso([None, fila()])
+
+        @contextlib.contextmanager
+        def gc():
+            yield cur
+        mysql = mock.Mock()
+        with mock.patch.object(sdb, "get_cursor", gc), \
+             mock.patch.object(orders_write, "senal", side_effect=[RuntimeError("x"), orders_write.senal(None, None, ENC)]), \
+             mock.patch.object(kubera_mirror, "espejar") as espejar:
+            s = orders_write.guardar("x.py", "f", dict(ENC), {"lineas": []}, "BEKURA:1", mysql)
+        mysql.assert_not_called()
+        espejar.assert_not_called()
+        self.assertEqual((s["escrito_en"], s["nueva_en_kubera"]), ("kubera", False))
+        self.assertIn("error_senal", s)
 
     def test_kubera_caida_es_mysql_respaldo_sin_senal(self):
         @contextlib.contextmanager

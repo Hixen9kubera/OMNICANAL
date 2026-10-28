@@ -81,6 +81,36 @@ class Cuota(unittest.TestCase):
             asyncio.run(pedidos_amazon._get(cli, "t", "/orders/v0/orders", {}, cuota, "orders"))
         self.assertEqual((cuota["orders"], cuota["orders_429"], cuota["orders_limite"]), (3, 1, "0.0167"))
 
+    def test_el_tope_de_paginas_avisa(self):
+        # #9: el tope cortaba sin avisar.
+        import asyncio
+
+        from services import alertas, amazon
+
+        class R:
+            status_code, headers = 200, {}
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"payload": {"Orders": [], "NextToken": "sigue"}}
+
+        cli = mock.MagicMock()
+        cli.get = mock.AsyncMock(return_value=R())
+        cli.__aenter__ = mock.AsyncMock(return_value=cli)
+        cli.__aexit__ = mock.AsyncMock(return_value=False)
+        with mock.patch.object(pedidos_amazon.httpx, "AsyncClient", return_value=cli), \
+             mock.patch.object(amazon, "_access_token", mock.AsyncMock(return_value="t")), \
+             mock.patch.object(pedidos_amazon, "_desde", return_value="2026-10-27T18:00:00Z"), \
+             mock.patch.object(orders_write, "estados_wc", return_value={}), \
+             mock.patch.object(pedidos_amazon.asyncio, "sleep", mock.AsyncMock()), \
+             mock.patch.object(alertas, "avisar", return_value=True) as avisar:
+            r = asyncio.run(pedidos_amazon.revisar())
+        self.assertTrue(r["cuota"]["tope_paginas"])
+        self.assertEqual(r["cuota"]["orders"], pedidos_amazon._MAX_PAGINAS)
+        self.assertEqual(avisar.call_args.args[0], "amazon_tope_paginas")
+
     def test_sin_cuota_como_siempre(self):
         import asyncio
 

@@ -240,13 +240,30 @@ async def revisar(solo_registro: bool | None = None) -> dict[str, Any]:
                     await _reparar(cuenta, ids, r)
         from services import alertas
         malas = {c: v for c, v in r["cuentas"].items() if v["falta"] or v["sin_pedido"] or v["atrasada"]}
+        sin_leer = {c: v["error"] for c, v in r["cuentas"].items() if v["error"]}
+        if len(sin_leer) == len(CUENTAS):
+            # Revisión de MAESTRO, #4: si ML no contestó en NINGUNA cuenta (token muerto, 403),
+            # no se comparó nada y decir «ok» sería un falso verde.
+            r["estado"] = "error"
         texto = "; ".join(f"{c}: {v['falta']} faltan, {v['sin_pedido']} sin pedido, {v['atrasada']} atrasadas"
                           for c, v in malas.items())
-        alertas.avisar_estado(
-            _TIPO_ALERTA, "diferencias" if malas else "ok",
-            f"*Sondeo de ventas ML* ({horas} h): {texto}. "
-            + ("Solo registro: nadie las repara." if solo else f"Reparadas {r['reparadas']}, creadas {r['creados']}."),
-            texto_ok="*Sondeo de ventas ML*: kubera tiene todas las ventas de ML de la ventana.")
+        if sin_leer:
+            estado_alerta = "sin_lectura"
+            texto_alerta = ("*Sondeo de ventas ML*: no pudo leer ML en "
+                            + "; ".join(f"{c} ({e})" for c, e in sin_leer.items())
+                            + (f". Además: {texto}." if texto else ". Esas ventas NO se compararon."))
+        elif malas:
+            estado_alerta = "diferencias"
+            texto_alerta = (f"*Sondeo de ventas ML* ({horas} h): {texto}. "
+                            + ("Solo registro: nadie las repara." if solo
+                               else f"Reparadas {r['reparadas']}, creadas {r['creados']}."))
+        else:
+            estado_alerta, texto_alerta = "ok", ""
+        # Regla 11 (revisión de MAESTRO, #5): avisar_estado lee y escribe la base y toma un
+        # candado de hilos; dentro de la corrutina detendría el backend entero.
+        await asyncio.to_thread(
+            alertas.avisar_estado, _TIPO_ALERTA, estado_alerta, texto_alerta,
+            "*Sondeo de ventas ML*: kubera tiene todas las ventas de ML de la ventana.")
     except Exception as exc:  # noqa: BLE001
         log.exception("pedidos_ml_sondeo.revisar falló")
         r.update(estado="error", error=f"{type(exc).__name__}: {str(exc)[:200]}")

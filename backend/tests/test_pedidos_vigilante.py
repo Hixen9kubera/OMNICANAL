@@ -65,11 +65,12 @@ class Revisar(Base):
         self.assertEqual((r["estado"], r["n"]), ("ok", 0))
         self.assertEqual(self.aviso.call_args.args[1], "ok")
 
-    def test_kubera_caida_no_lanza_ni_avisa(self):
+    def test_kubera_caida_no_lanza_y_avisa_que_no_puede_mirar(self):
+        # #9: un vigilante que no puede leer lo dice (antes callaba).
         with mock.patch.object(sdb, "fetch_all", side_effect=RuntimeError("sin kubera")):
             r = pedidos_vigilante.revisar()
         self.assertEqual(r["estado"], "sin_lectura")
-        self.aviso.assert_not_called()
+        self.assertEqual(self.aviso.call_args.args[:2], ("pedidos_sin_completar", "sin_lectura"))
 
     def test_estado_dice_si_esta_habilitado(self):
         with mock.patch.object(sdb, "fetch_all", return_value=[]):

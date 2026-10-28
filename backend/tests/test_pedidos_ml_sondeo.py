@@ -103,6 +103,23 @@ class Revisar(unittest.TestCase):
         self.assertEqual(r["estado"], "frenado")
         self.sinc.assert_not_called()
 
+    def test_ml_caido_en_todas_las_cuentas_no_es_verde(self):
+        # #4: sin nada comparado no hay «ok».
+        with mock.patch.object(S, "leer_ml", mock.AsyncMock(
+                return_value={"ordenes": {}, "paginas": 0, "total": None, "error": "/orders/search → HTTP 403"})):
+            r = asyncio.run(S.revisar())
+        self.assertEqual(r["estado"], "error")
+        self.assertEqual(self.aviso.call_args.args[1], "sin_lectura")
+        self.assertIn("no pudo leer ML", self.aviso.call_args.args[2])
+
+    def test_ml_caido_en_una_cuenta_tampoco_es_verde(self):
+        llamadas = {"BEKURA": {"ordenes": {}, "paginas": 1, "total": 0, "error": None},
+                    "SANCORFASHION": {"ordenes": {}, "paginas": 0, "total": None, "error": "HTTP 500"}}
+        with mock.patch.object(S, "leer_ml", mock.AsyncMock(side_effect=lambda c, h, p: llamadas[c])):
+            r = asyncio.run(S.revisar())
+        self.assertEqual(r["estado"], "incompleto")
+        self.assertEqual(self.aviso.call_args.args[1], "sin_lectura")
+
     def test_todo_al_dia_es_ok(self):
         with mock.patch.object(S, "leer_ml", mock.AsyncMock(
                 return_value={"ordenes": {}, "paginas": 1, "total": 0, "error": None})):

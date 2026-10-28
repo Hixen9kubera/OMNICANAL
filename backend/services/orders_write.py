@@ -281,7 +281,11 @@ select o.skus is null as esqueleto, o.estado_wc, o.wc_order_id,
 
 
 def _foto(cur, encabezado: dict[str, Any], tomar: bool = False) -> dict[str, Any] | None:
-    cur.execute(_SQL_FOTO + (" for update of o" if tomar else ""),
+    # `for no key update` (revisión de MAESTRO, #6): toma la fila contra otros registros
+    # de la misma venta sin chocar con el `for key share` que piden las FK de order_items
+    # al insertar sus líneas. Con `for update` esas inserciones esperaban (o se trababan)
+    # y la venta caía al respaldo de MySQL.
+    cur.execute(_SQL_FOTO + (" for no key update of o" if tomar else ""),
                 {"ca": encabezado.get("canal"), "cu": encabezado.get("cuenta"),
                  "id": str(encabezado.get("external_order_id") or "")})
     fila = cur.fetchone()
@@ -353,7 +357,6 @@ def guardar(origen_py: str, funcion: str, encabezado: dict[str, Any],
             if con_lineas:
                 kubera_mirror._up_channel_order_items(cur, lineas)
             despues = _foto(cur, encabezado)
-        resultado = senal(antes, despues, encabezado)
     except Exception as exc:  # noqa: BLE001
         log.warning("escritura primaria kubera channel.orders(%s) falló — MySQL "
                     "aguanta y el evento viaja por el espejo: %s", clave, exc)
@@ -373,6 +376,14 @@ def guardar(origen_py: str, funcion: str, encabezado: dict[str, Any],
         except Exception:  # noqa: BLE001
             pass
         return {**senal(None, None, encabezado), "escrito_en": "mysql_respaldo"}
+    # La señal va FUERA del try (revisión de MAESTRO, #7): kubera ya escribió y confirmó.
+    # Si armarla fallara, eso no es una caída de kubera: no dispara el respaldo de MySQL
+    # ni el aviso «cayó a MySQL»; sale en False y queda en el log.
+    try:
+        resultado = senal(antes, despues, encabezado)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("señal de %s no se pudo armar (la venta SÍ quedó en kubera): %s", clave, exc)
+        resultado = {**senal(None, None, encabezado), "error_senal": str(exc)[:200]}
     # Desmantelamiento (paso 1): sin espejo inverso, pedidos_ml queda congelada
     # a propósito. kubera ya guardó el pedido completo (encabezado + líneas).
     # El camino de emergencia de arriba NO depende de este flag.
