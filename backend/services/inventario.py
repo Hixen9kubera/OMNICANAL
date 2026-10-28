@@ -559,7 +559,20 @@ async def sincronizar_amazon(limite: int = 100) -> dict[str, Any]:
                       "marketplaceIds": mp, "details": "true"}
             next_token = None
             paginas = 0
-            while paginas < 10:  # tope de seguridad
+            # EL TOPE ERA 10 Y EL INVENTARIO SON 29 PÁGINAS (Eduardo, 28-oct-2026).
+            # Medido contra Amazon ese día: `/fba/inventory/v1/summaries` pagina
+            # de 50 en 50 y devuelve 1,423 SKUs. Con el tope en 10 se leían 500 y
+            # se descartaban 923 CON EL nextToken TODAVÍA PENDIENTE — en silencio,
+            # porque el corte no distingue "ya no hay más" de "me rendí".
+            #
+            # Lo que se perdía no era una cola de SKUs muertos: ORG-0785-CAF-RED
+            # (41 piezas), ORG-0785-CAF-CUA (47), TEC-0808-NEG (45) y
+            # VEH-0062-NAR (90) estaban todos del otro lado del corte. Sin su
+            # cantidad, el sync los marcaba FBM y el panel los pintaba DROP.
+            #
+            # 60 deja el doble de margen del catálogo de hoy y sigue siendo un
+            # freno real si Amazon devolviera un `nextToken` que no termina.
+            while paginas < 60:
                 if next_token:
                     params["nextToken"] = next_token
                 r = await cli.get("/fba/inventory/v1/summaries", params=params,
@@ -674,7 +687,19 @@ async def _sincronizar_amazon_resto(pubs: list[dict[str, Any]], skus_pub: list[s
         fba_qty = v.get("stock_fba")
         if fba_qty is None:
             fba_qty = fba.get(sku, 0)          # respaldo: summaries de FBA
-        es_fba = bool(fba_qty)
+        # ES FBA LO QUE AMAZON DICE QUE ES FBA, no lo que tiene piezas. El
+        # listado trae `fulfillmentChannelCode: AMAZON_NA` y `_parsear_listing`
+        # lo devuelve en `es_fba`; la cantidad solo llena la columna.
+        #
+        # Antes esta línea era `es_fba = bool(fba_qty)` y arrastraba DOS errores:
+        # un FBA agotado pasaba a FBM, y —peor— cualquier fallo o truncamiento
+        # de las summaries de arriba reclasificaba el catálogo entero a DROP sin
+        # un solo error visible. Medido el 28-oct: 333 de 354 SKUs del reporte
+        # de FBA se pintaban DROP, con 745 unidades reales invisibles.
+        #
+        # El `or` conserva el respaldo: si el listado no vino en esta vuelta
+        # pero las summaries sí traen piezas, es FBA igual.
+        es_fba = bool(v.get("es_fba")) or bool(fba_qty)
         rows.append({
             "sku": sku, "canal": "amazon", "cuenta": "",
             # COALESCE en _upsert protege el valor viejo si Amazon no respondió

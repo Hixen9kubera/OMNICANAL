@@ -386,16 +386,30 @@ def _parsear_listing(d: dict[str, Any]) -> dict[str, Any]:
     precio = None
     if offers and offers[0].get("price"):
         precio = _f(offers[0]["price"].get("amount"))
+    # EL CANAL SE LEE DEL CANAL, NO DE LA CANTIDAD (Eduardo, 28-oct-2026).
+    # `es_fba` salía de `bool(stock_fba)`, o sea que se contestaba "¿es FBA?"
+    # con "¿tiene piezas?". Dos formas de que eso mienta, y las dos pasan:
+    #
+    #   · Amazon manda `fulfillmentChannelCode: AMAZON_NA` SIN `quantity` en las
+    #     publicaciones FBA (verificado el 28-oct contra ORG-0785-CAF-RED y
+    #     JUGU-0143-MUL: traen fnSku y el código del canal, y ningún número).
+    #     La cantidad de FBA vive en el inventario de Amazon, no en el listado.
+    #   · Un producto FBA AGOTADO tiene 0 piezas y seguiría siendo FBA.
+    #
+    # Efecto medido: 333 de 354 SKUs del reporte de FBA se pintaban como DROP,
+    # con 745 unidades reales que el panel daba por inexistentes.
     stock_fba = stock_fbm = None
+    canal_fba = False
     for fa in d.get("fulfillmentAvailability") or []:
         code = (fa.get("fulfillmentChannelCode") or "").upper()
         if code.startswith("AMAZON"):
+            canal_fba = True
             stock_fba = fa.get("quantity")
         else:                      # DEFAULT / MFN → lo surte el vendedor
             stock_fbm = fa.get("quantity")
     return {"asin": summaries[0].get("asin"), "precio": precio, "estado": estado,
             "stock_fba": stock_fba, "stock_real": stock_fbm,
-            "es_fba": bool(stock_fba)}
+            "es_fba": canal_fba}
 
 
 async def datos_por_sku(skus: list[str], lote: int = 20) -> dict[str, dict[str, Any]]:
@@ -488,10 +502,12 @@ async def detalle_sku(sku: str) -> dict[str, Any] | None:
 
     stock_fba = None
     stock_fbm = None
+    canal_fba = False
     for fa in d.get("fulfillmentAvailability") or []:
         code = (fa.get("fulfillmentChannelCode") or "").upper()
         qty = fa.get("quantity")
         if code.startswith("AMAZON"):
+            canal_fba = True       # ver la nota de `_parsear_listing`
             stock_fba = qty
         else:  # DEFAULT / MFN → lo surte el vendedor (FBM = stock real)
             stock_fbm = qty
@@ -499,7 +515,8 @@ async def detalle_sku(sku: str) -> dict[str, Any] | None:
     return {
         "asin": asin, "precio": precio, "estado": estado,
         "stock_fba": stock_fba, "stock_real": stock_fbm,
-        "es_fba": bool(stock_fba),
+        # Mismo criterio que `_parsear_listing`: el CANAL, no la cantidad.
+        "es_fba": canal_fba,
     }
 
 

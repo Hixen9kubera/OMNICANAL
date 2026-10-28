@@ -1001,6 +1001,65 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.701.0 — «¿Es FBA?» se contestaba con «¿tiene piezas?»
+
+Eduardo, mirando Análisis: *"ORG-0785-CAF-RED no tenemos su información de FBA
+y es FBA, no FBM"*. Tenía razón, y detrás había **tres defectos encadenados**.
+
+**El caso.** `ORG-0785-CAF-RED` tenía 44 piezas en bodega de Amazon según
+`ops.fba_snapshot` (41 vendibles + 2 reservadas, reporte de hoy) y el panel lo
+pintaba **DROP con FBA en 0**. No era un caso suelto: **333 de 354 SKUs** del
+reporte de FBA salían como DROP, con **745 unidades** que el panel daba por
+inexistentes.
+
+**1. El tope de páginas cortaba el inventario a la tercera parte.**
+`inventario.py` leía `/fba/inventory/v1/summaries` con `while paginas < 10`.
+Medido contra Amazon el 28-oct: el inventario son **29 páginas / 1,423 SKUs**.
+Se leían 500 y se descartaban 923 **con el `nextToken` todavía pendiente** — en
+silencio, porque un corte por contador no distingue "ya no hay más" de "me
+rendí". Lo que quedaba del otro lado no era una cola de SKUs muertos:
+`ORG-0785-CAF-RED` (41 piezas), `ORG-0785-CAF-CUA` (47), `TEC-0808-NEG` (45) y
+`VEH-0062-NAR` (90) estaban todos ahí. Sube a 60.
+
+**2. El canal se deducía de la cantidad.** `es_fba = bool(stock_fba)` — o sea
+que la pregunta "¿es FBA?" se contestaba con "¿tiene piezas?". Dos formas de
+mentir, y las dos pasan:
+
+* Amazon manda `fulfillmentChannelCode: AMAZON_NA` **sin `quantity`** en las
+  publicaciones FBA (verificado contra 5 SKUs: traen `fnSku` y el código del
+  canal, y ningún número). La cantidad de FBA vive en el inventario, no en el
+  listado.
+* Un FBA **agotado** tiene 0 piezas y sigue siendo FBA.
+
+Y encima el `except Exception` del bloque de summaries convierte un fallo de esa
+llamada en "el catálogo entero es DROP", con un único warning.
+
+Ahora `es_fba` sale del código de canal, en los tres lugares que lo calculaban
+(`_parsear_listing`, `detalle_sku`, y el uso en el sync). El respaldo por
+cantidad se conserva con un `or`: si el listado no vino en esta vuelta pero las
+summaries sí traen piezas, es FBA igual.
+
+**3. La tarjeta de Omnicanal se contradecía sola.** Mostraba *"STOCK REAL
+1499"* y dos renglones abajo *"Total = 0 u (real + FBA)"*. El número de arriba
+usa `c.stock_real ?? c.stock`; el total leía solo `c.stock_real`, encontraba el
+nulo y lo sumaba como cero. Ahora usan el mismo respaldo. Y la condición que
+decide si ese renglón aparece también: `stock_fba` vale **0, no nulo**, en las
+FBM, así que se cumplía siempre y el total se pintaba aunque no hubiera nada
+que sumar.
+
+**Verificado contra Amazon en vivo, sin escribir nada.** De las 459
+publicaciones: **443 son `AMAZON_NA`**, 9 son `DEFAULT` y 7 no traen el campo.
+La simulación con el parser real del repo dice que **420 SKUs pasarían de DROP
+a FBA y ninguno al revés**, con +593 unidades de `stock_fba` en 26 SKUs. Las 7
+sin campo quedan fuera: desconocido no es FBA.
+
+**Lo que NO se pudo probar aquí, y por qué.** El sync completo no se corrió:
+`_upsert` escribe en `canal_inventario`, que vive en **MySQL de producción**, así
+que correrlo desde una máquina local tocaría producción aunque kubera apunte al
+sandbox. La verificación fue el parser real contra respuestas reales más la
+simulación de la escritura. La primera corrida de verdad hay que mirarla en el
+primer barrido tras el deploy.
+
 ### v0.700.0 — La IA nunca escribe una garantía: ni en Crear, ni en el Estudio, ni en Amazon, TikTok o Walmart
 
 **El pedido (Brandon, 28-oct-2026):** *"en la descripción se genera la garantía pero hay que evitar «Garantía del

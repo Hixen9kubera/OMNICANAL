@@ -435,12 +435,25 @@ export default function ProductDetailDrawer({ sku, producto, canales, onClose }:
                       </div>
 
                       {/* Total y situación */}
-                      {(c.stock_real != null || c.stock_full != null || c.stock_fba != null) && (
+                      {/* `stockReal` y no `c.stock_real`, por lo mismo de abajo.
+                          Y OJO con el cero: `stock_fba` vale 0 —no nulo— en las
+                          publicaciones FBM, así que esta condición se cumplía
+                          siempre y el renglón se pintaba aunque no hubiera nada
+                          que sumar. Con los tres en nulo ahora no aparece, que
+                          es mejor que enseñar un cero falso. */}
+                      {(stockReal != null || c.stock_full != null || c.stock_fba != null) && (
                         <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50/60 px-4 py-2 text-xs">
                           <span className="text-slate-500">
                             Total ={" "}
                             <span className="font-bold text-slate-700">
-                              {(c.stock_real ?? 0) + (c.stock_full ?? 0) + (c.stock_fba ?? 0)} u
+                              {/* EL MISMO RESPALDO QUE EL NÚMERO DE ARRIBA
+                                  (Eduardo, 28-oct). `stockReal` cae a `c.stock`
+                                  cuando `c.stock_real` viene nulo; este total NO
+                                  lo hacía y leía el nulo como cero. Resultado:
+                                  la tarjeta se contradecía a dos renglones de
+                                  distancia — "STOCK REAL 1499" arriba y
+                                  "Total = 0 u (real + FBA)" abajo. */}
+                              {(stockReal ?? 0) + (c.stock_full ?? 0) + (c.stock_fba ?? 0)} u
                             </span>{" "}
                             <span className="text-slate-400">
                               {esML ? "(real + FULL)"
