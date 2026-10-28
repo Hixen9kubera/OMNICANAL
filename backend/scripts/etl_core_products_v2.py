@@ -59,7 +59,7 @@ from services.sku_provisional import es_provisional  # noqa: E402
 
 FASE = "core-etl-v2"
 BATCH = 1000
-CAMPOS = ("name", "wc_id", "wc_parent_id", "odoo_id", "status", "has_variations", "source")
+CAMPOS = ("name", "wc_id", "wc_parent_id", "odoo_id", "status", "has_variations", "source", "parent_sku")
 # Lo ÚNICO que escribe el seam del corte F6 (kubera_mirror._up_core_product:
 # name, wc_id, status, source). El resto lo llena este ETL y nada más: odoo_id
 # viene de Odoo, wc_parent_id de Woo, has_variations está muerta (vacía en las
@@ -67,6 +67,48 @@ CAMPOS = ("name", "wc_id", "wc_parent_id", "odoo_id", "status", "has_variations"
 # lo recalcula como la lista de tablas MySQL donde aparece el SKU: contra el
 # 'panel_crear' del seam SIEMPRE difiere. Solo estos campos entran a seam_gap.
 CAMPOS_SEAM = ("name", "wc_id", "status")
+# FAMILIA (PLAN MAESTRO 3.2 / F0.3, 28-oct-2026): `has_variations` y `parent_sku` YA NO están
+# muertas. Se derivan aquí de `wc_parent_id` (la llave de Woo) en CADA corrida: si este ETL
+# siguiera escribiendo has_variations=false, revertiría el relleno de la 0080 esa misma noche.
+# Entran a CAMPOS (se actualizan) y NO a CAMPOS_SEAM: no rompen la racha de seam_gap.
+#
+# ARCHIVADO: lo que Woo ya no tiene (no está entre sus productos y variaciones vivos) pasa
+# a `estado_ciclo='archivado'` (columna de la 0080; sin ella, este paso se salta). Nunca
+# saca a nadie de archivado. Dos frenos: si Woo trajo menos del 90 % de los wc_id del padrón
+# (lectura incompleta), o si saldrían más de ARCHIVAR_MAX de golpe, NO archiva y lo reporta.
+ARCHIVAR_MAX = 200
+ARCHIVAR_MIN_LECTURA = 0.9
+
+
+def derivar_familia(registros) -> dict:
+    """`has_variations` (la fila es padre de alguna) y `parent_sku` (el sku de la fila cuyo
+    wc_id es mi wc_parent_id), sobre los registros de la unión. Devuelve los conteos."""
+    sku_por_wc = {int(r["wc_id"]): r["sku"] for r in registros if r.get("wc_id")}
+    padres = {int(r["wc_parent_id"]) for r in registros if r.get("wc_parent_id")}
+    huerfanas = []
+    for r in registros:
+        r["has_variations"] = bool(r.get("wc_id")) and int(r["wc_id"]) in padres
+        wp = r.get("wc_parent_id")
+        r["parent_sku"] = sku_por_wc.get(int(wp)) if wp else None
+        if wp and r["parent_sku"] is None:
+            huerfanas.append(r["sku"])
+    return {"padres": sum(1 for r in registros if r["has_variations"]),
+            "variaciones": sum(1 for r in registros if r.get("wc_parent_id")),
+            "variaciones_sin_padre_en_padron": len(huerfanas), "muestra_sin_padre": sorted(huerfanas)[:10]}
+
+
+def a_archivar(vivos_core, woo_vivos) -> tuple[list, str | None]:
+    """(skus a archivar, motivo por el que NO se archiva o None). `vivos_core` = [(sku, wc_id)]
+    del padrón con wc_id y estado_ciclo distinto de archivado; `woo_vivos` = wc_id que Woo tiene."""
+    if not vivos_core:
+        return [], None
+    if len(woo_vivos) < ARCHIVAR_MIN_LECTURA * len(vivos_core):
+        return [], (f"lectura de Woo incompleta: {len(woo_vivos)} wc_id vivos contra "
+                    f"{len(vivos_core)} en el padrón")
+    faltan = sorted(sku for sku, wc in vivos_core if int(wc) not in woo_vivos)
+    if len(faltan) > ARCHIVAR_MAX:
+        return [], f"{len(faltan)} saldrían de golpe (tope {ARCHIVAR_MAX}): revisar antes de archivar"
+    return faltan, None
 
 # CANDADO DE PROVISIONALES (25-sep-2026, Eduardo): los identificadores del app
 # viejo (`5070-0020`, `0759-0057-PURPLE`) se BORRAN de core.products y de
@@ -219,6 +261,11 @@ def main() -> None:
                       AND pm.meta_value <> ''
                     ORDER BY p.ID""")
     t_woo = wcur.fetchall()
+    # Todo lo que Woo TIENE vivo, con o sin _sku: la base del archivado (3.2).
+    wcur.execute("""SELECT p.ID AS wc_id FROM wp_posts p
+                    WHERE p.post_type IN ('product', 'product_variation')
+                      AND p.post_status NOT IN ('trash', 'auto-draft')""")
+    woo_vivos = {int(r["wc_id"]) for r in wcur.fetchall()}
     wcur.close()
     wp.close()
     woo_sku_por_wcid = {int(r["wc_id"]): str(r["sku"]).strip() for r in t_woo}
@@ -243,8 +290,8 @@ def main() -> None:
     pg = psycopg2.connect(DEST["SUPABASE_DB_URL"], connect_timeout=20)
     pg.autocommit = True
     pcur = pg.cursor()
-    pcur.execute("select sku, name, wc_id, wc_parent_id, odoo_id, status, has_variations, source "
-                 "from core.products")
+    pcur.execute("select sku, name, wc_id, wc_parent_id, odoo_id, status, has_variations, source, "
+                 "parent_sku::text from core.products")
     core_actual = {str(r[0]).lower(): {"sku": str(r[0]), **dict(zip(CAMPOS, r[1:]))}
                    for r in pcur.fetchall()}
     pcur.execute("select sku_original, sku from migration.id_map")
@@ -444,6 +491,19 @@ def main() -> None:
                                           json.dumps({"wc_id": wc_id, "se_quedo_en": orden[0],
                                                       "woo_confirma": woo_dice})))
 
+    # FAMILIA (3.2): se deriva sobre la unión ya depurada de colisiones.
+    familia = derivar_familia(list(por_clave.values()))
+
+    # ARCHIVADO (3.2): solo si la 0080 ya creó la columna.
+    pcur.execute("""select exists (select 1 from information_schema.columns
+                    where table_schema = 'core' and table_name = 'products' and column_name = 'estado_ciclo')""")
+    if pcur.fetchone()[0]:
+        pcur.execute("select sku::text, wc_id from core.products "
+                     "where wc_id is not null and estado_ciclo <> 'archivado'")
+        archivar, archivar_omitido = a_archivar(pcur.fetchall(), woo_vivos)
+    else:
+        archivar, archivar_omitido = [], "sin la columna estado_ciclo (0080 no aplicada)"
+
     # ── DIFF incremental contra core.products ────────────────────────────────
     union = list(por_clave.values())
     if args.limit:
@@ -460,7 +520,7 @@ def main() -> None:
         fila = {"sku": reg["sku"], "name": reg["name"], "wc_id": reg["wc_id"],
                 "wc_parent_id": reg["wc_parent_id"], "odoo_id": reg["odoo_id"],
                 "status": reg["status"], "has_variations": reg["has_variations"],
-                "source": ",".join(sorted(fuentes))}
+                "source": ",".join(sorted(fuentes)), "parent_sku": reg.get("parent_sku")}
         if actual is None:
             inserts.append(fila)
         else:
@@ -518,11 +578,16 @@ def main() -> None:
         "muestra_inserts": [{"sku": f["sku"], "status": f["status"], "source": f["source"]}
                              for f in inserts[:15]],
         "muestra_updates": [{"sku": f["sku"], "campos": f["_difs"]} for f in updates[:10]],
+        # Cuántos updates toca CADA campo (un update puede tocar varios): dice de un vistazo
+        # si un cambio del ETL (p. ej. la familia de 3.2) mueve filas o no.
+        "updates_por_campo": dict(sorted(Counter(c for f in updates for c in f["_difs"]).items())),
         # Quién rompió la racha. Va COMPLETA (ver seam_gap_filas) y es la misma
         # que se guarda en el acta.
         "seam_gap_skus": seam_gap_filas,
         "seam_gap_omitidos": seam_gap_omitidos,
         "muestra_aliases": dict(list(aliases_nuevos.items())[:10]),
+        "familia": familia,
+        "archivar": {"n": len(archivar), "muestra": archivar[:15], "omitido": archivar_omitido},
     }
 
     if not args.real:
@@ -534,25 +599,30 @@ def main() -> None:
 
     # ── ESCRITURA (solo --real): upserts, append de alias, issues, acta ──────
     pg.autocommit = False
+    # Padres primero: `parent_sku` tiene llave foránea a core.products(sku), y un padre que
+    # nace en el mismo lote que su variante tiene que existir antes (lotes de BATCH).
     filas = [(f["sku"], f["name"], f["wc_id"], f["wc_parent_id"], f["odoo_id"],
-              f["status"], f["has_variations"], f["source"])
-             for f in inserts + updates]
+              f["status"], f["has_variations"], f["source"], f["parent_sku"])
+             for f in sorted(inserts + updates, key=lambda f: f["wc_parent_id"] is not None)]
     if filas:
         psycopg2.extras.execute_values(pcur, """
             insert into core.products (sku, name, wc_id, wc_parent_id, odoo_id, status,
-                                       has_variations, source)
+                                       has_variations, source, parent_sku)
             values %s
             on conflict (sku) do update set
               name = excluded.name, wc_id = excluded.wc_id,
               wc_parent_id = excluded.wc_parent_id, odoo_id = excluded.odoo_id,
               status = excluded.status, has_variations = excluded.has_variations,
-              source = excluded.source
+              source = excluded.source, parent_sku = excluded.parent_sku
             where (products.name, products.wc_id, products.wc_parent_id, products.odoo_id,
-                   products.status, products.has_variations, products.source)
+                   products.status, products.has_variations, products.source, products.parent_sku)
               is distinct from
                   (excluded.name, excluded.wc_id, excluded.wc_parent_id, excluded.odoo_id,
-                   excluded.status, excluded.has_variations, excluded.source)
+                   excluded.status, excluded.has_variations, excluded.source, excluded.parent_sku)
         """, filas, page_size=BATCH)
+    if archivar:
+        pcur.execute("update core.products set estado_ciclo = 'archivado' "
+                     "where sku = any(%s) and estado_ciclo <> 'archivado'", (archivar,))
     if aliases_nuevos:
         psycopg2.extras.execute_values(pcur, """
             insert into migration.id_map (sku_original, sku, tabla_origen)
@@ -595,7 +665,10 @@ def main() -> None:
                                     "issues_nuevas": len(issues_escribibles),
                                     "nombre_no_coincide_informativo": tally_issues.get("nombre_no_coincide", 0),
                                     "provisionales_omitidos": len(provisionales),
-                                    "aliases_nuevos": len(aliases_nuevos)}, default=str),
+                                    "aliases_nuevos": len(aliases_nuevos),
+                                    "familia": familia,
+                                    "archivados": len(archivar),
+                                    "archivar_omitido": archivar_omitido}, default=str),
                   json.dumps({}), resultado))
     pg.commit()
     pcur.close()

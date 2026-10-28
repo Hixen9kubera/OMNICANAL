@@ -964,10 +964,20 @@
      "tags:ARRAY:null",
      "source:text:null",
      "created_at:timestamp with time zone:notnull",
-     "updated_at:timestamp with time zone:notnull"
+     "updated_at:timestamp with time zone:notnull",
+     "almacen_largo_cm:numeric:null",
+     "almacen_ancho_cm:numeric:null",
+     "almacen_alto_cm:numeric:null",
+     "almacen_peso_kg:numeric:null",
+     "almacen_cajas:integer:null",
+     "almacen_piezas_por_caja:integer:null",
+     "almacen_por:text:null",
+     "almacen_en:timestamp with time zone:null",
+     "estado_ciclo:text:notnull",
+     "procesada_at:timestamp with time zone:null"
     ],
     "constraints": {
-     "CHECK": 1,
+     "CHECK": 4,
      "FOREIGN KEY": 1,
      "PRIMARY KEY": 1,
      "UNIQUE": 1
@@ -2360,6 +2370,7 @@
    "orders_touch"
   ],
   "core.products": [
+   "products_archivar",
    "trg_touch_products"
   ],
   "core.usuarios": [
