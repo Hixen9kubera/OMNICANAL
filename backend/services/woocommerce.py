@@ -19,6 +19,7 @@ from typing import Any
 import httpx
 
 from config import settings
+from services import ml_atributos
 
 log = logging.getLogger("omnicanal.woocommerce")
 
@@ -2263,8 +2264,12 @@ async def guardar_contenido_wc(
                 actuales: list[dict[str, Any]] = r.json().get("attributes") or []
                 # Taxonomía (id>0) O eje de variación (variation=true, aunque sea
                 # local con id=0). Lo segundo es lo que faltaba — ver docstring.
+                # Y los datos FISCALES de ML (IVA, IEPS, claves SAT…): el Estudio
+                # ya no los enseña, y sin esto el primer «Guardar contenido» los
+                # borraría. No se llenan ni se tocan (Brandon, 28-oct-2026).
                 preservar = [a for a in actuales
-                             if a.get("id") or a.get("variation")]
+                             if a.get("id") or a.get("variation")
+                             or ml_atributos.es_fiscal(a.get("name"))]
                 ya = {str(a.get("name") or "").strip().lower() for a in preservar}
                 custom = []
                 for a in atributos:

@@ -15,6 +15,8 @@ ninguno lo toma en cuenta».
 4. El rechazo se explica con TODAS las respuestas del intento: «el título no concuerda
    con el Género» y no el «falta Género» que deja el reintento del pipeline.
 5. «Mejorar con IA» de ML devuelve el parte (obligatorios, rechazados, avisos).
+6. Datos FISCALES (28-oct): la IA no los ve ni los devuelve, el alta no los manda y «Guardar contenido» los deja
+   en Woo como estaban.
 
 Sin red.
 
@@ -248,6 +250,91 @@ class MejorarConIA(unittest.TestCase):
         self.assertEqual(r["rechazados"][0]["campo"], "Potencia (POWER)")
         self.assertIn("Niñas", r["avisos"][0])
         self.assertEqual(r["product_type"], "Tocados")
+
+
+class DatosFiscales(unittest.TestCase):
+    """Brandon, 28-oct-2026: «todos que sean datos fiscales NO SE LLENAN ni se tocan». MUE-0080-NEG salió a ML con
+    IVA 16 %, IEPS 0 % y las claves SAT en «No existe en el catálogo», todo puesto por la IA."""
+
+    FISCALES_CRUDOS = [
+        {"id": "INVOICE_PRODUCT_NAME", "name": "Nombre del producto en la factura", "value_type": "string",
+         "tags": {}},
+        {"id": "SAT_KEY", "name": "Clave del producto", "value_type": "string", "tags": {}},
+        {"id": "IVA_FOR_RESALE", "name": "IVA para reventa", "value_type": "list", "tags": {},
+         "values": [{"id": "1", "name": "16%"}]},
+        {"id": "IEPS", "name": "IEPS", "value_type": "list", "tags": {}, "values": [{"id": "2", "name": "0%"}]},
+        {"id": "IMPORT_DECLARATION_NUMBER", "name": "Número de pedimento", "value_type": "string", "tags": {}},
+    ]
+
+    def test_reconoce_id_meta_y_nombre(self):
+        for fiscal in ("IEPS", "ieps", "ml_attr_SAT_KEY", "IVA_FOR_RESALE", "IVA para reventa",
+                       "Número de pedimento", "  nombre del producto en la factura ", "MEASURE_UNIT_DESCRIPTION",
+                       "VALUE_ADDED_TAX"):
+            self.assertTrue(ma.es_fiscal(fiscal), fiscal)
+        for normal in ("COLOR", "Color", "ml_attr_COLOR", "UNITS_PER_PACK", "Material", "", None):
+            self.assertFalse(ma.es_fiscal(normal), normal)
+
+    def test_la_ia_no_los_ve(self):
+        m = ma.clasificar(CRUDOS + self.FISCALES_CRUDOS)
+        ids = {a["id"] for a in m["principales"] + m["secundarias"]}
+        self.assertFalse(ids & ma.FISCALES)
+        self.assertIn("COLOR", ids)
+        self.assertNotIn("IEPS", ma.build_prompt("Tapete", "", "", "", m, "MUE-0080-NEG"))
+
+    def test_si_la_ia_los_contesta_no_salen(self):
+        respuesta = {"atributos": {"COLOR": "Rosa", "IEPS": "0%", "SAT_KEY": "No existe en el catálogo"}, "flags": []}
+        with mock.patch.object(ma, "get_meli_all_attributes",
+                               mock.AsyncMock(return_value=ma.clasificar(CRUDOS + self.FISCALES_CRUDOS))), \
+             mock.patch.object(ma, "_deepseek_json", mock.AsyncMock(return_value=respuesta)):
+            r = asyncio.run(ma.generar_atributos("MLM190885", "Moños"))
+        self.assertEqual(r["atributos"]["COLOR"], "Rosa")
+        self.assertFalse(set(r["atributos"]) & ma.FISCALES)
+
+    def test_depurar_los_quita_sin_avisar(self):
+        r = ma.depurar({"COLOR": "Rosa", "IEPS": "0%", "IVA_FOR_RESALE": "16%"}, META)
+        self.assertEqual(r["atributos"], {"COLOR": "Rosa"})
+        self.assertEqual((r["avisos"], r["rechazados"]), ([], []))
+
+    def test_el_alta_no_los_manda_ni_de_la_meta_ni_del_estudio(self):
+        prod = {"title": "Moños", "ml_attrs": {"COLOR": "Negro", "IEPS": "0%", "SAT_KEY": "No existe en el catálogo"}}
+        campos = {"atributos": [{"nombre": "IVA para reventa", "campo": "IVA_FOR_RESALE", "valor": "16%"}]}
+        nuevo, avisos = AltaML._alta(self, prod, campos)
+        self.assertEqual(nuevo["ml_attrs"], {"COLOR": "Negro"})
+        self.assertFalse(any("IEPS" in a or "IVA" in a for a in avisos))
+
+    def test_guardar_contenido_conserva_los_fiscales_de_woo(self):
+        from services import woocommerce as wc
+        actuales = [{"id": 0, "name": "IEPS", "options": ["0%"], "variation": False},
+                    {"id": 0, "name": "Material", "options": ["Espuma"], "variation": False}]
+        enviado = {}
+
+        class Resp:
+            def __init__(self, code, body=None):
+                self.status_code, self._body, self.text = code, body or {}, ""
+
+            def json(self):
+                return self._body
+
+        class Cli:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url, params=None):
+                return Resp(200, {"attributes": actuales})
+
+            async def put(self, url, json=None, timeout=None):
+                enviado.update(json)
+                return Resp(200)
+
+        with mock.patch.object(wc, "_client", lambda: Cli()), \
+             mock.patch("services.wp_db.disponible", return_value=False):
+            ok = asyncio.run(wc.guardar_contenido_wc(1, atributos=[{"nombre": "Material", "valor": "Microfibra"}]))
+        self.assertTrue(ok)
+        self.assertEqual([(a["name"], a["options"]) for a in enviado["attributes"]],
+                         [("IEPS", ["0%"]), ("Material", ["Microfibra"])])   # el fiscal, intacto
 
 
 if __name__ == "__main__":

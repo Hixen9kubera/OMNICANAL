@@ -868,6 +868,26 @@ export function precioCatalogo(sku: string, signal?: AbortSignal): Promise<Preci
   return getJSON<PrecioCatalogo>(`/api/precio-sugerido/catalogo/${encodeURIComponent(sku)}`, signal);
 }
 
+// Datos FISCALES de Mercado Libre (IVA, IEPS, claves SAT, pedimento…): NO SE LLENAN NI SE TOCAN (Brandon,
+// 28-oct-2026). Misma lista que `backend/services/ml_atributos.py::FISCALES`; el backend tampoco los manda aunque
+// lleguen. Aquí solo se esconden del Estudio para que nadie los capture.
+const FISCALES_ML = new Set([
+  "invoice_product_name", "sat_key", "measure_unit_key", "measure_unit_description", "iva_for_resale", "ieps",
+  "import_declaration_number", "value_added_tax", "import_duty",
+  "nombre del producto en la factura", "clave del producto", "clave de la unidad de medida", "unidad de medida",
+  "iva para reventa", "numero de pedimento", "iva", "impuesto interno",
+]);
+
+export function esFiscalML(nombre: string | null | undefined): boolean {
+  const t = (nombre ?? "").trim().toLowerCase().replace(/^ml_attr_/, "")
+    .normalize("NFD").replace(/[̀-ͯ]/g, "");
+  return FISCALES_ML.has(t) || FISCALES_ML.has(t.replace(/\s+/g, "_")) || FISCALES_ML.has(t.replace(/_/g, " "));
+}
+
+export function sinFiscalesML<T extends { nombre: string }>(atributos: T[]): T[] {
+  return atributos.filter((a) => !esFiscalML(a.nombre));
+}
+
 export function medidasAmazon(p: { sku: string; asins: string[]; q?: string | null }): Promise<MedidasAmazon> {
   return postJSON<MedidasAmazon>(`/api/precio-sugerido/medidas-amazon`, p);
 }

@@ -57,7 +57,36 @@ _SKIP_IDS = {
     "SELLER_PACKAGE_WIDTH", "SELLER_PACKAGE_HEIGHT",
     "ORIGIN", "OEM",
 }
-_ATTRS_BASICOS_RE = ("peso", "dimen", "medida", "talla", "tamaño", "marca", "brand",
+
+# DATOS FISCALES: NO SE LLENAN NI SE TOCAN (Brandon, 28-oct-2026). Mercado Libre los guarda como atributos de la
+# publicación (jerarquía ITEM, grupo OTHERS) y los enseña en la ficha bajo «Otros». Desde que la IA ve TODOS los
+# secundarios (23-oct) los llenaba sola: MUE-0080-NEG salió con IVA 16 %, IEPS 0 % y las claves SAT en «No existe en
+# el catálogo». Aquí no los ve la IA, no salen en el alta ni en la actualización y no aparecen en el editor de
+# Bodega. Lo que ya tienen las publicaciones y las metas `ml_attr_*` de Woo se queda como está: no se borra.
+FISCALES = frozenset({
+    "INVOICE_PRODUCT_NAME", "SAT_KEY", "MEASURE_UNIT_KEY", "MEASURE_UNIT_DESCRIPTION", "IVA_FOR_RESALE", "IEPS",
+    "IMPORT_DECLARATION_NUMBER", "VALUE_ADDED_TAX", "IMPORT_DUTY",
+})
+# Sus nombres en ML (sin acentos ni mayúsculas): un atributo de Woo o del Estudio puede venir con la etiqueta.
+_FISCALES_NOMBRES = frozenset({
+    "nombre del producto en la factura", "clave del producto", "clave de la unidad de medida", "unidad de medida",
+    "iva para reventa", "ieps", "numero de pedimento", "iva", "impuesto interno",
+})
+
+
+def es_fiscal(llave: Any) -> bool:
+    """¿Es un dato fiscal de ML? Por su ID (`IEPS`, `ml_attr_SAT_KEY`) o por su nombre («IVA para reventa»)."""
+    t = str(llave or "").strip()
+    if t.lower().startswith("ml_attr_"):
+        t = t[len("ml_attr_"):]
+    if t.upper() in FISCALES:
+        return True
+    plano = unicodedata.normalize("NFKD", t.lower())
+    plano = " ".join("".join(c for c in plano if not unicodedata.combining(c)).replace("_", " ").split())
+    return plano in _FISCALES_NOMBRES
+
+
+_ATTRS_BASICOS_RE =("peso", "dimen", "medida", "talla", "tamaño", "marca", "brand",
                      "variante", "variant")
 _ATTRS_EXCLUIDOS = {"url_alibaba", "alibaba_price", "alibaba_title_original",
                     "ml_category_id", "categoria_meli_id"}
@@ -100,9 +129,9 @@ def clasificar(crudos: list) -> dict:
         tags = a.get("tags", {}) or {}
         if tags.get("hidden") or tags.get("read_only"):
             continue
-        if a["id"] in _SKIP_IDS:
+        if a["id"] in _SKIP_IDS or es_fiscal(a["id"]):
             continue
-        obligatorio = bool(tags.get("required") or tags.get("catalog_required"))
+        obligatorio =bool(tags.get("required") or tags.get("catalog_required"))
         entry = {
             "id": a["id"],
             "name": a.get("name") or a["id"],
@@ -350,13 +379,16 @@ def depurar(atributos: dict[str, str], meli_attrs: dict, titulo: str = "") -> di
         varios valores juntos en un atributo de una sola opción → se queda uno;
       · número ≤ 0 (o «0 W») → fuera: ML exige mayor que cero (TEC-1439-BLN);
       · GENDER → el que dice el título, si el título nombra uno (ACC-0446-MUL);
-      · `faltan`: obligatorios que quedaron sin valor.
+      · `faltan`: obligatorios que quedaron sin valor;
+      · un dato FISCAL (`es_fiscal`) no sale nunca, y sin aviso: no se llena ni se toca.
     """
     por_id = {a["id"]: a for a in (meli_attrs.get("principales", []) + meli_attrs.get("secundarias", []))}
     salida: dict[str, str] = {}
     avisos: list[str] = []
     rechazados: list[dict[str, str]] = []
     for aid, valor in (atributos or {}).items():
+        if es_fiscal(aid):
+            continue
         a = por_id.get(aid)
         valor = str(valor).strip()
         if not valor:

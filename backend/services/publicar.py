@@ -23,7 +23,7 @@ from typing import Any
 import httpx
 
 from config import settings
-from services import db, meli
+from services import db, meli, ml_atributos
 
 log = logging.getLogger("omnicanal.publicar")
 
@@ -426,10 +426,13 @@ async def _revision_categoria_ml(req: dict[str, Any],
 async def _preview_ml(req: dict[str, Any]) -> dict[str, Any]:
     campos = req.get("campos") or {}
     title = (campos.get("titulo") or "").strip()
+    # Los datos FISCALES no se tocan (`ml_atributos.FISCALES`, Brandon 28-oct): si no van en el PUT, ML deja en la
+    # publicación lo que ya tenía.
     attrs = [
         {"id": a["nombre"], "value_name": str(a["valor"]).strip()}
         for a in (campos.get("atributos") or [])
         if a.get("nombre") and str(a.get("valor") or "").strip()
+        and not ml_atributos.es_fiscal(a["nombre"]) and not ml_atributos.es_fiscal(a.get("campo"))
     ]
     desc = _plain(campos.get("descripcion"))
     pubs = _ml_publicaciones(req.get("sku"))
@@ -1089,10 +1092,13 @@ async def _confirmar_ml(req: dict[str, Any]) -> dict[str, Any]:
     wc_id = req.get("wc_id")
     campos = req.get("campos") or {}
     title = (campos.get("titulo") or "").strip()
+    # Los datos FISCALES no se tocan (`ml_atributos.FISCALES`, Brandon 28-oct): si no van en el PUT, ML deja en la
+    # publicación lo que ya tenía.
     attrs = [
         {"id": a["nombre"], "value_name": str(a["valor"]).strip()}
         for a in (campos.get("atributos") or [])
         if a.get("nombre") and str(a.get("valor") or "").strip()
+        and not ml_atributos.es_fiscal(a["nombre"]) and not ml_atributos.es_fiscal(a.get("campo"))
     ]
     desc = _plain(campos.get("descripcion"))
     if not title and not attrs and not desc:

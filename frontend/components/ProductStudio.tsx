@@ -80,6 +80,7 @@ import {
   studioMetadata,
   leerModoPublicacion,
   guardarModoPublicacion,
+  sinFiscalesML,
   type ProductoIA,
 } from "@/lib/api";
 import { aNumero } from "@/lib/numeros";
@@ -828,7 +829,8 @@ export default function ProductStudio({
         .filter((a): a is AtributoProducto => a !== null);
       if (!atrsBorrador.length) atrsBorrador = null;
     }
-    setAtributos(atrsBorrador ?? atrsBase);
+    // Los datos fiscales de ML no se enseñan ni se capturan (Brandon, 28-oct): ver `esFiscalML`.
+    setAtributos(sinFiscalesML(atrsBorrador ?? atrsBase));
     setHighlights(stored?.highlights ?? (srv.highlights as string) ?? "");
     setBullets(stored?.bullets ?? (srv.bullets as string[]) ?? []);
     setSearchTerms(stored?.searchTerms ?? (srv.backend_search_terms as string) ?? "");
@@ -1068,7 +1070,7 @@ export default function ProductStudio({
       if (c.descripcion != null) setDescripcion(c.descripcion);
       // Solo si viene como ARREGLO. Walmart lo manda como objeto y se pinta
       // aparte, de solo lectura (ver `atributosWalmart`).
-      if (Array.isArray(c.atributos) && c.atributos.length) setAtributos(c.atributos);
+      if (Array.isArray(c.atributos) && c.atributos.length) setAtributos(sinFiscalesML(c.atributos));
       if (c.highlights != null) setHighlights(c.highlights);
       if (c.bullets?.length) setBullets(c.bullets);
       if (c.backend_search_terms != null) setSearchTerms(c.backend_search_terms);
@@ -1834,7 +1836,7 @@ export default function ProductStudio({
       setTitulo(data?.nombre || "");
     }
     setDescripcion(data?.descripcion || "");
-    setAtributos(meta?.atributos ?? []);
+    setAtributos(sinFiscalesML(meta?.atributos ?? []));
     setHighlights("");
     setBullets([]);
     setSearchTerms("");

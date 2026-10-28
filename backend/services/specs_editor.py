@@ -69,7 +69,7 @@ import time
 import urllib.request
 from typing import Any
 
-from services import channel_content, specs
+from services import channel_content, ml_atributos, specs
 
 log = logging.getLogger("omnicanal.services.specs_editor")
 
@@ -142,6 +142,8 @@ def _campos_ml(categoria: str) -> list[dict[str, Any]]:
     for a in crudos or []:
         tags = a.get("tags") or {}
         if "hidden" in tags or "read_only" in tags:
+            continue
+        if ml_atributos.es_fiscal(a.get("id")):    # datos fiscales: no se llenan ni se tocan (28-oct)
             continue
         salida.append({
             "campo": a.get("id"),

@@ -1001,6 +1001,63 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.699.0 — Mercado Libre: los DATOS FISCALES no se llenan ni se tocan
+
+**Qué pidió Brandon (28-oct-2026):** «todos que sean datos fiscales NO SE LLENAN ni se tocan».
+
+**Qué pasaba.** En ML los datos fiscales son atributos de la publicación (jerarquía `ITEM`, grupo `OTHERS`) y la
+ficha los enseña bajo «Otros». Desde el 23-oct la IA de atributos ve todos los opcionales (v0.684), y como a
+estos nadie los excluyó, los llenaba ella. MUE-0080-NEG salió con:
+- nombre en factura;
+- IVA 16 % e IEPS 0 %;
+- unidad «Pieza»;
+- las dos claves del SAT en «No existe en el catálogo».
+
+**Cuáles son.** Medido en tres categorías, son los mismos siete visibles más dos ocultos:
+
+| ID | Nombre en ML |
+|---|---|
+| `INVOICE_PRODUCT_NAME` | Nombre del producto en la factura |
+| `SAT_KEY` | Clave del producto |
+| `MEASURE_UNIT_KEY` | Clave de la unidad de medida |
+| `MEASURE_UNIT_DESCRIPTION` | Unidad de medida |
+| `IVA_FOR_RESALE` | IVA para reventa |
+| `IEPS` | IEPS |
+| `IMPORT_DECLARATION_NUMBER` | Número de pedimento |
+| `VALUE_ADDED_TAX`, `IMPORT_DUTY` | IVA e impuesto interno (ocultos y de solo lectura) |
+
+Viven en `ml_atributos.FISCALES`, con `es_fiscal()`, que los reconoce por ID, por meta `ml_attr_*` o por su
+nombre.
+
+**Dónde quedó el candado** (una sola regla, usada en todos lados):
+- **La IA** (`ml_atributos.clasificar` / `depurar`): no los ve en el prompt y, si los contestara, no salen. Cubre
+  Crear Productos y «Mejorar con IA».
+- **El alta** (`publicar_ready.construir_prod` y `_atributos_ml_para_alta`): no viajan ni de las metas `ml_attr_*`
+  que la IA dejó antes, ni de los atributos de Woo, ni del Estudio.
+- **La actualización** (`publicar._preview_ml` / `_confirmar_ml`): no van en el PUT, así que ML deja en la
+  publicación lo que ya tenía.
+- **El Estudio y Bodega** no los enseñan, para que nadie los capture: `sinFiscalesML` en el Estudio y
+  `specs_editor._campos_ml` en Bodega.
+- **«Guardar contenido»** (`woocommerce.guardar_contenido_wc`): conserva tal cual los que ya estén en Woo. Sin
+  esto, el primer guardado después de esconderlos los habría borrado.
+
+**Lo que NO se hizo, a propósito («ni se tocan»):**
+- no se borraron las metas `ml_attr_*` ni los atributos fiscales que ya están en Woo;
+- no se limpiaron las publicaciones de ML que ya los tienen.
+
+Siguen como estaban. El candado es solo hacia adelante.
+
+**Pruebas.** `test_ml_atributos_revision`, clase `DatosFiscales` (6 nuevas):
+- la regla los reconoce por ID, meta o nombre;
+- la IA no los ve;
+- si la IA los contesta, no salen;
+- `depurar` los quita sin aviso;
+- el alta no los manda ni de la meta ni del Estudio;
+- «Guardar contenido» deja el IEPS de Woo intacto.
+
+Suite completa: 3,612 pruebas, con el mismo error heredado de antes (`test_competencia_juez_rutas`, del entorno
+Windows).
+
 ### v0.698.0 — `channel.orders`: el encabezado de cada venta se vuelve a llenar (PLAN MAESTRO 2.6) y nace `registrado_at` (0079, 2.2)
 
 **Qué pasaba (medido el 28-oct-2026 en producción, solo lectura).** Desde la v0.176.0 (14-ago, 19:43 UTC)

@@ -25,7 +25,7 @@ from typing import Any
 
 import requests
 
-from services import categoria_vectores, db, meli, ml_errores, ml_revision_categoria, wp_db
+from services import categoria_vectores, db, meli, ml_atributos, ml_errores, ml_revision_categoria, wp_db
 from vendor.amazon_ready import attribute_mapper as amz_mapper
 from vendor.ml_ready import ml_api, publisher_core
 
@@ -226,7 +226,6 @@ def _atributos_ml_para_alta(prod: dict[str, Any], campos: dict[str, Any] | None,
     devuelve el `prod` tal cual: el alta sigue como antes.
     """
     try:
-        from services import ml_atributos
         categoria = ml_revision_categoria.categoria_de_alta(prod)
         token = meli._access_token(cuenta)
         if not (categoria and token):
@@ -748,10 +747,15 @@ def construir_prod(sku: str, wc_id: int, campos: dict[str, Any]) -> dict[str, An
         return str(meta.get(clave) or "")
 
     # Atributos WC en la forma que espera build_attributes: {nombre_lower: primer_valor}.
-    wc_attrs = {a["name"].lower(): a["options"][0] for a in atributos if a.get("options")}
+    # Los datos FISCALES de ML no viajan nunca (`ml_atributos.FISCALES`, Brandon 28-oct): ni de Woo, ni del Studio,
+    # ni de las metas `ml_attr_*` que la IA dejó llenas antes de la regla.
+    wc_attrs = {a["name"].lower(): a["options"][0] for a in atributos
+                if a.get("options") and not ml_atributos.es_fiscal(a["name"])}
     # Lo que el usuario editó en el Studio tiene prioridad.
     for a in (campos.get("atributos") or []):
         nombre, valor = a.get("nombre"), str(a.get("valor") or "").strip()
+        if ml_atributos.es_fiscal(nombre) or ml_atributos.es_fiscal(a.get("campo")):
+            continue
         if nombre and valor:
             wc_attrs[nombre.lower()] = valor
 
@@ -797,7 +801,7 @@ def construir_prod(sku: str, wc_id: int, campos: dict[str, Any]) -> dict[str, An
         # Sin elección en el panel, el mapeo WC sigue siendo el fallback.
         "wc_categories":    [] if cat_id else wp_db.categorias_wc(wc_id),
         "ml_attrs":         {k[len("ml_attr_"):]: v for k, v in meta.items()
-                             if k.startswith("ml_attr_") and v},
+                             if k.startswith("ml_attr_") and v and not ml_atributos.es_fiscal(k)},
         "wc_attrs":         wc_attrs,
         # Amazon hace `t.get("name")` sobre cada tag: van como dicts, no strings.
         "tags":             wp_db.tags_wc(wc_id),
