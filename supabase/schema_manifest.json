@@ -38,6 +38,222 @@
     },
     "rls": true
    },
+   "copias_odoo": {
+    "columnas": [
+     "almacen:text:notnull",
+     "fuente:text:notnull",
+     "foto_at:timestamp with time zone:null",
+     "foto_renglones:integer:null",
+     "foto_fisico:bigint:null",
+     "foto_reservado:bigint:null",
+     "catalogo_at:timestamp with time zone:null",
+     "catalogo_ubicaciones:integer:null",
+     "historial_hasta:timestamp with time zone:null",
+     "ultima_pasada_at:timestamp with time zone:notnull",
+     "ultima_pasada_ok:boolean:notnull",
+     "ultimo_error:text:null"
+    ],
+    "constraints": {
+     "CHECK": 2,
+     "FOREIGN KEY": 1,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "ddl_auditoria": {
+    "columnas": [
+     "id:bigint:notnull",
+     "ocurrido_at:timestamp with time zone:notnull",
+     "txid:bigint:notnull",
+     "rol:text:notnull",
+     "usuario:text:null",
+     "app:text:null",
+     "comando:text:notnull",
+     "objeto:text:null",
+     "tipo_objeto:text:null"
+    ],
+    "constraints": {
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "desprendimiento_foto": {
+    "columnas": [
+     "desprendimiento_id:bigint:notnull",
+     "sentido:text:notnull",
+     "sku:USER-DEFINED:notnull",
+     "ubicacion_id:bigint:notnull",
+     "ubicacion:text:notnull",
+     "fisico:integer:notnull",
+     "reservado:integer:notnull",
+     "odoo_quant_id:bigint:null",
+     "odoo_product_id:integer:null"
+    ],
+    "constraints": {
+     "CHECK": 1,
+     "FOREIGN KEY": 2,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "desprendimientos": {
+    "columnas": [
+     "id:bigint:notnull",
+     "almacen:text:notnull",
+     "de_fuente:text:notnull",
+     "a_fuente:text:notnull",
+     "estado:text:notnull",
+     "congelado_at:timestamp with time zone:notnull",
+     "acta:text:notnull",
+     "quien:text:notnull",
+     "odoo_warehouse_id:integer:null",
+     "revierte_a:bigint:null",
+     "txid:bigint:null",
+     "foto_odoo_at:timestamp with time zone:null",
+     "renglones:integer:null",
+     "skus:integer:null",
+     "fisico:bigint:null",
+     "reservado:bigint:null",
+     "hecho_at:timestamp with time zone:null",
+     "revertido_at:timestamp with time zone:null",
+     "odoo_vaciado_at:timestamp with time zone:null",
+     "odoo_vaciado_ref:text:null",
+     "carga_id:bigint:null",
+     "lote:text:null",
+     "fisico_no_vendible:bigint:null",
+     "creado_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "CHECK": 6,
+     "FOREIGN KEY": 3,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "diario": {
+    "columnas": [
+     "id:bigint:notnull",
+     "lote:text:notnull",
+     "hoja_sha256:text:notnull",
+     "renglon:integer:notnull",
+     "ocurrido_at:timestamp with time zone:notnull",
+     "almacen:text:notnull",
+     "ubicacion_id:bigint:null",
+     "sku:USER-DEFINED:notnull",
+     "piezas:integer:notnull",
+     "tipo:text:notnull",
+     "canal:text:null",
+     "cuenta:text:null",
+     "referencia:text:notnull",
+     "entrega_odoo:text:null",
+     "woo_restado:integer:null",
+     "destino_almacen:text:null",
+     "destino_ubicacion_id:bigint:null",
+     "quien:text:notnull",
+     "nota:text:null",
+     "capturado_por:text:notnull",
+     "capturado_at:timestamp with time zone:notnull",
+     "estado:text:notnull",
+     "asentado_ref:text:null",
+     "asentado_at:timestamp with time zone:null",
+     "asentado_por:text:null",
+     "motivo_rechazo:text:null"
+    ],
+    "constraints": {
+     "CHECK": 11,
+     "FOREIGN KEY": 4,
+     "PRIMARY KEY": 1,
+     "UNIQUE": 1
+    },
+    "rls": true
+   },
+   "diario_conciliacion_v": {
+    "columnas": [
+     "problema:text:null",
+     "donde:text:null",
+     "detalle:text:null",
+     "desde:timestamp with time zone:null"
+    ],
+    "constraints": {},
+    "rls": false
+   },
+   "diario_reporte_v": {
+    "columnas": [
+     "dia_cdmx:date:null",
+     "lote:text:null",
+     "almacen:text:null",
+     "tipo:text:null",
+     "estado:text:null",
+     "renglones:bigint:null",
+     "piezas:bigint:null",
+     "pendientes_24h:bigint:null"
+    ],
+    "constraints": {},
+    "rls": false
+   },
+   "existencias_bodega_v": {
+    "columnas": [
+     "sku:USER-DEFINED:null",
+     "almacen:text:null",
+     "fuente:text:null",
+     "grupo:text:null",
+     "fisico:bigint:null",
+     "fisico_vendible:bigint:null",
+     "reservado:bigint:null",
+     "libre:bigint:null",
+     "libre_vendible:bigint:null",
+     "copia_at:timestamp with time zone:null"
+    ],
+    "constraints": {},
+    "rls": false
+   },
+   "existencias_sku_v": {
+    "columnas": [
+     "sku:USER-DEFINED:null",
+     "total:numeric:null",
+     "cuarentena:numeric:null",
+     "scrap:numeric:null",
+     "fisico_vendible:numeric:null",
+     "reservado:numeric:null",
+     "libre_vendible:numeric:null",
+     "resumen:text:null",
+     "desglose:jsonb:null",
+     "copia_mas_vieja_at:timestamp with time zone:null",
+     "fuentes:ARRAY:null",
+     "por_verificar:numeric:null",
+     "transito:numeric:null"
+    ],
+    "constraints": {},
+    "rls": false
+   },
+   "existencias_ubicacion_v": {
+    "columnas": [
+     "sku:USER-DEFINED:null",
+     "almacen:text:null",
+     "fuente:text:null",
+     "ubicacion_id:bigint:null",
+     "ubicacion:text:null",
+     "ruta:text:null",
+     "tipo:text:null",
+     "cuenta_para_venta:boolean:null",
+     "fisico:integer:null",
+     "reservado_ubicacion:integer:null",
+     "libre_ubicacion:integer:null",
+     "copia_at:timestamp with time zone:null",
+     "origen:text:null"
+    ],
+    "constraints": {},
+    "rls": false
+   },
+   "fuente_unica_vigia_v": {
+    "columnas": [
+     "problema:text:null",
+     "donde:text:null",
+     "detalle:text:null"
+    ],
+    "constraints": {},
+    "rls": false
+   },
    "historial_movimientos": {
     "columnas": [
      "id:bigint:notnull",
@@ -86,11 +302,73 @@
      "odoo_ubicacion:text:null",
      "entrada_at:timestamp with time zone:null",
      "cargado_at:timestamp with time zone:notnull",
-     "actualizado_at:timestamp with time zone:notnull"
+     "actualizado_at:timestamp with time zone:notnull",
+     "reservado:integer:notnull",
+     "ubicacion_id:bigint:null"
+    ],
+    "constraints": {
+     "CHECK": 7,
+     "FOREIGN KEY": 3,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "puentes_odoo": {
+    "columnas": [
+     "almacen:text:notnull",
+     "fuente:text:notnull",
+     "odoo_location_id:integer:notnull",
+     "odoo_uso:text:notnull",
+     "activo:boolean:notnull",
+     "acta:text:notnull",
+     "motivo:text:null",
+     "actualizado_por:text:null",
+     "creado_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "CHECK": 3,
+     "FOREIGN KEY": 1,
+     "PRIMARY KEY": 1,
+     "UNIQUE": 1
+    },
+    "rls": true
+   },
+   "puentes_odoo_hist": {
+    "columnas": [
+     "id:bigint:notnull",
+     "almacen:text:notnull",
+     "antes:jsonb:null",
+     "despues:jsonb:notnull",
+     "motivo:text:null",
+     "quien:text:null",
+     "cambiado_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "saldo_inicial_ajustes": {
+    "columnas": [
+     "id:bigint:notnull",
+     "lote:text:notnull",
+     "carga_id:bigint:notnull",
+     "almacen:text:notnull",
+     "sku_clave:text:notnull",
+     "ubicacion_ref:text:notnull",
+     "delta:integer:notnull",
+     "regla:text:notnull",
+     "par:bigint:null",
+     "quant_id:bigint:null",
+     "odoo_product_id:bigint:null",
+     "referencia:text:null",
+     "nota:text:notnull",
+     "quien:text:notnull",
+     "creado_at:timestamp with time zone:notnull"
     ],
     "constraints": {
      "CHECK": 6,
-     "FOREIGN KEY": 1,
+     "FOREIGN KEY": 2,
      "PRIMARY KEY": 1
     },
     "rls": true
@@ -104,7 +382,8 @@
      "apartado:integer:notnull",
      "libre:integer:null",
      "ubicacion:text:null",
-     "actualizado_at:timestamp with time zone:notnull"
+     "actualizado_at:timestamp with time zone:notnull",
+     "fisico_no_vendible:integer:notnull"
     ],
     "constraints": {
      "CHECK": 3,
@@ -129,15 +408,297 @@
      "quien:text:notnull",
      "quien_nombre:text:null",
      "via:text:null",
-     "creado_at:timestamp with time zone:notnull"
+     "creado_at:timestamp with time zone:notnull",
+     "ubicacion_id:bigint:null"
     ],
     "constraints": {
-     "CHECK": 9,
-     "FOREIGN KEY": 2,
+     "CHECK": 11,
+     "FOREIGN KEY": 3,
      "PRIMARY KEY": 1,
      "UNIQUE": 1
     },
     "rls": true
+   },
+   "t0_migradas": {
+    "columnas": [
+     "lote:text:notnull",
+     "canal:text:notnull",
+     "cuenta:text:notnull",
+     "external_order_id:text:notnull",
+     "accion_antes:text:notnull",
+     "odoo_order_id:bigint:null",
+     "odoo_name:text:null",
+     "almacen_id:integer:null",
+     "clase:text:notnull",
+     "quien:text:notnull",
+     "migrada_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "CHECK": 1,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "t0_partidas": {
+    "columnas": [
+     "id:bigint:notnull",
+     "lote:text:notnull",
+     "sku:USER-DEFINED:notnull",
+     "tipo:text:notnull",
+     "cantidad:integer:notnull",
+     "referencia:text:notnull",
+     "nota:text:null",
+     "quien:text:notnull",
+     "creado_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "CHECK": 3,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "t0_skus_sin_libro": {
+    "columnas": [
+     "lote:text:notnull",
+     "sku:USER-DEFINED:notnull",
+     "canales:jsonb:notnull",
+     "decision:text:notnull",
+     "aprobado_por:text:null",
+     "motivo:text:notnull",
+     "quien:text:notnull",
+     "creado_at:timestamp with time zone:notnull",
+     "grupo:text:notnull"
+    ],
+    "constraints": {
+     "CHECK": 4,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "t0_woo_foto": {
+    "columnas": [
+     "lote:text:notnull",
+     "sku:USER-DEFINED:notnull",
+     "stock_woo:integer:null",
+     "gestiona:boolean:notnull",
+     "leido_at:timestamp with time zone:notnull",
+     "fuente:text:notnull"
+    ],
+    "constraints": {
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "traslado_eventos": {
+    "columnas": [
+     "id:bigint:notnull",
+     "traslado_id:bigint:notnull",
+     "sku:USER-DEFINED:notnull",
+     "evento:text:notnull",
+     "sistema:text:notnull",
+     "cantidad:integer:notnull",
+     "stock_mov_id:bigint:null",
+     "odoo_move_line_id:bigint:null",
+     "odoo_picking_id:integer:null",
+     "odoo_picking_ref:text:null",
+     "odoo_origen_location_id:integer:null",
+     "odoo_destino_location_id:integer:null",
+     "odoo_hecho_at:timestamp with time zone:null",
+     "anomalia:text:null",
+     "nota:text:null",
+     "quien:text:notnull",
+     "creado_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "CHECK": 4,
+     "FOREIGN KEY": 2,
+     "PRIMARY KEY": 1,
+     "UNIQUE": 2
+    },
+    "rls": true
+   },
+   "traslado_lineas": {
+    "columnas": [
+     "traslado_id:bigint:notnull",
+     "sku:USER-DEFINED:notnull",
+     "solicitado:integer:notnull",
+     "salido:integer:notnull",
+     "recibido:integer:notnull",
+     "diferencia:integer:notnull",
+     "en_transito:integer:null"
+    ],
+    "constraints": {
+     "CHECK": 1,
+     "FOREIGN KEY": 1,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "traslados": {
+    "columnas": [
+     "id:bigint:notnull",
+     "origen:text:notnull",
+     "destino:text:notnull",
+     "estado:text:notnull",
+     "nota:text:null",
+     "solicitado_por:text:notnull",
+     "solicitado_at:timestamp with time zone:notnull",
+     "cancelado_at:timestamp with time zone:null",
+     "cancelado_por:text:null",
+     "cancelado_motivo:text:null",
+     "cuadrado_at:timestamp with time zone:null",
+     "cuadrado_por:text:null",
+     "actualizado_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "CHECK": 5,
+     "FOREIGN KEY": 2,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "traslados_v": {
+    "columnas": [
+     "folio:text:null",
+     "id:bigint:null",
+     "origen:text:null",
+     "destino:text:null",
+     "estado:text:null",
+     "sku:USER-DEFINED:null",
+     "solicitado:integer:null",
+     "salido:integer:null",
+     "recibido:integer:null",
+     "diferencia:integer:null",
+     "en_transito:integer:null",
+     "solicitado_at:timestamp with time zone:null",
+     "solicitado_por:text:null",
+     "pickings_odoo:text:null",
+     "con_anomalia:boolean:null"
+    ],
+    "constraints": {},
+    "rls": false
+   },
+   "ubicacion_tipos": {
+    "columnas": [
+     "tipo:text:notnull",
+     "nombre:text:notnull",
+     "cuenta_para_venta:boolean:notnull",
+     "descripcion:text:null",
+     "actualizado_at:timestamp with time zone:notnull",
+     "actualizado_por:text:null",
+     "motivo:text:null"
+    ],
+    "constraints": {
+     "CHECK": 4,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "ubicacion_tipos_hist": {
+    "columnas": [
+     "id:bigint:notnull",
+     "tipo:text:notnull",
+     "antes:jsonb:null",
+     "despues:jsonb:notnull",
+     "motivo:text:null",
+     "quien:text:null",
+     "cambiado_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "ubicaciones": {
+    "columnas": [
+     "id:bigint:notnull",
+     "almacen:text:notnull",
+     "fuente:text:notnull",
+     "ruta:text:notnull",
+     "posicion:text:notnull",
+     "padre_id:bigint:null",
+     "tipo:text:notnull",
+     "rack_bloque:text:null",
+     "rack_fila:text:null",
+     "rack_nivel:text:null",
+     "activa:boolean:notnull",
+     "odoo_location_id:integer:null",
+     "odoo_sin_almacen:boolean:notnull",
+     "odoo_escrito_at:timestamp with time zone:null",
+     "creado_at:timestamp with time zone:notnull",
+     "actualizado_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "CHECK": 6,
+     "FOREIGN KEY": 3,
+     "PRIMARY KEY": 1,
+     "UNIQUE": 2
+    },
+    "rls": true
+   },
+   "ubicaciones_hist": {
+    "columnas": [
+     "id:bigint:notnull",
+     "ubicacion_id:bigint:notnull",
+     "almacen:text:notnull",
+     "operacion:text:notnull",
+     "antes:jsonb:null",
+     "despues:jsonb:notnull",
+     "piezas:bigint:notnull",
+     "motivo:text:null",
+     "quien:text:null",
+     "txid:bigint:notnull",
+     "cambiado_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "CHECK": 1,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "ubicaciones_v": {
+    "columnas": [
+     "id:bigint:null",
+     "almacen:text:null",
+     "fuente:text:null",
+     "ruta:text:null",
+     "posicion:text:null",
+     "padre_id:bigint:null",
+     "tipo:text:null",
+     "rack_bloque:text:null",
+     "rack_fila:text:null",
+     "rack_nivel:text:null",
+     "activa:boolean:null",
+     "odoo_location_id:integer:null",
+     "odoo_sin_almacen:boolean:null",
+     "odoo_escrito_at:timestamp with time zone:null",
+     "creado_at:timestamp with time zone:null",
+     "actualizado_at:timestamp with time zone:null",
+     "cuenta_para_venta:boolean:null",
+     "skus:bigint:null",
+     "piezas:bigint:null",
+     "vacia:boolean:null"
+    ],
+    "constraints": {},
+    "rls": false
+   },
+   "vigia_fuente_v": {
+    "columnas": [
+     "problema:text:null",
+     "donde:text:null",
+     "detalle:text:null"
+    ],
+    "constraints": {},
+    "rls": false
+   },
+   "vigia_traslados_v": {
+    "columnas": [
+     "problema:text:null",
+     "donde:text:null",
+     "detalle:text:null"
+    ],
+    "constraints": {},
+    "rls": false
    }
   },
   "channel": {
@@ -960,6 +1521,113 @@
     "rls": true
    }
   },
+  "odoo_historia": {
+   "cargas": {
+    "columnas": [
+     "id:bigint:notnull",
+     "estado:text:notnull",
+     "respaldo:text:notnull",
+     "manifiesto_sha256:text:notnull",
+     "corte_utc:timestamp with time zone:notnull",
+     "corte_bloqueo:jsonb:notnull",
+     "modelos:jsonb:notnull",
+     "cargador_version:text:notnull",
+     "acta:text:notnull",
+     "abierta_por:text:notnull",
+     "abierta_at:timestamp with time zone:notnull",
+     "cerrada_por:text:null",
+     "cerrada_at:timestamp with time zone:null",
+     "motivo_fallida:text:null"
+    ],
+    "constraints": {
+     "CHECK": 10,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "product_product": {
+    "columnas": [
+     "carga_id:bigint:notnull",
+     "id:bigint:notnull",
+     "product_tmpl_id:bigint:notnull",
+     "default_code:text:null",
+     "name:text:null",
+     "barcode:text:null",
+     "active:boolean:notnull",
+     "volume:numeric:null",
+     "weight:numeric:null",
+     "create_date:timestamp with time zone:null",
+     "write_date:timestamp with time zone:null"
+    ],
+    "constraints": {
+     "FOREIGN KEY": 1,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "saldo_al_15oct_v": {
+    "columnas": [
+     "carga_id:bigint:null",
+     "corte_utc:timestamp with time zone:null",
+     "quant_id:bigint:null",
+     "odoo_product_id:bigint:null",
+     "default_code:text:null",
+     "producto_activo:boolean:null",
+     "odoo_location_id:bigint:null",
+     "complete_name:text:null",
+     "usage:text:null",
+     "warehouse_id:bigint:null",
+     "quantity:numeric:null",
+     "reserved_quantity:numeric:null"
+    ],
+    "constraints": {},
+    "rls": false
+   },
+   "stock_location": {
+    "columnas": [
+     "carga_id:bigint:notnull",
+     "id:bigint:notnull",
+     "complete_name:text:notnull",
+     "name:text:null",
+     "location_id:bigint:null",
+     "parent_path:text:null",
+     "usage:text:notnull",
+     "warehouse_id:bigint:null",
+     "active:boolean:notnull",
+     "scrap_location:boolean:null",
+     "return_location:boolean:null",
+     "replenish_location:boolean:null",
+     "company_id:bigint:null",
+     "barcode:text:null",
+     "create_date:timestamp with time zone:null",
+     "write_date:timestamp with time zone:null"
+    ],
+    "constraints": {
+     "CHECK": 1,
+     "FOREIGN KEY": 1,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "stock_quant": {
+    "columnas": [
+     "carga_id:bigint:notnull",
+     "id:bigint:notnull",
+     "product_id:bigint:notnull",
+     "location_id:bigint:notnull",
+     "quantity:numeric:notnull",
+     "reserved_quantity:numeric:notnull",
+     "in_date:timestamp with time zone:null",
+     "create_date:timestamp with time zone:null",
+     "write_date:timestamp with time zone:null"
+    ],
+    "constraints": {
+     "FOREIGN KEY": 3,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   }
+  },
   "ops": {
    "almacenes": {
     "columnas": [
@@ -1539,12 +2207,13 @@
   }
  },
  "resumen": {
-  "almacen": 6,
+  "almacen": 35,
   "channel": 10,
   "core": 5,
   "costing": 8,
   "enrich": 14,
   "migration": 4,
+  "odoo_historia": 5,
   "ops": 21,
   "ventas": 5
  },
@@ -1552,29 +2221,133 @@
   "almacen.almacenes": [
    "almacenes_guarda",
    "almacenes_hist",
-   "almacenes_sin_truncate"
+   "almacenes_sin_truncate",
+   "almacenes_woo_existencias"
   ],
   "almacen.almacenes_hist": [
    "almacenes_hist_sin_truncate",
    "almacenes_hist_solo_agregar"
   ],
+  "almacen.copias_odoo": [
+   "copias_odoo_escritor",
+   "copias_odoo_sin_truncate"
+  ],
+  "almacen.ddl_auditoria": [
+   "ddl_auditoria_sin_truncate",
+   "ddl_auditoria_solo_agregar"
+  ],
+  "almacen.desprendimiento_foto": [
+   "desprendimiento_foto_guarda",
+   "desprendimiento_foto_sin_truncate",
+   "desprendimiento_foto_solo_agregar"
+  ],
+  "almacen.desprendimientos": [
+   "desprendimientos_guarda",
+   "desprendimientos_hecho_cuadra",
+   "desprendimientos_sin_truncate"
+  ],
+  "almacen.diario": [
+   "diario_guarda",
+   "diario_sin_truncate"
+  ],
   "almacen.historial_movimientos": [
+   "historial_movimientos_escritor",
+   "historial_movimientos_sin_truncate",
+   "historial_movimientos_solo_odoo",
    "historial_movimientos_tocar_trg"
   ],
   "almacen.locations": [
+   "locations_escritor",
+   "locations_kubera_cuadra",
+   "locations_sin_truncate",
    "locations_tocar_trg"
+  ],
+  "almacen.puentes_odoo": [
+   "puentes_odoo_guarda",
+   "puentes_odoo_hist",
+   "puentes_odoo_sin_truncate"
+  ],
+  "almacen.puentes_odoo_hist": [
+   "puentes_odoo_hist_sin_truncate",
+   "puentes_odoo_hist_solo_agregar"
+  ],
+  "almacen.saldo_inicial_ajustes": [
+   "saldo_inicial_ajustes_sin_truncate",
+   "saldo_inicial_ajustes_solo_agregar"
   ],
   "almacen.stock_almacen": [
    "stock_almacen_apartado_cuadra",
    "stock_almacen_cuadra",
    "stock_almacen_guarda",
-   "stock_almacen_sin_truncate"
+   "stock_almacen_no_vendible_cuadra",
+   "stock_almacen_sin_truncate",
+   "stock_almacen_sku_existe"
   ],
   "almacen.stock_mov": [
    "stock_mov_cuadra",
    "stock_mov_devolucion_cuadra",
+   "stock_mov_devolucion_sin_ov",
+   "stock_mov_reubicacion_pares",
    "stock_mov_sin_truncate",
-   "stock_mov_solo_agregar"
+   "stock_mov_sku_existe",
+   "stock_mov_solo_agregar",
+   "stock_mov_tras_evento",
+   "stock_mov_ubicacion_antes",
+   "stock_mov_ubicacion_despues",
+   "stock_mov_ubicaciones_cuadran"
+  ],
+  "almacen.t0_migradas": [
+   "t0_migradas_sin_truncate",
+   "t0_migradas_solo_agregar"
+  ],
+  "almacen.t0_partidas": [
+   "t0_partidas_sin_truncate",
+   "t0_partidas_solo_agregar"
+  ],
+  "almacen.t0_skus_sin_libro": [
+   "t0_skus_sin_libro_sin_truncate",
+   "t0_skus_sin_libro_solo_agregar"
+  ],
+  "almacen.t0_woo_foto": [
+   "t0_woo_foto_sin_truncate",
+   "t0_woo_foto_solo_agregar"
+  ],
+  "almacen.traslado_eventos": [
+   "traslado_eventos_regla",
+   "traslado_eventos_sin_truncate",
+   "traslado_eventos_solo_agregar",
+   "traslado_eventos_suma"
+  ],
+  "almacen.traslado_lineas": [
+   "traslado_lineas_guarda",
+   "traslado_lineas_sin_truncate"
+  ],
+  "almacen.traslados": [
+   "traslados_guarda",
+   "traslados_sin_truncate"
+  ],
+  "almacen.ubicacion_tipos": [
+   "ubicacion_tipos_guarda",
+   "ubicacion_tipos_hist",
+   "ubicacion_tipos_recalcula",
+   "ubicacion_tipos_sin_truncate"
+  ],
+  "almacen.ubicacion_tipos_hist": [
+   "ubicacion_tipos_hist_sin_truncate",
+   "ubicacion_tipos_hist_solo_agregar"
+  ],
+  "almacen.ubicaciones": [
+   "ubicaciones_escritor",
+   "ubicaciones_hist_alta",
+   "ubicaciones_hist_cambio",
+   "ubicaciones_recalcula",
+   "ubicaciones_reclasificar",
+   "ubicaciones_sin_truncate",
+   "ubicaciones_tocar"
+  ],
+  "almacen.ubicaciones_hist": [
+   "ubicaciones_hist_sin_truncate",
+   "ubicaciones_hist_solo_agregar"
   ],
   "channel.listings": [
    "trg_hist_listings",
@@ -1596,6 +2369,22 @@
   "costing.costos_validados": [
    "trg_hist_costos_validados",
    "trg_touch_costos_validados"
+  ],
+  "odoo_historia.cargas": [
+   "cargas_guarda",
+   "cargas_sin_truncate"
+  ],
+  "odoo_historia.product_product": [
+   "product_product_sin_truncate",
+   "product_product_solo_lectura"
+  ],
+  "odoo_historia.stock_location": [
+   "stock_location_sin_truncate",
+   "stock_location_solo_lectura"
+  ],
+  "odoo_historia.stock_quant": [
+   "stock_quant_sin_truncate",
+   "stock_quant_solo_lectura"
   ],
   "ops.devoluciones": [
    "devoluciones_guarda",
@@ -1639,7 +2428,8 @@
    "ov_ordenes_apartado_cuadra",
    "ov_ordenes_coherente",
    "ov_ordenes_guarda",
-   "ov_ordenes_sin_truncate"
+   "ov_ordenes_sin_truncate",
+   "ov_ordenes_una_fuente"
   ]
  }
 }

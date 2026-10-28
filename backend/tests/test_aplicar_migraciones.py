@@ -591,7 +591,11 @@ class HuellasTest(unittest.TestCase):
         # La 0071 (editar una confirmada) vuelve a definir dos de las 14 guardias que
         # recreó la 0068, ya con su puerta: la huella de una función es de la ÚLTIMA
         # que la define, así que a la 0068 le quedan 12 y esas dos son de la 0071.
-        self.assertEqual(len(e["0068_mudanza_ov_a_ventas_y_almacen"]["funciones"]), 12)
+        # La 0076 (acta 1.11) vuelve a definir otras dos —la guardia de almacenes y la de
+        # stock_almacen, ya con la fuente única—: a la 0068 le quedan 10.
+        self.assertEqual(len(e["0068_mudanza_ov_a_ventas_y_almacen"]["funciones"]), 10)
+        self.assertTrue({("ops", "tg_almacenes_guarda", 0), ("ops", "tg_stock_almacen_guarda", 0)}
+                        <= set(e["0076_almacen_fuente_unica_copia"]["funciones"]))
         self.assertEqual(set(e["0071_ov_editar_confirmada"]["funciones"]),
                          {("ops", "tg_ov_ordenes_guarda", 0), ("ops", "tg_ov_lineas_guarda", 0)})
         for cuerpo in e["0071_ov_editar_confirmada"]["funciones"].values():
@@ -1092,15 +1096,22 @@ class Fase0Test(unittest.TestCase):
         # en ops queda la VISTA puente del mismo nombre (`select *`, security_invoker):
         # mismas columnas en el mismo orden, todas «null» (una vista no guarda
         # NOT NULL), sin constraints ni RLS propios. Sus triggers son de la tabla.
+        # El `select *` se congela al crear la vista: las columnas que la 0076 le
+        # agregó a la tabla (acta 1.11, medido en producción el 28-oct) no llegan al
+        # puente, que se queda con las de la 0068.
         mudadas = {"ov_folio": "ventas", "ov_ordenes": "ventas", "ov_lineas": "ventas", "ov_mensajes": "ventas",
                    "ov_archivos": "ventas", "almacenes": "almacen", "almacenes_hist": "almacen",
                    "stock_almacen": "almacen", "stock_mov": "almacen"}
+        despues_de_0068 = {"stock_almacen": ["fisico_no_vendible:integer:notnull"], "stock_mov": ["ubicacion_id:bigint:null"]}
         self.assertEqual(set(esq["ventas"]), {t for t, s in mudadas.items() if s == "ventas"})
         for t, s in mudadas.items():
             with self.subTest(t=t):
                 tabla, puente = esq[s][t], esq["ops"][t]
                 self.assertTrue(tabla["rls"])
-                self.assertEqual(puente, {"columnas": [c.rsplit(":", 1)[0] + ":null" for c in tabla["columnas"]],
+                nuevas = despues_de_0068.get(t, [])
+                self.assertEqual([c for c in tabla["columnas"] if c in nuevas], nuevas)
+                self.assertEqual(puente, {"columnas": [c.rsplit(":", 1)[0] + ":null" for c in tabla["columnas"]
+                                                       if c not in nuevas],
                                           "constraints": {}, "rls": False})
                 self.assertIn(f"{s}.{t}", man["triggers"])
                 self.assertNotIn(f"ops.{t}", man["triggers"])

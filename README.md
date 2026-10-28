@@ -1001,6 +1001,104 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.695.0 — Migraciones 0075, 0076 y 0077 (esquema del libro de T0), YA APLICADAS en producción con el acta 1.11. Sin código nuevo
+
+**Qué es.** Los tres `.sql` del esquema `almacen` para T0 (salida de Odoo y Woo). Se aplicaron en producción el
+28-oct-2026 con el acta 1.11:
+- análisis del agente omni-datos;
+- verificación de MAESTRO;
+- dale de Brandon (C5 en `ventas.ov_ordenes` y su copia de TEX2 congelada);
+- sí de Eduardo.
+
+En el sandbox estaban desde el 23-oct. Este commit las deja en el repo **con los mismos bytes que corrieron en
+producción** (sha256 abajo) y pone al día el manifiesto. No cambia código del backend ni del panel, salvo la versión.
+
+**Ninguna bodega cambia de fuente.** DROP, TEX2 y TEXCO siguen siendo de Odoo y ENSAYO de kubera. El corte
+(T0) es otra acta.
+
+**Qué trae cada una:**
+- `0075_almacen_ubicaciones_y_odoo_historia`:
+  - ubicaciones por bodega y sus tipos (`almacen.ubicaciones`, `ubicacion_tipos` + historia);
+  - `almacen.copias_odoo`;
+  - el esquema `odoo_historia`, donde irá la copia final de Odoo (vacío hasta la carga 1.11b);
+  - en `almacen.locations`, candados de fuente única y de ubicación;
+  - `historial_movimientos` solo lo escribe la copia de Odoo;
+  - las guardas de `almacen.*` quedan en ALWAYS.
+- `0076_almacen_fuente_unica_copia`:
+  - una sola fuente por bodega, con un escritor por fuente: la copia de Odoo o el libro;
+  - los desprendimientos, que son el corte de T0 y solo los hace `postgres` en un acta;
+  - `stock_mov.ubicacion_id`;
+  - `stock_almacen.fisico_no_vendible` (D16: `libre = fisico − fisico_no_vendible − apartado`);
+  - saldo inicial, vistas de existencias, cuadre por partidas contra Woo y SKUs sin libro (D4);
+  - auditoría de DDL (dos event triggers) y la vigía `almacen.fuente_unica_vigia_v`.
+- `0077_almacen_traslados_y_claves`:
+  - traslados entre bodegas (`traslados`, `traslado_lineas`, `traslado_eventos`) y puentes de Odoo;
+  - «una venta, una sola fuente», con triggers en `ops.odoo_sale_orders` y `ventas.ov_ordenes`;
+  - claves nuevas del libro (`stock_mov_clave_chk` VALIDADA en producción);
+  - devolución sin OV y SKU obligatorio;
+  - el diario (plantilla D9).
+
+**La 0076 trae una corrección respecto a la del sandbox.** Así fue la primera ventana (28-oct, 04:19 UTC):
+- La 0075 entró bien.
+- La 0076 original (sha `3361ac0e…`) falló con `55006 cannot ALTER TABLE "locations" because it has pending trigger
+  events` y se deshizo sola:
+  - la 0076 siembra los saldos de ENSAYO en `locations` (6 en producción, 0 en el sandbox), lo que deja pendientes
+    las comprobaciones diferidas `locations_ubicacion_fk` y `locations_kubera_cuadra`;
+  - B8 hace después un `ALTER TABLE` sobre esa tabla en la misma transacción, y Postgres no lo permite.
+- Arreglo: `set constraints all immediate;` justo antes de B8. Son las mismas comprobaciones, solo que antes.
+- Se ensayó en el sandbox con la FORMA de producción y en una transacción con ROLLBACK:
+  - la original reprodujo el 55006;
+  - la corregida, la 0077 y el paso 5b pasaron;
+  - el sandbox quedó intacto.
+- Se aplicó a las 05:04 UTC con un aplicador en modo «continuar».
+
+Lección: ensayar con datos de la forma de producción, no solo con el esquema. El sandbox se queda con la
+0076 original, que crea el mismo esquema.
+
+| Archivo | sha256 aplicado en producción |
+|---|---|
+| `0075_almacen_ubicaciones_y_odoo_historia.sql` | `ced053bd97ce10c3237f26016642b721eaa07ba6bebb25ac111cb3a93017b919` |
+| `0076_almacen_fuente_unica_copia.sql` | `f26de251eb48f4252501db9d3e9414d54d840c0f8d17d0a80cd3d4914bc07017` |
+| `0077_almacen_traslados_y_claves.sql` | `a4d460b24f0bb554231665ac70cac54cae0a964c686ae45eae0001df7e9a06b8` |
+
+Son los sha de los archivos tal como se aplicaron: la 0075 y la 0077 con finales de línea LF, la 0076 con CRLF.
+Git guarda los tres con LF; un checkout con `core.autocrlf=true` cambia el sha, no el SQL.
+
+**Paso 5b (NO va en estos `.sql`; está en el acta).** En producción y en el sandbox se le quitaron a
+`service_role` las secuencias de `almacen` y `odoo_historia` y la escritura sobre `almacen.almacenes_hist`, con
+rastro en `ops.process_log` (proceso `acta_1_11`). Un ambiente reconstruido solo con `supabase/migrations/`
+no lo trae: hay que repetirlo, o hacerlo migración si se vuelve a construir uno desde cero.
+
+**Efectos vivos, por diseño:**
+- `service_role` (el rol de la API REST de Supabase) solo LEE `almacenes`, `locations`, `stock_almacen` y
+  `stock_mov`. El backend no usa ese rol: escribe por su conexión de base de datos (`SUPABASE_DB_URL`).
+- Quien vuelva a encender `ALMACEN_ODOO_ENABLED` verá `42501 locations_solo_copiador` cada 30 min, y la copia no se
+  escribe hasta que el escritor ponga su marca.
+- Una OV ligada a una venta que tiene orden viva en Odoo responde 502 con `regla=una_venta_una_fuente` (C5). El
+  mensaje claro para el panel está pendiente (D-a, omni-backend).
+- La vigía queda ruidosa 24 h por la auditoría de DDL.
+
+**Verificado en producción** (acta 1.11 §10.8):
+- registro `ops.migraciones` 0075/0076/0077 a nombre de eduardo@kubera.mx;
+- 2 event triggers en ALWAYS y 0 guardas fuera de ALWAYS;
+- `libre` con D16, ENSAYO cuadra y `service_role` sin escritura;
+- `prueba_post_1_11_prod.py` con los escritores vivos (OV de punta a punta, bitácora de Odoo y controles) en una
+  transacción con ROLLBACK: huella igual;
+- 60 min sin un solo 23514/42501/55006.
+
+**Manifiesto (`supabase/schema_manifest.json`), con la regla de la casa: se agrega, no se regenera.**
+- +34 relaciones medidas en producción: 29 de `almacen` y las 5 de `odoo_historia`, un esquema nuevo en el manifiesto.
+- Re-medidas `almacen.locations`, `stock_almacen` y `stock_mov`, más los triggers de `almacenes`,
+  `historial_movimientos`, `locations`, `stock_almacen`, `stock_mov` y `ventas.ov_ordenes`.
+- La deriva vieja de `ops` se queda como estaba: `devoluciones`, `stock_formato*`, `task_queue`,
+  `channel_submissions`, `ml_tokens` y `process_log`. No es de esta acta.
+- Las vistas puente `ops.stock_almacen` y `ops.stock_mov` (de la 0068, `select *`) se congelaron al crearse y NO
+  ven las columnas nuevas de la 0076. La prueba del manifiesto ahora lo dice así.
+
+**Pruebas:** en `test_aplicar_migraciones` cambian dos cosas:
+- a la 0068 le quedan 10 funciones, porque la 0076 redefine `tg_almacenes_guarda` y `tg_stock_almacen_guarda`;
+- los puentes congelados.
+
 ### v0.694.0 — El panel lee el libro de kubera y se cierran las puertas que podían revivir a Odoo (ruta directa, tareas 1.8 y 1.9). **Nace inerte**, encima de la v0.693.0
 
 **Por qué (20–21-oct-2026).** La v0.693.0 enseña al fan-out a leer el libro. Esta versión hace que todo lo que
