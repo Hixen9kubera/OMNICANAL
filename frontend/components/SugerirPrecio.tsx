@@ -1,67 +1,60 @@
 "use client";
 
 /**
- * SugerirPrecio — «Sugerir precio» del Estudio (v0.686.0).
+ * SugerirPrecio — «Sugerir precio» del Estudio (v0.686.0; simplificado en v0.696.0).
  *
- * A cuánto se vende de verdad EL MISMO producto en Mercado Libre y qué precio
- * compite sin bajar del piso de rentabilidad. Dos modos:
- *   · Rápido (gratis): los más vendidos de la categoría + comisión real + piso.
- *   · Completo ($0.01–0.10): búsqueda en ML + juez por título + juez por FOTO.
- *     Lo que más pesa es Apify (sobre todo su proxy residencial). La búsqueda se
- *     guarda 7 días y la reusan los productos parecidos: entonces cuesta ~$0.01.
- *     El costo de cada consulta sale al pie (preliminar hasta que Apify cobra).
+ * De dónde sale el precio:
+ *   1. El CATÁLOGO MAESTRO (gratis, al abrir el SKU): la MEDIA de Mercado Libre
+ *      con su mínimo y máximo, y lo que cobra Amazon por el mismo producto.
+ *   2. Si el SKU no está en el catálogo, el botón COMPLETO ($0.01–0.10): busca en
+ *      ML (juez por título y por FOTO) y en Amazon (SP-API, gratis) y queda
+ *      guardado. Si ya hay una consulta completa, esa manda: es más reciente.
  *
- * Solo sugiere. «Usar en Precio oferta» llena el campo y el precio se guarda con
- * «Guardar precio y costo», como cualquier precio tecleado.
+ * La regla (Brandon, 28-oct): un poco abajo de la media de ML, nunca arriba de
+ * la media ni del máximo → media × 0.97, hacia abajo al peso.
  *
- * Reemplaza al «Precio de competencia sugerido» de Mejorar con IA, que dependía
- * de SerpApi (agotado) y caía a que la IA estimara sin datos: para TEC-0605 dijo
- * $399 cuando el mismo modelo se vende entre $96 y $245.
+ * Cada marketplace tiene su ventana con las publicaciones que se leyeron y cuáles
+ * hicieron match. «Medidas de Amazon» trae el paquete de los que hicieron match.
+ *
+ * Solo sugiere. «Usar en Precio oferta» llena el campo y se guarda con
+ * «Guardar precio y costo»; «Usar estas medidas» llena peso y medidas igual.
  */
 
-import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ExternalLink, Loader2, Search, Sparkles, TrendingUp, Zap } from "lucide-react";
+import { useEffect, useState } from "react";
+import { AlertTriangle, ExternalLink, Loader2, Package, Sparkles, TrendingUp, X } from "lucide-react";
 
 import {
+  medidasAmazon,
   mensajeDeError,
+  precioCatalogo,
   precioSugeridoCompleto,
-  precioSugeridoRapido,
   precioSugeridoTrabajo,
   precioSugeridoUltimo,
-  utilidadAPrecio,
-  type PrecioEstado,
-  type PrecioRival,
+  type MedidasAmazon,
+  type PrecioAmazon,
+  type PrecioCatalogo,
   type PrecioSugeridoResp,
   type PrecioSugeridoTrabajo,
 } from "@/lib/api";
 import { useTrabajoJob } from "@/components/resolver/useTrabajoJob";
 
+/** Un poco abajo de la media de ML (regla de Brandon, 28-oct). */
+const FACTOR_BAJO_MEDIA = 0.97;
+
 const mxn = (v: number | null | undefined) =>
   v == null ? "—" : `$${v.toLocaleString("es-MX", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
 const usd = (v: number) => `$${v.toFixed(v < 0.1 ? 3 : 2)} USD`;
 
-const ESTADO: Record<PrecioEstado, { etiqueta: string; clase: string }> = {
-  compite: { etiqueta: "Compite", clase: "bg-emerald-100 text-emerald-800" },
-  arriba_mediana: { etiqueta: "Arriba de la mediana", clase: "bg-amber-100 text-amber-800" },
-  no_compite: { etiqueta: "No compite con este margen", clase: "bg-red-100 text-red-700" },
-  sin_mercado: { etiqueta: "Sin comparables", clase: "bg-slate-100 text-slate-700" },
-  sin_piso: { etiqueta: "Sin piso", clase: "bg-slate-100 text-slate-700" },
+const FUENTES_ML: Record<string, string> = {
+  banda_v3: "más vendidos de la categoría",
+  keyword_amazon: "Amazon ÷ 1.443",
+  keyword_ml: "búsqueda en ML",
 };
 
-const FOTO: Record<string, { texto: string; clase: string }> = {
-  mismo_modelo: { texto: "Mismo modelo (foto)", clase: "bg-emerald-100 text-emerald-800" },
-  mismo_diseno: { texto: "Mismo diseño (foto)", clase: "bg-teal-100 text-teal-800" },
-  diferente: { texto: "Otro producto (foto)", clase: "bg-slate-100 text-slate-500" },
-  error: { texto: "Foto sin revisar", clase: "bg-slate-100 text-slate-400" },
-};
-
-const CLASE_TITULO: Record<string, string> = {
-  mismo: "mismo producto",
-  otro_paquete: "otra cantidad",
-  otra_gama: "otra gama",
-  refaccion: "refacción",
-  otro_producto: "otro producto",
-  dudoso: "dudoso",
+const MATCH: Record<string, { texto: string; clase: string }> = {
+  match: { texto: "Match", clase: "bg-emerald-100 text-emerald-800" },
+  no_match: { texto: "No match", clase: "bg-slate-100 text-slate-500" },
+  sin_dato: { texto: "Sin veredicto", clase: "bg-amber-50 text-amber-700" },
 };
 
 function haceCuanto(iso: string): string {
@@ -71,54 +64,212 @@ function haceCuanto(iso: string): string {
   return `hace ${Math.round(min / 1440)} d`;
 }
 
+const dia = (iso: string | null | undefined) =>
+  iso ? new Date(`${iso.slice(0, 10)}T12:00:00`).toLocaleDateString("es-MX", { day: "numeric", month: "short" }) : "";
+
+type Stats = { min: number | null; media: number | null; max: number | null };
+
+/** Una publicación en la ventana de «lo que se leyó», sea de ML o de Amazon. */
+type Fila = {
+  id: string;
+  titulo: string;
+  /** null en la ventana de medidas: ahí no importa el precio. */
+  precio: number | null;
+  url?: string | null;
+  match: "match" | "no_match" | "sin_dato";
+  nota?: string;
+};
+
+type Ventana = { titulo: string; resumen: string; filas: Fila[] };
+
+/** El bloque de un marketplace: mínimo, media y máximo, de dónde salen y su ventana. */
+function Tarjeta({
+  nombre,
+  stats,
+  detalle,
+  pie,
+  ventana,
+  onVer,
+}: {
+  nombre: string;
+  stats: Stats | null;
+  detalle: string;
+  pie: string;
+  ventana: Ventana | null;
+  onVer: (v: Ventana) => void;
+}) {
+  return (
+    <div className="rounded-lg bg-white px-3 py-2 text-xs">
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-bold text-slate-700">{nombre}</span>
+        {ventana && ventana.filas.length > 0 && (
+          <button
+            type="button"
+            onClick={() => onVer(ventana)}
+            className="rounded-md border border-slate-200 px-2 py-0.5 font-semibold text-slate-600 hover:bg-slate-50"
+          >
+            Ver publicaciones ({ventana.filas.length})
+          </button>
+        )}
+      </div>
+      {stats ? (
+        <div className="mt-1.5 grid grid-cols-3 gap-2 text-center">
+          {(["min", "media", "max"] as const).map((k) => (
+            <div key={k}>
+              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                {k === "min" ? "Mín" : k === "media" ? "Media" : "Máx"}
+              </div>
+              <div className={`tabular-nums ${k === "media" ? "text-base font-black text-slate-800" : "text-sm font-bold text-slate-600"}`}>
+                {mxn(stats[k])}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="mt-1.5 text-slate-400">Sin precio.</div>
+      )}
+      {detalle && <div className="mt-1.5 text-slate-500">{detalle}</div>}
+      <div className="mt-0.5 text-[11px] text-slate-400">{pie}</div>
+    </div>
+  );
+}
+
+function ventanaAmazon(a: PrecioAmazon): Ventana {
+  const cuenta = (m: string) => a.publicaciones.filter((p) => p.match === m).length;
+  const partes = [`${cuenta("match")} hicieron match`, `${cuenta("no_match")} no`];
+  if (cuenta("sin_dato")) partes.push(`${cuenta("sin_dato")} sin veredicto guardado`);
+  return {
+    titulo: `Amazon · «${a.q}»`,
+    resumen: partes.join(" · "),
+    filas: a.publicaciones.map((p) => ({
+      id: p.id,
+      titulo: p.titulo,
+      precio: p.precio,
+      url: p.url,
+      match: p.match,
+      nota: [p.unidades ? `paquete de ${p.unidades}` : "", p.motivo ?? ""].filter(Boolean).join(" · "),
+    })),
+  };
+}
+
+function ventanaML(r: PrecioSugeridoResp): Ventana {
+  const filas: Fila[] = [...r.rivales]
+    .sort((a, b) => Number(b.en_referencia) - Number(a.en_referencia) || a.precio - b.precio)
+    .map((x) => ({
+      id: x.id,
+      titulo: x.titulo ?? "",
+      precio: x.precio,
+      url: x.url,
+      match: x.en_referencia ? "match" : "no_match",
+      nota: [
+        x.foto === "mismo_modelo" ? "mismo modelo por foto" : x.foto === "mismo_diseno" ? "mismo diseño por foto" : "",
+        x.clase_titulo && x.clase_titulo !== "mismo" ? `título: ${x.clase_titulo.replace("_", " ")}` : "",
+        x.extremo ? "precio fuera de rango" : "",
+      ].filter(Boolean).join(" · "),
+    }));
+  const n = filas.filter((f) => f.match === "match").length;
+  return {
+    titulo: `Mercado Libre · «${(r.terminos ?? []).join("», «")}»`,
+    resumen: `${n} hicieron match${r.referencia ? ` (${r.referencia.etiqueta.toLowerCase()})` : ""} · ${filas.length - n} no`,
+    filas,
+  };
+}
+
+function VentanaPublicaciones({ v, onCerrar }: { v: Ventana; onCerrar: () => void }) {
+  useEffect(() => {
+    const tecla = (e: KeyboardEvent) => e.key === "Escape" && onCerrar();
+    window.addEventListener("keydown", tecla);
+    return () => window.removeEventListener("keydown", tecla);
+  }, [onCerrar]);
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" onClick={onCerrar}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={v.titulo}
+        onClick={(e) => e.stopPropagation()}
+        className="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-white shadow-xl"
+      >
+        <header className="flex items-start justify-between gap-3 border-b border-slate-200 px-4 py-3">
+          <div className="min-w-0">
+            <div className="truncate text-sm font-bold text-slate-800">{v.titulo}</div>
+            <div className="text-xs text-slate-500">{v.resumen}</div>
+          </div>
+          <button type="button" onClick={onCerrar} aria-label="Cerrar" className="rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700">
+            <X size={18} />
+          </button>
+        </header>
+        <ul className="divide-y divide-slate-100 overflow-auto text-xs">
+          {v.filas.map((f) => (
+            <li key={f.id} className="flex items-center gap-3 px-4 py-2">
+              <span className={`w-24 shrink-0 rounded px-1.5 py-0.5 text-center font-semibold ${MATCH[f.match].clase}`}>
+                {MATCH[f.match].texto}
+              </span>
+              {f.precio != null && <span className="w-20 shrink-0 text-right font-bold tabular-nums text-slate-800">{mxn(f.precio)}</span>}
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-slate-700" title={f.titulo}>{f.titulo}</span>
+                {f.nota && <span className="block truncate text-[11px] text-slate-400">{f.nota}</span>}
+              </span>
+              {f.url && (
+                <a href={f.url} target="_blank" rel="noopener noreferrer" className="shrink-0 text-slate-400 hover:text-slate-700" title="Abrir publicación">
+                  <ExternalLink size={14} />
+                </a>
+              )}
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 export default function SugerirPrecio({
   sku,
   titulo,
   mlCatId,
-  costo,
   imagen,
-  pesoKg,
   disabled,
   onUsar,
+  onUsarMedidas,
 }: {
   sku: string;
   titulo: string;
   mlCatId: string | null;
-  costo: number | null;
   imagen: string | null;
-  /** «Peso (kg)» del Estudio (el que guarda y usa costos). Vacío → el backend usa el atributo «Peso» de Woo. */
-  pesoKg: number | null;
   disabled?: boolean;
   /** Llena «Precio oferta» del Estudio; se guarda con el botón de siempre. */
   onUsar: (precio: number) => void;
+  /** Llena peso y largo × ancho × alto del Estudio; se guardan con el botón de siempre. */
+  onUsarMedidas: (m: { peso_kg: number; largo_cm: number; ancho_cm: number; alto_cm: number }) => void;
 }) {
+  const [cat, setCat] = useState<PrecioCatalogo | null>(null);
   const [res, setRes] = useState<PrecioSugeridoResp | null>(null);
-  const [margen, setMargen] = useState("30");
-  const [terminos, setTerminos] = useState("");
-  const [rapidoCargando, setRapidoCargando] = useState(false);
+  const [cargando, setCargando] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [jid, setJid] = useState<string | null>(null);
-  const [prueba, setPrueba] = useState("");
+  const [ventana, setVentana] = useState<Ventana | null>(null);
+  const [medidas, setMedidas] = useState<MedidasAmazon | null>(null);
+  const [midiendo, setMidiendo] = useState(false);
   const job = useTrabajoJob<PrecioSugeridoTrabajo>(jid, precioSugeridoTrabajo, 3000);
 
-  // Al abrir el SKU: la última consulta guardada (no se vuelve a pagar).
+  // Al abrir el SKU: el catálogo maestro y la última consulta completa (no se vuelve a pagar).
   useEffect(() => {
+    setCat(null);
     setRes(null);
     setError(null);
     setJid(null);
-    setPrueba("");
-    setTerminos("");
+    setMedidas(null);
+    setVentana(null);
     if (!sku) return;
     const ctl = new AbortController();
-    precioSugeridoUltimo(sku, ctl.signal)
-      .then((r) => {
-        if (r.resultado) {
-          setRes(r.resultado);
-          setTerminos((r.resultado.terminos ?? []).join(", "));
-          setMargen(String(Math.round((r.resultado.margen ?? 0.3) * 100)));
-        }
+    setCargando(true);
+    Promise.allSettled([precioCatalogo(sku, ctl.signal), precioSugeridoUltimo(sku, ctl.signal)])
+      .then(([c, u]) => {
+        if (ctl.signal.aborted) return;
+        if (c.status === "fulfilled") setCat(c.value);
+        if (u.status === "fulfilled" && u.value.resultado) setRes(u.value.resultado);
       })
-      .catch(() => { /* sin consulta previa: no es error */ });
+      .finally(() => !ctl.signal.aborted && setCargando(false));
     return () => ctl.abort();
   }, [sku]);
 
@@ -128,7 +279,7 @@ export default function SugerirPrecio({
     if (!e) return;
     if (e.paso === "listo" && e.resultado) {
       setRes(e.resultado);
-      setTerminos((e.resultado.terminos ?? []).join(", "));
+      setMedidas(null);
       setJid(null);
     } else if (e.paso === "error") {
       setError(e.error || "El análisis completo falló.");
@@ -136,116 +287,75 @@ export default function SugerirPrecio({
     }
   }, [job.est]);
 
-  const entrada = () => ({
-    sku,
-    titulo,
-    ml_cat_id: mlCatId,
-    costo,
-    imagen,
-    peso_kg: pesoKg,
-    margen: Math.max(0, Number(margen) || 0) / 100,
-    terminos: terminos.split(",").map((t) => t.trim()).filter(Boolean),
-  });
-
-  async function correrRapido() {
-    setError(null);
-    setRapidoCargando(true);
-    try {
-      setRes(await precioSugeridoRapido(entrada()));
-    } catch (e) {
-      setError(mensajeDeError(e, "No se pudo sugerir el precio."));
-    } finally {
-      setRapidoCargando(false);
-    }
-  }
-
   async function correrCompleto() {
     setError(null);
     try {
-      const t = await precioSugeridoCompleto(entrada());
+      const t = await precioSugeridoCompleto({ sku, titulo, ml_cat_id: mlCatId, imagen });
       setJid(t.id);
     } catch (e) {
       setError(mensajeDeError(e, "No se pudo arrancar el análisis completo."));
     }
   }
 
-  const corriendo = rapidoCargando || !!jid;
-  const precioPrueba = Number(prueba) || 0;
-  const utilPrueba = res && precioPrueba > 0 ? utilidadAPrecio(res, precioPrueba) : null;
+  // Mercado Libre: la búsqueda completa manda si encontró comparables; si no, el catálogo maestro.
+  const ref = res?.referencia ?? null;
+  const ml: (Stats & { origen: "completo" | "catalogo" }) | null = ref
+    ? { min: ref.min, media: ref.media, max: ref.max, origen: "completo" }
+    : cat?.ml
+      ? { min: cat.ml.min ?? cat.ml.media, media: cat.ml.media, max: cat.ml.max ?? cat.ml.media, origen: "catalogo" }
+      : null;
+  // Amazon: igual, la consulta completa si trajo Amazon; si no, el catálogo.
+  const az = res?.amazon ?? cat?.amazon ?? null;
+  const azDeCompleto = !!res?.amazon;
+  const azStats: Stats | null = az?.media != null ? { min: az.min ?? null, media: az.media, max: az.max ?? null } : null;
 
-  const rivales = useMemo(() => {
-    if (!res) return [] as PrecioRival[];
-    return [...res.rivales].sort(
-      (a, b) => Number(b.en_referencia) - Number(a.en_referencia) || a.precio - b.precio,
-    );
-  }, [res]);
+  const sugerido = ml?.media ? Math.floor(ml.media * FACTOR_BAJO_MEDIA) : null;
+  const corriendo = !!jid;
 
-  const s = res?.sugerido;
-  const d = s?.desglose;
+  async function traerMedidas() {
+    if (!az) return;
+    setError(null);
+    setMidiendo(true);
+    try {
+      const asins = az.publicaciones.filter((p) => p.match === "match").map((p) => p.id).slice(0, 10);
+      setMedidas(await medidasAmazon({ sku, asins, q: az.q }));
+    } catch (e) {
+      setError(mensajeDeError(e, "No se pudieron traer las medidas de Amazon."));
+    } finally {
+      setMidiendo(false);
+    }
+  }
+
+  const fuentesML = cat?.ml
+    ? Object.entries(cat.ml.fuentes)
+        .map(([k, v]) => `${FUENTES_ML[k] ?? k} ${mxn(v)}`)
+        .join(" · ") || (cat.ml.fuente === "exacto" ? "precio exacto revisado" : "")
+    : "";
+  const m = medidas?.sugeridas;
 
   return (
     <section className="overflow-hidden rounded-2xl border-2 border-amber-200 bg-amber-50/40">
       <header className="flex flex-wrap items-center gap-2 border-b border-amber-200 bg-amber-100/60 px-4 py-2">
         <TrendingUp size={16} className="text-amber-600" />
         <span className="text-sm font-bold text-amber-900">Sugerir precio</span>
-        <span className="text-xs text-amber-700">Mercado Libre · lo que cobra la competencia del MISMO producto</span>
+        <button
+          type="button"
+          onClick={correrCompleto}
+          disabled={disabled || corriendo}
+          title={
+            "Busca el producto en Mercado Libre (por título y por FOTO) y en Amazon, y guarda el resultado. " +
+            "~$0.01 y ~30 s si la búsqueda de ML ya está guardada; ~$0.05 y 1–1.5 min si hay que buscar; " +
+            "hasta ~$0.10 si ML bloquea y se reintenta. Amazon no cuesta."
+          }
+          className="ml-auto flex items-center gap-1.5 rounded-lg bg-amber-600 px-3 py-1.5 text-sm font-bold text-white shadow-sm hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {corriendo ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />}
+          Completo · $0.01–0.10
+        </button>
       </header>
 
       <div className="space-y-3 px-4 py-3">
-        <div className="flex flex-wrap items-end gap-3">
-          <label className="text-xs font-semibold text-slate-600">
-            Margen mínimo sobre el costo
-            <span className="mt-1 flex items-center gap-1">
-              <input
-                type="number"
-                min={0}
-                max={300}
-                value={margen}
-                onChange={(e) => setMargen(e.target.value)}
-                className="w-20 rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-sm"
-              />
-              <span className="text-sm text-slate-500">%</span>
-            </span>
-          </label>
-          <button
-            type="button"
-            onClick={correrRapido}
-            disabled={disabled || corriendo}
-            title="Más vendidos de la categoría + comisión real + piso. No cuesta nada."
-            className="flex items-center gap-1.5 rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm font-bold text-amber-800 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {rapidoCargando ? <Loader2 size={15} className="animate-spin" /> : <Zap size={15} />}
-            Rápido · gratis
-          </button>
-          <button
-            type="button"
-            onClick={correrCompleto}
-            disabled={disabled || corriendo}
-            title={
-              "Busca el producto en ML, separa por título y compara las FOTOS. " +
-              "~$0.01 y ~30 s si la búsqueda ya está guardada (7 días, la comparten productos parecidos); " +
-              "~$0.05 y ~1–1.5 min si hay que buscar; hasta ~$0.10 si ML bloquea y se reintenta o hace falta un 2.º término."
-            }
-            className="flex items-center gap-1.5 rounded-lg bg-amber-600 px-3 py-2 text-sm font-bold text-white shadow-sm hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {jid ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />}
-            Completo · $0.01–0.10
-          </button>
-          <label className="min-w-[240px] flex-1 text-xs font-semibold text-slate-600">
-            Términos de búsqueda (completo; vacío = los propone la IA)
-            <span className="mt-1 flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-2">
-              <Search size={13} className="text-slate-400" />
-              <input
-                value={terminos}
-                onChange={(e) => setTerminos(e.target.value)}
-                placeholder="p. ej. microfono lavalier inalambrico 2 pack"
-                className="w-full bg-transparent py-1.5 text-sm outline-none"
-              />
-            </span>
-          </label>
-        </div>
-
-        {jid && (
+        {corriendo && (
           <div className="flex items-center gap-2 rounded-lg bg-white px-3 py-2 text-sm text-amber-800">
             <Loader2 size={15} className="animate-spin" />
             {job.est?.paso_label ?? "Arrancando…"}
@@ -257,181 +367,135 @@ export default function SugerirPrecio({
           </div>
         )}
 
-        {res && s && (
-          <div className="space-y-3">
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-              <span className="text-3xl font-black text-slate-800">{mxn(s.precio)}</span>
-              <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${ESTADO[s.estado].clase}`}>
-                {ESTADO[s.estado].etiqueta}
-              </span>
-              {s.precio != null && (
+        {cargando ? (
+          <div className="flex items-center gap-2 text-xs text-slate-500">
+            <Loader2 size={13} className="animate-spin" /> Leyendo el catálogo maestro…
+          </div>
+        ) : sugerido != null && ml ? (
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <span className="text-3xl font-black text-slate-800">{mxn(sugerido)}</span>
+            <span className="text-xs text-slate-500">un poco abajo de la media de Mercado Libre ({mxn(ml.media)})</span>
+            <span className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => onUsar(sugerido)}
+                disabled={disabled}
+                className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                title="Llena «Precio oferta». Revisa el precio regular (tachado) y guarda con «Guardar precio y costo»."
+              >
+                Usar {mxn(sugerido)} en Precio oferta
+              </button>
+              <button
+                type="button"
+                onClick={traerMedidas}
+                disabled={disabled || midiendo || !az}
+                className="flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                title={az ? "Medidas del paquete de las publicaciones de Amazon que hicieron match (gratis)" : "Sin datos de Amazon: corre Completo"}
+              >
+                {midiendo ? <Loader2 size={13} className="animate-spin" /> : <Package size={13} />}
+                Medidas de Amazon
+              </button>
+            </span>
+          </div>
+        ) : (
+          <p className="text-sm text-slate-600">
+            {cat?.ml ? "" : "Sin precio de Mercado Libre en el catálogo maestro. "}
+            {res && !ref ? "La búsqueda completa no encontró comparables en Mercado Libre." : "Presiona Completo para buscarlo."}
+          </p>
+        )}
+
+        {medidas && (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg bg-white px-3 py-2 text-xs text-slate-600">
+            {m ? (
+              <>
+                <span>
+                  Paquete sugerido:{" "}
+                  <strong className="text-slate-800">
+                    {m.largo_cm} × {m.ancho_cm} × {m.alto_cm} cm · {m.peso_kg} kg
+                  </strong>
+                </span>
+                <span className="text-slate-400">
+                  mediana de {medidas.n} {medidas.origen === "match" ? "que hicieron match" : `de la búsqueda «${medidas.q}», sin filtrar`} en Amazon
+                </span>
                 <button
                   type="button"
-                  onClick={() => onUsar(s.precio as number)}
+                  onClick={() => onUsarMedidas(m)}
                   disabled={disabled}
-                  className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-                  title="Llena «Precio oferta». Revisa el precio regular (tachado) y guarda con «Guardar precio y costo»."
+                  className="rounded-md border border-slate-300 px-2 py-0.5 font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                  title="Llena Peso y Largo × Ancho × Alto del Estudio; se guardan con el botón de siempre"
                 >
-                  Usar {mxn(s.precio)} en Precio oferta
+                  Usar estas medidas
                 </button>
-              )}
-            </div>
-            <p className="text-sm text-slate-700">{s.texto}</p>
-
-            {d && (
-              <p className="text-sm text-slate-700">
-                A {mxn(s.precio)} te quedan{" "}
-                <strong className={d.utilidad >= 0 ? "text-emerald-700" : "text-red-700"}>{mxn(d.utilidad)}</strong> por
-                pieza ({d.pct_sobre_costo} % sobre el costo)
-                <span className="block text-xs text-slate-500">
-                  − IVA {mxn(d.iva)} · − comisión ML {Math.round(d.pct * 1000) / 10} % {mxn(d.comision)} · − envío{" "}
-                  {mxn(d.envio)} · − costo {mxn(d.costo)}
-                </span>
-              </p>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setVentana({
+                      titulo: "Medidas de Amazon (paquete)",
+                      resumen: `${medidas.n} publicaciones medidas`,
+                      filas: medidas.publicaciones.map((p) => ({
+                        id: p.asin,
+                        titulo: p.titulo,
+                        precio: null,
+                        url: p.url,
+                        match: medidas.origen === "match" ? "match" : "sin_dato",
+                        nota: `${p.largo_cm} × ${p.ancho_cm} × ${p.alto_cm} cm · ${p.peso_kg} kg`,
+                      })),
+                    })
+                  }
+                  className="font-semibold text-slate-500 underline hover:text-slate-700"
+                >
+                  ver de cuáles
+                </button>
+              </>
+            ) : (
+              <span>Amazon no trae medidas de paquete para estas publicaciones.</span>
             )}
-
-            <div className="grid gap-2 text-xs sm:grid-cols-2">
-              <div className="rounded-lg bg-white px-3 py-2">
-                <div className="font-semibold text-slate-500">Piso para ganar {Math.round(res.margen * 100)} % sobre el costo</div>
-                <div className="text-base font-bold text-slate-800">{mxn(res.piso)}</div>
-                <div className="text-slate-400">
-                  costo {mxn(res.costo)} · envío{" "}
-                  {res.envio_origen === "peso" ? `por peso (${res.peso_kg} kg)` : res.envio_origen === "panel" ? "del panel" : "sin dato"}
-                </div>
-              </div>
-              <div className="rounded-lg bg-white px-3 py-2">
-                <div className="font-semibold text-slate-500">
-                  Mercado · {res.referencia ? `${res.referencia.etiqueta} (${res.referencia.n})` : "sin comparables"}
-                </div>
-                {res.referencia ? (
-                  <>
-                    <div className="text-base font-bold text-slate-800">mediana {mxn(res.referencia.mediana)}</div>
-                    <div className="text-slate-400">
-                      normal {mxn(res.referencia.p25)}–{mxn(res.referencia.p75)} · todo {mxn(res.referencia.min)}–
-                      {mxn(res.referencia.max)}
-                      {res.referencia.pocos && " · pocos datos"}
-                    </div>
-                  </>
-                ) : res.categoria ? (
-                  // Sin comparables, al menos lo que cobra la categoría: si el piso queda muy arriba, salta a la vista.
-                  <>
-                    <div className="text-base font-bold text-slate-800">
-                      categoría: mediana {mxn(res.categoria.mediana)}
-                    </div>
-                    <div className="text-slate-400">
-                      los {res.categoria.n} más vendidos, sin filtrar por producto · {mxn(res.categoria.min)}–
-                      {mxn(res.categoria.max)}. Solo de referencia.
-                    </div>
-                  </>
-                ) : (
-                  <div className="text-slate-400">No hubo publicaciones comparables.</div>
-                )}
-              </div>
-            </div>
-
-            <label className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
-              Probar otro precio:
-              <input
-                type="number"
-                value={prueba}
-                onChange={(e) => setPrueba(e.target.value)}
-                placeholder="$"
-                className="w-24 rounded-lg border border-slate-300 bg-white px-2 py-1 text-sm"
-              />
-              {utilPrueba != null && res.costo ? (
-                <span>
-                  te quedan <strong className={utilPrueba >= 0 ? "text-emerald-700" : "text-red-700"}>{mxn(Math.round(utilPrueba * 100) / 100)}</strong>{" "}
-                  ({Math.round((utilPrueba / res.costo) * 1000) / 10} % sobre el costo)
-                </span>
-              ) : null}
-            </label>
-
-            {!!res.avisos.length && (
-              <ul className="space-y-0.5 text-[11px] text-amber-700">
-                {res.avisos.map((a, i) => (
-                  <li key={i}>⚠ {a}</li>
-                ))}
-              </ul>
-            )}
-
-            <details className="rounded-lg bg-white text-xs" open={res.modo === "completo"}>
-              <summary className="cursor-pointer px-3 py-2 font-semibold text-slate-600">
-                {res.modo === "completo" ? "Rivales de la búsqueda" : "Más vendidos de la categoría"} ({rivales.length}
-                {res.referencia ? ` · ${rivales.filter((r) => r.en_referencia).length} en la referencia` : ""})
-              </summary>
-              <ul className="max-h-[420px] divide-y divide-slate-100 overflow-auto">
-                {rivales.map((r) => (
-                  <li key={r.id} className={`flex items-center gap-3 px-3 py-1.5 ${r.en_referencia ? "bg-emerald-50/50" : ""}`}>
-                    {r.imagen ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={r.imagen} alt="" className="h-11 w-11 shrink-0 rounded object-contain" loading="lazy" />
-                    ) : (
-                      <div className="h-11 w-11 shrink-0 rounded bg-slate-100" />
-                    )}
-                    <span className="w-16 shrink-0 text-right font-bold text-slate-800">{mxn(r.precio)}</span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-slate-700" title={r.titulo ?? ""}>{r.titulo}</span>
-                      <span className="flex flex-wrap gap-1 pt-0.5">
-                        {r.foto && FOTO[r.foto] && (
-                          <span className={`rounded px-1.5 py-0.5 ${FOTO[r.foto].clase}`} title={r.foto_razon}>
-                            {FOTO[r.foto].texto}
-                            {r.foto_piezas ? ` · ${r.foto_piezas} pzs` : ""}
-                          </span>
-                        )}
-                        {r.clase_titulo && (
-                          <span className="rounded bg-slate-100 px-1.5 py-0.5 text-slate-500" title={r.motivo_titulo}>
-                            título: {CLASE_TITULO[r.clase_titulo] ?? r.clase_titulo}
-                          </span>
-                        )}
-                        {r.parecido != null && (
-                          <span className="rounded bg-slate-100 px-1.5 py-0.5 text-slate-500">parecido {Math.round(r.parecido * 100)} %</span>
-                        )}
-                        {r.extremo && (
-                          <span className="rounded bg-red-50 px-1.5 py-0.5 text-red-600" title="Su precio cae muy lejos de la mediana de su grupo">
-                            precio fuera de rango
-                          </span>
-                        )}
-                        {(r.mas_vendido || r.fuente === "mas_vendidos") && (
-                          <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-800">más vendido</span>
-                        )}
-                      </span>
-                    </span>
-                    {r.url && (
-                      <a href={r.url} target="_blank" rel="noopener noreferrer" className="shrink-0 text-slate-400 hover:text-slate-700">
-                        <ExternalLink size={14} />
-                      </a>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </details>
-
-            <p className="text-[11px] text-slate-400">
-              {res.modo === "completo" ? "Completo" : "Rápido"} · {haceCuanto(res.consultado)}
-              {res.terminos?.length ? ` · buscó «${res.terminos.join("», «")}»` : ""}
-              {res.cache && Object.keys(res.cache).length > 0 &&
-                ` · reusó la búsqueda guardada (${Object.values(res.cache)
-                  .map((d) => (d === 0 ? "de hoy" : `de hace ${d} d`))
-                  .join(", ")}), sin pagar Apify`}
-              {res.propias_fuera ? ` · ${res.propias_fuera} publicación(es) nuestra(s) fuera de los rivales` : ""}
-              {" · "}costó {usd(res.costo_consulta.total)}
-              {res.costo_consulta.total > 0 &&
-                ` (búsqueda ${usd(res.costo_consulta.apify)}, título ${usd(res.costo_consulta.juez)}, fotos ${usd(res.costo_consulta.fotos)})`}
-              {res.costo_consulta.apify > 0 && res.costo_consulta.apify_final === false &&
-                " — la búsqueda es preliminar: Apify cobra el proxy unos minutos después; al reabrir sale el monto final"}
-              . Solo informativo: no cambia ningún precio.
-            </p>
           </div>
         )}
 
-        {!res && !corriendo && !error && (
-          <p className="text-xs text-slate-500">
-            <strong>Rápido</strong>: los más vendidos de la categoría, sin costo. <strong>Completo</strong>: busca el
-            producto en Mercado Libre, separa los que son el mismo por título y por FOTO, y calcula el precio que compite
-            sin bajar de tu margen.
+        <div className="grid gap-2 sm:grid-cols-2">
+          <Tarjeta
+            nombre="Mercado Libre"
+            stats={ml}
+            detalle={
+              ml?.origen === "completo"
+                ? `${ref?.n ?? 0} comparables · ${ref?.etiqueta?.toLowerCase() ?? ""}` +
+                  (cat?.ml ? ` · catálogo: media ${mxn(cat.ml.media)}` : "")
+                : fuentesML
+            }
+            pie={
+              ml?.origen === "completo" && res
+                ? `Completo · ${haceCuanto(res.consultado)}`
+                : cat?.ml
+                  ? `Catálogo maestro · ${dia(cat.fecha_ml)}`
+                  : ""
+            }
+            ventana={res && res.rivales.length ? ventanaML(res) : null}
+            onVer={setVentana}
+          />
+          <Tarjeta
+            nombre="Amazon"
+            stats={azStats}
+            detalle={az ? `${az.n ?? 0} comparables de ${az.vistos} leídas · «${az.q}»` : ""}
+            pie={
+              az ? (azDeCompleto && res ? `Completo · ${haceCuanto(res.consultado)}` : `Catálogo maestro · ${dia(cat?.fecha_amazon)}`) : ""
+            }
+            ventana={az ? ventanaAmazon(az) : null}
+            onVer={setVentana}
+          />
+        </div>
+
+        {res && (
+          <p className="text-[11px] text-slate-400">
+            Última consulta completa {haceCuanto(res.consultado)} · costó {usd(res.costo_consulta.total)}
+            {res.costo_consulta.apify > 0 && res.costo_consulta.apify_final === false &&
+              " (preliminar: Apify cobra el proxy unos minutos después)"}
+            . Solo informativo: no cambia ningún precio.
           </p>
         )}
       </div>
+
+      {ventana && <VentanaPublicaciones v={ventana} onCerrar={() => setVentana(null)} />}
     </section>
   );
 }

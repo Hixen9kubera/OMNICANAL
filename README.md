@@ -1001,6 +1001,98 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.696.0 — «Sugerir precio» se simplifica: el precio sale del CATÁLOGO MAESTRO (ML y Amazon), el completo suma Amazon y hay botón de medidas de Amazon
+
+**Qué pidió Brandon (28-oct-2026).** Simple pero esencial:
+- quitar el modo rápido («no nos funciona»), su texto de ayuda, el margen mínimo, los términos de búsqueda y el
+  subtítulo «Mercado Libre · lo que cobra la competencia del MISMO producto»;
+- que quede solo el botón Completo y que dé un precio sugerido;
+- la regla: un poco abajo de la media de ML;
+- mostrar del catálogo maestro el MÍN, MÁX y MEDIA de Mercado Libre y de Amazon, «nada más»;
+- un botón por marketplace que abra las publicaciones leídas y diga cuáles hicieron match;
+- un botón junto al precio sugerido para traer las medidas de Amazon;
+- si el SKU no está en el catálogo, se presiona Completo y sus datos quedan guardados, con Amazon hecho como en
+  el estudio de mercado por SP-API (gratis).
+
+**Cómo queda la sección.**
+- **Precio sugerido** = `piso(media de ML × 0.97)`: siempre abajo de la media y, por lo tanto, del máximo. Es la
+  regla que se usó al republicar los 5 SKUs del 28-oct.
+- La **media de ML** sale de la consulta completa si el SKU ya tiene una con comparables (es más reciente); si
+  no, del catálogo maestro (`precio_ml_final` del v3).
+- **Dos tarjetas**, Mercado Libre y Amazon, con Mín / Media / Máx y de dónde salen:
+  - en ML del catálogo: las fuentes del v3 (más vendidos de la categoría, Amazon ÷ 1.443, búsqueda en ML). Ojo:
+    el rango es ENTRE FUENTES, no entre rivales;
+  - en Amazon: cuántas de las leídas fueron comparables y con qué palabra clave.
+- **«Ver publicaciones»** abre una ventana con cada publicación leída: Match / No match / Sin veredicto, precio y
+  liga.
+  - Amazon la tiene siempre.
+  - ML solo cuando hay una consulta completa: el catálogo no guarda publicaciones de ML por producto (su precio
+    viene de los más vendidos de la categoría), y Brandon eligió no inventar una ventana para eso.
+- **«Medidas de Amazon»**: el paquete de las publicaciones que hicieron match. Toma la mediana de cada lado
+  (hacia arriba al cm) y del peso (hacia arriba a 0.01 kg).
+  - «Usar estas medidas» llena Peso y Largo × Ancho × Alto del Estudio; se guardan con su botón de siempre.
+  - Un ASIN PADRE no trae medidas (0 de 15 el 28-oct): se baja a su primera variante.
+  - Sin match con medidas, mide las primeras de la búsqueda y lo dice.
+- Ya no se enseñan el piso, la utilidad, ni «probar otro precio». El backend los sigue calculando en el
+  completo, sin cambios.
+
+**El catálogo maestro llega al panel como archivo** (`backend/data/catalogo_precios/precios.json.gz`, 3.7 MB):
+- 14,412 SKUs: 12,281 con precio de ML y 12,133 con precio de Amazon;
+- 6,585 búsquedas de Amazon con sus publicaciones.
+
+Lo arma `backend/scripts/catalogo_precios_preparar.py` desde `reportes/catalogo_vivo` (local, fuera de git).
+**El repo es público**, así que el extracto solo lleva precios de MERCADO:
+- no lleva `estimado_costo`, `topado_10x_costo` ni las `notas` del v3 (dicen «3.59× costo»: con el precio se
+  despejaría nuestro costo);
+- no abre `datos_pl.json` ni `eduardo_ml/`.
+
+Hay una prueba que lo fija. El servicio `catalogo_precios.py` lo abre una vez por proceso. Se actualiza corriendo
+el script y haciendo deploy.
+
+**El match de cada publicación de Amazon se RECONSTRUYE.** El catálogo guardó, por grupo:
+- cuántas cayeron en cada clase (mismo producto, otra gama, refacción…);
+- las 4 más baratas que sí eran el mismo;
+- la estadística de las que entraron.
+
+No guardó el veredicto de cada una. El script prueba todas las combinaciones de n publicaciones que reproducen
+exactamente esa estadística (media, mediana, P25, P75, mín y máx). Lo que todas comparten es match seguro, y lo
+que ninguna usa es no match si ya se contaron todas las «mismo».
+- Resultado: de 126,723 publicaciones, 64,480 match y 54,471 no match. 7,772 (6 %) quedan «sin veredicto
+  guardado» y la ventana lo dice así.
+- TEC-0686-NEG queda completo: 9 match y 1 otra gama, como dice el catálogo.
+
+**El modo completo ahora también busca en Amazon** (`services/amazon_mercado.py::estudio`). Es el método de la
+memoria «amazon-estudio-de-mercado-sp-api», recortado para un botón:
+1. `searchCatalogItems`, 2 páginas (40 publicaciones);
+2. caja de compra con `getCompetitivePricing`;
+3. una cifra por familia;
+4. el mismo juez de títulos de Competencia;
+5. solo el nodo de Amazon donde cae la mayoría de los match;
+6. sin precios a más de 2.5× de la mediana.
+
+Medido el 28-oct con «linterna uv recargable»: 40 leídas, 39 con caja de compra, 36 familias, 7.5 s.
+- Si Amazon falla, ML sigue y se avisa.
+- Si el SKU está en el catálogo, su palabra clave se usa TAL CUAL para ML y para Amazon, y no se le pregunta a
+  la IA. Recortarla le quitaba «uv» a «linterna uv recargable».
+- Amazon no cobra. El juez sí (centavos), y se suma a «juez» en el costo de la consulta.
+
+**Rutas** (todas `operador`):
+- nuevas: `GET /api/precio-sugerido/catalogo/{sku}` y `POST /api/precio-sugerido/medidas-amazon`;
+- quitada: `POST /api/precio-sugerido/rapido`.
+
+Nada escribe precios ni medidas: los botones «Usar…» solo llenan campos del Estudio.
+
+**Pruebas.** `tests/test_precio_sugerido.py`, 48 en verde:
+- quitadas: las del modo rápido;
+- nuevas: el veredicto reconstruido de TEC-0686-NEG, combinaciones que no deciden, el extracto sin costos, la
+  ventana de Amazon, familias con caja de compra, el nodo de la mayoría, las medidas del paquete, la palabra del
+  catálogo en el completo y Amazon caído sin tumbar ML.
+
+Humo en vivo, solo lectura:
+- catálogo en 0.17 s la primera vez;
+- medidas de DEC-0019-VER: 36 × 22 × 14 cm, 1.52 kg;
+- `/rapido` responde 404.
+
 ### v0.695.0 — Migraciones 0075, 0076 y 0077 (esquema del libro de T0), YA APLICADAS en producción con el acta 1.11. Sin código nuevo
 
 **Qué es.** Los tres `.sql` del esquema `almacen` para T0 (salida de Odoo y Woo). Se aplicaron en producción el

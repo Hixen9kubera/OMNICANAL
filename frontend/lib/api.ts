@@ -692,8 +692,9 @@ export function mejorarIA(p: { canal: string; producto: ProductoIA; cuenta?: str
 }
 
 // ── «Sugerir precio» del Estudio (v0.686.0) ─────────────────────────────────
-// La competencia REAL del mismo producto en ML contra el piso de rentabilidad.
-// Ver backend/services/precio_sugerido.py. Solo sugiere: no escribe precios.
+// La competencia REAL del mismo producto: el catálogo maestro y, si no lo tiene,
+// el modo completo (ML + Amazon). Ver backend/services/precio_sugerido.py. Solo
+// sugiere: no escribe precios. El modo rápido se quitó en v0.696.0.
 
 export interface PrecioSugeridoEntrada {
   sku: string;
@@ -785,6 +786,8 @@ export interface PrecioSugeridoResp {
   /** Publicaciones nuestras que salieron en la búsqueda y no cuentan como rivales (v0.688.0). */
   propias_fuera?: number;
   unidades_nuestras?: number;
+  /** Amazon por SP-API, gratis (v0.696.0). null si falló; ausente en consultas anteriores. */
+  amazon?: PrecioAmazon | null;
   avisos: string[];
   costo_consulta: {
     apify: number;
@@ -807,8 +810,66 @@ export interface PrecioSugeridoTrabajo {
   resultado: PrecioSugeridoResp | null;
 }
 
-export function precioSugeridoRapido(e: PrecioSugeridoEntrada): Promise<PrecioSugeridoResp> {
-  return postJSON<PrecioSugeridoResp>(`/api/precio-sugerido/rapido`, e);
+// v0.696.0: el CATÁLOGO MAESTRO (gratis) y Amazon. Ver backend/services/catalogo_precios.py y amazon_mercado.py.
+
+export interface PrecioPubAmazon {
+  /** ASIN (la variante en vivo; la familia en el catálogo). */
+  id: string;
+  titulo: string;
+  precio: number;
+  url: string;
+  match: "match" | "no_match" | "sin_dato";
+  /** Mismo producto en otro tamaño de paquete. */
+  unidades?: number;
+  clase?: string;
+  motivo?: string;
+}
+
+export interface PrecioAmazon {
+  q: string;
+  vistos: number;
+  clases: Record<string, number>;
+  publicaciones: PrecioPubAmazon[];
+  n?: number;
+  media?: number;
+  mediana?: number;
+  min?: number;
+  max?: number;
+  nodo?: { id: string; nombre: string | null } | null;
+}
+
+export interface PrecioCatalogo {
+  sku: string;
+  /** La MEDIA es el precio (`precio_ml_final` del v3); el rango es entre FUENTES, no entre rivales. */
+  ml: {
+    media: number;
+    min: number | null;
+    max: number | null;
+    fuentes: Record<string, number>;
+    fuente?: string;
+    categoria?: string;
+    revisar?: boolean;
+  } | null;
+  amazon: PrecioAmazon | null;
+  fecha_ml: string | null;
+  fecha_amazon: string | null;
+}
+
+export interface MedidasAmazon {
+  sugeridas: { largo_cm: number; ancho_cm: number; alto_cm: number; peso_kg: number } | null;
+  n: number;
+  /** match = de las que hicieron match; busqueda = las primeras de la búsqueda, sin filtrar. */
+  origen: "match" | "busqueda";
+  q: string | null;
+  publicaciones: { asin: string; titulo: string; url: string; largo_cm: number; ancho_cm: number; alto_cm: number; peso_kg: number }[];
+}
+
+export function precioCatalogo(sku: string, signal?: AbortSignal): Promise<PrecioCatalogo> {
+  return getJSON<PrecioCatalogo>(`/api/precio-sugerido/catalogo/${encodeURIComponent(sku)}`, signal);
+}
+
+export function medidasAmazon(p: { sku: string; asins: string[]; q?: string | null }): Promise<MedidasAmazon> {
+  return postJSON<MedidasAmazon>(`/api/precio-sugerido/medidas-amazon`, p);
 }
 
 export function precioSugeridoCompleto(e: PrecioSugeridoEntrada): Promise<PrecioSugeridoTrabajo> {
@@ -821,18 +882,6 @@ export function precioSugeridoTrabajo(jid: string, signal?: AbortSignal): Promis
 
 export function precioSugeridoUltimo(sku: string, signal?: AbortSignal): Promise<{ resultado: PrecioSugeridoResp | null }> {
   return getJSON<{ resultado: PrecioSugeridoResp | null }>(`/api/precio-sugerido/ultimo/${encodeURIComponent(sku)}`, signal);
-}
-
-/** Lo que queda por pieza a un precio, con la MISMA fórmula del backend (`precio_sugerido.utilidad`). */
-export function utilidadAPrecio(r: PrecioSugeridoResp, precio: number): number | null {
-  if (!r.costo || !r.comision.length || !(precio > 0)) return null;
-  const banda = r.comision.find((b) => b.hasta == null || precio <= b.hasta) ?? r.comision[r.comision.length - 1];
-  let envio = r.envio_fijo ?? 0;
-  if (r.tabla_envio) {
-    const i = r.tramos_envio.findIndex((tope) => precio <= tope);
-    envio = r.tabla_envio[i === -1 ? r.tramos_envio.length : i];
-  }
-  return precio / (1 + r.iva) - (banda.pct * precio + banda.fijo) - envio - r.costo;
 }
 
 export function precioCompetencia(

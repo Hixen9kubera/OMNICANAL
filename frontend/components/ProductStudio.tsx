@@ -2776,20 +2776,24 @@ export default function ProductStudio({
                 </section>
               )}
 
-              {/* SUGERIR PRECIO (v0.686.0): la competencia REAL del mismo
-                  producto en ML (búsqueda + juez por título y por FOTO) contra
-                  el piso de rentabilidad. «Usar en Precio oferta» solo llena el
-                  campo de abajo; se guarda con «Guardar precio y costo». */}
+              {/* SUGERIR PRECIO (v0.686.0; v0.696.0): el catálogo maestro (ML y
+                  Amazon) o, si no lo tiene, el modo completo. «Usar en Precio
+                  oferta» y «Usar estas medidas» solo llenan los campos de abajo;
+                  se guardan con sus botones de siempre. */}
               {sku && (
                 <SugerirPrecio
                   sku={sku}
                   titulo={titulo || data?.nombre || sku}
                   mlCatId={catMlId || meta?.categoria_ml?.category_id || null}
-                  costo={Number(campos.costo) || null}
                   imagen={data?.imagen ?? data?.imagenes?.[0] ?? null}
-                  pesoKg={Number(campos.peso) || null}
                   disabled={soloVistaAgrupada}
                   onUsar={(precio) => setCampo("precioOferta", String(precio))}
+                  onUsarMedidas={(m) => {
+                    setCampo("peso", String(m.peso_kg));
+                    setCampo("largo", String(m.largo_cm));
+                    setCampo("ancho", String(m.ancho_cm));
+                    setCampo("alto", String(m.alto_cm));
+                  }}
                 />
               )}
 

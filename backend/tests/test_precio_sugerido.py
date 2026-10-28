@@ -6,7 +6,9 @@
 2. **La referencia** se elige por confianza: foto → título → más vendidos, con al menos 3 precios.
 3. **La sugerencia** con los números reales de TEC-0605 (prueba del 22-oct): mediana del mismo modelo $159.
 4. **El juez de fotos**: se lee su JSON, y un rival del mismo modelo con OTRA cantidad de piezas no entra.
-5. **El modo rápido** filtra los más vendidos por parecido de título y no llama a nada que cobre.
+5. **El catálogo maestro y Amazon** (v0.696.0): el veredicto de cada publicación de Amazon se reconstruye de lo que
+   guardó el catálogo; la búsqueda en vivo cuenta una vez por familia, juzga por título y se queda con un nodo; las
+   medidas son la mediana del paquete; el completo usa la palabra clave del catálogo y Amazon no lo tumba.
 6. **Permisos**: las rutas piden `operador`, como Competencia.
 7. **Búsqueda corta** (v0.687.0): nunca el título entero, lo del usuario manda, y el completo pide 3 reintentos.
 8. **Avisos de datos** (v0.687.0): VAR-0549-NEG (costo $456.45, 20 kg) avisa del peso y del costo; TEC-0605 no.
@@ -164,51 +166,13 @@ class JuezDeFotos(unittest.TestCase):
         self.assertIn("Sin llave", r["motivo"])
 
 
-class ModoRapido(unittest.TestCase):
+class Parecido(unittest.TestCase):
     def test_parecido(self):
         a = "2 Pack Micrófono Inalambrico De Solapa Cancelacion Ruido Negro"
         self.assertGreater(ps.parecido(a, "Pack 2 Micrófonos Inalámbricos Lavalier de solapa con cancelación de ruido"),
                            ps.UMBRAL_PARECIDO)
         self.assertLess(ps.parecido(a, "Shure Beta 58a"), ps.UMBRAL_PARECIDO)
         self.assertEqual(ps.parecido(a, ""), 0.0)
-
-    def test_rapido_no_cobra_y_filtra_por_titulo(self):
-        top = [{"id": "MLM1", "titulo": "Pack 2 Micrófonos Inalámbricos Lavalier Solapa Cancelación Ruido", "precio": 159.0},
-               {"id": "MLM2", "titulo": "2 Pack Micrófono Inalámbrico De Solapa Para iPhone", "precio": 98.99},
-               {"id": "MLM3", "titulo": "Micrófono Lavalier Inalámbrico Solapa Cancelación de Ruido 2 piezas", "precio": 129.0},
-               {"id": "MLM4", "titulo": "Shure Beta 58a", "precio": 4388.0}]
-        datos = {"sku": "TEC-0605", "titulo": "2 Pack Micrófono Inalambrico De Solapa Cancelacion Ruido Negro",
-                 "costo": COSTO, "ml_cat_id": "MLM10743", "imagen": None, "peso_kg": 0.07, "envio_panel": 91.7,
-                 "margen": 0.30}
-
-        class Cli:
-            async def aclose(self):
-                pass
-
-        async def bandas(cli, cat):
-            return [{"hasta": 499.99, "pct": PCT, "fijo": 0}, {"hasta": None, "pct": 0.16, "fijo": 0}]
-
-        anotado = []
-        with mock.patch.object(ps, "datos_sku", mock.AsyncMock(return_value=datos)), \
-                mock.patch.object(ps, "_cliente_ml", mock.AsyncMock(return_value=Cli())), \
-                mock.patch.object(ps, "mas_vendidos", mock.AsyncMock(return_value=top)), \
-                mock.patch.object(ps, "comisiones", bandas), \
-                mock.patch.object(ps, "_anotar", lambda res, dur: anotado.append(res)), \
-                mock.patch.object(ps, "juez_fotos") as fotos:
-            r = asyncio.run(ps.rapido({"sku": "TEC-0605"}))
-        fotos.assert_not_called()
-        self.assertEqual(r["costo_consulta"]["total"], 0.0)
-        self.assertEqual(r["referencia"]["grupo"], "mas_vendidos")
-        self.assertEqual(r["referencia"]["n"], 3)                          # el Shure quedó fuera
-        self.assertFalse(next(x for x in r["rivales"] if x["id"] == "MLM4")["en_referencia"])
-        self.assertEqual(r["piso"], 208.0)
-        self.assertEqual(r["sugerido"]["estado"], "no_compite")            # mediana $129 < piso $208 y P75 < $209
-        self.assertEqual(r["sugerido"]["precio"], 209)
-        self.assertAlmostEqual(r["sugerido"]["desglose"]["envio"], 35.0)
-        self.assertEqual(len(anotado), 1)
-        # v0.687.0: la categoría completa viaja como contexto, y unos datos sanos no levantan avisos.
-        self.assertEqual(r["categoria"]["n"], 4)
-        self.assertFalse([a for a in r["avisos"] if a.startswith(("El envío", "El piso"))])
 
 
 class Cliente:
@@ -257,10 +221,14 @@ class BusquedaSePagaUnaVez(unittest.TestCase):
     DATOS = {"sku": "VAR-0549-NEG", "titulo": BOLSAS, "costo": 456.45, "ml_cat_id": None, "imagen": None,
              "peso_kg": 20.0, "envio_panel": None, "margen": 0.30}
 
-    def _completo(self, cache=None, medidas=None, terminos=None, gasto=None):
-        """Corre `completo` sin red. `cache`: {término: {filas, dias}}; `medidas`: {término: filas} que «raspa»."""
-        from services import competencia_captura, competencia_juez, competencia_terminos
+    def _completo(self, cache=None, medidas=None, terminos=None, gasto=None, catalogo=None, amazon=None):
+        """Corre `completo` sin red. `cache`: {término: {filas, dias}}; `medidas`: {término: filas} que «raspa»;
+        `catalogo`: lo que da el catálogo maestro; `amazon`: lo que da (o la excepción que lanza) Amazon."""
+        from services import (amazon_mercado, catalogo_precios, competencia_captura, competencia_juez,
+                              competencia_terminos)
         cache, medidas = cache or {}, medidas or {}
+        estudio = mock.AsyncMock(side_effect=amazon) if isinstance(amazon, Exception) else \
+            mock.AsyncMock(return_value=dict(amazon or {"q": "x", "vistos": 0, "publicaciones": [], "usd": 0.0}))
 
         async def medir(terms, limite=10, bloqueados=None, reintentos=8, filas_out=None):
             for t in terms:
@@ -280,8 +248,11 @@ class BusquedaSePagaUnaVez(unittest.TestCase):
                                   lambda prods: {"VAR-0549-NEG": "bolsas thank you regalo"}), \
                 mock.patch.object(competencia_juez, "juzgar_lote",
                                   lambda *a, **k: {"veredictos": {}, "usd": 0.0035, "unidades_nuestras": 1}), \
-                mock.patch.object(competencia_captura, "medir_busquedas", medir_mock):
+                mock.patch.object(competencia_captura, "medir_busquedas", medir_mock), \
+                mock.patch.object(catalogo_precios, "por_sku", return_value=catalogo or {"ml": None, "amazon": None}), \
+                mock.patch.object(amazon_mercado, "estudio", estudio):
             r = asyncio.run(ps.completo({"sku": "VAR-0549-NEG", "terminos": terminos or []}))
+        self.estudio = estudio
         return r, medir_mock, gasto_mock
 
     def test_un_termino_con_3_reintentos_y_queda_guardado(self):
@@ -363,6 +334,137 @@ class BusquedaSePagaUnaVez(unittest.TestCase):
         g = ps._sumar_apify([{"detalle": {"usd": 0.03, "run_id": "A", "usd_final": True}},
                              {"detalle": '{"usd": 0.008, "run_id": "B"}'}])
         self.assertEqual(g, {"usd": 0.038, "runs": ["A", "B"], "final": False})
+
+
+    def test_la_palabra_del_catalogo_se_busca_en_ml_y_en_amazon(self):
+        from services import competencia_terminos
+        cat = {"ml": None, "amazon": {"q": "bolsas de regalo"}}
+        with mock.patch.object(competencia_terminos, "proponer") as ia:
+            r, medir, _ = self._completo(medidas={"bolsas de regalo": _filas(30)}, catalogo=cat,
+                                         amazon={"q": "bolsas de regalo", "vistos": 3, "n": 2, "media": 150.0,
+                                                 "publicaciones": [], "usd": 0.002})
+        ia.assert_not_called()                                    # la palabra del catálogo ahorra la IA
+        self.assertEqual(medir.call_args.args[0], ["bolsas de regalo"])
+        self.assertEqual(self.estudio.call_args.args[0], "bolsas de regalo")
+        self.assertEqual(r["amazon"]["media"], 150.0)
+        self.assertNotIn("usd", r["amazon"])
+        self.assertAlmostEqual(r["costo_consulta"]["juez"], 0.0055)   # el juez de ML + el de Amazon
+
+    def test_amazon_caido_no_tumba_ml(self):
+        r, _, _ = self._completo(medidas={"bolsas thank you regalo": _filas(30)}, amazon=RuntimeError("403"))
+        self.assertTrue(r["ok"])
+        self.assertIsNone(r["amazon"])
+        self.assertEqual(len(r["rivales"]), 30)
+        self.assertIn("No se pudo leer Amazon: 403", r["avisos"])
+        self.assertEqual(self.estudio.call_args.args[0], "bolsas thank you regalo")   # sin catálogo: el de ML
+
+
+class CatalogoMaestro(unittest.TestCase):
+    """v0.696.0: el catálogo no guardó el veredicto de cada publicación de Amazon; se reconstruye de sus cuentas."""
+
+    # TEC-0686-NEG tal como está en el catálogo: 9 «mismo» (6 del mismo paquete + 3 de 2 piezas) y 1 otra gama.
+    TEC_0686 = {"vistos": 10, "clases": {"m": 9, "g": 1}, "n": 6, "media": 377.73, "mediana": 370.22, "p25": 295.48,
+                "p75": 472.38, "min": 199.99, "max": 549.0,
+                "ej": [{"t": "a", "p": 72.74, "id": "B08XK6PQ6Z", "u": 2}, {"t": "b", "p": 99.5, "id": "B0F8VBZ1KW", "u": 2},
+                       {"t": "c", "p": 109.5, "id": "B0D8Q1B6JV", "u": 2}, {"t": "d", "p": 199.99, "id": "B0GVJQ7YQ4"}]}
+    RES_0686 = [{"id": "B0HHRK2M4S", "p": 498.0}, {"id": "B0D3BNJWGR", "p": 395.5}, {"id": "B0DYDRZK8Y", "p": 344.93},
+                {"id": "B0F8VBZ1KW", "p": 199.0}, {"id": "B0D29P28G6", "p": 278.99}, {"id": "B0GVJQ7YQ4", "p": 199.99},
+                {"id": "B08XK6PQ6Z", "p": 145.48}, {"id": "B0D8Q1B6JV", "p": 219.0}, {"id": "B0H8RZN1VY", "p": 149.98},
+                {"id": "B0DL8WD46K", "p": 549.0}]
+
+    def _prep(self):
+        from scripts import catalogo_precios_preparar as prep
+        return prep
+
+    def test_estadistica_igual_a_la_del_catalogo(self):
+        e = self._prep().estadistica([498.0, 395.5, 344.93, 278.99, 199.99, 549.0])
+        llaves = ("n", "media", "mediana", "p25", "p75", "min", "max")
+        self.assertEqual({k: e[k] for k in llaves}, {k: self.TEC_0686[k] for k in llaves})
+
+    def test_tec_0686_queda_todo_decidido(self):
+        ver, unidades = self._prep().veredictos(self.TEC_0686, self.RES_0686)
+        self.assertEqual(ver, "mmmmmmmmxm")              # solo el de $149.98 no hizo match
+        self.assertEqual(unidades, {3: 2, 6: 2, 7: 2})
+
+    def test_sin_match_y_combinaciones_que_no_deciden(self):
+        prep = self._prep()
+        self.assertEqual(prep.veredictos({"clases": {"g": 3}}, [{"id": "A", "p": 1}] * 3)[0], "xxx")
+        # 2 «mismo» del mismo paquete entre 3 con el mismo precio: no se sabe cuáles son.
+        g = {"clases": {"m": 2, "o": 1}, "n": 2, "media": 100.0, "mediana": 100.0, "p25": 100.0, "p75": 100.0,
+             "min": 100.0, "max": 100.0, "ej": []}
+        res = [{"id": "A", "p": 100.0}, {"id": "B", "p": 100.0}, {"id": "C", "p": 100.0}]
+        self.assertEqual(prep.veredictos(g, res)[0], "???")
+        res[2]["p"] = 300.0
+        self.assertEqual(prep.veredictos(g, res)[0], "mmx")
+
+    def test_el_extracto_no_lleva_costos(self):
+        prep = self._prep()
+        fila = {"precio_ml_final": 162.0, "min": 162.0, "max": 256.56, "estimado_costo": 68.21,
+                "topado_10x_costo": True, "notas": ["sin fuentes: estimado 3.59× costo"],
+                "fuentes": {"keyword_amazon": 256.56, "banda_v3": 162.0}, "fuente": "banda_v3",
+                "categoria_banda_v3": "Linternas"}
+        self.assertEqual(set(prep._ml(fila)), {"media", "min", "max", "fuentes", "fuente", "categoria"})
+        self.assertIsNone(prep._ml({"precio_ml_final": None, "estimado_costo": 68.21}))
+
+    def test_amazon_de_ordena_y_enlaza(self):
+        from services import catalogo_precios as cp
+        az = {"q": "linterna uv", "vistos": 3, "clases": {"m": 2, "g": 1}, "v": "xm?", "u": {"1": 2}, "n": 1,
+              "media": 200.0, "min": 200.0, "max": 200.0}
+        a = cp.amazon_de(az, [["B1", "uno", 300.0], ["B2", "dos", 200.0], ["B3", "tres", 100.0]])
+        self.assertEqual([(p["id"], p["match"]) for p in a["publicaciones"]],
+                         [("B2", "match"), ("B3", "sin_dato"), ("B1", "no_match")])
+        self.assertEqual(a["publicaciones"][0]["unidades"], 2)
+        self.assertEqual(a["publicaciones"][0]["url"], "https://www.amazon.com.mx/dp/B2")
+        self.assertEqual((a["media"], a["n"]), (200.0, 1))
+
+    def test_por_sku_sin_sku(self):
+        from services import catalogo_precios as cp
+        with mock.patch.object(cp, "_datos", {"meta": {"ml_fecha": "2026-10-12"}, "skus": {}, "busquedas": {}}):
+            r = cp.por_sku("NO-EXISTE")
+        self.assertEqual((r["ml"], r["amazon"], r["fecha_ml"]), (None, None, "2026-10-12"))
+
+
+class AmazonEnVivo(unittest.TestCase):
+    """v0.696.0: el método del estudio de sábanas (memoria «amazon-estudio-de-mercado-sp-api») en un botón."""
+
+    def test_una_cifra_por_familia_con_caja_de_compra(self):
+        from services import amazon_mercado as am
+        base = {"marca": "", "nodo": "N", "nodo_nombre": "x"}
+        items = [{"asin": "H1", "padre": "P1", "titulo": "Linterna rojo", **base},
+                 {"asin": "H2", "padre": "P1", "titulo": "Linterna azul", **base},
+                 {"asin": "H3", "padre": "P1", "titulo": "Linterna verde", **base},
+                 {"asin": "S1", "padre": "S1", "titulo": "Linterna sola", **base},
+                 {"asin": "S2", "padre": "S2", "titulo": "Sin caja", **base}]
+        f = am.familias(items, {"H1": 100.0, "H2": 120.0, "H3": 300.0, "S1": 90.0})
+        self.assertEqual([(x["id"], x["padre"], x["precio"]) for x in f], [("H1", "P1", 120.0), ("S1", "S1", 90.0)])
+        self.assertEqual(f[0]["url"], "https://www.amazon.com.mx/dp/H1")   # la variante: el padre no se compra
+
+    def test_juez_y_nodo_de_la_mayoria(self):
+        from services import amazon_mercado as am
+        pubs = [{"precio": 100.0, "nodo": "A", "nodo_nombre": "Linternas"},
+                {"precio": 110.0, "nodo": "A", "nodo_nombre": "Linternas"},
+                {"precio": 120.0, "nodo": "B", "nodo_nombre": "Lámparas"},
+                {"precio": 130.0, "nodo": "A", "nodo_nombre": "Linternas"},
+                {"precio": 140.0, "nodo": "A", "nodo_nombre": "Linternas"}]
+        nodo = am.marcar(pubs, {1: {"clase": "mismo"}, 2: {"clase": "mismo"}, 3: {"clase": "mismo"},
+                                4: {"clase": "otro_paquete", "unidades_rival": 2}})
+        self.assertEqual(nodo, {"id": "A", "nombre": "Linternas"})
+        self.assertEqual([p["match"] for p in pubs], ["match", "match", "no_match", "no_match", "sin_dato"])
+        self.assertIn("otra categoría", pubs[2]["motivo"])
+        self.assertEqual(pubs[3]["unidades"], 2)
+
+    def test_medidas_del_paquete(self):
+        from services import amazon_mercado as am
+        it = {"dimensions": [{"marketplaceId": "MX", "package": {
+            "length": {"value": 6.7322834577, "unit": "inches"}, "width": {"value": 2.7165354303, "unit": "inches"},
+            "height": {"value": 1.9291338563, "unit": "inches"}, "weight": {"value": 0.6393405598, "unit": "pounds"}}}]}
+        self.assertEqual(am._paquete(it, "MX"), {"largo_cm": 17.1, "ancho_cm": 6.9, "alto_cm": 4.9, "peso_kg": 0.29})
+        self.assertIsNone(am._paquete({"dimensions": [{"marketplaceId": "MX", "item": {}}]}, "MX"))   # un padre
+        m = am.mediana_paquete([{"largo_cm": 40.3, "ancho_cm": 29.5, "alto_cm": 4.8, "peso_kg": 0.181},
+                                {"largo_cm": 43.2, "ancho_cm": 22.4, "alto_cm": 7.5, "peso_kg": 0.259},
+                                {"largo_cm": 39.8, "ancho_cm": 11.4, "alto_cm": 8.4, "peso_kg": 1.08}])
+        self.assertEqual(m, {"largo_cm": 41.0, "ancho_cm": 23.0, "alto_cm": 8.0, "peso_kg": 0.26})
+        self.assertIsNone(am.mediana_paquete([]))
 
 
 class Raspador(unittest.TestCase):
@@ -447,37 +549,13 @@ class AvisosDeDatos(unittest.TestCase):
         self.assertEqual(self._avisos(1139, 0.3, 1138.0, 456.45, 159.0, "compite"), [])
         self.assertEqual(len(self._avisos(1139, 0.3, 1138.0, 456.45, 159.0, "no_compite")), 1)
 
-    def test_rapido_de_var_0549(self):
-        top = [{"id": f"MLM{i}", "titulo": t, "precio": p} for i, (t, p) in enumerate([
-            ("Pack 30 Bolsas De Regalo Transparentes De PVC Con Asa Para Eventos,bolsas de plastico transparentes",
-             159.0),                                                    # el de la captura: parecido 0.17 < 0.2
-            ("Bolsa De Papel Kraft Con Asa 25 Piezas", 189.0),
-            ("Papel China Colores Surtidos 100 Hojas", 99.0),
-            ("Moño Para Regalo Satinado 50 Piezas", 120.0)])]
-        datos = {"sku": "VAR-0549-NEG", "titulo": TerminosDeBusqueda.BOLSAS, "costo": 456.45, "ml_cat_id": "MLM1",
-                 "imagen": None, "peso_kg": 20.0, "envio_panel": None, "margen": 0.30}
-
-        async def bandas(cli, cat):
-            return [{"hasta": None, "pct": 0.145, "fijo": 0}]
-
-        with mock.patch.object(ps, "datos_sku", mock.AsyncMock(return_value=datos)), \
-                mock.patch.object(ps, "_cliente_ml", mock.AsyncMock(return_value=Cliente())), \
-                mock.patch.object(ps, "mas_vendidos", mock.AsyncMock(return_value=top)), \
-                mock.patch.object(ps, "comisiones", bandas), \
-                mock.patch.object(ps, "_anotar", lambda res, dur: None):
-            r = asyncio.run(ps.rapido({"sku": "VAR-0549-NEG"}))
-        self.assertIsNone(r["referencia"])
-        self.assertEqual(r["sugerido"]["estado"], "sin_mercado")
-        self.assertEqual(r["piso"], 1138.0)                               # lo que dio producción el 23-oct
-        self.assertEqual(r["categoria"]["mediana"], 139.5)
-        self.assertTrue(any("20 kg" in a for a in r["avisos"]))
-        self.assertTrue(any(a.startswith("El piso ($1,138)") for a in r["avisos"]))
-
 
 class Permisos(unittest.TestCase):
     def test_rutas_piden_operador(self):
-        for metodo, ruta in (("POST", "/api/precio-sugerido/rapido"), ("POST", "/api/precio-sugerido/completo"),
-                             ("GET", "/api/precio-sugerido/ultimo/TEC-0605")):
+        for metodo, ruta in (("GET", "/api/precio-sugerido/catalogo/TEC-0605"),
+                             ("POST", "/api/precio-sugerido/completo"),
+                             ("GET", "/api/precio-sugerido/ultimo/TEC-0605"),
+                             ("POST", "/api/precio-sugerido/medidas-amazon")):
             self.assertEqual(rbac.rol_requerido(metodo, ruta), "operador")
             self.assertFalse(rbac.permite("lectura", metodo, ruta))
             self.assertTrue(rbac.permite("operador", metodo, ruta))

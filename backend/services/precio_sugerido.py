@@ -13,12 +13,15 @@ Prueba del 22-oct-2026 con TEC-0605 (2 pack de micrófonos lavalier, costo $82.0
   · por TÍTULO el juez dejó 47 «iguales» con media $288 (Hollyland, Boya…); por FOTO quedaron 12 del mismo
     modelo, mediana $159. Lo que decide es la foto: calibrado contra una revisión a ojo, 11 de 13 coinciden.
 
-── DOS MODOS ───────────────────────────────────────────────────────────────────
-  rápido   (gratis, segundos): los más vendidos de la categoría en ML (API con nuestro token) filtrados por
-           parecido de título + comisión real + piso. Es una primera referencia, no el precio final.
-  completo ($0.01–0.10, ~30 s–2 min): búsqueda de ML con UN término corto → juez por título
-           (`competencia_juez.juzgar_lote`) → juez por FOTO, pareja por pareja (visión por OpenRouter) → mediana de
-           los del mismo modelo → piso → sugerencia. Corre en segundo plano (POST da un `jid`).
+── DE DÓNDE SALE EL PRECIO (v0.696.0) ──────────────────────────────────────────
+  1. El CATÁLOGO MAESTRO (`catalogo_precios`, gratis, al abrir el SKU): la media de ML del v3 y lo de Amazon.
+  2. Si el SKU no está ahí, el modo COMPLETO ($0.01–0.10, ~30 s–2 min): búsqueda de ML con UN término corto → juez
+     por título (`competencia_juez.juzgar_lote`) → juez por FOTO, pareja por pareja (visión por OpenRouter) →
+     referencia de los del mismo modelo; y Amazon por SP-API (`amazon_mercado.estudio`, gratis). Corre en segundo
+     plano (POST da un `jid`) y queda guardado.
+  La regla del precio (Brandon, 28-oct) la aplica el Estudio: un poco abajo de la MEDIA de ML (media × 0.97, hacia
+  abajo al peso). El modo rápido (los más vendidos de la categoría filtrados por título) se quitó en v0.696.0: no
+  servía. El piso y la utilidad se siguen calculando aquí, pero el Estudio ya no los enseña.
 
 ── LA BÚSQUEDA SE PAGA UNA VEZ (v0.688.0) ──────────────────────────────────────
   Usa el caché de términos de Competencia (`enrich.market_search_term` / `market_search_results`): si el término
@@ -84,7 +87,7 @@ IVA = costos.IVA_RATE
 MARGEN_DEFAULT = 0.30         # margen mínimo sobre el COSTO (Brandon, 23-oct)
 MAX_FOTOS = 30                # rivales que pasan al juez de fotos (~$0.0003 cada pareja)
 MIN_GRUPO = 3                 # con menos, la mediana no es referencia
-UMBRAL_PARECIDO = 0.2         # modo rápido: parecido de título mínimo (Jaccard de palabras)
+UMBRAL_PARECIDO = 0.2         # más vendidos que cuentan como grupo: parecido de título mínimo (Jaccard)
 _BANDAS = ((499.99, 300.0), (1000.0, 750.0), (math.inf, 1500.0))   # (hasta, precio con el que se pregunta)
 # Búsqueda del modo completo. ML bloqueó el término LARGO (el título casi entero) en las dos primeras consultas
 # reales —TEC-0605 y VAR-0549-NEG, 23-oct— y cada bloqueo se reintentaba 8 veces: 3 min 43 s y $0.07 de Apify.
@@ -326,6 +329,7 @@ PASOS = {
     "buscando": "Buscando en Mercado Libre (alrededor de 1 min)…",
     "juez_titulo": "Separando los que son el mismo producto…",
     "juez_fotos": "Comparando fotos…",
+    "amazon": "Buscando en Amazon…",
     "calculando": "Calculando comisión, piso y sugerencia…",
     "listo": "Listo",
     "error": "Error",
@@ -700,12 +704,12 @@ def total_consulta(cc: dict[str, Any]) -> float:
     return round(sum(float(cc.get(k) or 0) for k in ("apify", "juez", "fotos")), 6)
 
 
-# ── Los dos modos ────────────────────────────────────────────────────────────
+# ── El modo completo ─────────────────────────────────────────────────────────
 
 async def _cerrar(d: dict[str, Any], modo: str, rivales: list[dict[str, Any]], grupos: dict[str, list[float]],
                   cli: httpx.AsyncClient | None, avisos: list[str], costo_consulta: dict[str, float],
                   extra: dict[str, Any], top: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    """Comisión real, piso, referencia y sugerencia: lo que comparten los dos modos. `top` son los más vendidos de
+    """Comisión real, piso, referencia y sugerencia: el cierre del modo completo. `top` son los más vendidos de
     la categoría SIN filtrar: su resumen viaja como `categoria`, solo de contexto (no entra a la sugerencia)."""
     bandas = await comisiones(cli, d["ml_cat_id"]) if cli and d["ml_cat_id"] else []
     if not bandas:
@@ -764,38 +768,10 @@ async def _cerrar(d: dict[str, Any], modo: str, rivales: list[dict[str, Any]], g
     }
 
 
-async def rapido(entrada: dict[str, Any]) -> dict[str, Any]:
-    """GRATIS: más vendidos de la categoría filtrados por parecido de título + comisión real + piso."""
-    t0 = time.monotonic()
-    d = await datos_sku(entrada)
-    avisos: list[str] = []
-    cli = await _cliente_ml()
-    if not cli:
-        avisos.append("Sin token de Mercado Libre: no se leyeron los más vendidos ni la comisión.")
-    try:
-        top = await mas_vendidos(cli, d["ml_cat_id"]) if (cli and d["ml_cat_id"]) else []
-        if not d["ml_cat_id"]:
-            avisos.append("El SKU no tiene categoría de ML: elige una en el Estudio para leer sus más vendidos.")
-        for r in top:
-            r["parecido"] = round(parecido(d["titulo"], r["titulo"]), 2)
-            r["_grupos"] = ["mas_vendidos"] if r["parecido"] >= UMBRAL_PARECIDO else []
-        grupos = {"mas_vendidos": [r["precio"] for r in top if r["_grupos"]]}
-        if top and len(grupos["mas_vendidos"]) < MIN_GRUPO:
-            avisos.append(f"Solo {len(grupos['mas_vendidos'])} de los {len(top)} más vendidos se parecen por título: "
-                          "usa el modo completo para buscar el producto exacto.")
-        res = await _cerrar(d, "rapido", top, grupos, cli, avisos, {"apify": 0.0, "juez": 0.0, "fotos": 0.0}, {},
-                            top=top)
-    finally:
-        if cli:
-            await cli.aclose()
-    await asyncio.to_thread(_anotar, res, time.monotonic() - t0)
-    return res
-
-
 async def completo(entrada: dict[str, Any], avisar: Callable[[str], None] = lambda _p: None) -> dict[str, Any]:
     """$0.01–0.10: búsqueda (del caché de Competencia o raspada) + juez por título + juez por foto + comisión real +
     piso. Lo caro es Apify, y solo cuando hay que raspar (ver «LO QUE COBRA APIFY» arriba)."""
-    from services import competencia_juez, competencia_terminos
+    from services import amazon_mercado, catalogo_precios, competencia_juez, competencia_terminos
 
     t0, desde = time.monotonic(), datetime.now(timezone.utc)
     avisar("datos")
@@ -803,9 +779,15 @@ async def completo(entrada: dict[str, Any], avisar: Callable[[str], None] = lamb
     avisos: list[str] = []
     gasto = {"apify": 0.0, "juez": 0.0, "fotos": 0.0}
 
+    # La palabra clave del catálogo maestro ya es corta y en español: va TAL CUAL (recortarla le quitaría «uv» a
+    # «linterna uv recargable») y con ella no se le pregunta a la IA. El título recortado queda de 2.º término.
+    q_catalogo = ((await asyncio.to_thread(catalogo_precios.por_sku, d["sku"])).get("amazon") or {}).get("q")
     propios = any(t and t.strip() for t in entrada.get("terminos") or [])
     terminos = terminos_busqueda(entrada.get("terminos"), None, d["titulo"])
-    if not propios:
+    if not propios and q_catalogo:
+        terminos = list(dict.fromkeys([" ".join(q_catalogo.split()).lower(),
+                                       *terminos_busqueda(None, None, d["titulo"])]))[:2]
+    elif not propios:
         prop = await asyncio.to_thread(competencia_terminos.proponer, [{"sku": d["sku"], "nombre": d["titulo"]}])
         terminos = terminos_busqueda(None, prop.get(d["sku"]), d["titulo"])
 
@@ -873,6 +855,17 @@ async def completo(entrada: dict[str, Any], avisar: Callable[[str], None] = lamb
                   "titulo": [r["precio"] for r in rivales if "titulo" in r["_grupos"]],
                   "mas_vendidos": [t["precio"] for t in top if parecido(d["titulo"], t["titulo"]) >= UMBRAL_PARECIDO]}
 
+        # Amazon no cobra (SP-API) y no debe tumbar lo de ML: si falla, se avisa.
+        avisar("amazon")
+        az = None
+        try:
+            az = await amazon_mercado.estudio(q_catalogo or (buscados[0] if buscados else termino_corto(d["titulo"])),
+                                              d["titulo"], unidades)
+            gasto["juez"] += az.pop("usd", 0.0)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("precio sugerido: Amazon de %s falló: %s", d["sku"], exc)
+            avisos.append(f"No se pudo leer Amazon: {exc}")
+
         avisar("calculando")
         raspados = [t for t in buscados if t not in reusados]
         g = (await asyncio.to_thread(_gasto_apify_desde, desde) if raspados
@@ -880,7 +873,7 @@ async def completo(entrada: dict[str, Any], avisar: Callable[[str], None] = lamb
         gasto.update(apify=g["usd"], apify_runs=g["runs"], apify_final=g["final"])
         res = await _cerrar(d, "completo", rivales, grupos, cli, avisos, gasto,
                             {"terminos": buscados, "cache": reusados, "propias_fuera": propias,
-                             "unidades_nuestras": unidades, "mas_vendidos": top}, top=top)
+                             "unidades_nuestras": unidades, "mas_vendidos": top, "amazon": az}, top=top)
     finally:
         if cli:
             await cli.aclose()
