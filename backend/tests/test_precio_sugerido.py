@@ -330,6 +330,13 @@ class BusquedaSePagaUnaVez(unittest.TestCase):
         self.assertTrue(r["costo_consulta"]["apify_final"])
         self.assertAlmostEqual(r["costo_consulta"]["total"], 0.0505)
 
+    def test_ultimo_ignora_el_modo_rapido(self):
+        # v0.697.0: una consulta rápida vieja (TEC-0605-NEG-2PZ) le ganaba al catálogo maestro por ser la más nueva.
+        from services import supabase_db
+        with mock.patch.object(supabase_db, "fetch_one", return_value=None) as leer:
+            self.assertIsNone(ps.ultimo("TEC-0605-NEG-2PZ"))
+        self.assertIn("accion = 'completo'", leer.call_args.args[0])
+
     def test_suma_de_corridas(self):
         g = ps._sumar_apify([{"detalle": {"usd": 0.03, "run_id": "A", "usd_final": True}},
                              {"detalle": '{"usd": 0.008, "run_id": "B"}'}])

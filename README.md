@@ -1001,6 +1001,24 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.697.0 — «Sugerir precio»: una consulta del modo rápido ya no le gana al catálogo maestro
+
+**Qué pasó.** Al revisar la v0.696.0 en producción, TEC-0605-NEG-2PZ mostraba ML con media de **$156.37**
+(sugerido $151). Ese número venía de una consulta del **modo rápido** de hace 5 días: los más vendidos de la
+categoría filtrados por título, lo que Brandon dijo que no sirve. Por ser la consulta más reciente le ganaba al
+catálogo maestro, que dice **$372**.
+
+**Arreglo:**
+- `precio_sugerido.ultimo` solo devuelve consultas COMPLETAS (`accion = 'completo'`). Las rápidas viejas se
+  quedan en la bitácora, pero el Estudio ya no las lee.
+- En el Estudio, una consulta completa solo manda en Mercado Libre si encontró EL MISMO producto, por foto o por
+  título. Si su referencia es la de los más vendidos de la categoría, manda el catálogo maestro y el texto lo
+  dice.
+- La tarjeta de Amazon ahora dice «9 con match de 10 leídas · la media usa 6». Los que hacen match en otro
+  tamaño de paquete se enseñan, pero no promedian; antes decía «6 comparables» y la ventana «9 hicieron match».
+
+**Pruebas:** `test_precio_sugerido`, 49 en verde (nueva: `test_ultimo_ignora_el_modo_rapido`).
+
 ### v0.696.0 — «Sugerir precio» se simplifica: el precio sale del CATÁLOGO MAESTRO (ML y Amazon), el completo suma Amazon y hay botón de medidas de Amazon
 
 **Qué pidió Brandon (28-oct-2026).** Simple pero esencial:

@@ -647,12 +647,14 @@ def _anotar(res: dict[str, Any], duracion: float) -> None:
 
 
 def ultimo(sku: str) -> dict[str, Any] | None:
-    """BLOQUEANTE (kubera, SELECT). La última consulta del SKU, para no volver a pagar al abrir el Estudio."""
+    """BLOQUEANTE (kubera, SELECT). La última consulta COMPLETA del SKU, para no volver a pagar al abrir el Estudio.
+    Las del modo rápido (quitado en v0.696.0) no cuentan: TEC-0605-NEG-2PZ tenía una de hace 5 días que, por ser la
+    más reciente, le ganaba al catálogo maestro ($156 contra $372)."""
     from services import supabase_db as sdb
 
     fila = sdb.fetch_one(
         "select detalle, created_at from ops.process_log where proceso = %s and sku = %s and estado = 'ok' "
-        "order by id desc limit 1", (PROCESO, sku))
+        "and accion = 'completo' order by id desc limit 1", (PROCESO, sku))
     if not fila:
         return None
     d = fila["detalle"] if isinstance(fila["detalle"], dict) else json.loads(fila["detalle"])

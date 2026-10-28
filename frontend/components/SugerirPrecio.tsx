@@ -138,6 +138,7 @@ function ventanaAmazon(a: PrecioAmazon): Ventana {
   const cuenta = (m: string) => a.publicaciones.filter((p) => p.match === m).length;
   const partes = [`${cuenta("match")} hicieron match`, `${cuenta("no_match")} no`];
   if (cuenta("sin_dato")) partes.push(`${cuenta("sin_dato")} sin veredicto guardado`);
+  if (a.publicaciones.some((p) => p.match === "match" && p.unidades)) partes.push("los de otro paquete no entran a la media");
   return {
     titulo: `Amazon · «${a.q}»`,
     resumen: partes.join(" · "),
@@ -150,6 +151,13 @@ function ventanaAmazon(a: PrecioAmazon): Ventana {
       nota: [p.unidades ? `paquete de ${p.unidades}` : "", p.motivo ?? ""].filter(Boolean).join(" · "),
     })),
   };
+}
+
+/** «9 con match de 10 leídas · la media usa 6»: los de otro tamaño de paquete hacen match pero no promedian. */
+function detalleAmazon(a: PrecioAmazon): string {
+  const match = a.publicaciones.filter((p) => p.match === "match").length;
+  const enMedia = a.n ?? 0;
+  return `${match} con match de ${a.vistos} leídas` + (enMedia !== match ? ` · la media usa ${enMedia}` : "") + ` · «${a.q}»`;
 }
 
 function ventanaML(r: PrecioSugeridoResp): Ventana {
@@ -297,8 +305,9 @@ export default function SugerirPrecio({
     }
   }
 
-  // Mercado Libre: la búsqueda completa manda si encontró comparables; si no, el catálogo maestro.
-  const ref = res?.referencia ?? null;
+  // Mercado Libre: la búsqueda completa manda si encontró EL MISMO producto (por foto o por título); si solo
+  // trajo los más vendidos de la categoría —lo que hacía el modo rápido, que no servía—, manda el catálogo.
+  const ref = res?.referencia && res.referencia.grupo !== "mas_vendidos" ? res.referencia : null;
   const ml: (Stats & { origen: "completo" | "catalogo" }) | null = ref
     ? { min: ref.min, media: ref.media, max: ref.max, origen: "completo" }
     : cat?.ml
@@ -400,7 +409,7 @@ export default function SugerirPrecio({
         ) : (
           <p className="text-sm text-slate-600">
             {cat?.ml ? "" : "Sin precio de Mercado Libre en el catálogo maestro. "}
-            {res && !ref ? "La búsqueda completa no encontró comparables en Mercado Libre." : "Presiona Completo para buscarlo."}
+            {res && !ref ? "La búsqueda completa no encontró el mismo producto en Mercado Libre." : "Presiona Completo para buscarlo."}
           </p>
         )}
 
@@ -476,7 +485,7 @@ export default function SugerirPrecio({
           <Tarjeta
             nombre="Amazon"
             stats={azStats}
-            detalle={az ? `${az.n ?? 0} comparables de ${az.vistos} leídas · «${az.q}»` : ""}
+            detalle={az ? detalleAmazon(az) : ""}
             pie={
               az ? (azDeCompleto && res ? `Completo · ${haceCuanto(res.consultado)}` : `Catálogo maestro · ${dia(cat?.fecha_amazon)}`) : ""
             }
