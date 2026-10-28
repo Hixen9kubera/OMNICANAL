@@ -14,7 +14,11 @@ Lo que las pruebas unitarias no pueden ver —el SQL de verdad contra un Postgre
   K7. Un esqueleto de hace 40 días que se completa NO es nueva (el planeador no crea OV vieja), pero sí cambia
       el vendible (el fan-out se entera). Revisión de MAESTRO, #2.
   K8. `estados_wc` y la marca de agua (`ultimo_actualizado`) no cuentan las filas sin pedido. Revisión, #1.
-  La foto con `for no key update` corre en cada registro (K1–K7).
+  K9. El reintento de una venta «Woo pendiente» (acta 2.11, B0.6), por `pedidos_ml.sincronizar` real con un Woo
+      falso: el aviso con Woo caído la deja completa sin pedido y no la suelta; el reintento con Woo caído tampoco;
+      con kubera primero apagado (reversa) ni el reintento ni un aviso nuevo la liberan; con Woo de vuelta el
+      reintento crea el pedido por la rama huérfana. La señal de venta nueva sale una sola vez.
+  La foto con `for no key update` corre en cada registro (K1–K7, K9).
 
 Uso: backend/.venv/Scripts/python.exe backend/scripts/probar_kubera_primero_sandbox.py
 """
@@ -147,6 +151,91 @@ try:
     futura = ex("select actualizado_at from channel.orders where external_order_id = 'ZZZ-KPRIMERO-4'")[0][0]
     check("K8 la marca de agua no cuenta la fila sin pedido (aunque sea la más nueva)",
           marca is not None and marca < futura.astimezone(timezone.utc).replace(tzinfo=None), f"{marca} < {futura}")
+
+    # K9 · El reintento de una venta «Woo pendiente» (acta 2.11, B0.6), por `pedidos_ml.sincronizar` REAL: el
+    # reclamo, el registro y la señal van contra este Postgres; Woo es un falso que primero no contesta.
+    import asyncio
+
+    from services import alertas, fanout_stock
+
+    class _Resp:
+        def __init__(self, cuerpo):
+            self.status_code, self._c, self.text = 201, cuerpo, ""
+
+        def json(self):
+            return self._c
+
+    class _Woo:
+        caido = True
+
+        def __call__(self, *a, **k):
+            return self
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, ruta, json=None):
+            if self.caido:
+                raise pedidos_ml.httpx.ConnectError("Woo no contesta (simulado)")
+            return _Resp({"id": 888})
+
+    woo, encolados = _Woo(), []
+    liberar_real = orders_write.liberar
+    liberados: list = []
+    payload = {"status": "processing", "_skus": ["ACC-0001-AZL", "ACC-0002-DOR"], "_sin_mapear": [],
+               "_comision": 80.0}
+    k9 = "ZZZ-KPRIMERO-9"
+    parches_k9 = [
+        mock.patch.object(pedidos_ml, "_schema_ok", True),
+        mock.patch.object(pedidos_ml, "construir_payload", mock.AsyncMock(side_effect=lambda *a, **k: dict(payload))),
+        mock.patch.object(pedidos_ml, "_pedido_en_woo", mock.AsyncMock(return_value=None)),
+        mock.patch.object(pedidos_ml, "_ya_compensado", return_value=False),
+        mock.patch.object(pedidos_ml.httpx, "AsyncClient", woo),
+        mock.patch.object(pedidos_ml.asyncio, "sleep", mock.AsyncMock()),
+        mock.patch.object(orders_write, "liberar",
+                          side_effect=lambda *a: (liberados.append(a), liberar_real(*a))[1]),
+        mock.patch.object(fanout_stock, "encolar_varios", side_effect=lambda skus, **k: encolados.append(skus)),
+        mock.patch.object(fanout_stock, "seguro_encendido", return_value=False),
+        mock.patch("services.odoo_ventas.canales_posibles", return_value=()),
+        mock.patch.object(alertas, "avisar", return_value=True),
+        mock.patch.object(settings, "fanout_fuente", "kubera"),
+    ]
+    for p in parches_k9:
+        p.start()
+    try:
+        def sinc(kubera_primero=True, reintentable=True):
+            with mock.patch.object(settings, "pedidos_kubera_primero", kubera_primero):
+                return asyncio.run(pedidos_ml.sincronizar(k9, orden=dict(ORDEN, id=k9), reintentable=reintentable))
+
+        def fila9():
+            f = ex("select skus is null, wc_order_id, estado_wc from channel.orders where external_order_id = %s",
+                   (k9,))
+            return f[0] if f else None
+
+        r = sinc(reintentable=False)                                   # el aviso: Woo no contesta
+        check("K9 aviso con Woo caído: la venta queda completa en kubera, sin pedido ni estado; no se suelta",
+              not r["ok"] and fila9() == (False, None, None) and not liberados, str(fila9()))
+        check("K9 aviso: la señal de venta nueva sale UNA vez, con los SKUs de la orden (no es FULL)",
+              encolados == [["ACC-0001-AZL", "ACC-0002-DOR"]], str(encolados))
+        r = sinc()                                                     # el reintento, Woo sigue caído
+        check("K9 reintento con Woo caído: la venta sigue, sin `liberar` y sin repetir la señal",
+              not r["ok"] and fila9() == (False, None, None) and not liberados and len(encolados) == 1)
+        sinc(kubera_primero=False)                                     # reversa: el reintento sin la bandera
+        sinc(kubera_primero=False, reintentable=False)                 # reversa: un aviso nuevo sin la bandera
+        check("K9 reversa (kubera primero apagado): ni el reintento ni un aviso nuevo la liberan",
+              fila9() == (False, None, None) and not liberados, str(liberados))
+        woo.caido = False
+        r = sinc()                                                     # el reintento, Woo ya contesta
+        check("K9 reintento con Woo de vuelta: pedido 888 por la rama huérfana, una sola fila, señal sin repetir",
+              r["ok"] and fila9() == (False, 888, "processing") and len(encolados) == 1
+              and ex("select count(*) from channel.orders where external_order_id = %s", (k9,))[0][0] == 1,
+              str((r.get("ok"), fila9(), encolados)))
+    finally:
+        for p in parches_k9:
+            p.stop()
 finally:
     for p in parches:
         p.stop()

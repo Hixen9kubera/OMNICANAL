@@ -10,6 +10,9 @@
 #2 · Un esqueleto VIEJO que se completa no es `nueva_en_kubera` (el planeador no crea OV de agosto), pero
      `vendible_cambia` sí avisa al fan-out si tiene líneas no FULL y no está cancelado.
 #3 · Con FANOUT_FUENTE=kubera, una venta sin señal de kubera (cayó a MySQL o sin registro) se avisa.
+B0.6 del acta (28-oct) · El reintento de una venta «Woo pendiente» (`sincronizar(reintentable=True)`, el job de
+     avisos de ML que ya corre en producción) adopta o crea por la rama del reclamo huérfano, no repite la señal
+     y nunca llama a `liberar`; tampoco con kubera primero apagado (la reversa de B).
 
 Sin red ni base:
     cd backend && python -m unittest tests.test_kubera_primero_etapa_b -v
@@ -182,6 +185,101 @@ class Flujo(unittest.TestCase):                     # #1 y #3
         with mock.patch.object(stock_libro, "lee_libro", return_value=False):
             self.correr()
         self.assertNotIn("fanout_sin_senal", [c.args[0] for c in self.aviso.call_args_list])
+
+
+class ReintentoDeUnaPendiente(unittest.TestCase):    # acta 2.11, B0.6
+    """El aviso falló en Woo con kubera primero: la venta quedó «Woo pendiente» (registrada, `wc_order_id` NULL,
+    el reclamo puesto). La retoma el reintento de los avisos de ML, que YA corre en producción desde sep
+    (`ml_webhook_reintentos.reprocesar` → `sincronizar(reintentable=True)`). Como la fila ya existe, el reintento
+    PIERDE el reclamo y entra por la rama del reclamo huérfano: adopta lo que Woo tenga o lo crea, no repite la
+    señal y nunca llama a `liberar`, que solo llama quien GANÓ el reclamo. Tampoco con kubera primero apagado,
+    que es la reversa de B.
+
+    La caída de Woo se simula con una EXCEPCIÓN (timeout, conexión): un 5xx que contesta no suelta el reclamo en
+    ningún caso (`ok: False` sin pasar por el `except`), así que con él `liberar` nunca estaría en juego."""
+
+    setUp = Flujo.setUp
+
+    class WooReal(Woo):
+        """Como el Woo de verdad: el PUT a /orders/<id> contesta con ESE id. `caido` = el POST no llega."""
+
+        def __init__(self, codigo=201, llamadas=None, caido=False):
+            super().__init__(codigo, llamadas)
+            self.caido = caido
+
+        async def post(self, ruta, json=None):
+            if self.caido:
+                self.llamadas.append("woo POST (caído)")
+                raise pedidos_ml.httpx.ConnectError("Woo no contesta")
+            return await super().post(ruta, json)
+
+        async def put(self, ruta, json=None):
+            await super().put(ruta, json)
+            return Resp(200 if self.codigo < 300 else self.codigo, {"id": int(ruta.rsplit("/", 1)[1])})
+
+    def sincronizar(self, caido=False, kubera_primero=True, reintentable=True):
+        """`reintentable=True` = el job de reintentos; False = un aviso del webhook de la misma orden."""
+        with mock.patch.object(settings, "pedidos_kubera_primero", kubera_primero),              mock.patch.object(settings, "fanout_fuente", "kubera"),              mock.patch.object(pedidos_ml.asyncio, "sleep", mock.AsyncMock()),              mock.patch.object(pedidos_ml.httpx, "AsyncClient", self.WooReal(201, self.llamadas, caido)):
+            return asyncio.run(pedidos_ml.sincronizar("2000000001", proteger_stock=False, orden=dict(ORDEN),
+                                                      reintentable=reintentable))
+
+    def aviso_que_falla(self):
+        """El aviso original con kubera primero: gana el reclamo, pre-registra, Woo no contesta. NO se suelta."""
+        r = self.sincronizar(caido=True, reintentable=False)
+        self.assertFalse(r["ok"])
+        self.assertEqual(self.registros, [(None, None)])
+        self.assertEqual(self.encolar.call_count, 1)              # la señal de la venta nueva, una vez
+        self.liberar.assert_not_called()
+        orders_write.reclamar.return_value = False                # la fila ya existe: nadie más gana
+        self.llamadas.clear()
+
+    def test_crea_el_pedido_por_la_rama_huerfana_sin_repetir_la_senal(self):
+        self.aviso_que_falla()
+        r = self.sincronizar()
+        self.assertTrue(r["ok"])
+        self.assertEqual(orders_write.reclamar.call_args.args[-1], True)   # estricto: es un reintento
+        self.assertEqual(self.llamadas, ["kubera(estado=None, wc=None)", "woo POST",
+                                         "kubera(estado=processing, wc=777)"])
+        self.assertEqual(self.encolar.call_count, 1)
+        self.liberar.assert_not_called()
+
+    def test_si_woo_ya_lo_tenia_lo_adopta_y_no_crea_otro(self):
+        self.aviso_que_falla()
+        pedidos_ml._pedido_en_woo.return_value = 777
+        r = self.sincronizar()
+        self.assertTrue(r["ok"])
+        self.assertNotIn("woo POST", self.llamadas)
+        self.assertEqual(self.registros[-1], ("processing", 777))
+        self.liberar.assert_not_called()
+
+    def test_si_woo_sigue_caido_el_reintento_no_suelta_la_venta(self):
+        self.aviso_que_falla()
+        r = self.sincronizar(caido=True)
+        self.assertFalse(r["ok"])
+        self.assertEqual(self.registros, [(None, None), (None, None)])
+        self.assertEqual(self.encolar.call_count, 1)
+        self.liberar.assert_not_called()
+
+    def test_reversa_el_reintento_con_kubera_primero_apagado_no_la_libera(self):
+        self.aviso_que_falla()
+        r = self.sincronizar(caido=True, kubera_primero=False)
+        self.assertFalse(r["ok"])
+        self.assertEqual(self.registros, [(None, None)])        # sin la bandera no hay registro previo
+        self.liberar.assert_not_called()
+
+    def test_reversa_un_aviso_nuevo_que_falla_tampoco_la_libera(self):
+        # El webhook (no reintentable) con kubera primero apagado SÍ suelta lo que él reclamó. Aquí no reclamó
+        # nada: la fila ya existía. La protege la guarda `if reclamo_mio` (un mutante sin ella cae aquí).
+        self.aviso_que_falla()
+        r = self.sincronizar(caido=True, kubera_primero=False, reintentable=False)
+        self.assertFalse(r["ok"])
+        self.liberar.assert_not_called()
+
+    def test_contraprueba_el_aviso_que_si_gano_el_reclamo_lo_suelta_sin_kubera_primero(self):
+        # Lo de hoy, sin la bandera: el aviso gana el reclamo, Woo no contesta y no hay rastro → `liberar`.
+        r = self.sincronizar(caido=True, kubera_primero=False, reintentable=False)
+        self.assertFalse(r["ok"])
+        self.liberar.assert_called_once()
 
 
 if __name__ == "__main__":

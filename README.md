@@ -1467,7 +1467,10 @@ quedaba una venta reclamada sin pedido.
   `GET /api/flujo/pedidos-amazon-sondeo`.
 - **Kubera primero** (`PEDIDOS_KUBERA_PRIMERO=false`): la venta se registra COMPLETA (encabezado y líneas) ANTES de
   Woo y otra vez después; si Woo falla, el reclamo NO se suelta (queda «Woo pendiente» para el reintento, el sondeo y el
-  vigilante). `wc_order_id` ya no vuelve a NULL (`coalesce`). Se enciende junto con `ML_WEBHOOK_REINTENTOS_ENABLED`.
+  vigilante). `wc_order_id` ya no vuelve a NULL (`coalesce`). El reintento que la completa ya corre:
+  `ML_WEBHOOK_REINTENTOS_ENABLED` está encendida en producción desde el 24–26-sep (corrección del 28-oct; antes
+  esta línea decía que se encendía junto con kubera primero). Como la fila ya existe, el reintento pierde el reclamo
+  y entra por la rama del reclamo huérfano (adopta o crea, sin `liberar`); lo fijan `ReintentoDeUnaPendiente` y K9.
 - **La señal «venta nueva en kubera»** (contrato v2 con INVENTARIO FANOUT): `orders_write.guardar` la devuelve después
   del COMMIT (`nueva_en_kubera`, `vendible_cambia`, `todas_full` de las líneas, cuenta, orden, líneas). Con
   `FANOUT_FUENTE=kubera` el fan-out encola SOLO desde ella (los no FULL, motivo «venta CUENTA ORDEN»), aunque Woo esté
