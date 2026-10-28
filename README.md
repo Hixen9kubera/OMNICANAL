@@ -1485,7 +1485,19 @@ con el código real y ROLLBACK: `scripts/probar_kubera_primero_sandbox.py`, 9/9.
   aviso va en hilo (regla 11).
 - El sondeo de Amazon avisa si llega al tope de páginas y lee kubera en hilo (`_desde`, `estados_wc`).
 - El vigilante avisa si no puede leer kubera.
-- Lo que bloquea la etapa B (kubera primero) va en su propio commit, antes de su acta.
+**Lo que bloqueaba la etapa B (kubera primero), revisión #1, #2, #3 y #8:**
+- El registro previo a Woo es solo para una venta NUEVA y deja `estado_wc` en NULL: el libro igual la resta
+  (`coalesce(estado_wc, '')`), y si Woo falla el dedupe de los sondeos no la da por «sin cambio». Una venta que
+  ya tiene pedido no se pre-registra: un PUT fallido deja el estado anterior en kubera y el reintento lo ve.
+  `orders_write.estados_wc` y la marca de agua de Amazon (`ultimo_actualizado`) no cuentan las filas sin pedido.
+- Un esqueleto de más de 24 h que se completa no es `nueva_en_kubera` (el planeador no crea OV de ventas viejas),
+  pero sí `vendible_cambia` si tiene líneas no FULL y no está cancelado (el fan-out se entera).
+- Con `FANOUT_FUENTE=kubera`, una venta sin señal de kubera (cayó a MySQL o sin registro) avisa `fanout_sin_senal`;
+  la regresa el reproceso del respaldo (2.15) con su señal.
+- El sondeo de ML no repara lo que kubera tiene con el número del PACK (`por_pack`) ni lo creado hace más de
+  `PEDIDOS_ML_SONDEO_MAX_DIAS` (7, `vieja`): los cuenta para que los vea una persona.
+- El ensayo del sandbox (`scripts/probar_kubera_primero_sandbox.py`) suma K7 (esqueleto viejo) y K8 (dedupe y marca
+  sin las filas sin pedido): 12/12.
 
 ### v0.701.0 — «¿Es FBA?» se contestaba con «¿tiene piezas?»
 

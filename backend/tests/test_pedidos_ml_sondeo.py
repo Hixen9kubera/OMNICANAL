@@ -51,6 +51,20 @@ class Clasificar(unittest.TestCase):
         kb = {"2": {"wc_order_id": None, "estado_canal": "paid", "registrado": AHORA - timedelta(minutes=3)}}
         self.assertEqual(S.clasificar({"2": orden()}, kb, AHORA, 10)["al_dia"], ["2"])
 
+    def test_por_pack_no_se_repara(self):
+        # Revisión de MAESTRO, #8: kubera la tiene con el número del PACK; repararla por el número
+        # de orden crearía un segundo pedido.
+        kb = {"P1": {"wc_order_id": None, "estado_canal": "paid", "registrado": VIEJA}}
+        cl = S.clasificar({"1": orden(pack="P1")}, kb, AHORA, 10)
+        self.assertEqual((cl["por_pack"], cl["sin_pedido"]), (["1"], []))
+
+    def test_vieja_se_cuenta_y_no_se_repara(self):
+        hace_un_mes = AHORA - timedelta(days=30)
+        o = {"estado": "paid", "pack": None, "creada": hace_un_mes, "actualizada": VIEJA}
+        cl = S.clasificar({"1": o}, {}, AHORA, 10, max_dias=7)
+        self.assertEqual((cl["vieja"], cl["falta"]), (["1"], []))
+        self.assertEqual(S.clasificar({"1": o}, {}, AHORA, 10)["falta"], ["1"])      # sin tope, como antes
+
     def test_se_reconoce_por_el_pack(self):
         kb = {"P1": {"wc_order_id": 9, "estado_canal": "paid", "registrado": VIEJA}}
         self.assertEqual(S.clasificar({"1": orden(pack="P1")}, kb, AHORA, 10)["al_dia"], ["1"])
@@ -85,6 +99,22 @@ class Revisar(unittest.TestCase):
         self.assertEqual((r["reparadas"], r["creados"]), (2, 2))
         self.assertEqual(self.sinc.await_count, 2)
         self.assertTrue(all(c.kwargs["reintentable"] for c in self.sinc.await_args_list))
+
+    def test_no_repara_por_pack_ni_viejas(self):
+        hace_un_mes = AHORA - timedelta(days=30)
+        ml = {"1": {"estado": "paid", "pack": "P1", "creada": VIEJA, "actualizada": VIEJA},
+              "2": {"estado": "paid", "pack": None, "creada": hace_un_mes, "actualizada": VIEJA},
+              "3": orden()}
+        kb = {"P1": {"wc_order_id": None, "estado_canal": "paid", "registrado": VIEJA}}
+        with mock.patch.object(S, "leer_ml", mock.AsyncMock(
+                side_effect=lambda c, h, p: {"ordenes": ml if c == "BEKURA" else {}, "paginas": 1, "total": 3,
+                                             "error": None})), \
+             mock.patch.object(S, "kubera", return_value=kb), \
+             mock.patch.object(settings, "pedidos_ml_sondeo_max_dias", 7):
+            r = asyncio.run(S.revisar(solo_registro=False))
+        c = r["cuentas"]["BEKURA"]
+        self.assertEqual((c["por_pack"], c["vieja"], c["falta"]), (1, 1, 1))
+        self.assertEqual([x.args[0] for x in self.sinc.await_args_list], ["3"])
 
     def test_se_detiene_en_el_freno(self):
         self.anotar.return_value = True

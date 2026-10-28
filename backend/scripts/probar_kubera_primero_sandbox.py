@@ -11,7 +11,10 @@ Lo que las pruebas unitarias no pueden ver —el SQL de verdad contra un Postgre
   K4. Cancelar con una línea no FULL → `vendible_cambia`.
   K5. Descancelar → `vendible_cambia` otra vez.
   K6. El esqueleto del reclamo se completa una vez (`orders_write.reclamar` real) y el encabezado queda lleno.
-  La foto con `for no key update` corre en cada registro (K1–K6).
+  K7. Un esqueleto de hace 40 días que se completa NO es nueva (el planeador no crea OV vieja), pero sí cambia
+      el vendible (el fan-out se entera). Revisión de MAESTRO, #2.
+  K8. `estados_wc` y la marca de agua (`ultimo_actualizado`) no cuentan las filas sin pedido. Revisión, #1.
+  La foto con `for no key update` corre en cada registro (K1–K7).
 
 Uso: backend/.venv/Scripts/python.exe backend/scripts/probar_kubera_primero_sandbox.py
 """
@@ -78,6 +81,11 @@ def fetch_one(sql, params=None):
     return dict(zip([d[0] for d in CUR.description], fila)) if fila else None
 
 
+def fetch_all(sql, params=None):
+    CUR.execute(sql, params)
+    return [dict(zip([d[0] for d in CUR.description], f)) for f in CUR.fetchall()]
+
+
 def ex(sql, p=None):
     CUR.execute(sql, p)
     return CUR.fetchall()
@@ -91,6 +99,7 @@ ORDEN = {"id": "ZZZ-KPRIMERO-1", "cuenta": "BEKURA", "estado": "paid", "total": 
 AHORA = datetime.now(timezone.utc)
 parches = [mock.patch.object(sdb, "get_cursor", get_cursor),
            mock.patch.object(sdb, "fetch_one", fetch_one),
+           mock.patch.object(sdb, "fetch_all", fetch_all),
            mock.patch.object(sdb, "disponible", return_value=True),
            mock.patch.object(orders_write, "activo", return_value=True),
            mock.patch.object(kubera_mirror, "activo", return_value=True),
@@ -122,6 +131,22 @@ try:
     f = ex("select skus::text, comision from channel.orders where external_order_id = 'ZZZ-KPRIMERO-2'")[0]
     check("K6 el esqueleto se completa una vez (nueva) con su encabezado",
           s6["nueva_en_kubera"] and f[0] is not None and f[1] is not None, str(f))
+    ex("""insert into channel.orders (canal, cuenta, external_order_id, creado_at, registrado_at, actualizado_at)
+          values ('mercado_libre', 'BEKURA', 'ZZZ-KPRIMERO-3', now() - interval '40 days',
+                  now() - interval '40 days', now() - interval '40 days') returning 1""")
+    s7 = reg("processing", None, ident="ZZZ-KPRIMERO-3", skus=("ACC-0001-AZL",))
+    check("K7 un esqueleto de hace 40 días no es nueva pero sí cambia el vendible",
+          not s7["nueva_en_kubera"] and s7["vendible_cambia"], str({k: s7[k] for k in ("nueva_en_kubera",
+                                                                                      "vendible_cambia")}))
+    ex("""insert into channel.orders (canal, cuenta, external_order_id, creado_at, actualizado_at)
+          values ('mercado_libre', 'BEKURA', 'ZZZ-KPRIMERO-4', now(), now() + interval '1 day') returning 1""")
+    previos = orders_write.estados_wc(("BEKURA",))
+    check("K8 estados_wc trae la venta con pedido y no las que no lo tienen",
+          "ZZZ-KPRIMERO-1" in previos and "ZZZ-KPRIMERO-2" not in previos and "ZZZ-KPRIMERO-4" not in previos)
+    marca = orders_write.ultimo_actualizado("BEKURA")
+    futura = ex("select actualizado_at from channel.orders where external_order_id = 'ZZZ-KPRIMERO-4'")[0][0]
+    check("K8 la marca de agua no cuenta la fila sin pedido (aunque sea la más nueva)",
+          marca is not None and marca < futura.astimezone(timezone.utc).replace(tzinfo=None), f"{marca} < {futura}")
 finally:
     for p in parches:
         p.stop()

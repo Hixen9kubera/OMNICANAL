@@ -725,12 +725,19 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
     # pedido que ya hubiera o ninguno. Si Woo no contesta, kubera ya la tiene: el libro la
     # resta, el fan-out (con FANOUT_FUENTE=kubera) se entera y el reintento solo crea el
     # pedido. Hoy Woo es la puerta: si se cae, la venta no existe en kubera (riesgo 7).
+    #
+    # REVISIÓN DE MAESTRO, #1. Solo para una venta NUEVA (sin pedido de Woo) y SIN estado:
+    #   · `estado_wc` queda NULL hasta que Woo conteste. El libro igual la resta
+    #     (`coalesce(estado_wc, '') <> 'cancelled'`), y el dedupe de los sondeos no la
+    #     confunde con «sin cambio» si Woo falla: NULL nunca es el estado de destino.
+    #   · Una venta que YA tiene pedido no se pre-registra: si el PUT a Woo falla (una
+    #     cancelación), kubera conserva el estado anterior y el sondeo/reintento ve la
+    #     diferencia. Pre-registrar el estado nuevo lo dejaba callado para siempre.
     kubera_primero = bool(getattr(settings, "pedidos_kubera_primero", False))
-    if kubera_primero:
+    if kubera_primero and not (previo and previo.get("wc_order_id")):
         try:
             senal_previa = await asyncio.to_thread(
-                _registrar_venta, order_id, orden, payload["status"],
-                (previo or {}).get("wc_order_id"), comision, skus, creado, ahora)
+                _registrar_venta, order_id, orden, None, None, comision, skus, creado, ahora)
             _avisar_fanout(senal_previa, str(order_id))
         except Exception as exc:  # noqa: BLE001 — Woo sigue como siempre
             log.warning("kubera primero: no se registró %s antes de Woo: %s", order_id, exc)
@@ -916,6 +923,15 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
         if stock_libro.lee_libro():
             # FANOUT_FUENTE=kubera: SOLO desde la señal de kubera (2.11, INVENTARIO FANOUT).
             _avisar_fanout(senal, str(order_id))
+            if not senal or senal.get("escrito_en") != "kubera":
+                # Revisión de MAESTRO, #3: la venta no llegó a kubera (cayó a MySQL o el
+                # registro lanzó): no hay señal y el libro no la resta todavía. La regresa
+                # el reproceso del respaldo (2.15, con su señal); mientras tanto, que se vea.
+                await asyncio.to_thread(
+                    alertas.avisar, "fanout_sin_senal",
+                    f"*Venta {orden['cuenta']} {order_id} sin señal de kubera* "
+                    f"({(senal or {}).get('escrito_en') or 'sin registro'}): con FANOUT_FUENTE=kubera "
+                    f"el libro no la resta hasta que el reproceso del respaldo la aplique.")
         elif descuenta and accion == "creado":
             fanout_stock.encolar_varios([s for s in skus if s],
                                         motivo=f"venta {orden['cuenta']} {order_id}")

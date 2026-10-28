@@ -123,9 +123,12 @@ def estados_wc(cuentas: tuple[str, ...]) -> dict[str, str]:
         return {f["ml_order_id"]: f["estado_wc"] for f in db.fetch_all(
             f"SELECT ml_order_id, estado_wc FROM pedidos_ml WHERE cuenta IN ({ph})",
             tuple(cuentas))}
+    # Sin las filas SIN pedido (revisión de MAESTRO, #1): una venta registrada en kubera
+    # cuyo pedido de Woo no se creó NO está «sin cambio» aunque su estado coincida; si el
+    # dedupe la saltara, el sondeo no volvería a intentar el pedido nunca.
     return {f["external_order_id"]: f["estado_wc"] for f in sdb.fetch_all(
         "select external_order_id, estado_wc from channel.orders "
-        "where cuenta = any(%(c)s)", {"c": list(cuentas)})}
+        "where cuenta = any(%(c)s) and wc_order_id is not null", {"c": list(cuentas)})}
 
 
 def ultimo_actualizado(cuenta: str):
@@ -139,8 +142,12 @@ def ultimo_actualizado(cuenta: str):
         f = db.fetch_one(
             "SELECT MAX(actualizado) m FROM pedidos_ml WHERE cuenta=%s", (cuenta,))
         return (f or {}).get("m")
+    # Solo ventas CON pedido (revisión de MAESTRO, #1): un registro previo a Woo (kubera
+    # primero) o un reclamo sube `actualizado_at`; si Woo falla después, una marca que lo
+    # contara ya habría pasado esa venta y Amazon no la volvería a enviar.
     f = sdb.fetch_one(
-        "select max(actualizado_at) m from channel.orders where cuenta = %(c)s",
+        "select max(actualizado_at) m from channel.orders "
+        "where cuenta = %(c)s and wc_order_id is not null",
         {"c": cuenta})
     ts = (f or {}).get("m")
     return ts.astimezone(timezone.utc).replace(tzinfo=None) if ts else None
@@ -267,9 +274,10 @@ def liberar(canal: str, cuenta: str, external_order_id: str) -> None:
 
 
 # La venta tal como está en kubera, dentro de la transacción del registro. Con
-# `for update` la fila queda tomada hasta el COMMIT: la foto de antes es la de verdad.
+# `for no key update` la fila queda tomada hasta el COMMIT: la foto de antes es la de verdad.
 _SQL_FOTO = """
 select o.skus is null as esqueleto, o.estado_wc, o.wc_order_id,
+       coalesce(o.registrado_at, o.creado_at) as registrado,
        coalesce((select json_agg(json_build_object('sku', i.sku::text, 'cantidad', i.cantidad,
                                                    'es_fulfillment', i.es_fulfillment) order by i.linea)
                    from channel.order_items i
@@ -300,8 +308,14 @@ def _foto(cur, encabezado: dict[str, Any], tomar: bool = False) -> dict[str, Any
     return {**fila, "lineas": lineas}
 
 
+# Un esqueleto que se completa después de esto NO es una venta nueva (revisión de MAESTRO, #2):
+# es el re-aviso de una venta vieja cuyo registro nunca se terminó. El planeador de OV no debe
+# crearle una OV; el fan-out sí debe enterarse (sus líneas aparecen en el libro).
+NUEVA_MAX_HORAS = 24
+
+
 def senal(antes: dict[str, Any] | None, despues: dict[str, Any] | None,
-          encabezado: dict[str, Any]) -> dict[str, Any]:
+          encabezado: dict[str, Any], ahora: Any = None) -> dict[str, Any]:
     """La señal «venta nueva en kubera» (PLAN MAESTRO 2.11; contrato v2 acordado con
     INVENTARIO FANOUT el 28-oct). Función pura: compara la venta antes y después del
     registro.
@@ -313,11 +327,20 @@ def senal(antes: dict[str, Any] | None, despues: dict[str, Any] | None,
       todas_full       todas las líneas FULL (de las LÍNEAS: el encabezado no se usa).
 
     Nadie la escucha mientras FANOUT_FUENTE=woo y no haya planeador."""
+    from datetime import datetime, timedelta
     lineas = list((despues or {}).get("lineas") or [])
     completa = bool(despues) and not despues.get("esqueleto")
-    nueva = completa and (antes is None or bool(antes.get("esqueleto")))
+    ahora = ahora or datetime.now(timezone.utc)
+    reg = (antes or {}).get("registrado")
+    tardia = (completa and antes is not None and bool(antes.get("esqueleto")) and reg is not None
+              and reg < ahora - timedelta(hours=NUEVA_MAX_HORAS))
+    nueva = completa and not tardia and (antes is None or bool(antes.get("esqueleto")))
     cambia = False
-    if completa and not nueva:
+    if tardia:
+        # Se completa una venta vieja: no es nueva, pero sus líneas sí cambian el libro.
+        cambia = (despues.get("estado_wc") != "cancelled"
+                  and any(not ln.get("es_fulfillment") for ln in lineas))
+    elif completa and not nueva:
         cancela = (antes.get("estado_wc") == "cancelled") != (despues.get("estado_wc") == "cancelled")
         if cancela and any(not ln.get("es_fulfillment") for ln in lineas):
             cambia = True

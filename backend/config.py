@@ -283,6 +283,9 @@ class Settings(BaseSettings):
     pedidos_ml_sondeo_paginas: int = 40
     pedidos_ml_sondeo_umbral_min: int = 10
     pedidos_ml_sondeo_lote: int = 25
+    # Lo que tendría que repararse pero se creó hace más de estos días se CUENTA y no se
+    # repara (revisión de MAESTRO, #9): un aviso tardío de una venta vieja no nace pedido.
+    pedidos_ml_sondeo_max_dias: int = 7
     # GUÍA Y ETIQUETA PDF (pedidos_tiktok.refrescar_guias): número de rastreo en
     # la entrega de salida y el PDF de TikTok ("Subir guía", `<order_id>.pdf`)
     # en la orden CONFIRMADA de Odoo, verificados al re-leer. Cada 20 min porque

@@ -151,26 +151,44 @@ def kubera(cuenta: str, ids: list[str]) -> dict[str, dict[str, Any]]:
     return {f["external_order_id"]: f for f in sdb.fetch_all(_SQL_KUBERA, {"c": cuenta, "ids": ids})}
 
 
+REPARABLES = ("falta", "sin_pedido", "atrasada")
+
+
 def clasificar(ml: dict[str, dict[str, Any]], kb: dict[str, dict[str, Any]], ahora: datetime,
-               umbral_min: int) -> dict[str, list[str]]:
+               umbral_min: int, max_dias: int | None = None) -> dict[str, list[str]]:
     """Cada orden de ML en su clase. Una orden recién tocada (menos de `umbral_min`) se
-    deja al webhook: puede venir en camino."""
+    deja al webhook: puede venir en camino.
+
+    Dos clases que se CUENTAN y no se reparan:
+      por_pack  kubera la tiene guardada con el número del PACK, no con el de la orden
+                (revisión de MAESTRO, #8): repararla por el número de orden crearía un
+                segundo pedido. Que la vea una persona.
+      vieja     necesitaría reparación pero se creó hace más de `max_dias`: un aviso de ML
+                sobre una venta vieja (reclamo, devolución) no debe nacer como pedido nuevo.
+    """
     corte = ahora - timedelta(minutes=umbral_min)
+    antiguedad = ahora - timedelta(days=max_dias) if max_dias else None
     clases: dict[str, list[str]] = {"falta": [], "sin_pedido": [], "atrasada": [], "al_dia": [],
-                                    "reciente": []}
+                                    "reciente": [], "por_pack": [], "vieja": []}
     for oid, o in ml.items():
+        por_pack = oid not in kb and bool(o.get("pack")) and o["pack"] in kb
         k = kb.get(oid) or (kb.get(o["pack"]) if o.get("pack") else None)
         act = o.get("actualizada") or o.get("creada")
         if act and act > corte:
-            clases["reciente"].append(oid)
+            clase = "reciente"
         elif k is None:
-            clases["falta"].append(oid)
+            clase = "falta"
         elif k.get("wc_order_id") is None and (k.get("registrado") is None or k["registrado"] < corte):
-            clases["sin_pedido"].append(oid)
+            clase = "sin_pedido"
         elif o.get("estado") and (k.get("estado_canal") or "") != o["estado"]:
-            clases["atrasada"].append(oid)
+            clase = "atrasada"
         else:
-            clases["al_dia"].append(oid)
+            clase = "al_dia"
+        if clase in REPARABLES and por_pack:
+            clase = "por_pack"
+        elif clase in REPARABLES and antiguedad and o.get("creada") and o["creada"] < antiguedad:
+            clase = "vieja"
+        clases[clase].append(oid)
     return clases
 
 
@@ -224,14 +242,15 @@ async def revisar(solo_registro: bool | None = None) -> dict[str, Any]:
             ml = await leer_ml(cuenta, horas, paginas)
             kb = await asyncio.to_thread(kubera, cuenta, sorted(
                 set(ml["ordenes"]) | {o["pack"] for o in ml["ordenes"].values() if o.get("pack")}))
-            cl = clasificar(ml["ordenes"], kb, datetime.now(timezone.utc), umbral)
+            cl = clasificar(ml["ordenes"], kb, datetime.now(timezone.utc), umbral,
+                            int(settings.pedidos_ml_sondeo_max_dias))
             r["cuentas"][cuenta] = {"ml": len(ml["ordenes"]), "paginas": ml["paginas"], "error": ml["error"],
                                     **{k: len(v) for k, v in cl.items()},
                                     "muestra": {k: v[:5] for k, v in cl.items()
-                                                if k in ("falta", "sin_pedido", "atrasada") and v}}
+                                                if k in (*REPARABLES, "por_pack", "vieja") and v}}
             if ml["error"]:
                 r["estado"] = "incompleto"
-            pendientes += [(cuenta, oid) for k in ("falta", "sin_pedido", "atrasada") for oid in cl[k]]
+            pendientes += [(cuenta, oid) for k in REPARABLES for oid in cl[k]]
         r["por_reparar"] = len(pendientes)
         if not solo and pendientes:
             for cuenta in CUENTAS:

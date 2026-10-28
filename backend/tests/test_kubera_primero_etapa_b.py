@@ -1,0 +1,188 @@
+"""Pruebas de lo que bloqueaba la ETAPA B de 2.11 (revisión independiente de MAESTRO, 28-oct-2026: #1, #2, #3).
+
+── QUÉ FIJAN ───────────────────────────────────────────────────────────────────
+#1 · El registro previo a Woo no deja una venta sin pedido para siempre:
+   · solo para una venta NUEVA y con `estado_wc` NULL (el dedupe de los sondeos nunca la da por «sin cambio»);
+   · una venta que YA tiene pedido no se pre-registra: un PUT fallido deja kubera con el estado anterior;
+   · Woo que contesta 5xx SIN excepción: la venta queda registrada y el reclamo no se suelta;
+   · cancelación FULL/protegida con la bandera encendida: un solo registro, después de Woo;
+   · `estados_wc` y la marca de agua (`ultimo_actualizado`) excluyen las filas sin pedido.
+#2 · Un esqueleto VIEJO que se completa no es `nueva_en_kubera` (el planeador no crea OV de agosto), pero
+     `vendible_cambia` sí avisa al fan-out si tiene líneas no FULL y no está cancelado.
+#3 · Con FANOUT_FUENTE=kubera, una venta sin señal de kubera (cayó a MySQL o sin registro) se avisa.
+
+Sin red ni base:
+    cd backend && python -m unittest tests.test_kubera_primero_etapa_b -v
+"""
+from __future__ import annotations
+
+import asyncio
+import sys
+import unittest
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from config import settings  # noqa: E402
+from services import alertas, fanout_stock, orders_write, pedidos_ml, stock_libro  # noqa: E402
+from services import supabase_db as sdb  # noqa: E402
+
+AHORA = datetime(2026, 10, 28, 18, 0, tzinfo=timezone.utc)
+ENC = {"canal": "mercado_libre", "cuenta": "BEKURA", "external_order_id": "2000000001"}
+DROP = {"sku": "ACC-0001-AZL", "cantidad": 2, "es_fulfillment": False}
+FULL = {"sku": "ACC-0002-DOR", "cantidad": 1, "es_fulfillment": True}
+
+
+def fila(esqueleto=False, estado="processing", lineas=(DROP,), wc=None, registrado=AHORA):
+    return {"esqueleto": esqueleto, "estado_wc": estado, "wc_order_id": wc, "lineas": list(lineas),
+            "registrado": registrado}
+
+
+class EsqueletoViejo(unittest.TestCase):           # #2
+    def test_reciente_es_nueva(self):
+        s = orders_write.senal(fila(esqueleto=True, lineas=(), registrado=AHORA - timedelta(minutes=5)),
+                               fila(), ENC, AHORA)
+        self.assertTrue(s["nueva_en_kubera"])
+
+    def test_viejo_no_es_nueva_pero_avisa_al_fanout(self):
+        s = orders_write.senal(fila(esqueleto=True, lineas=(), registrado=AHORA - timedelta(days=40)),
+                               fila(), ENC, AHORA)
+        self.assertEqual((s["nueva_en_kubera"], s["vendible_cambia"]), (False, True))
+
+    def test_viejo_cancelado_o_todo_full_no_cambia_el_vendible(self):
+        viejo = fila(esqueleto=True, lineas=(), registrado=AHORA - timedelta(days=40))
+        self.assertFalse(orders_write.senal(viejo, fila(estado="cancelled"), ENC, AHORA)["vendible_cambia"])
+        self.assertFalse(orders_write.senal(viejo, fila(lineas=(FULL,)), ENC, AHORA)["vendible_cambia"])
+
+    def test_sin_fila_previa_sigue_siendo_nueva(self):
+        self.assertTrue(orders_write.senal(None, fila(), ENC, AHORA)["nueva_en_kubera"])
+
+
+class DedupeYMarca(unittest.TestCase):              # #1
+    def test_estados_wc_excluye_las_filas_sin_pedido(self):
+        with mock.patch.object(sdb, "disponible", return_value=True), \
+             mock.patch.object(sdb, "fetch_all", return_value=[]) as fa:
+            orders_write.estados_wc(("AMAZON",))
+        self.assertIn("and wc_order_id is not null", " ".join(fa.call_args.args[0].split()))
+
+    def test_la_marca_excluye_las_filas_sin_pedido(self):
+        with mock.patch.object(sdb, "disponible", return_value=True), \
+             mock.patch.object(sdb, "fetch_one", return_value={"m": None}) as fo:
+            orders_write.ultimo_actualizado("AMAZON")
+        self.assertIn("and wc_order_id is not null", " ".join(fo.call_args.args[0].split()))
+
+
+ORDEN = {"id": "2000000001", "cuenta": "BEKURA", "estado": "paid", "total": 499.0, "fecha": "2026-10-28T10:00:00Z",
+         "es_full": False, "items": [{"sku": "ACC-0001-AZL", "cantidad": 2, "item_id": "MLM1"}]}
+
+
+class Resp:
+    def __init__(self, code, cuerpo=None):
+        self.status_code, self._c, self.text = code, cuerpo or {}, ""
+
+    def json(self):
+        return self._c
+
+
+class Woo:
+    def __init__(self, codigo=201, llamadas=None):
+        self.codigo, self.llamadas = codigo, llamadas
+
+    def __call__(self, *a, **k):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def post(self, ruta, json=None):
+        self.llamadas.append("woo POST")
+        return Resp(self.codigo, {"id": 777})
+
+    async def put(self, ruta, json=None):
+        self.llamadas.append("woo PUT" if "status" in (json or {}) else "woo PUT meta")
+        return Resp(200 if self.codigo < 300 else self.codigo, {"id": 555})
+
+
+class Flujo(unittest.TestCase):                     # #1 y #3
+    def setUp(self) -> None:
+        self.addCleanup(mock.patch.stopall)
+        self.llamadas: list[str] = []
+        self.estado = "processing"
+        mock.patch.object(pedidos_ml, "_schema_ok", True).start()
+        mock.patch.object(pedidos_ml, "construir_payload", mock.AsyncMock(
+            side_effect=lambda *a, **k: {"status": self.estado, "_skus": ["ACC-0001-AZL"],
+                                         "_sin_mapear": [], "_comision": 87.3})).start()
+        self.previo = mock.patch.object(orders_write, "wc_order_id_previo", return_value=None).start()
+        mock.patch.object(orders_write, "reclamar", return_value=True).start()
+        self.liberar = mock.patch.object(orders_write, "liberar").start()
+        mock.patch.object(pedidos_ml, "_pedido_en_woo", mock.AsyncMock(return_value=None)).start()
+        mock.patch.object(pedidos_ml, "_ya_compensado", return_value=False).start()
+        self.registros = []
+
+        def registrar(order_id, orden, estado, wc, *a):
+            self.registros.append((estado, wc))
+            self.llamadas.append(f"kubera(estado={estado}, wc={wc})")
+            return {"nueva_en_kubera": len(self.registros) == 1, "vendible_cambia": False,
+                    "escrito_en": self.escrito_en, "cuenta": "BEKURA", "lineas": [DROP]}
+        self.escrito_en = "kubera"
+        mock.patch.object(pedidos_ml, "_registrar_venta", side_effect=registrar).start()
+        self.encolar = mock.patch.object(fanout_stock, "encolar_varios").start()
+        mock.patch.object(fanout_stock, "seguro_encendido", return_value=False).start()
+        mock.patch("services.odoo_ventas.canales_posibles", return_value=()).start()
+        self.aviso = mock.patch.object(alertas, "avisar", return_value=True).start()
+
+    def correr(self, codigo=201, orden=None, fuente="woo"):
+        with mock.patch.object(settings, "pedidos_kubera_primero", True), \
+             mock.patch.object(settings, "fanout_fuente", fuente), \
+             mock.patch.object(pedidos_ml.httpx, "AsyncClient", Woo(codigo, self.llamadas)):
+            return asyncio.run(pedidos_ml._sincronizar_serializado("2000000001", None, False,
+                                                                    dict(orden or ORDEN)))
+
+    def test_venta_nueva_se_pre_registra_sin_estado(self):
+        r = self.correr()
+        self.assertTrue(r["ok"])
+        self.assertEqual(self.registros, [(None, None), ("processing", 777)])
+
+    def test_venta_existente_no_se_pre_registra(self):
+        self.previo.return_value = 555
+        r = self.correr()
+        self.assertTrue(r["ok"])
+        self.assertEqual(self.llamadas, ["woo PUT", "kubera(estado=processing, wc=555)"])
+
+    def test_cancelacion_full_con_la_bandera_un_solo_registro_despues_de_woo(self):
+        self.previo.return_value = 555
+        self.estado = "cancelled"
+        r = self.correr(orden={**ORDEN, "es_full": True})
+        self.assertTrue(r["ok"])
+        self.assertEqual(self.registros, [("cancelled", 555)])
+        self.assertEqual(self.llamadas[-1], "kubera(estado=cancelled, wc=555)")
+
+    def test_woo_5xx_sin_excepcion_deja_la_venta_registrada_y_no_suelta(self):
+        r = self.correr(codigo=500)
+        self.assertFalse(r["ok"])
+        self.assertEqual(self.registros, [(None, None)])
+        self.liberar.assert_not_called()
+
+    def test_sin_senal_de_kubera_con_fanout_en_kubera_se_avisa(self):     # #3
+        self.escrito_en = "mysql_respaldo"
+        self.correr(fuente="kubera")
+        self.assertIn("fanout_sin_senal", [c.args[0] for c in self.aviso.call_args_list])
+
+    def test_con_senal_de_kubera_no_se_avisa(self):
+        self.correr(fuente="kubera")
+        self.assertNotIn("fanout_sin_senal", [c.args[0] for c in self.aviso.call_args_list])
+
+    def test_con_fanout_en_woo_no_se_avisa_aunque_no_haya_senal(self):
+        self.escrito_en = "mysql_respaldo"
+        with mock.patch.object(stock_libro, "lee_libro", return_value=False):
+            self.correr()
+        self.assertNotIn("fanout_sin_senal", [c.args[0] for c in self.aviso.call_args_list])
+
+
+if __name__ == "__main__":
+    unittest.main()
