@@ -1001,6 +1001,37 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.698.0 — `channel.orders`: el encabezado de cada venta se vuelve a llenar (PLAN MAESTRO 2.6) y nace `registrado_at` (0079, 2.2)
+
+**Qué pasaba (medido el 28-oct-2026 en producción, solo lectura).** Desde la v0.176.0 (14-ago, 19:43 UTC)
+`orders_write.reclamar` deja primero una fila ESQUELETO (solo la llave y `creado_at`) para que dos procesos no
+creen el mismo pedido. El `guardar` del ganador pasa después por `kubera_mirror._up_channel_orders`, cuyo
+`ON CONFLICT` se escribió cuando la primera escritura era la completa: nunca rellenaba `skus` ni `es_fulfillment`,
+y la comisión solo si valía 0 (`NULL = 0` no es verdadero). Resultado: **33,002 encabezados sin `skus` ni
+comisión y 30,702 ventas FULL marcadas como no FULL**. Las líneas (`order_items`) siempre estuvieron bien.
+A quién le pegaba:
+- el resumen de Ventas (`orders_read.rango`, `sum(es_fulfillment)`) cuenta 0 FULL desde el 14-ago;
+- el prellenado de una OV a mano (`ordenes_venta._SQL_VENTAS`) lee comisión y FULL del encabezado;
+- las OV espejo de T0 (`almacen.ov_espejo`, 0076) toman `coalesce(comision, 0)`.
+
+**Arreglo del escritor.** `skus IS NULL` marca el esqueleto, y el conflicto lo completa UNA vez con `skus`,
+`es_fulfillment` y la comisión (NULL cuenta como «nunca observada», igual que el 0). Una fila ya completa no
+cambia. **`creado_at` NO se toca**: en las filas reclamadas es la hora del reclamo, y eso es lo que leen hoy el
+libro (`stock_libro`), la tanda de T0 (0076: `t0_pendientes`, `t0_cuadre`) y `fanout_bodegas`. Para «¿ya estaba
+en la foto de Woo?» esa hora es la correcta, porque el pedido nace en Woo justo después del reclamo.
+
+**0079 · `registrado_at`.** La hora en que kubera registró la venta. Se agrega sin default y luego con
+`default now()`, así que las filas viejas quedan en NULL. Ningún código la nombra: la migración y el código se
+despliegan en cualquier orden. Lleva su candado (RLS + grant) y su fila en `ops.migraciones`. Aplicada en el
+sandbox el 28-oct; en producción va con su acta (`_paso_prod_encabezado_orders`), junto con el relleno histórico.
+
+**`schema_manifest.json`:** `channel.orders` se re-midió en producción (le faltaban `stock_compensado_at` y
+`stock_revertido_at`) y se le agregó `registrado_at`. En el sandbox ya cuadra.
+
+**Pruebas:**
+- `tests/test_encabezado_orders.py`: contrato del SQL y de la 0079.
+- Ensayo en el sandbox con el código real y ROLLBACK: 15/15.
+
 ### v0.697.0 — «Sugerir precio»: una consulta del modo rápido ya no le gana al catálogo maestro
 
 **Qué pasó.** Al revisar la v0.696.0 en producción, TEC-0605-NEG-2PZ mostraba ML con media de **$156.37**

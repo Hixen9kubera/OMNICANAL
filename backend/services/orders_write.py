@@ -209,6 +209,12 @@ def reclamar(canal: str, cuenta: str, external_order_id: str,
     perdedor no crea; consulta. `wc_order_id` queda NULL hasta que el ganador
     complete — ese NULL es la señal de "reclamado, aún sin pedido".
 
+    La fila que deja es un ESQUELETO (`skus` NULL): el `guardar` del ganador la
+    completa una vez (`kubera_mirror._up_channel_orders`; del 14-ago al 28-oct
+    no lo hacía y los encabezados quedaron sin skus/comisión/FULL). Su
+    `registrado_at` (0079) nace aquí, por default: la hora en que kubera supo de
+    la venta.
+
     Si kubera no responde hay dos comportamientos, y el llamador elige:
       · `estricto=False` (default, el webhook): devuelve True — es preferible
         arriesgar un duplicado (detectable y reparable) a perder la venta,

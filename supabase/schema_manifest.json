@@ -821,7 +821,10 @@
      "es_fulfillment:boolean:notnull",
      "skus:ARRAY:null",
      "creado_at:timestamp with time zone:null",
-     "actualizado_at:timestamp with time zone:notnull"
+     "actualizado_at:timestamp with time zone:notnull",
+     "stock_compensado_at:timestamp with time zone:null",
+     "stock_revertido_at:timestamp with time zone:null",
+     "registrado_at:timestamp with time zone:null"
     ],
     "constraints": {
      "FOREIGN KEY": 2,

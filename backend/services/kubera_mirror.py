@@ -547,7 +547,21 @@ def _up_channel_orders(cur, p: dict[str, Any]) -> None:
         que las filas nacidas en 0 no podían sanar NUNCA y el acta de pedidos
         salía `con_deltas` a diario (7 pedidos Amazon al 29-jul).
     En ambos casos: 0 → valor real se permite UNA vez; un valor ya puesto es
-    inmutable (jamás se re-toca)."""
+    inmutable (jamás se re-toca).
+
+    EL ESQUELETO DEL RECLAMO (PLAN MAESTRO 2.6, 28-oct). Desde v0.176.0 (14-ago
+    19:43 UTC) la PRIMERA escritura ya no es esta: `orders_write.reclamar` deja
+    antes una fila con solo la llave y `creado_at`. Esta función se escribió para
+    cuando la primera era la completa, así que el conflicto dejaba `skus` y
+    `es_fulfillment` como nacieron en el esqueleto (NULL y false) y `comision`
+    en NULL (`NULL = 0` no es verdadero). Medido el 28-oct en producción: 33,002
+    encabezados sin skus/comisión y 30,702 FULL marcados como no FULL; las líneas
+    de `order_items` sí estaban bien. Ahora `skus IS NULL` marca el esqueleto y
+    el conflicto lo completa UNA vez con `skus`, `es_fulfillment` y la comisión
+    (NULL cuenta como 0, «nunca observado»). Una fila ya completa no cambia.
+    `creado_at` NO se toca: en las filas reclamadas es la hora del reclamo y eso
+    leen hoy el libro (`stock_libro`), la tanda de T0 (0076) y `fanout_bodegas`.
+    Tampoco `registrado_at` (0079): nace con su default y nadie la reescribe."""
     cur.execute(
         """insert into channel.orders
              (external_order_id, canal, cuenta, wc_order_id, estado_canal,
@@ -560,9 +574,13 @@ def _up_channel_orders(cur, p: dict[str, Any]) -> None:
              total        = case when coalesce(channel.orders.total, 0) = 0
                                  then excluded.total
                                  else channel.orders.total end,
-             comision     = case when channel.orders.comision = 0
+             comision     = case when coalesce(channel.orders.comision, 0) = 0
                                  then excluded.comision
                                  else channel.orders.comision end,
+             es_fulfillment = case when channel.orders.skus is null
+                                   then excluded.es_fulfillment
+                                   else channel.orders.es_fulfillment end,
+             skus         = coalesce(channel.orders.skus, excluded.skus),
              actualizado_at = now()""",
         (str(p.get("external_order_id") or ""), p.get("canal"), p.get("cuenta"),
          p.get("wc_order_id"), p.get("estado_canal"), p.get("estado_wc"),
