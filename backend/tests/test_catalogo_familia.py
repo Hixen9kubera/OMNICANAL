@@ -103,6 +103,7 @@ class Migracion0080(unittest.TestCase):
                       self.s)
         for regla in ("when 'general' then false", "<> 'closed'", "<> 'DELETED'", "<> '5/None'",
                       "when p_publicada then 'publicado'", "when p_status = 'ready' then 'listo'",
+                      "when p_status = 'pending' then 'procesado'",
                       "else 'draft'"):
             self.assertIn(regla, self.s)
 

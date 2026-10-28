@@ -27,6 +27,12 @@
 --     Propuesta vigente (recomendación de MAESTRO, 28-oct): «publicado» = al menos una
 --     publicación NO cerrada en channel.listings (Woo se va, no debe definir el ciclo);
 --     packing_list_only y demás etiquetas sin Woo → draft.
+--     `pending` → procesado (MAESTRO, 28-oct): es el paso de Woo que pone Crear al terminar
+--     (`crear_producto`: status_final y `destrabar_inprogress`). Medido en producción el 28-oct:
+--     1,481 en pending, todas padres o simples; 1,060 tienen publicación abierta (quedan
+--     `publicado`) y de las 421 restantes, 289 tienen «completado» de Crear en ops.process_log;
+--     las 132 sin rastro nacieron en kubera del 24-jul al 12-ago, antes de que la bitácora
+--     estuviera completa.
 --   · Relleno: familia desde `wc_parent_id` (7,477 variaciones, 1,503 padres; todos los
 --     padres tienen fila) y `estado_ciclo` con las funciones. Después: default 'draft',
 --     NOT NULL y el CHECK.
@@ -37,8 +43,8 @@
 --   · El candado de la tabla se reafirma en la misma migración (RLS + grant).
 --
 -- LO QUE NO HACE
---   · `procesada_at` y el estado `procesado`: la meta `_crear_procesada_at` vive en Woo
---     (142 posts); los llena el flujo de alta (3.3), no esta migración.
+--   · `procesada_at`: la meta `_crear_procesada_at` vive en Woo (142 posts); la llena 3.3
+--     (`rellenar_procesada_at.py` y el seam de Crear), no esta migración.
 --   · Marcar `archivado` lo que Woo ya no tiene: eso lo hace el ETL (lee Woo).
 --
 -- Estado: aplicar PRIMERO en el sandbox. Producción solo con acta (doble candado).
@@ -101,6 +107,7 @@ returns text language sql immutable as $$
     when p_status in ('trash', 'deleted') then 'archivado'
     when p_publicada                      then 'publicado'
     when p_status = 'ready'               then 'listo'
+    when p_status = 'pending'             then 'procesado'                  -- Crear lo terminó (ver arriba)
     else 'draft'                                                            -- incluye packing_list_only y demás
   end
 $$;
