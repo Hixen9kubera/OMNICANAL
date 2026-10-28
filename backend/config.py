@@ -260,6 +260,29 @@ class Settings(BaseSettings):
     # ventas sin pedido en 3 h.
     ml_webhook_reintentos_max_creados_hora: int = 20
     tiktok_webhook_reintentos_max_creados_hora: int = 20
+    # VIGILANTE DE VENTAS RECLAMADAS SIN PEDIDO (services/pedidos_vigilante.py,
+    # PLAN MAESTRO 2.11/F2.3): cada N min cuenta las filas de channel.orders con
+    # wc_order_id NULL cuyo registro (registrado_at, o creado_at antes de la 0079)
+    # tiene más de UMBRAL_MIN, y avisa por Slack al cambiar de estado. Solo lee y
+    # avisa. Nace APAGADO. EXCLUIR: llaves «canal:cuenta:orden» separadas por coma.
+    pedidos_vigilante_enabled: bool = False
+    pedidos_vigilante_min: int = 5
+    pedidos_vigilante_umbral_min: int = 10
+    pedidos_vigilante_excluir: str = ""
+    # SONDEO DE VENTAS DE ML (services/pedidos_ml_sondeo.py, PLAN MAESTRO 2.11/F2.3):
+    # ML solo entraba por webhook. Cada N min pregunta /orders/search por cuenta con
+    # ventana FIJA de HORAS hacia atrás (order.date_last_updated) y compara contra
+    # channel.orders: faltan, sin pedido hace > UMBRAL_MIN, o con otro estado. Medido
+    # el 28-oct en prod: 24 h = 14 páginas (~5 s) por pasada. SOLO_REGISTRO (por
+    # omisión) solo cuenta y avisa; sin él repara hasta LOTE por pasada por el camino
+    # de los reintentos del aviso, con el freno FRENO_ML. Nace APAGADO (regla 3).
+    pedidos_ml_sondeo_enabled: bool = False
+    pedidos_ml_sondeo_solo_registro: bool = True
+    pedidos_ml_sondeo_min: int = 15
+    pedidos_ml_sondeo_horas: int = 24
+    pedidos_ml_sondeo_paginas: int = 40
+    pedidos_ml_sondeo_umbral_min: int = 10
+    pedidos_ml_sondeo_lote: int = 25
     # GUÍA Y ETIQUETA PDF (pedidos_tiktok.refrescar_guias): número de rastreo en
     # la entrega de salida y el PDF de TikTok ("Subir guía", `<order_id>.pdf`)
     # en la orden CONFIRMADA de Odoo, verificados al re-leer. Cada 20 min porque
@@ -1528,6 +1551,13 @@ class Settings(BaseSettings):
     # Encender descuenta_stock = el corte de inventario a Woo.
     pedidos_wc_enabled: bool = True
     pedidos_wc_descuenta_stock: bool = False
+    # KUBERA PRIMERO (PLAN MAESTRO 2.11/F2.2): la venta se registra COMPLETA en
+    # channel.orders + order_items ANTES de crear/actualizar el pedido de Woo, y si
+    # Woo falla el reclamo NO se suelta (la venta queda «Woo pendiente»; la completan
+    # el reintento del aviso, el sondeo de ML y el vigilante). Nace APAGADO (regla 3).
+    # Se enciende en la MISMA acta que ML_WEBHOOK_REINTENTOS_ENABLED: sin reintento,
+    # un webhook fallido dejaría la venta en kubera sin pedido hasta otro aviso.
+    pedidos_kubera_primero: bool = False
     # Refresco de VENTAS contra la API de ML (tab Ventas): con false, el tab
     # sirve solo el caché ya guardado (días cerrados) y NO le pide nada nuevo a
     # ML — modo "puros pedidos de Woo" (Brandon, 2026-07-17). Los pedidos del
@@ -1545,6 +1575,14 @@ class Settings(BaseSettings):
     fba_refresco_auto: bool = True
     fba_refresco_hora_utc: int = 13
     pedidos_amazon_min: int = 5
+    # VENTANA del sondeo de Amazon (PLAN MAESTRO 2.11/F2.3). 0 = como siempre: pide
+    # desde la marca (último actualizado_at de AMAZON − 10 min). >0 = pide desde
+    # min(marca − 10 min, ahora − HORAS): tras una caída larga sigue mandando la marca
+    # (el 27-oct recuperó solo los 5 días del LWA vencido) y en un día normal re-mira
+    # una ventana fija, porque una marca que avanza con NUESTRAS escrituras deja atrás
+    # lo que no se vio (lección de Temu). Cuesta 1–2 páginas de getOrders por pasada;
+    # getOrderItems solo para lo que cambió (el sondeo compara contra kubera antes).
+    pedidos_amazon_ventana_horas: int = 0
     # Pedidos de Temu/TikTok vía M2E Cloud (order/find por canal). El token se
     # genera en M2E: Settings → Catalog → API. Sondeo suave (volumen ~0 aún).
     m2e_api_token: str = ""

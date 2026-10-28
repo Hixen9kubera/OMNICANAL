@@ -1001,6 +1001,38 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.702.0 — Pedidos sin Woo de puerta (PLAN MAESTRO 2.11): kubera primero, sondeo de ML, ventana de Amazon y vigilante. Todo NACE APAGADO
+
+**Por qué.** Woo es la puerta de cada venta: si no contesta, la venta no entra a kubera, el libro no la resta y se
+puede sobrevender (riesgo 7 del plan maestro). Las ventas de ML solo entraban por webhook: un aviso perdido dejaba la
+venta fuera hasta otro aviso (24-sep: 13 sin pedido; 21/22-oct: 162 recuperadas a mano). Y nadie veía cuánto tiempo
+quedaba una venta reclamada sin pedido.
+
+**Qué trae (todo inerte hasta su acta, `_paso_prod_pedidos_2_11`):**
+- **Vigilante** (`services/pedidos_vigilante.py`, `PEDIDOS_VIGILANTE_ENABLED=false`): cada 5 min cuenta las ventas con
+  `wc_order_id` NULL y registro de hace más de 10 min (`registrado_at`, o `creado_at` antes de la 0079) y avisa por
+  Slack solo al cambiar de estado. `PEDIDOS_VIGILANTE_EXCLUIR` para llaves conocidas. `GET /api/flujo/pedidos-sin-completar`.
+- **Sondeo de ML** (`services/pedidos_ml_sondeo.py`, `PEDIDOS_ML_SONDEO_ENABLED=false`, `_SOLO_REGISTRO=true`): cada
+  15 min, `GET /orders/search` por cuenta con ventana FIJA de 24 h (`order.date_last_updated`), contra
+  `channel.orders` (por orden o pack): falta / sin pedido / atrasada. En solo registro cuenta y avisa; si no, repara por
+  el camino de los reintentos del aviso con el freno `FRENO_ML`. Solo GET; un 401 va al renovador compartido. Medido en
+  producción el 28-oct: 14 páginas por pasada (~5 s), 0 diferencias. `GET /api/flujo/pedidos-ml-sondeo`.
+- **Ventana de Amazon** (`PEDIDOS_AMAZON_VENTANA_HORAS=0` = como hoy): `LastUpdatedAfter = min(marca − 10 min,
+  ahora − HORAS)`. Tras una caída manda la marca (el 27-oct recuperó sola los 5 días del LWA vencido); en un día
+  normal re-mira la ventana fija. El sondeo cuenta su cuota (llamadas, 429 y el límite anunciado):
+  `GET /api/flujo/pedidos-amazon-sondeo`.
+- **Kubera primero** (`PEDIDOS_KUBERA_PRIMERO=false`): la venta se registra COMPLETA (encabezado y líneas) ANTES de
+  Woo y otra vez después; si Woo falla, el reclamo NO se suelta (queda «Woo pendiente» para el reintento, el sondeo y el
+  vigilante). `wc_order_id` ya no vuelve a NULL (`coalesce`). Se enciende junto con `ML_WEBHOOK_REINTENTOS_ENABLED`.
+- **La señal «venta nueva en kubera»** (contrato v2 con INVENTARIO FANOUT): `orders_write.guardar` la devuelve después
+  del COMMIT (`nueva_en_kubera`, `vendible_cambia`, `todas_full` de las líneas, cuenta, orden, líneas). Con
+  `FANOUT_FUENTE=kubera` el fan-out encola SOLO desde ella (los no FULL, motivo «venta CUENTA ORDEN»), aunque Woo esté
+  caído; con `woo`, como siempre. La respuesta de `sincronizar` la trae en `"kubera"` para el planeador de OV.
+
+**Pruebas:** `test_pedidos_vigilante`, `test_pedidos_ml_sondeo`, `test_pedidos_amazon_ventana`, `test_kubera_primero`
+y `test_fanout_senal_kubera` (de INVENTARIO FANOUT, con la cola real del fan-out). Sandbox con el código real y
+ROLLBACK: 10/10.
+
 ### v0.701.0 — «¿Es FBA?» se contestaba con «¿tiene piezas?»
 
 Eduardo, mirando Análisis: *"ORG-0785-CAF-RED no tenemos su información de FBA

@@ -51,13 +51,25 @@ def estado() -> dict[str, Any]:
     return _ultimo
 
 
-async def _get(cli: httpx.AsyncClient, tok: str, ruta: str, params: dict) -> dict:
+async def _get(cli: httpx.AsyncClient, tok: str, ruta: str, params: dict,
+               cuota: dict | None = None, clave: str = "orders") -> dict:
+    """`cuota` (opcional) cuenta llamadas y 429 por `clave` y guarda el límite que
+    anuncia Amazon (x-amzn-RateLimit-Limit): con la ventana de ≥24 h (2.11) hay que
+    poder ver que el sondeo no se acerca al límite de getOrders."""
     r = await cli.get(f"{settings.amazon_sp_api_endpoint}{ruta}", params=params,
                       headers={"x-amz-access-token": tok})
+    if cuota is not None:
+        cuota[clave] = cuota.get(clave, 0) + 1
+        if r.headers.get("x-amzn-RateLimit-Limit"):
+            cuota[f"{clave}_limite"] = r.headers.get("x-amzn-RateLimit-Limit")
     if r.status_code == 429:  # rate limit: una pausa y un reintento bastan aquí
+        if cuota is not None:
+            cuota[f"{clave}_429"] = cuota.get(f"{clave}_429", 0) + 1
         await asyncio.sleep(2.0)
         r = await cli.get(f"{settings.amazon_sp_api_endpoint}{ruta}", params=params,
                           headers={"x-amz-access-token": tok})
+        if cuota is not None:
+            cuota[clave] += 1                # el reintento también gasta cuota
     r.raise_for_status()
     return r.json().get("payload") or {}
 
@@ -106,14 +118,18 @@ def _normalizar(o: dict, items: list[dict]) -> dict:
 
 
 def _desde() -> str:
-    """LastUpdatedAfter: el último `actualizado` de AMAZON menos el margen."""
+    """LastUpdatedAfter: el último `actualizado` de AMAZON menos el margen y, con
+    PEDIDOS_AMAZON_VENTANA_HORAS, nunca después de `ahora − HORAS` (2.11/F2.3)."""
     # Del REGISTRO (channel.orders), no del espejo: con `pedidos_ml` congelada
     # la marca se quedaba fija y el sondeo repetía siempre la misma ventana.
     from services import orders_write
+    ahora = datetime.now(timezone.utc).replace(tzinfo=None)
     m = orders_write.ultimo_actualizado("AMAZON")
-    base = m or (datetime.now(timezone.utc).replace(tzinfo=None)
-                 - timedelta(days=7))
+    base = m or (ahora - timedelta(days=7))
     base = base - timedelta(minutes=_MARGEN_MIN)
+    horas = int(getattr(settings, "pedidos_amazon_ventana_horas", 0) or 0)
+    if horas > 0:
+        base = min(base, ahora - timedelta(hours=horas))
     return base.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -125,14 +141,16 @@ async def revisar(proteger_stock: bool = False,
     salieron antes de que Woo fuera el maestro — descontarlas hoy duplicaría).
     """
     creados = actualizados = sin_cambio = errores = saltados = 0
+    cuota: dict[str, Any] = {}
     try:
         tok = await amazon._access_token()
         async with httpx.AsyncClient(timeout=30.0) as cli:
             params = {"MarketplaceIds": settings.amazon_marketplace_id,
                       "LastUpdatedAfter": desde_iso or _desde()}
+            cuota["desde"] = params["LastUpdatedAfter"]
             ordenes: list[dict] = []
             for _ in range(_MAX_PAGINAS):
-                pl = await _get(cli, tok, "/orders/v0/orders", params)
+                pl = await _get(cli, tok, "/orders/v0/orders", params, cuota, "orders")
                 ordenes += pl.get("Orders") or []
                 nt = pl.get("NextToken")
                 if not nt:
@@ -152,7 +170,8 @@ async def revisar(proteger_stock: bool = False,
                     sin_cambio += 1     # nada nuevo: ni items ni Woo se tocan
                     continue
                 try:
-                    it = await _get(cli, tok, f"/orders/v0/orders/{oid}/orderItems", {})
+                    it = await _get(cli, tok, f"/orders/v0/orders/{oid}/orderItems", {},
+                                    cuota, "items")
                     orden = _normalizar(o, it.get("OrderItems") or [])
                     r = await pedidos_ml.sincronizar(
                         oid, forzar_estado=destino, orden=orden,
@@ -175,13 +194,14 @@ async def revisar(proteger_stock: bool = False,
                     errores += 1
                     log.warning("orden Amazon %s: %s", oid, exc)
     except Exception as exc:  # noqa: BLE001
-        _ultimo.update(estado=f"error: {exc}", ts=datetime.now(timezone.utc).isoformat())
+        _ultimo.update(estado=f"error: {exc}", ts=datetime.now(timezone.utc).isoformat(),
+                       cuota=cuota)
         log.warning("sondeo Amazon falló: %s", exc)
         return _ultimo
     _ultimo.update(estado="ok", ts=datetime.now(timezone.utc).isoformat(),
                    ordenes=len(ordenes), creados=creados,
                    actualizados=actualizados, sin_cambio=sin_cambio,
-                   errores=errores, saltados=saltados)
+                   errores=errores, saltados=saltados, cuota=cuota)
     if creados or actualizados or errores:
         log.info("Pedidos Amazon: %d creados, %d actualizados, %d sin cambio, %d err",
                  creados, actualizados, sin_cambio, errores)

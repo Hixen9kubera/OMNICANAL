@@ -420,6 +420,31 @@ def iniciar() -> None:
                            max_instances=1, coalesce=True)
         log.info("Vigilante de cobertura del sync cada 60 min (mínimo %.0f%% en %s h).",
                  100 * settings.vigilante_sync_min_cobertura, settings.vigilante_sync_horas)
+    # Vigilante de VENTAS RECLAMADAS SIN PEDIDO (PLAN MAESTRO 2.11/F2.3): wc_order_id
+    # NULL por más de PEDIDOS_VIGILANTE_UMBRAL_MIN. Solo lee y avisa.
+    if getattr(settings, "pedidos_vigilante_enabled", False):
+        from services import pedidos_vigilante
+
+        async def _pedidos_vigilante() -> None:
+            await asyncio.to_thread(pedidos_vigilante.revisar)   # regla 11: lee la base
+
+        _scheduler.add_job(_pedidos_vigilante, "interval", minutes=settings.pedidos_vigilante_min,
+                           id="pedidos_vigilante",
+                           next_run_time=datetime.now() + timedelta(minutes=3),
+                           max_instances=1, coalesce=True)
+        log.info("Vigilante de ventas reclamadas sin pedido cada %s min (umbral %s min).",
+                 settings.pedidos_vigilante_min, settings.pedidos_vigilante_umbral_min)
+    # SONDEO DE VENTAS DE ML (PLAN MAESTRO 2.11/F2.3): ventana fija de 24 h contra
+    # channel.orders. Nace en solo registro.
+    if getattr(settings, "pedidos_ml_sondeo_enabled", False):
+        from services import pedidos_ml_sondeo
+        _scheduler.add_job(pedidos_ml_sondeo.revisar, "interval",
+                           minutes=settings.pedidos_ml_sondeo_min, id="pedidos_ml_sondeo",
+                           next_run_time=datetime.now() + timedelta(minutes=4),
+                           max_instances=1, coalesce=True)
+        log.info("Sondeo de ventas ML cada %s min, ventana %s h (%s).",
+                 settings.pedidos_ml_sondeo_min, settings.pedidos_ml_sondeo_horas,
+                 "solo registro" if settings.pedidos_ml_sondeo_solo_registro else "repara")
     # COLA DEL JUEZ de rivales (Competencia): juzga lo pendiente sin esperar a
     # que alguien vuelva a medir. Su primera pasada es el backfill y después es
     # el mantenimiento, dentro del MISMO tope de 24 h que el gancho de la captura

@@ -266,19 +266,94 @@ def liberar(canal: str, cuenta: str, external_order_id: str) -> None:
                     external_order_id, exc)
 
 
+# La venta tal como está en kubera, dentro de la transacción del registro. Con
+# `for update` la fila queda tomada hasta el COMMIT: la foto de antes es la de verdad.
+_SQL_FOTO = """
+select o.skus is null as esqueleto, o.estado_wc, o.wc_order_id,
+       coalesce((select json_agg(json_build_object('sku', i.sku::text, 'cantidad', i.cantidad,
+                                                   'es_fulfillment', i.es_fulfillment) order by i.linea)
+                   from channel.order_items i
+                  where i.canal = o.canal and i.cuenta = o.cuenta
+                    and i.external_order_id = o.external_order_id), '[]'::json) as lineas
+  from channel.orders o
+ where o.canal = %(ca)s and o.cuenta = %(cu)s and o.external_order_id = %(id)s
+"""
+
+
+def _foto(cur, encabezado: dict[str, Any], tomar: bool = False) -> dict[str, Any] | None:
+    cur.execute(_SQL_FOTO + (" for update of o" if tomar else ""),
+                {"ca": encabezado.get("canal"), "cu": encabezado.get("cuenta"),
+                 "id": str(encabezado.get("external_order_id") or "")})
+    fila = cur.fetchone()
+    if fila is None:
+        return None
+    if not isinstance(fila, dict):
+        fila = dict(zip([d[0] for d in cur.description], fila))
+    lineas = fila.get("lineas") or []
+    if isinstance(lineas, str):
+        import json
+        lineas = json.loads(lineas)
+    return {**fila, "lineas": lineas}
+
+
+def senal(antes: dict[str, Any] | None, despues: dict[str, Any] | None,
+          encabezado: dict[str, Any]) -> dict[str, Any]:
+    """La señal «venta nueva en kubera» (PLAN MAESTRO 2.11; contrato v2 acordado con
+    INVENTARIO FANOUT el 28-oct). Función pura: compara la venta antes y después del
+    registro.
+
+      nueva_en_kubera  la escritura la pasó de «no existía» o «esqueleto» a completa:
+                       UNA vez por venta.
+      vendible_cambia  una venta YA completa que entra o sale de 'cancelled' teniendo
+                       alguna línea no FULL, o a la que le cambian SKU o cantidad.
+      todas_full       todas las líneas FULL (de las LÍNEAS: el encabezado no se usa).
+
+    Nadie la escucha mientras FANOUT_FUENTE=woo y no haya planeador."""
+    lineas = list((despues or {}).get("lineas") or [])
+    completa = bool(despues) and not despues.get("esqueleto")
+    nueva = completa and (antes is None or bool(antes.get("esqueleto")))
+    cambia = False
+    if completa and not nueva:
+        cancela = (antes.get("estado_wc") == "cancelled") != (despues.get("estado_wc") == "cancelled")
+        if cancela and any(not ln.get("es_fulfillment") for ln in lineas):
+            cambia = True
+
+        def _lin(ls):
+            return sorted((str(ln.get("sku") or ""), int(ln.get("cantidad") or 0)) for ln in ls)
+        if _lin(antes.get("lineas") or []) != _lin(lineas):
+            cambia = True
+    return {"nueva_en_kubera": nueva, "vendible_cambia": cambia,
+            "canal": encabezado.get("canal"), "cuenta": encabezado.get("cuenta"),
+            "external_order_id": str(encabezado.get("external_order_id") or ""),
+            "estado_wc": (despues or {}).get("estado_wc"),
+            "todas_full": bool(lineas) and all(ln.get("es_fulfillment") for ln in lineas),
+            "wc_order_id": (despues or {}).get("wc_order_id"),
+            "lineas": [{"sku": ln.get("sku"), "cantidad": int(ln.get("cantidad") or 0),
+                        "es_fulfillment": bool(ln.get("es_fulfillment"))} for ln in lineas],
+            "escrito_en": "kubera"}
+
+
 def guardar(origen_py: str, funcion: str, encabezado: dict[str, Any],
             lineas: dict[str, Any], clave: str,
-            escribir_mysql: Callable[[], None]) -> None:
-    """Registro del pedido bajo el corte: kubera primaria, MySQL espejo."""
+            escribir_mysql: Callable[[], None]) -> dict[str, Any]:
+    """Registro del pedido bajo el corte: kubera primaria, MySQL espejo.
+
+    Devuelve la señal de `senal()` DESPUÉS del COMMIT (quien la use —el fan-out, el
+    planeador— ve la venta ya escrita). Si kubera falla y la venta cae a MySQL + cola
+    del espejo, la señal sale con `escrito_en='mysql_respaldo'` y en False: el reproceso
+    la completa después, en silencio."""
     from services import kubera_mirror
     con_lineas = kubera_mirror.activo("pedidos_ml_items")
     try:
         with sdb.get_cursor() as cur:
             cur.execute("select set_config('statement_timeout', '4000', true)")
             cur.execute("select set_config('app.via', 'corte_orders', true)")
+            antes = _foto(cur, encabezado, tomar=True)
             kubera_mirror._up_channel_orders(cur, encabezado)
             if con_lineas:
                 kubera_mirror._up_channel_order_items(cur, lineas)
+            despues = _foto(cur, encabezado)
+        resultado = senal(antes, despues, encabezado)
     except Exception as exc:  # noqa: BLE001
         log.warning("escritura primaria kubera channel.orders(%s) falló — MySQL "
                     "aguanta y el evento viaja por el espejo: %s", clave, exc)
@@ -297,10 +372,10 @@ def guardar(origen_py: str, funcion: str, encabezado: dict[str, Any],
                 f"por el espejo/cola.")
         except Exception:  # noqa: BLE001
             pass
-        return
+        return {**senal(None, None, encabezado), "escrito_en": "mysql_respaldo"}
     # Desmantelamiento (paso 1): sin espejo inverso, pedidos_ml queda congelada
     # a propósito. kubera ya guardó el pedido completo (encabezado + líneas).
     # El camino de emergencia de arriba NO depende de este flag.
-    if not settings.orders_espejo_inverso:
-        return
-    _en_hilo(_espejo_inverso_mysql, clave, escribir_mysql)
+    if settings.orders_espejo_inverso:
+        _en_hilo(_espejo_inverso_mysql, clave, escribir_mysql)
+    return resultado

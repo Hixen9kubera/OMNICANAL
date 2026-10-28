@@ -561,14 +561,19 @@ def _up_channel_orders(cur, p: dict[str, Any]) -> None:
     (NULL cuenta como 0, «nunca observado»). Una fila ya completa no cambia.
     `creado_at` NO se toca: en las filas reclamadas es la hora del reclamo y eso
     leen hoy el libro (`stock_libro`), la tanda de T0 (0076) y `fanout_bodegas`.
-    Tampoco `registrado_at` (0079): nace con su default y nadie la reescribe."""
+    Tampoco `registrado_at` (0079): nace con su default y nadie la reescribe.
+
+    `wc_order_id` NUNCA vuelve a NULL (2.11, kubera primero): con PEDIDOS_KUBERA_PRIMERO
+    la venta se registra ANTES de que exista su pedido de Woo, y una escritura sin
+    pedido —el registro previo de un re-aviso, o uno con Woo caído— no puede borrar
+    el número que ya estaba. Soltar un reclamo es `orders_write.liberar`, no esto."""
     cur.execute(
         """insert into channel.orders
              (external_order_id, canal, cuenta, wc_order_id, estado_canal,
               estado_wc, total, comision, es_fulfillment, skus, creado_at)
            values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::citext[],%s)
            on conflict (canal, cuenta, external_order_id) do update set
-             wc_order_id  = excluded.wc_order_id,
+             wc_order_id  = coalesce(excluded.wc_order_id, channel.orders.wc_order_id),
              estado_canal = excluded.estado_canal,
              estado_wc    = excluded.estado_wc,
              total        = case when coalesce(channel.orders.total, 0) = 0

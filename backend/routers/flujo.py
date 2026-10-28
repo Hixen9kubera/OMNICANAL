@@ -342,6 +342,34 @@ def _salud() -> list[dict[str, Any]]:
     return filas
 
 
+@router.get("/pedidos-sin-completar")
+def pedidos_sin_completar(umbral_min: int | None = None) -> dict[str, Any]:
+    """Ventas reclamadas sin pedido (wc_order_id NULL) hace más de `umbral_min`
+    (PEDIDOS_VIGILANTE_UMBRAL_MIN por omisión), y lo último que vio el vigilante.
+    Solo lee; responde aunque el vigilante esté apagado."""
+    from services import pedidos_vigilante
+    filas = pedidos_vigilante.pendientes(umbral_min)
+    return {"n": len(filas), "filas": filas[:100], "vigilante": pedidos_vigilante.estado()}
+
+
+@router.get("/pedidos-ml-sondeo")
+def pedidos_ml_sondeo_estado() -> dict[str, Any]:
+    """Lo último que vio el sondeo de ventas de ML: por cuenta, cuántas órdenes trajo
+    ML en la ventana y cuántas faltan, siguen sin pedido o tienen otro estado."""
+    from services import pedidos_ml_sondeo
+    return pedidos_ml_sondeo.estado()
+
+
+@router.get("/pedidos-amazon-sondeo")
+def pedidos_amazon_sondeo_estado() -> dict[str, Any]:
+    """La última pasada del sondeo de Amazon: órdenes vistas, creadas y actualizadas, y su
+    CUOTA (llamadas a getOrders y getOrderItems, 429 y el límite que anuncia Amazon), con la
+    ventana configurada (PEDIDOS_AMAZON_VENTANA_HORAS, 2.11)."""
+    from config import settings
+    from services import pedidos_amazon
+    return {"ventana_horas": settings.pedidos_amazon_ventana_horas, **pedidos_amazon.estado()}
+
+
 @router.get("/pulso")
 def pulso(ventana_min: int = 15) -> dict[str, Any]:
     global _previo, _previo_t, _salud_cache, _salud_t

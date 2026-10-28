@@ -476,6 +476,113 @@ def _ya_compensado(wc_id: int, cuenta: str | None = None,
         return False
 
 
+def _registrar_venta(order_id: str, orden: dict, estado_wc: str, wc_id: int | None,
+                     comision: float, skus: list, creado: datetime, ahora: datetime) -> dict | None:
+    """⚠️ BLOQUEA (kubera + MySQL de respaldo): en hilo. El registro de la venta, sacado de
+    `_sincronizar_serializado` para poder llamarlo también ANTES de Woo (PLAN MAESTRO 2.11,
+    kubera primero). Devuelve la señal de `orders_write.guardar` («venta nueva en kubera»), o
+    None si el registro va por el camino viejo (sin el corte de pedidos)."""
+    def _mysql() -> None:
+        with db.get_cursor() as cur:
+            cur.execute(
+                """INSERT INTO pedidos_ml (ml_order_id, cuenta, wc_order_id, estado_ml,
+                       estado_wc, total, comision, es_full, skus, creado, actualizado)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   ON DUPLICATE KEY UPDATE wc_order_id=VALUES(wc_order_id),
+                       estado_ml=VALUES(estado_ml), estado_wc=VALUES(estado_wc),
+                       -- La comisión NO se re-toca (congela el dato histórico de la
+                       -- venta), SALVO que esté en 0: un 0 no es histórico, es un
+                       -- dato que nunca se calculó (token caído al crearse). Solo
+                       -- se permite el paso 0 → valor real; un valor ya puesto es
+                       -- inmutable (COALESCE(NULLIF...) evita re-pisar >0).
+                       comision=IF(comision=0, VALUES(comision), comision),
+                       -- MISMA REGLA para el TOTAL (hallazgo de Eduardo, 28-jul):
+                       -- Amazon NO publica los importes mientras la orden está
+                       -- "Pending" (OrderTotal e ItemPrice llegan vacíos), así que
+                       -- la venta nacía congelada en $0 y ahí se quedaba. 14 pedidos
+                       -- afectados, 6 de ellos ya cobrados. Un 0 no es un dato
+                       -- histórico: es un dato que nunca se pudo capturar. Solo se
+                       -- permite 0 → valor real; un total ya puesto es inmutable.
+                       total=IF(total=0, VALUES(total), total),
+                       actualizado=VALUES(actualizado)""",
+                (order_id, orden["cuenta"], wc_id, orden.get("estado"), estado_wc,
+                 orden["total"], comision, 1 if orden.get("es_full") else 0,
+                 ",".join(s for s in skus if s)[:255], creado, ahora))
+
+    # Espejo kubera: el pedido viaja a channel.orders (DDL aplicado el
+    # 2026-07-22 con GO de Eduardo). El array de SKUs va COMPLETO — el CSV
+    # de MySQL trunca a 255; en conflicto solo se mueven estados (el total
+    # congelado no se re-toca, igual que aquí).
+    cuenta = orden["cuenta"]
+    canal, origen_py, funcion = _ESPEJO_ORIGEN.get(
+        cuenta, (str(orden.get("detalle") or cuenta).lower(),
+                 "services/pedidos_m2e.py", "→ pedidos_ml.sincronizar"))
+    encabezado = {
+        "external_order_id": str(order_id), "canal": canal, "cuenta": cuenta,
+        "wc_order_id": wc_id, "estado_canal": str(orden.get("estado") or ""),
+        "estado_wc": estado_wc, "total": orden["total"],
+        "comision": comision, "es_fulfillment": bool(orden.get("es_full")),
+        "skus": [s for s in skus if s], "creado_at": creado}
+    # LÍNEAS con cantidades e item_id → channel.order_items (F1 de la
+    # absorción de dailytrack, GO Eduardo 2026-07-28). Los datos ya están
+    # en memoria (meli/pedidos_amazon/pedidos_m2e normalizan igual): cero
+    # llamadas extra. Tabla-origen virtual `pedidos_ml_items`: se enciende
+    # sumándola a KUBERA_MIRROR_TABLAS (variable Railway, sin deploy). La
+    # comisión de línea viaja como TOTAL (fee unitario × cantidad) — misma
+    # base que daily_sales.sale_fee, y suma a la comisión del encabezado.
+    lineas = {**encabezado, "lineas": [
+        {"linea": n, "item_id": it.get("item_id") or None,
+         "sku": (it.get("sku") or "").strip() or None,
+         "titulo": (it.get("titulo") or "")[:200] or None,
+         "cantidad": int(it.get("cantidad") or 1),
+         "precio_unitario": it.get("precio_unitario"),
+         "comision": round(float(it.get("comision_ml") or 0)
+                           * int(it.get("cantidad") or 1), 2)}
+        for n, it in enumerate(orden.get("items", []), start=1)]}
+    # F6 (corte, opción A): kubera primaria + pedidos_ml de espejo inverso.
+    # EN UN HILO: psycopg2 es bloqueante y esto son varios viajes a kubera.
+    # Dentro de la corrutina congelaba el backend ENTERO en cada venta —
+    # con la tormenta de avisos de ML, el panel dejaba de cargar (13-ago).
+    if orders_write.activo():
+        return orders_write.guardar(origen_py, funcion, encabezado, lineas,
+                                    f"{cuenta}:{order_id}", _mysql)
+    _mysql()
+    kubera_mirror.espejar(
+        origen_py, funcion, "pedidos_ml", "channel.orders", "UPSERT",
+        encabezado, clave=f"{cuenta}:{order_id}")
+    kubera_mirror.espejar(
+        origen_py, "sincronizar (líneas)", "pedidos_ml_items",
+        "channel.order_items", "UPSERT", lineas,
+        clave=f"{cuenta}:{order_id}")
+    return None
+
+
+def _avisar_fanout(senal: dict | None, order_id: str) -> None:
+    """FANOUT_FUENTE=kubera (contrato v2 con INVENTARIO FANOUT, 28-oct): la venta —o su
+    cancelación— movió el libro, así que se encolan sus SKUs NO FULL, con el motivo de
+    siempre. Solo desde la señal de kubera (`nueva_en_kubera` o `vendible_cambia`), que se
+    da UNA vez por cambio y DESPUÉS del commit. Con FANOUT_FUENTE=woo no hace nada: el
+    fan-out sigue en el «creado» de Woo. Nunca lanza: una venta no se cae por el fan-out."""
+    try:
+        from services import stock_libro
+        if not senal or not stock_libro.lee_libro():
+            return
+        if not (senal.get("nueva_en_kubera") or senal.get("vendible_cambia")):
+            return
+        if not senal.get("lineas"):
+            # Sin líneas no hay qué repartir y no quedaría rastro (pasaría con
+            # pedidos_ml_items fuera de KUBERA_MIRROR_TABLAS). Que se vea.
+            log.warning("fan-out (libro): la venta %s cambió el libro pero llegó sin líneas; "
+                        "no se encoló nada", order_id)
+            return
+        skus = [ln["sku"] for ln in senal.get("lineas") or []
+                if ln.get("sku") and not ln.get("es_fulfillment")]
+        if skus:
+            fanout_stock.encolar_varios(skus, motivo=f"venta {senal.get('cuenta')} {order_id}")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("fan-out (libro) no encolado para %s: %s", order_id, exc)
+
+
 async def sincronizar(order_id: str, forzar_estado: str | None = None,
                       proteger_stock: bool = False,
                       orden: dict | None = None,
@@ -613,6 +720,21 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
     except Exception:  # noqa: BLE001
         pass
 
+    # KUBERA PRIMERO (PLAN MAESTRO 2.11/F2.2, PEDIDOS_KUBERA_PRIMERO, apagado por omisión):
+    # la venta se registra COMPLETA —encabezado y líneas— antes de tocar Woo, con el
+    # pedido que ya hubiera o ninguno. Si Woo no contesta, kubera ya la tiene: el libro la
+    # resta, el fan-out (con FANOUT_FUENTE=kubera) se entera y el reintento solo crea el
+    # pedido. Hoy Woo es la puerta: si se cae, la venta no existe en kubera (riesgo 7).
+    kubera_primero = bool(getattr(settings, "pedidos_kubera_primero", False))
+    if kubera_primero:
+        try:
+            senal_previa = await asyncio.to_thread(
+                _registrar_venta, order_id, orden, payload["status"],
+                (previo or {}).get("wc_order_id"), comision, skus, creado, ahora)
+            _avisar_fanout(senal_previa, str(order_id))
+        except Exception as exc:  # noqa: BLE001 — Woo sigue como siempre
+            log.warning("kubera primero: no se registró %s antes de Woo: %s", order_id, exc)
+
     foto_previa: list[dict] | None = None   # `_reduced_stock` antes de cancelar
     try:
         async with httpx.AsyncClient(base_url=_WC, auth=_AUTH, timeout=45.0) as cli:
@@ -704,6 +826,13 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
                     "orden %s: falló sin rastro en Woo; el candado se retiene "
                     "y la siguiente pasada del sondeo decide — adopta o crea "
                     "(%s)", order_id, exc)
+            elif kubera_primero:
+                # Con kubera primero NO se suelta: la venta YA está registrada con
+                # sus líneas, y `liberar` (wc_order_id NULL) la borraría junto con
+                # ellas (on delete cascade). Queda «Woo pendiente»: el reintento del
+                # aviso, el sondeo de ML y el vigilante la completan (2.11).
+                log.warning("orden %s: Woo falló con kubera primero; la venta queda "
+                            "registrada sin pedido (%s)", order_id, exc)
             else:
                 # Webhook (ML): sin reintento garantizado, soltar sigue siendo
                 # lo correcto — un candado retenido sin otro aviso perdería la
@@ -728,83 +857,11 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
     # (`encabezado` sale de `orden`/`payload`/`comision`/`skus`, calculados
     # todos antes de crear en Woo), y la compensación no lee nada que el
     # registro produzca.
+    senal = None
     try:
-        def _mysql() -> None:
-            with db.get_cursor() as cur:
-                cur.execute(
-                    """INSERT INTO pedidos_ml (ml_order_id, cuenta, wc_order_id, estado_ml,
-                           estado_wc, total, comision, es_full, skus, creado, actualizado)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                       ON DUPLICATE KEY UPDATE wc_order_id=VALUES(wc_order_id),
-                           estado_ml=VALUES(estado_ml), estado_wc=VALUES(estado_wc),
-                           -- La comisión NO se re-toca (congela el dato histórico de la
-                           -- venta), SALVO que esté en 0: un 0 no es histórico, es un
-                           -- dato que nunca se calculó (token caído al crearse). Solo
-                           -- se permite el paso 0 → valor real; un valor ya puesto es
-                           -- inmutable (COALESCE(NULLIF...) evita re-pisar >0).
-                           comision=IF(comision=0, VALUES(comision), comision),
-                           -- MISMA REGLA para el TOTAL (hallazgo de Eduardo, 28-jul):
-                           -- Amazon NO publica los importes mientras la orden está
-                           -- "Pending" (OrderTotal e ItemPrice llegan vacíos), así que
-                           -- la venta nacía congelada en $0 y ahí se quedaba. 14 pedidos
-                           -- afectados, 6 de ellos ya cobrados. Un 0 no es un dato
-                           -- histórico: es un dato que nunca se pudo capturar. Solo se
-                           -- permite 0 → valor real; un total ya puesto es inmutable.
-                           total=IF(total=0, VALUES(total), total),
-                           actualizado=VALUES(actualizado)""",
-                    (order_id, orden["cuenta"], wc_id, orden.get("estado"), payload["status"],
-                     orden["total"], comision, 1 if orden.get("es_full") else 0,
-                     ",".join(s for s in skus if s)[:255], creado, ahora))
-
-        # Espejo kubera: el pedido viaja a channel.orders (DDL aplicado el
-        # 2026-07-22 con GO de Eduardo). El array de SKUs va COMPLETO — el CSV
-        # de MySQL trunca a 255; en conflicto solo se mueven estados (el total
-        # congelado no se re-toca, igual que aquí).
-        cuenta = orden["cuenta"]
-        canal, origen_py, funcion = _ESPEJO_ORIGEN.get(
-            cuenta, (str(orden.get("detalle") or cuenta).lower(),
-                     "services/pedidos_m2e.py", "→ pedidos_ml.sincronizar"))
-        encabezado = {
-            "external_order_id": str(order_id), "canal": canal, "cuenta": cuenta,
-            "wc_order_id": wc_id, "estado_canal": str(orden.get("estado") or ""),
-            "estado_wc": payload["status"], "total": orden["total"],
-            "comision": comision, "es_fulfillment": bool(orden.get("es_full")),
-            "skus": [s for s in skus if s], "creado_at": creado}
-        # LÍNEAS con cantidades e item_id → channel.order_items (F1 de la
-        # absorción de dailytrack, GO Eduardo 2026-07-28). Los datos ya están
-        # en memoria (meli/pedidos_amazon/pedidos_m2e normalizan igual): cero
-        # llamadas extra. Tabla-origen virtual `pedidos_ml_items`: se enciende
-        # sumándola a KUBERA_MIRROR_TABLAS (variable Railway, sin deploy). La
-        # comisión de línea viaja como TOTAL (fee unitario × cantidad) — misma
-        # base que daily_sales.sale_fee, y suma a la comisión del encabezado.
-        lineas = {**encabezado, "lineas": [
-            {"linea": n, "item_id": it.get("item_id") or None,
-             "sku": (it.get("sku") or "").strip() or None,
-             "titulo": (it.get("titulo") or "")[:200] or None,
-             "cantidad": int(it.get("cantidad") or 1),
-             "precio_unitario": it.get("precio_unitario"),
-             "comision": round(float(it.get("comision_ml") or 0)
-                               * int(it.get("cantidad") or 1), 2)}
-            for n, it in enumerate(orden.get("items", []), start=1)]}
-        # F6 (corte, opción A): kubera primaria + pedidos_ml de espejo inverso.
-        # EN UN HILO: psycopg2 es bloqueante y esto son varios viajes a kubera.
-        # Dentro de la corrutina congelaba el backend ENTERO en cada venta —
-        # con la tormenta de avisos de ML, el panel dejaba de cargar (13-ago).
-        def _registrar() -> None:
-            if orders_write.activo():
-                orders_write.guardar(origen_py, funcion, encabezado, lineas,
-                                     f"{cuenta}:{order_id}", _mysql)
-            else:
-                _mysql()
-                kubera_mirror.espejar(
-                    origen_py, funcion, "pedidos_ml", "channel.orders", "UPSERT",
-                    encabezado, clave=f"{cuenta}:{order_id}")
-                kubera_mirror.espejar(
-                    origen_py, "sincronizar (líneas)", "pedidos_ml_items",
-                    "channel.order_items", "UPSERT", lineas,
-                    clave=f"{cuenta}:{order_id}")
-
-        await asyncio.to_thread(_registrar)
+        # EN UN HILO: psycopg2 es bloqueante y esto son varios viajes a kubera (13-ago).
+        senal = await asyncio.to_thread(_registrar_venta, order_id, orden, payload["status"],
+                                        wc_id, comision, skus, creado, ahora)
     except Exception as exc:  # noqa: BLE001
         log.warning("No se pudo registrar pedidos_ml %s: %s", order_id, exc)
 
@@ -855,7 +912,11 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
     # y no toca el almacén compartido. Fire-and-forget: nunca rompe la venta.
     try:
         descuenta = not (orden.get("es_full") or proteger_stock)
-        if descuenta and accion == "creado":
+        from services import stock_libro
+        if stock_libro.lee_libro():
+            # FANOUT_FUENTE=kubera: SOLO desde la señal de kubera (2.11, INVENTARIO FANOUT).
+            _avisar_fanout(senal, str(order_id))
+        elif descuenta and accion == "creado":
             fanout_stock.encolar_varios([s for s in skus if s],
                                         motivo=f"venta {orden['cuenta']} {order_id}")
     except Exception as exc:  # noqa: BLE001
@@ -964,4 +1025,4 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
             "estado_ml": orden.get("estado"), "total": orden["total"],
             "comision": comision, "neto": round(orden["total"] - comision, 2),
             "es_full": bool(orden.get("es_full")), "skus": skus,
-            "sin_mapear": sin_mapear}
+            "sin_mapear": sin_mapear, "kubera": senal}

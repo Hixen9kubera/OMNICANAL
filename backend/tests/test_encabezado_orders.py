@@ -116,6 +116,10 @@ class ElConflictoCompletaElEsqueleto(unittest.TestCase):
         _, params = _upsert_orders({**PAYLOAD, "skus": None})
         self.assertEqual(params[9], [])
 
+    def test_wc_order_id_nunca_vuelve_a_nulo(self):
+        # 2.11 kubera primero: una escritura sin pedido no borra el que ya estaba.
+        self.assertEqual(self.set["wc_order_id"], "coalesce(excluded.wc_order_id, channel.orders.wc_order_id)")
+
     def test_lo_de_siempre_sigue_en_el_conflicto(self):
         self.assertEqual(set(self.set), {"wc_order_id", "estado_canal", "estado_wc", "total",
                                          "comision", "es_fulfillment", "skus", "actualizado_at"})
