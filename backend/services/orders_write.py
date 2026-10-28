@@ -260,13 +260,18 @@ def liberar(canal: str, cuenta: str, external_order_id: str) -> None:
     siguiente aviso de esa orden vería "ya reclamada" y no la crearía nunca:
     la venta se perdería en silencio, que es peor que el duplicado que se
     intenta evitar. Solo borra si sigue sin pedido.
+
+    Y solo un ESQUELETO (`skus` NULL; segunda revisión de MAESTRO, #8): una venta ya
+    registrada con sus líneas (kubera primero) no es un reclamo, es la venta.
+    `reclamar(estricto=False)` da True si kubera lanzó aunque la fila exista, y entonces
+    esta llamada podía borrar una venta «Woo pendiente» completa junto con sus líneas.
     """
     if not activo():
         return
     try:
         sdb.execute(
             "delete from channel.orders where canal = %(ca)s and cuenta = %(cu)s "
-            "  and external_order_id = %(id)s and wc_order_id is null",
+            "  and external_order_id = %(id)s and wc_order_id is null and skus is null",
             {"ca": canal, "cu": cuenta, "id": str(external_order_id)})
     except Exception as exc:  # noqa: BLE001
         log.warning("no se pudo liberar el reclamo de %s: %s",

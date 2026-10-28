@@ -65,6 +65,22 @@ class Clasificar(unittest.TestCase):
         self.assertEqual((cl["vieja"], cl["falta"]), (["1"], []))
         self.assertEqual(S.clasificar({"1": o}, {}, AHORA, 10)["falta"], ["1"])      # sin tope, como antes
 
+    def test_vieja_no_tapa_atrasada(self):
+        # Segunda revisión de MAESTRO, #4: una atrasada vieja es un PUT de estado (no crea nada):
+        # se repara. Una cancelación de hace 8 días se quedaba sin aplicar.
+        hace_ocho = AHORA - timedelta(days=8)
+        o = {"estado": "cancelled", "pack": None, "creada": hace_ocho, "actualizada": VIEJA}
+        kb = {"1": {"wc_order_id": 9, "estado_canal": "paid", "registrado": hace_ocho}}
+        cl = S.clasificar({"1": o}, kb, AHORA, 10, max_dias=7)
+        self.assertEqual((cl["atrasada"], cl["vieja"]), (["1"], []))
+
+    def test_vieja_si_tapa_lo_que_crearia(self):
+        hace_ocho = AHORA - timedelta(days=8)
+        o = {"estado": "paid", "pack": None, "creada": hace_ocho, "actualizada": VIEJA}
+        kb = {"2": {"wc_order_id": None, "estado_canal": "paid", "registrado": hace_ocho}}
+        cl = S.clasificar({"1": o, "2": dict(o)}, kb, AHORA, 10, max_dias=7)
+        self.assertEqual(sorted(cl["vieja"]), ["1", "2"])          # falta y sin_pedido
+
     def test_se_reconoce_por_el_pack(self):
         kb = {"P1": {"wc_order_id": 9, "estado_canal": "paid", "registrado": VIEJA}}
         self.assertEqual(S.clasificar({"1": orden(pack="P1")}, kb, AHORA, 10)["al_dia"], ["1"])
@@ -115,6 +131,22 @@ class Revisar(unittest.TestCase):
         c = r["cuentas"]["BEKURA"]
         self.assertEqual((c["por_pack"], c["vieja"], c["falta"]), (1, 1, 1))
         self.assertEqual([x.args[0] for x in self.sinc.await_args_list], ["3"])
+
+    def test_por_pack_y_viejas_llegan_a_slack(self):
+        # Segunda revisión, #4: `malas` no las incluía y nadie se enteraba.
+        hace_un_mes = AHORA - timedelta(days=30)
+        ml = {"1": {"estado": "paid", "pack": "P1", "creada": VIEJA, "actualizada": VIEJA},
+              "2": {"estado": "paid", "pack": None, "creada": hace_un_mes, "actualizada": VIEJA}}
+        kb = {"P1": {"wc_order_id": None, "estado_canal": "paid", "registrado": VIEJA}}
+        with mock.patch.object(S, "leer_ml", mock.AsyncMock(
+                side_effect=lambda c, h, p: {"ordenes": ml if c == "BEKURA" else {}, "paginas": 1, "total": 2,
+                                             "error": None})), \
+             mock.patch.object(S, "kubera", return_value=kb), \
+             mock.patch.object(settings, "pedidos_ml_sondeo_max_dias", 7):
+            asyncio.run(S.revisar())
+        self.assertEqual(self.aviso.call_args.args[1], "diferencias")
+        self.assertIn("1 por pack", self.aviso.call_args.args[2])
+        self.assertIn("1 viejas", self.aviso.call_args.args[2])
 
     def test_se_detiene_en_el_freno(self):
         self.anotar.return_value = True

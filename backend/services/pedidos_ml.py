@@ -726,18 +726,21 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
     # resta, el fan-out (con FANOUT_FUENTE=kubera) se entera y el reintento solo crea el
     # pedido. Hoy Woo es la puerta: si se cae, la venta no existe en kubera (riesgo 7).
     #
-    # REVISIÓN DE MAESTRO, #1. Solo para una venta NUEVA (sin pedido de Woo) y SIN estado:
-    #   · `estado_wc` queda NULL hasta que Woo conteste. El libro igual la resta
-    #     (`coalesce(estado_wc, '') <> 'cancelled'`), y el dedupe de los sondeos no la
-    #     confunde con «sin cambio» si Woo falla: NULL nunca es el estado de destino.
+    # REVISIÓN DE MAESTRO, #1. Solo para una venta NUEVA (sin pedido de Woo):
     #   · Una venta que YA tiene pedido no se pre-registra: si el PUT a Woo falla (una
     #     cancelación), kubera conserva el estado anterior y el sondeo/reintento ve la
     #     diferencia. Pre-registrar el estado nuevo lo dejaba callado para siempre.
+    #   · Con su ESTADO de ML (segunda revisión, #7). La primera versión lo dejaba NULL para
+    #     que el dedupe de los sondeos no la diera por «sin cambio» si Woo fallaba; eso ya
+    #     lo cubre que `estados_wc` y la marca de agua no cuenten las filas sin pedido. Con
+    #     NULL, una venta que llega YA cancelada se restaba del libro hasta que Woo contestara.
     kubera_primero = bool(getattr(settings, "pedidos_kubera_primero", False))
+    senal_previa: dict | None = None
     if kubera_primero and not (previo and previo.get("wc_order_id")):
         try:
             senal_previa = await asyncio.to_thread(
-                _registrar_venta, order_id, orden, None, None, comision, skus, creado, ahora)
+                _registrar_venta, order_id, orden, payload["status"], None, comision, skus, creado,
+                ahora)
             _avisar_fanout(senal_previa, str(order_id))
         except Exception as exc:  # noqa: BLE001 — Woo sigue como siempre
             log.warning("kubera primero: no se registró %s antes de Woo: %s", order_id, exc)
@@ -923,15 +926,26 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
         if stock_libro.lee_libro():
             # FANOUT_FUENTE=kubera: SOLO desde la señal de kubera (2.11, INVENTARIO FANOUT).
             _avisar_fanout(senal, str(order_id))
-            if not senal or senal.get("escrito_en") != "kubera":
-                # Revisión de MAESTRO, #3: la venta no llegó a kubera (cayó a MySQL o el
-                # registro lanzó): no hay señal y el libro no la resta todavía. La regresa
-                # el reproceso del respaldo (2.15, con su señal); mientras tanto, que se vea.
+            en_kubera = any(x and x.get("escrito_en") == "kubera" for x in (senal, senal_previa))
+            if not en_kubera:
+                # La venta no llegó a kubera por esta vía (cayó a MySQL o el registro lanzó), ni
+                # por el pre-registro de kubera primero (segunda revisión, #6: si ese sí escribió,
+                # la venta ya está en el libro y ya avisó).
+                #
+                # Segunda revisión, #2: al caer a MySQL el evento viaja por `espejar` y su worker
+                # (`_trabajar`) suele aplicarlo en milisegundos, SIN foto ni señal; nunca llega a
+                # la cola del respaldo, así que el reproceso (2.15) no lo ve. Se encolan aquí sus
+                # SKU no FULL: el fan-out lee el libro tras su espera y, si el worker ya la aplicó,
+                # reparte el número bueno; si no, el reproceso los vuelve a encolar con su señal.
+                # Encolar de más no daña: recalcula el mismo número.
+                if descuenta:
+                    fanout_stock.encolar_varios([s for s in skus if s],
+                                                motivo=f"venta {orden['cuenta']} {order_id} (sin señal)")
                 await asyncio.to_thread(
                     alertas.avisar, "fanout_sin_senal",
                     f"*Venta {orden['cuenta']} {order_id} sin señal de kubera* "
-                    f"({(senal or {}).get('escrito_en') or 'sin registro'}): con FANOUT_FUENTE=kubera "
-                    f"el libro no la resta hasta que el reproceso del respaldo la aplique.")
+                    f"({(senal or {}).get('escrito_en') or 'sin registro'}): se encolaron sus SKU para "
+                    f"el fan-out; el libro la resta cuando el espejo o el reproceso la apliquen.")
         elif descuenta and accion == "creado":
             fanout_stock.encolar_varios([s for s in skus if s],
                                         motivo=f"venta {orden['cuenta']} {order_id}")

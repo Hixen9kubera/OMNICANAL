@@ -14,6 +14,7 @@ Lo que las pruebas unitarias no pueden ver —el SQL de verdad contra un Postgre
   K7. Un esqueleto de hace 40 días que se completa NO es nueva (el planeador no crea OV vieja), pero sí cambia
       el vendible (el fan-out se entera). Revisión de MAESTRO, #2.
   K8. `estados_wc` y la marca de agua (`ultimo_actualizado`) no cuentan las filas sin pedido. Revisión, #1.
+  K10. `liberar` solo borra un esqueleto: una venta completa sin pedido sobrevive (segunda revisión, #8).
   K9. El reintento de una venta «Woo pendiente» (acta 2.11, B0.6), por `pedidos_ml.sincronizar` real con un Woo
       falso: el aviso con Woo caído la deja completa sin pedido y no la suelta; el reintento con Woo caído tampoco;
       con kubera primero apagado (reversa) ni el reintento ni un aviso nuevo la liberan; con Woo de vuelta el
@@ -216,17 +217,17 @@ try:
             return f[0] if f else None
 
         r = sinc(reintentable=False)                                   # el aviso: Woo no contesta
-        check("K9 aviso con Woo caído: la venta queda completa en kubera, sin pedido ni estado; no se suelta",
-              not r["ok"] and fila9() == (False, None, None) and not liberados, str(fila9()))
+        check("K9 aviso con Woo caído: la venta queda completa en kubera, sin pedido y con su estado; no se suelta",
+              not r["ok"] and fila9() == (False, None, 'processing') and not liberados, str(fila9()))
         check("K9 aviso: la señal de venta nueva sale UNA vez, con los SKUs de la orden (no es FULL)",
               encolados == [["ACC-0001-AZL", "ACC-0002-DOR"]], str(encolados))
         r = sinc()                                                     # el reintento, Woo sigue caído
         check("K9 reintento con Woo caído: la venta sigue, sin `liberar` y sin repetir la señal",
-              not r["ok"] and fila9() == (False, None, None) and not liberados and len(encolados) == 1)
+              not r["ok"] and fila9() == (False, None, 'processing') and not liberados and len(encolados) == 1)
         sinc(kubera_primero=False)                                     # reversa: el reintento sin la bandera
         sinc(kubera_primero=False, reintentable=False)                 # reversa: un aviso nuevo sin la bandera
         check("K9 reversa (kubera primero apagado): ni el reintento ni un aviso nuevo la liberan",
-              fila9() == (False, None, None) and not liberados, str(liberados))
+              fila9() == (False, None, 'processing') and not liberados, str(liberados))
         woo.caido = False
         r = sinc()                                                     # el reintento, Woo ya contesta
         check("K9 reintento con Woo de vuelta: pedido 888 por la rama huérfana, una sola fila, señal sin repetir",
@@ -236,6 +237,18 @@ try:
     finally:
         for p in parches_k9:
             p.stop()
+
+    # K10 · `liberar` solo suelta un ESQUELETO (segunda revisión de MAESTRO, #8): una venta completa sin pedido
+    # (kubera primero, «Woo pendiente») no se borra aunque alguien llame a `liberar` con su llave.
+    orders_write.liberar("mercado_libre", "BEKURA", k9)
+    orders_write.reclamar("mercado_libre", "BEKURA", "ZZZ-KPRIMERO-10")
+    reg("processing", None, ident="ZZZ-KPRIMERO-11", skus=("ACC-0001-AZL",))
+    orders_write.liberar("mercado_libre", "BEKURA", "ZZZ-KPRIMERO-11")
+    orders_write.liberar("mercado_libre", "BEKURA", "ZZZ-KPRIMERO-10")
+    vivas = {r[0] for r in ex("select external_order_id from channel.orders where external_order_id in "
+                              "('ZZZ-KPRIMERO-9', 'ZZZ-KPRIMERO-10', 'ZZZ-KPRIMERO-11')")}
+    check("K10 liberar borra el esqueleto y no toca la venta completa sin pedido",
+          vivas == {"ZZZ-KPRIMERO-9", "ZZZ-KPRIMERO-11"}, str(sorted(vivas)))
 finally:
     for p in parches:
         p.stop()

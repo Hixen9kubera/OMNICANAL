@@ -2,7 +2,8 @@
 
 ── QUÉ FIJAN ───────────────────────────────────────────────────────────────────
 #1 · El registro previo a Woo no deja una venta sin pedido para siempre:
-   · solo para una venta NUEVA y con `estado_wc` NULL (el dedupe de los sondeos nunca la da por «sin cambio»);
+   · solo para una venta NUEVA, con su estado de ML (segunda revisión, #7; el dedupe de los sondeos ya no la
+     confunde porque `estados_wc` no cuenta las filas sin pedido);
    · una venta que YA tiene pedido no se pre-registra: un PUT fallido deja kubera con el estado anterior;
    · Woo que contesta 5xx SIN excepción: la venta queda registrada y el reclamo no se suelta;
    · cancelación FULL/protegida con la bandera encendida: un solo registro, después de Woo;
@@ -146,10 +147,10 @@ class Flujo(unittest.TestCase):                     # #1 y #3
             return asyncio.run(pedidos_ml._sincronizar_serializado("2000000001", None, False,
                                                                     dict(orden or ORDEN)))
 
-    def test_venta_nueva_se_pre_registra_sin_estado(self):
+    def test_venta_nueva_se_pre_registra_con_su_estado(self):
         r = self.correr()
         self.assertTrue(r["ok"])
-        self.assertEqual(self.registros, [(None, None), ("processing", 777)])
+        self.assertEqual(self.registros, [("processing", None), ("processing", 777)])
 
     def test_venta_existente_no_se_pre_registra(self):
         self.previo.return_value = 555
@@ -168,7 +169,7 @@ class Flujo(unittest.TestCase):                     # #1 y #3
     def test_woo_5xx_sin_excepcion_deja_la_venta_registrada_y_no_suelta(self):
         r = self.correr(codigo=500)
         self.assertFalse(r["ok"])
-        self.assertEqual(self.registros, [(None, None)])
+        self.assertEqual(self.registros, [("processing", None)])
         self.liberar.assert_not_called()
 
     def test_sin_senal_de_kubera_con_fanout_en_kubera_se_avisa(self):     # #3
@@ -179,6 +180,39 @@ class Flujo(unittest.TestCase):                     # #1 y #3
     def test_con_senal_de_kubera_no_se_avisa(self):
         self.correr(fuente="kubera")
         self.assertNotIn("fanout_sin_senal", [c.args[0] for c in self.aviso.call_args_list])
+
+    def test_ruta_del_worker_sin_senal_encola_los_sku_no_full(self):      # segunda revisión, #2
+        # Cayó a MySQL: el worker del espejo la aplicará en milisegundos SIN señal y nunca llegará al
+        # reproceso. Sus SKU no FULL se encolan aquí.
+        self.escrito_en = "mysql_respaldo"
+        self.correr(fuente="kubera")
+        motivos = [c.kwargs.get("motivo", "") for c in self.encolar.call_args_list]
+        self.assertTrue(any("(sin señal)" in m for m in motivos), motivos)
+        self.assertIn(["ACC-0001-AZL"], [c.args[0] for c in self.encolar.call_args_list])
+
+    def test_sin_senal_y_full_no_encola(self):
+        self.escrito_en = "mysql_respaldo"
+        # Una venta FULL pasa por la compensación (lee `_reduced_stock` de MySQL): aquí no se prueba eso.
+        with mock.patch.object(pedidos_ml, "_compensar_stock_protegido",
+                               mock.AsyncMock(return_value={"compensado": 0})):
+            self.correr(orden={**ORDEN, "es_full": True}, fuente="kubera")
+        motivos = [c.kwargs.get("motivo", "") for c in self.encolar.call_args_list]
+        self.assertFalse(any("(sin señal)" in m for m in motivos), motivos)
+        self.assertIn("fanout_sin_senal", [c.args[0] for c in self.aviso.call_args_list])
+
+    def test_si_el_pre_registro_si_escribio_no_hay_alarma(self):          # segunda revisión, #6
+        # El pre-registro llegó a kubera (y avisó como venta nueva); el registro de después cae a MySQL.
+        escritos = iter(["kubera", "mysql_respaldo"])
+        registrar_original = pedidos_ml._registrar_venta.side_effect
+
+        def registrar(*a):
+            self.escrito_en = next(escritos)
+            return registrar_original(*a)
+        pedidos_ml._registrar_venta.side_effect = registrar
+        self.correr(fuente="kubera")
+        self.assertNotIn("fanout_sin_senal", [c.args[0] for c in self.aviso.call_args_list])
+        motivos = [c.kwargs.get("motivo", "") for c in self.encolar.call_args_list]
+        self.assertFalse(any("(sin señal)" in m for m in motivos), motivos)
 
     def test_con_fanout_en_woo_no_se_avisa_aunque_no_haya_senal(self):
         self.escrito_en = "mysql_respaldo"
@@ -227,7 +261,7 @@ class ReintentoDeUnaPendiente(unittest.TestCase):    # acta 2.11, B0.6
         """El aviso original con kubera primero: gana el reclamo, pre-registra, Woo no contesta. NO se suelta."""
         r = self.sincronizar(caido=True, reintentable=False)
         self.assertFalse(r["ok"])
-        self.assertEqual(self.registros, [(None, None)])
+        self.assertEqual(self.registros, [("processing", None)])
         self.assertEqual(self.encolar.call_count, 1)              # la señal de la venta nueva, una vez
         self.liberar.assert_not_called()
         orders_write.reclamar.return_value = False                # la fila ya existe: nadie más gana
@@ -238,7 +272,7 @@ class ReintentoDeUnaPendiente(unittest.TestCase):    # acta 2.11, B0.6
         r = self.sincronizar()
         self.assertTrue(r["ok"])
         self.assertEqual(orders_write.reclamar.call_args.args[-1], True)   # estricto: es un reintento
-        self.assertEqual(self.llamadas, ["kubera(estado=None, wc=None)", "woo POST",
+        self.assertEqual(self.llamadas, ["kubera(estado=processing, wc=None)", "woo POST",
                                          "kubera(estado=processing, wc=777)"])
         self.assertEqual(self.encolar.call_count, 1)
         self.liberar.assert_not_called()
@@ -256,7 +290,7 @@ class ReintentoDeUnaPendiente(unittest.TestCase):    # acta 2.11, B0.6
         self.aviso_que_falla()
         r = self.sincronizar(caido=True)
         self.assertFalse(r["ok"])
-        self.assertEqual(self.registros, [(None, None), (None, None)])
+        self.assertEqual(self.registros, [("processing", None), ("processing", None)])
         self.assertEqual(self.encolar.call_count, 1)
         self.liberar.assert_not_called()
 
@@ -264,7 +298,7 @@ class ReintentoDeUnaPendiente(unittest.TestCase):    # acta 2.11, B0.6
         self.aviso_que_falla()
         r = self.sincronizar(caido=True, kubera_primero=False)
         self.assertFalse(r["ok"])
-        self.assertEqual(self.registros, [(None, None)])        # sin la bandera no hay registro previo
+        self.assertEqual(self.registros, [("processing", None)])        # sin la bandera no hay registro previo
         self.liberar.assert_not_called()
 
     def test_reversa_un_aviso_nuevo_que_falla_tampoco_la_libera(self):
@@ -280,6 +314,92 @@ class ReintentoDeUnaPendiente(unittest.TestCase):    # acta 2.11, B0.6
         r = self.sincronizar(caido=True, kubera_primero=False, reintentable=False)
         self.assertFalse(r["ok"])
         self.liberar.assert_called_once()
+
+
+class LiberarSoloEsqueletos(unittest.TestCase):                      # segunda revisión, #8
+    def test_el_delete_exige_esqueleto(self):
+        with mock.patch.object(orders_write, "activo", return_value=True), \
+             mock.patch.object(sdb, "execute") as ex:
+            orders_write.liberar("mercado_libre", "BEKURA", "2000000001")
+        sql = " ".join(ex.call_args.args[0].split())
+        self.assertIn("wc_order_id is null and skus is null", sql)
+
+
+class RafagaEnDosProcesos(unittest.TestCase):
+    """El relevo de contenedores de un deploy: dos procesos con el MISMO aviso, sin el candado en memoria
+    que los serializa (`_locks` es por proceso). Con kubera primero el ganador hace más trabajo antes de
+    Woo (el pre-registro), lo que ensancha la carrera. El perdedor espera a que el ganador complete
+    (`wc_order_id_previo`, hasta 4 vueltas de 1 s) y ADOPTA el pedido: un solo POST a Woo."""
+
+    def test_el_perdedor_adopta_el_pedido_del_ganador(self):
+        estado = {"wc": None}
+        llamadas: list[str] = []
+        registros: list = []
+        sueltos = asyncio.Event()
+        dormir = asyncio.sleep
+
+        async def sleep_corto(_s):
+            sueltos.set()                # el perdedor ya está esperando: el Woo del ganador contesta
+            await dormir(0.01)
+
+        def registrar(order_id, orden, est, wc, *a):
+            registros.append((est, wc))
+            if wc:
+                estado["wc"] = wc
+            return {"nueva_en_kubera": len(registros) == 1, "vendible_cambia": False, "escrito_en": "kubera",
+                    "cuenta": "BEKURA", "lineas": [DROP]}
+
+        class WooLento:
+            def __call__(self, *a, **k):
+                return self
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def post(self, ruta, json=None):
+                llamadas.append("woo POST")
+                await sueltos.wait()
+                return Resp(201, {"id": 777})
+
+            async def put(self, ruta, json=None):
+                llamadas.append("woo PUT")
+                return Resp(200, {"id": int(ruta.rsplit("/", 1)[1])})
+
+        reclamos = iter([True, False])
+        with mock.patch.object(pedidos_ml, "_schema_ok", True), \
+             mock.patch.object(pedidos_ml, "construir_payload", mock.AsyncMock(
+                 side_effect=lambda *a, **k: {"status": "processing", "_skus": ["ACC-0001-AZL"],
+                                              "_sin_mapear": [], "_comision": 87.3})), \
+             mock.patch.object(orders_write, "wc_order_id_previo", side_effect=lambda *_: estado["wc"]), \
+             mock.patch.object(orders_write, "reclamar", side_effect=lambda *a: next(reclamos)), \
+             mock.patch.object(orders_write, "liberar") as liberar, \
+             mock.patch.object(pedidos_ml, "_pedido_en_woo", mock.AsyncMock(return_value=None)), \
+             mock.patch.object(pedidos_ml, "_ya_compensado", return_value=False), \
+             mock.patch.object(pedidos_ml, "_registrar_venta", side_effect=registrar), \
+             mock.patch.object(fanout_stock, "encolar_varios"), \
+             mock.patch.object(fanout_stock, "seguro_encendido", return_value=False), \
+             mock.patch("services.odoo_ventas.canales_posibles", return_value=()), \
+             mock.patch.object(alertas, "avisar", return_value=True), \
+             mock.patch.object(settings, "pedidos_kubera_primero", True), \
+             mock.patch.object(settings, "fanout_fuente", "woo"), \
+             mock.patch.object(pedidos_ml.asyncio, "sleep", sleep_corto), \
+             mock.patch.object(pedidos_ml.httpx, "AsyncClient", WooLento()):
+
+            async def dos_procesos():
+                a = asyncio.create_task(pedidos_ml._sincronizar_serializado("2000000001", None, False, dict(ORDEN)))
+                await dormir(0)
+                b = asyncio.create_task(pedidos_ml._sincronizar_serializado("2000000001", None, False, dict(ORDEN)))
+                return await asyncio.gather(a, b)
+            ra, rb = asyncio.run(dos_procesos())
+        self.assertTrue(ra["ok"] and rb["ok"], (ra, rb))
+        self.assertEqual(llamadas.count("woo POST"), 1, llamadas)        # sin duplicado
+        self.assertIn("woo PUT", llamadas)                                # el perdedor adoptó
+        self.assertEqual(registros[0], ("processing", None))             # solo el ganador pre-registró
+        self.assertEqual(sum(1 for r in registros if r == ("processing", None)), 1, registros)
+        liberar.assert_not_called()
 
 
 if __name__ == "__main__":

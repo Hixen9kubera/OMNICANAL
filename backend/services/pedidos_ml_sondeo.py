@@ -163,8 +163,12 @@ def clasificar(ml: dict[str, dict[str, Any]], kb: dict[str, dict[str, Any]], aho
       por_pack  kubera la tiene guardada con el número del PACK, no con el de la orden
                 (revisión de MAESTRO, #8): repararla por el número de orden crearía un
                 segundo pedido. Que la vea una persona.
-      vieja     necesitaría reparación pero se creó hace más de `max_dias`: un aviso de ML
-                sobre una venta vieja (reclamo, devolución) no debe nacer como pedido nuevo.
+      vieja     le falta el pedido (o la venta entera) y se creó hace más de `max_dias`: un
+                aviso de ML sobre una venta vieja (reclamo, devolución) no debe nacer como
+                pedido nuevo. Solo tapa lo que CREARÍA (`falta`, `sin_pedido`); una `atrasada`
+                vieja se repara igual, porque es un PUT de estado que no crea nada (segunda
+                revisión de MAESTRO, #4: una cancelación de hace 8 días ya no se reparaba).
+    Las dos se avisan por Slack con las demás diferencias: alguien tiene que verlas.
     """
     corte = ahora - timedelta(minutes=umbral_min)
     antiguedad = ahora - timedelta(days=max_dias) if max_dias else None
@@ -186,7 +190,8 @@ def clasificar(ml: dict[str, dict[str, Any]], kb: dict[str, dict[str, Any]], aho
             clase = "al_dia"
         if clase in REPARABLES and por_pack:
             clase = "por_pack"
-        elif clase in REPARABLES and antiguedad and o.get("creada") and o["creada"] < antiguedad:
+        elif (clase in ("falta", "sin_pedido") and antiguedad and o.get("creada")
+              and o["creada"] < antiguedad):
             clase = "vieja"
         clases[clase].append(oid)
     return clases
@@ -258,13 +263,17 @@ async def revisar(solo_registro: bool | None = None) -> dict[str, Any]:
                 if ids and r["estado"] != "frenado":
                     await _reparar(cuenta, ids, r)
         from services import alertas
-        malas = {c: v for c, v in r["cuentas"].items() if v["falta"] or v["sin_pedido"] or v["atrasada"]}
+        malas = {c: v for c, v in r["cuentas"].items()
+                 if v["falta"] or v["sin_pedido"] or v["atrasada"] or v["por_pack"] or v["vieja"]}
         sin_leer = {c: v["error"] for c, v in r["cuentas"].items() if v["error"]}
         if len(sin_leer) == len(CUENTAS):
             # Revisión de MAESTRO, #4: si ML no contestó en NINGUNA cuenta (token muerto, 403),
             # no se comparó nada y decir «ok» sería un falso verde.
             r["estado"] = "error"
         texto = "; ".join(f"{c}: {v['falta']} faltan, {v['sin_pedido']} sin pedido, {v['atrasada']} atrasadas"
+                          + (f", {v['por_pack']} por pack" if v["por_pack"] else "")
+                          + (f", {v['vieja']} viejas (más de {settings.pedidos_ml_sondeo_max_dias} d, "
+                             "no se reparan)" if v["vieja"] else "")
                           for c, v in malas.items())
         if sin_leer:
             estado_alerta = "sin_lectura"
