@@ -1001,6 +1001,46 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.703.0 — Pestaña CATÁLOGO: el artifact del catálogo vivo dentro del panel, con la foto del PACKING LIST
+
+Pedido de Brandon (29-oct-2026): «un apartado en omnicanal justo antes de competencia se va a llamar Catálogo donde
+vas a traer todo el artifact», con «las imágenes de packing list… cambiarás las imágenes de odoo a las de packing list
+para mostrarse», «el artifact no lo modifiques va a ser nuestro respaldo de datos» y respetando el diseño del panel.
+
+**Qué es.** El artifact del catálogo vivo (claude.ai/artifact/QGPgvZBTfBC2RMQd12n2C6, versión 18: el inventario contado
+desde los packing lists —comprado − salió = queda— valuado a precio de Mercado Libre v3 y de Amazon) portado a
+`/catalogo`, con sus cinco vistas: **Productos** (los 7 filtros, totales de lo filtrado, tabla ordenable de 50 por
+página, detalle de cada fila y «Copiar para Excel»), **Por categoría** (categoría → subcategoría → productos con mín,
+media y máx de ML y Amazon), **Contenedores**, **Empate SKU y packing list** y **De dónde sale cada dato**. Las cuentas
+son las del artifact, portadas línea por línea a `components/catalogo/logica.ts`: medido en local, el valor a precio
+de ML da **$355,865,985** y a precio de Amazon **$634,612,686**, las mismas cifras del artifact ($355.9 M y $634.6 M).
+
+**Las fotos.** Cada producto muestra la foto ORIGINAL de su renglón en el packing list: el catálogo guarda el sha1 de
+la foto de cada renglón y `scripts/catalogo_preparar.py` la busca dentro de los 186 packing lists bajados de Drive
+(8,467 de 8,510 encontradas). Resultado: **12,150 filas con foto del packing list** (11,680 sacadas del archivo
+original y 470 de la hoja del artifact), **2,440 con la de Odoo** porque no tienen renglón con foto, y 614 sin foto.
+Se guardan en 93 hojas WebP de 10 × 10 fotos de 192 px (~29 MB), acomodadas en el orden en que abre la tabla para
+que la primera página pida una sola hoja. Clic en una foto → la misma en grande. NO se tocan las fotos de Woo ni de
+Odoo.
+
+**Sin costos.** El repo es público: el extracto (`backend/data/catalogo/catalogo.json.gz`, 4.3 MB) no lleva el costo
+por pieza (`co`), el precio del proveedor en dólares (`usd`) ni el múltiplo de los precios estimados por costo (con él
+se despejaría el costo). `comprobar_sin_costos` revisa la salida antes de escribirla y la prueba
+`test_el_archivo_del_repo_no_trae_costos` revisa el archivo del repo. El artifact sí los trae: es el respaldo.
+
+**Piezas.**
+- `backend/scripts/catalogo_preparar.py`: `bajar` (índice de `costing.packing_archivos` con un SELECT; los archivos,
+  de Drive público) y `armar` (lee `reportes/catalogo_vivo` sin modificarlo).
+- `backend/services/catalogo.py` + `routers/catalogo.py`: `GET /api/catalogo` (el JSON comprimido tal cual, con
+  `Content-Encoding: gzip`) y `GET /api/catalogo/img/{hoja}`. `operador` en `core/rbac.py`, como Competencia.
+- Frontend: `app/catalogo/page.tsx` y `components/catalogo/` (`logica.ts`, `Fotos.tsx`, `Resumen.tsx`,
+  `Productos.tsx`, `Detalle.tsx`, `Celdas.tsx`, `Otras.tsx`). Colores del panel: índigo, y el amarillo de Mercado
+  Libre y el naranja de Amazon de `lib/theme.ts`. Pestaña nueva en la barra, entre FULLFILMENT y Competencia.
+- Pruebas: `tests/test_catalogo.py` (8).
+
+**Para actualizarla** cuando cambie el artifact: correr `catalogo_preparar.py armar` (y `bajar` si hay packing lists
+nuevos) y desplegar. Es una FOTO: no lee nada en vivo.
+
 ### v0.702.0 — Pedidos sin Woo de puerta (PLAN MAESTRO 2.11): kubera primero, sondeo de ML, ventana de Amazon y vigilante. Todo NACE APAGADO
 
 **Por qué.** Woo es la puerta de cada venta: si no contesta, la venta no entra a kubera, el libro no la resta y se

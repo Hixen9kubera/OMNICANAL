@@ -254,6 +254,9 @@ REGLAS: tuple[tuple[str, str, str], ...] = (
     # Competencia, y la respuesta trae costo y margen. Mismo nivel que Competencia.
     ("GET", "/api/precio-sugerido", "operador"),
     ("POST", "/api/precio-sugerido", "operador"),
+    # CATÁLOGO (v0.703.0): el artifact del catálogo vivo en el panel. Trae precios de mercado y el VALOR del
+    # inventario (sin costos): mismo nivel que Competencia, no `lectura`.
+    ("GET", "/api/catalogo", "operador"),
 
     # ══ LECTURA — mirar ventas e inventario, sin costos ══════════════════════
     ("GET", "/api/productos", "lectura"),

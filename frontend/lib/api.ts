@@ -3253,6 +3253,23 @@ export async function pricingHoja(nombre: string, version: string): Promise<stri
   return URL.createObjectURL(await res.blob());
 }
 
+// ── CATÁLOGO (v0.703.0): el artifact del catálogo vivo, con la foto del packing list ─
+
+import type { Catalogo } from "@/components/catalogo/logica";
+
+/** El catálogo completo (~13 MB abiertos; viaja comprimido). Sin costos: ver `backend/services/catalogo.py`. */
+export function catalogoDatos(signal?: AbortSignal): Promise<Catalogo> {
+  return getJSON<Catalogo>("/api/catalogo", signal);
+}
+
+/** Una hoja de fotos (`f0`, `f12`…) como URL de objeto. `version` cambia la URL con cada catálogo nuevo. */
+export async function catalogoHoja(nombre: string, version: string): Promise<string> {
+  const ruta = `/api/catalogo/img/${encodeURIComponent(nombre)}?v=${encodeURIComponent(version)}`;
+  const res = await fetchSesion(`${BASE}${ruta}`);
+  if (!res.ok) throw await errorDeRespuesta(res, ruta);
+  return URL.createObjectURL(await res.blob());
+}
+
 // ── Fan-out · Devoluciones (Operaciones › Fan-out, solo admin; solo lee) ─────
 
 import type { BandejaDevol, DetalleDevol } from "@/components/fanout/tipos";

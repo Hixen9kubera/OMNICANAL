@@ -31,6 +31,7 @@ import {
   ClipboardCheck,
   ClipboardList,
   BadgeDollarSign,
+  BookOpen,
 } from "lucide-react";
 import NotificationBell from "./NotificationBell";
 import IndicadorIA from "./fulfillment/IndicadorIA";
@@ -171,6 +172,10 @@ const ITEMS: NavItem[] = [
   // El rótulo se escribió así en la petición; la ruta usa la ortografía técnica.
   { id: "fulfillment", label: "FULLFILMENT", icon: Truck, href: "/fulfillment",
     beta: true },
+  // CATÁLOGO (29-oct-2026, Brandon): «un apartado justo antes de Competencia» con todo el artifact del catálogo
+  // vivo —inventario contado desde los packing lists, valuado a precio de ML y de Amazon— y la foto del packing
+  // list de cada producto. Sin soloAdmin, como Competencia: el backend la pide de `operador` (core/rbac.py).
+  { id: "catalogo", label: "Catálogo", icon: BookOpen, href: "/catalogo" },
   { id: "competencia", label: "Competencia", icon: Trophy, href: "/competencia",
     beta: true },
   // OPERACIONES absorbió a MONITOREO y WEBHOOKS como entradas de su submenú

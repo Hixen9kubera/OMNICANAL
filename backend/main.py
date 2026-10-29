@@ -23,7 +23,7 @@ from core.marketplaces import lista_canales
 from core.middleware import identidad
 from models.schemas import HealthCheck
 from routers import (alertas as r_alertas, auth, automatizacion, canales, checklist,
-                     competencia, conversion,
+                     catalogo, competencia, conversion,
                      costos_publicados, flujo, monitoreo,
                      crear, fanout,
                      fba, fulfillment, fulfillment_envios, fulfillment_full, ia, imagenes, inventario, investigacion, metricas, migracion,
@@ -233,7 +233,7 @@ app = FastAPI(
         "Temu, Shein)."
     ),
 
-    version="0.702.0",
+    version="0.703.0",
     lifespan=lifespan,
     # /docs, /redoc y /openapi.json publican el mapa COMPLETO de los 84
     # endpoints: rutas, parámetros y esquemas. Con la API abierta eso es un
@@ -339,6 +339,9 @@ app.include_router(pricing.router)
 # Estudio · «Sugerir precio» (v0.686.0): la competencia REAL del mismo producto en ML (búsqueda + juez por título y
 # por foto) contra el piso de rentabilidad. Solo sugiere; escribe únicamente su bitácora (ops.process_log).
 app.include_router(precio_sugerido.router)
+# CATÁLOGO (v0.703.0): el artifact del catálogo vivo —inventario contado desde los packing lists, valuado a
+# precio de ML y de Amazon— dentro del panel, con la foto del packing list. Una FOTO sin costos; solo lectura.
+app.include_router(catalogo.router)
 # Inventario · Órdenes de venta PROPIAS (folio OV-00001…): el documento que
 # hasta hoy sólo vivía en Odoo. Sólo escribe en `ventas.ov_*`; no toca Odoo, Woo
 # ni ningún marketplace. Confirmar/reservar/entregar, detrás de
@@ -355,7 +358,7 @@ def raiz():
     return {
         "app": "OMNICANAL Â· Kubera",
 
-        "version": "0.702.0",
+        "version": "0.703.0",
         "docs": "/docs",
         "canales": [c["id"] for c in lista_canales()],
     }
