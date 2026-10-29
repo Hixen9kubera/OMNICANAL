@@ -11,7 +11,7 @@ import { Foto } from "./Fotos";
 import Detalle from "./Detalle";
 import { CeldaPrecio, CeldaValor, Estado, Etiqueta, Mini, SoldOut, TriCab } from "./Celdas";
 import {
-  CORTO, type Catalogo, type Fila, type Filtros, type Orden, c1, c2, enContenedor, fm0, mill, nf, ordenar, partesML, pasa, sumar, tsv,
+  CORTO, type Catalogo, type Fila, type Filtros, type Orden, c1, c2, enContenedor, nf, ordenar, pasa, sumar, tsv,
 } from "./logica";
 
 const ML = THEME_FALLBACK.mercado_libre;
@@ -137,12 +137,7 @@ export default function Productos({ D, filtros, setFiltros }: { D: Catalogo; fil
 
       <div aria-live="polite" className="flex flex-wrap gap-2 text-xs">
         <Chip><b>{nf(t.sk)}</b> SKUs y <b>{nf(t.sin)}</b> productos sin SKU</Chip>
-        <Chip tono="indigo">Comprado <b>{nf(t.pc)}</b></Chip>
-        <Chip tono="rose">Salió <b>{nf(t.ps)}</b></Chip>
-        <Chip tono="emerald">Queda <b>{nf(t.pq)}</b></Chip>
         <Chip>SOLD OUT <b>{nf(t.so)}</b></Chip>
-        <Chip estilo={{ background: ML.suave, color: ML.texto, borderColor: "#F5E27A" }}>Valor a precio de ML <b>{fm0(t.tm)}</b> ({partesML(t, " + ")})</Chip>
-        <Chip estilo={{ background: AZ.suave, color: "#7A4A00", borderColor: "#FFD08A" }}>Valor a precio de Amazon <b>{fm0(t.ta)}</b> (medido {mill(t.va)} + estimado {mill(t.ea)})</Chip>
         {t.nest + t.nopl > 0 && <Chip>{nf(t.nest + t.nopl)} SKUs sin renglón, no suman</Chip>}
         {filtros.con && <Chip>Solo las piezas que llegaron en este contenedor.</Chip>}
       </div>
@@ -274,8 +269,6 @@ export function useAncho(ref: React.RefObject<HTMLDivElement | null>): number {
   return ancho;
 }
 
-function Chip({ children, tono, estilo }: { children: React.ReactNode; tono?: "indigo" | "rose" | "emerald"; estilo?: React.CSSProperties }) {
-  const c = tono === "indigo" ? "border-indigo-200 bg-indigo-50 text-indigo-800" : tono === "rose" ? "border-rose-200 bg-rose-50 text-rose-700"
-    : tono === "emerald" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-white text-slate-600";
-  return <span className={`rounded-full border px-3 py-1 tabular-nums ${estilo ? "" : c}`} style={estilo}>{children}</span>;
+function Chip({ children }: { children: React.ReactNode }) {
+  return <span className="rounded-full border border-slate-200 bg-white px-3 py-1 tabular-nums text-slate-600">{children}</span>;
 }

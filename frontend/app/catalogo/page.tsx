@@ -3,11 +3,12 @@
 /**
  * /catalogo — CATÁLOGO (v0.703.0, Brandon, 29-oct-2026): el artifact del catálogo vivo dentro del panel.
  *
- * Todo el inventario contado desde los packing lists —comprado − salió = queda— y lo que queda valuado a precio de
- * Mercado Libre y de Amazon, con las mismas cinco vistas del artifact (Productos, Por categoría, Contenedores,
+ * Los productos de los packing lists con su precio de Mercado Libre y de Amazon, con las mismas cinco vistas del
+ * artifact (Productos, Por categoría, Contenedores,
  * Empate y De dónde sale cada dato). Dos diferencias a propósito: cada producto muestra la FOTO DE SU RENGLÓN EN EL
  * PACKING LIST (la de Odoo solo donde no hay), y no hay costos (el repo es público). El artifact no se toca: es el
- * respaldo de los datos.
+ * respaldo de los datos. Tampoco van la cuenta del inventario (comprado − salió = queda, lo que dice Odoo) ni el valor
+ * total a precio de ML y de Amazon: Brandon (29-oct) — «son datos que se necesitan únicamente en el artifact».
  *
  * Solo lectura. `operador` como Competencia: el backend (core/rbac.py) es la autoridad; aquí solo se esconde.
  */
@@ -20,7 +21,6 @@ import AppNavbar from "@/components/AppNavbar";
 import { ProveedorFotos } from "@/components/catalogo/Fotos";
 import Productos from "@/components/catalogo/Productos";
 import { Contenedores, Empate, Metodo, PorCategoria } from "@/components/catalogo/Otras";
-import { Cuenta, Valor } from "@/components/catalogo/Resumen";
 import { type Catalogo, type Filtros, SIN_FILTROS, hora, nf, preparar, sumar } from "@/components/catalogo/logica";
 import { ApiError, catalogoDatos, mensajeDeError } from "@/lib/api";
 import { quienSoy } from "@/lib/sesion";
@@ -118,8 +118,8 @@ function Catalogo() {
               <div className="text-xs font-semibold uppercase tracking-[0.2em] opacity-80">Centro Omnicanal · Inventario</div>
               <h1 className="mt-1 flex items-center gap-2 text-3xl font-extrabold tracking-tight"><BookOpen size={28} aria-hidden /> Catálogo</h1>
               <p className="mt-1 max-w-3xl text-sm opacity-90">
-                Lo que se compró según los packing lists de todos los contenedores, menos lo que Odoo movió hacia afuera. Lo que queda se valúa al
-                precio promedio de Mercado Libre y de Amazon. Cada producto con la foto de su renglón en el packing list.
+                Todos los productos de los packing lists, con su precio de Mercado Libre y de Amazon y la foto de su renglón en el
+                packing list.
               </p>
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 <span className="flex items-center gap-2 rounded-xl bg-white/15 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-white/30 backdrop-blur">
@@ -142,9 +142,6 @@ function Catalogo() {
             </span>
           ))}
         </div>
-
-        <Cuenta D={D} t={total} />
-        <Valor D={D} t={total} />
 
         <div id="pestanas" className="flex flex-wrap gap-1 rounded-2xl border border-slate-200 bg-white p-1 shadow-card" role="tablist" aria-label="Vistas del catálogo">
           {PESTANAS.map(([id, nom]) => (

@@ -1001,6 +1001,19 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.704.0 — CATÁLOGO: fuera la cuenta del inventario y el valor total (solo van en el artifact)
+
+Brandon (29-oct-2026), al revisar la pestaña: las secciones del valor de la mercancía a precio de ML y de Amazon, los
+movimientos de Odoo y las piezas totales «son datos que se necesitan únicamente en el artifact pero en la tab no son
+necesarios». Se quitaron de `/catalogo`:
+- las cuatro tarjetas de la cuenta (COMPRADO − SALIÓ DE BODEGA = QUEDA, y ODOO DICE QUE HAY) y el «Por qué Odoo tiene
+  menos»;
+- las dos tarjetas de VALOR DE LO QUE QUEDA (Mercado Libre y Amazon);
+- en «Productos», las pastillas de Comprado, Salió, Queda y los dos valores totales de lo filtrado (repetían esas
+  mismas cifras). Quedan el conteo de SKUs y productos sin SKU, y SOLD OUT.
+Se borró `components/catalogo/Resumen.tsx`. Las columnas de cada producto (comprado, salió, queda, precio y valor por
+pieza) y las otras vistas no cambian; el artifact sigue con todo.
+
 ### v0.703.0 — Pestaña CATÁLOGO: el artifact del catálogo vivo dentro del panel, con la foto del PACKING LIST
 
 Pedido de Brandon (29-oct-2026): «un apartado en omnicanal justo antes de competencia se va a llamar Catálogo donde
