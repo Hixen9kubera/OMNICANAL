@@ -19,10 +19,12 @@ import { AlertTriangle, BookOpen, Loader2, Lock, RotateCw } from "lucide-react";
 
 import AppNavbar from "@/components/AppNavbar";
 import { ProveedorFotos } from "@/components/catalogo/Fotos";
-import Productos from "@/components/catalogo/Productos";
+import Productos, { type EstadoPublicados } from "@/components/catalogo/Productos";
 import { Contenedores, Empate, Metodo, PorCategoria } from "@/components/catalogo/Otras";
-import { type Catalogo, type Filtros, POR_VALIDAR, SIN_FILTROS, hora, nf, preparar, sumar } from "@/components/catalogo/logica";
-import { ApiError, catalogoDatos, mensajeDeError } from "@/lib/api";
+import {
+  type Catalogo, type Filtros, POR_VALIDAR, SIN_FILTROS, hora, marcarPublicados, nf, preparar, sumar,
+} from "@/components/catalogo/logica";
+import { ApiError, catalogoDatos, catalogoPublicados, mensajeDeError } from "@/lib/api";
 import { quienSoy } from "@/lib/sesion";
 
 const SIN_LOGIN = process.env.NEXT_PUBLIC_AUTH_OFF === "true";
@@ -58,15 +60,26 @@ function Catalogo() {
   const [pestana, setPestana] = useState<Pestana>("pro");
   // Abre en «Por validar» (Brandon, 30-oct-2026); un «Ver productos» de otra vista abre el catálogo completo.
   const [filtros, setFiltros] = useState<Filtros>(POR_VALIDAR);
+  // Lo publicado en ML (v0.708.0) llega DESPUÉS del catálogo y no lo frena: es lo único en vivo de la pestaña.
+  const [pub, setPub] = useState<EstadoPublicados>({ estado: "cargando" });
 
   useEffect(() => {
     const ctl = new AbortController();
     setError(null);
+    setPub({ estado: "cargando" });
     catalogoDatos(ctl.signal)
       .then((d) => {
         if (ctl.signal.aborted) return;
         preparar(d.R);
         setD(d);
+        catalogoPublicados(ctl.signal)
+          .then((p) => {
+            if (ctl.signal.aborted) return;
+            marcarPublicados(d.R, p.ml);
+            setD({ ...d }); // las filas cambiaron por dentro: un objeto nuevo para que la tabla vuelva a filtrar
+            setPub({ estado: "ok", actualizado: p.actualizado });
+          })
+          .catch(() => { if (!ctl.signal.aborted) setPub({ estado: "error" }); });
       })
       .catch((e) => {
         if (ctl.signal.aborted) return;
@@ -154,7 +167,7 @@ function Catalogo() {
         </div>
 
         <section role="tabpanel">
-          {pestana === "pro" && <Productos D={D} filtros={filtros} setFiltros={setFiltros} />}
+          {pestana === "pro" && <Productos D={D} filtros={filtros} setFiltros={setFiltros} pub={pub} />}
           {pestana === "cat" && <PorCategoria D={D} irA={irA} />}
           {pestana === "con" && <Contenedores D={D} irA={irA} />}
           {pestana === "emp" && <Empate D={D} irA={irA} />}

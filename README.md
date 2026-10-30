@@ -1001,6 +1001,29 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.708.0 — CATÁLOGO: con SKU / sin SKU y publicado en ML / sin publicar, con su columna
+
+Brandon (30-oct-2026): «sepárame los productos que tienen SKU de los que NO TIENEN SKU explícitamente, y además ponme
+un filtro de los que ya están publicados vs los que no, además agrega una columna nueva para que podamos
+diferenciarlos a vista».
+
+- **Dos filtros nuevos** en la vista Productos, con su conteo (cada uno respeta todos los demás filtros):
+  **SKU** — Todos · Con SKU · Sin SKU (los renglones del packing list a los que nadie les ha puesto SKU), y
+  **Mercado Libre** — Todos · Publicados · Sin publicar. Se combinan con «Por validar», los motivos y los demás
+  filtros; «Quitar filtros» los regresa a Todos.
+- **Columna «SKU y Mercado Libre»**, junto al producto: «Sin SKU» (gris), «Con SKU · Sin publicar en ML» (ámbar) o
+  «Con SKU · Publicado en ML» (verde) con cada cuenta y si está activa o pausada (BEKURA, SANCOR). «Copiar para
+  Excel» agrega la columna «Publicado en ML».
+- **Publicado = en Mercado Libre HOY, activa o pausada**: la definición única del panel (`channel_read.
+  _SIT_PUBLICADO_ML`, la misma de Costos), leída de `channel.listings` —que alimenta el sync de 15 min— con
+  `channel_read.publicados_ml_todos()` en UNA consulta. Es lo único EN VIVO de la pestaña (lo demás es la foto del
+  artifact del 13-oct). `GET /api/catalogo/publicados` (operador, 5 min en memoria) da también la hora del último
+  sync, y la pestaña la enseña. Llega después del catálogo y no lo frena; si kubera no contesta (503), los filtros de
+  ML se apagan y la columna dice «sin dato de ML».
+- Pruebas: `tests/test_catalogo.py` (la consulta usa la definición única, el servicio compacta y guarda 5 min, 503
+  si kubera falla, la ruta es de operador). Visto en el navegador con un backend simulado (los datos reales del
+  catálogo y 4 SKUs publicados de prueba): conteos, combinación de filtros y la columna.
+
 ### v0.707.0 — «Mejorar con IA» de ML: lo que enseñó la primera prueba en vivo
 
 Prueba del 30-oct-2026 en producción con tres productos sin publicar (CAM-0025-GRI colchoneta, TEC-0680-NEG audífonos,

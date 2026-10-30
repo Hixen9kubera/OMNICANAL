@@ -5,7 +5,7 @@
 // `celdaValor`, `etEstado`).
 
 import type { ReactNode } from "react";
-import { FML, NIVEL, type Estimado, type Fila, type Precio, etiquetaEstimado, fm, fm0, nf } from "./logica";
+import { FML, NIVEL, type Estimado, type Fila, type Precio, cuentaCorta, etiquetaEstimado, fm, fm0, nf } from "./logica";
 
 export const Mini = ({ children, className = "" }: { children: ReactNode; className?: string }) => (
   <div className={`text-[11px] leading-snug text-slate-500 ${className}`}>{children}</div>
@@ -29,6 +29,26 @@ export function Estado({ r }: { r: Fila }) {
   if (r.pe != null) return <Etiqueta tono="amber">renglón no ubicado</Etiqueta>;
   if (r.pc == null) return <Etiqueta>sin packing list</Etiqueta>;
   return null;
+}
+
+/**
+ * La columna «SKU y Mercado Libre» (v0.708.0, Brandon, 30-oct-2026): «que podamos diferenciarlos a vista». Tres
+ * casos, cada uno con su color: sin SKU (gris), con SKU y sin publicar (ámbar), publicado en ML (verde, con la
+ * cuenta y si está activa o pausada). Mientras no llega el dato de ML, solo dice que tiene SKU.
+ */
+export function Publicacion({ r }: { r: Fila }) {
+  if (r.sin) return <Etiqueta>Sin SKU</Etiqueta>;
+  if (r._pub == null) return <><Etiqueta tono="indigo">Con SKU</Etiqueta><Mini className="mt-1">sin dato de ML</Mini></>;
+  if (!r._pub.length) return <><Etiqueta tono="indigo">Con SKU</Etiqueta><div className="mt-1"><Etiqueta tono="amber">Sin publicar en ML</Etiqueta></div></>;
+  return (
+    <>
+      <Etiqueta tono="indigo">Con SKU</Etiqueta>
+      <div className="mt-1"><Etiqueta tono="emerald">Publicado en ML</Etiqueta></div>
+      {r._pub.map(([c, s]) => (
+        <Mini key={c} className="mt-0.5 whitespace-nowrap"><b className="text-slate-700">{cuentaCorta(c)}</b> · {s === "active" ? "activa" : "pausada"}</Mini>
+      ))}
+    </>
+  );
 }
 
 export function Tri({ a, b, c }: { a: string; b: string; c: string }) {

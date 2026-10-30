@@ -6,6 +6,10 @@
 // POR VALIDAR (v0.705.0, Brandon, 30-oct-2026): «filtrar para que muestre lo que necesitamos validar primero que nada
 // y ordenar de mayor retorno, mayor ticket, mayor stock». La pestaña abre en «Por validar» (los motivos salen de
 // `logica.ts::motivos`) ordenada por mayor retorno; «Todo el catálogo» quita ese filtro.
+//
+// SKU Y PUBLICADO (v0.708.0, Brandon, 30-oct-2026): «sepárame los productos que tienen SKU de los que NO tienen SKU
+// explícitamente», «un filtro de los que ya están publicados vs los que no» y «una columna nueva para que podamos
+// diferenciarlos a vista». Publicado = en Mercado Libre HOY (activa o pausada), lo único en vivo de la pestaña.
 
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDownWideNarrow, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardCheck, ClipboardCopy, Search, X } from "lucide-react";
@@ -13,11 +17,14 @@ import { ArrowDownWideNarrow, Check, ChevronDown, ChevronLeft, ChevronRight, Cli
 import { THEME_FALLBACK } from "@/lib/theme";
 import { Foto } from "./Fotos";
 import Detalle from "./Detalle";
-import { CeldaPrecio, CeldaValor, Estado, Etiqueta, Mini, SoldOut, TriCab } from "./Celdas";
+import { CeldaPrecio, CeldaValor, Estado, Etiqueta, Mini, Publicacion, SoldOut, TriCab } from "./Celdas";
 import {
-  CORTO, MOTIVOS, PRIORIDADES, SIN_FILTROS, type Catalogo, type Fila, type Filtros, type Orden, c1, c2, enContenedor, nf,
-  ordenar, pasa, sumar, tsv,
+  CORTO, MOTIVOS, PRIORIDADES, SIN_FILTROS, type Catalogo, type Fila, type Filtros, type Orden, c1, c2, enContenedor, hora, nf,
+  ordenar, pasa, publicadoEnML, sumar, tsv,
 } from "./logica";
+
+/** Cómo va la lectura de lo publicado en ML (la página la pide después del catálogo). */
+export type EstadoPublicados = { estado: "cargando" | "ok" | "error"; actualizado?: string | null };
 
 const CORTO_MOTIVO: Record<string, string> = Object.fromEntries(MOTIVOS.map(([k, n]) => [k, n]));
 
@@ -55,13 +62,40 @@ function Selector({ etiqueta, valor, opciones, onChange }: { etiqueta: string; v
   );
 }
 
+/** Un grupo de opciones excluyentes con su conteo (como «Por validar / Todo el catálogo»). */
+function Segmentos({ etiqueta, valor, opciones, onChange, apagado }: {
+  etiqueta: string; valor: string; opciones: [string, string, number | null][]; onChange: (v: string) => void; apagado?: string;
+}) {
+  return (
+    <div className="flex min-w-0 flex-col gap-1">
+      <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{etiqueta}</span>
+      <div className="inline-flex flex-wrap gap-0.5 rounded-xl bg-slate-100 p-1" role="radiogroup" aria-label={etiqueta} title={apagado}>
+        {opciones.map(([v, nom, n]) => {
+          const on = valor === v;
+          return (
+            <button key={v || "todos"} type="button" role="radio" aria-checked={on} disabled={!!apagado && !!v} onClick={() => onChange(v)}
+              className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${on ? "bg-white text-indigo-700 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}>
+              {nom}
+              {n != null && (
+                <span className={`rounded-full px-1.5 py-0.5 text-[10.5px] tabular-nums ${on ? "bg-indigo-100 text-indigo-700" : "bg-slate-200 text-slate-600"}`}>{nf(n)}</span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 const COLS: [Orden | "", string, string][] = [
-  ["", "Foto", ""], ["s", "Producto", ""], ["", "Categoría", ""], ["pc", "Comprado", "d"], ["ps", "Salió", "d"], ["pq", "Queda", "d"],
+  ["", "Foto", ""], ["s", "Producto", ""], ["", "SKU y Mercado Libre", ""], ["", "Categoría", ""], ["pc", "Comprado", "d"], ["ps", "Salió", "d"], ["pq", "Queda", "d"],
   ["lb", "Odoo libre", "d"], ["mlm", "Mercado Libre por pieza", "ml"], ["_tm", "Valor a precio de ML", "ml"], ["azm", "Amazon por pieza", "az"],
   ["_ta", "Valor a precio de Amazon", "az"], ["", "Contenedor", ""],
 ];
 
-export default function Productos({ D, filtros, setFiltros }: { D: Catalogo; filtros: Filtros; setFiltros: (f: Filtros) => void }) {
+export default function Productos({ D, filtros, setFiltros, pub }: {
+  D: Catalogo; filtros: Filtros; setFiltros: (f: Filtros) => void; pub: EstadoPublicados;
+}) {
   const [busca, setBusca] = useState(filtros.q);
   const [orden, setOrden] = useState<{ k: Orden; d: number }>({ k: "_tm", d: -1 });
   const [pag, setPag] = useState(0);
@@ -108,6 +142,15 @@ export default function Productos({ D, filtros, setFiltros }: { D: Catalogo; fil
     });
     return c;
   }, [D]);
+  // Los conteos de «SKU» y «Mercado Libre» respetan todos los demás filtros (cada uno sin el suyo).
+  const conteos = useMemo(() => {
+    const sinSku = D.R.filter((r) => pasa(D, r, { ...filtros, sku: "" }));
+    const sinPub = D.R.filter((r) => pasa(D, r, { ...filtros, pub: "" }));
+    const con = sinSku.filter((r) => !r.sin).length;
+    const pubs = sinPub.filter(publicadoEnML).length;
+    return { sku: [sinSku.length, con, sinSku.length - con], pub: [sinPub.length, pubs, sinPub.length - pubs] };
+  }, [D, filtros]);
+  const pubOk = pub.estado === "ok";
   const prioridad = PRIORIDADES.find((p) => p[0] === orden.k && orden.d < 0);
 
   const cambiar = (k: keyof Filtros) => (v: string) => setFiltros({ ...filtros, [k]: v, ...(k === "cat" ? { sub: "" } : {}) });
@@ -160,11 +203,21 @@ export default function Productos({ D, filtros, setFiltros }: { D: Catalogo; fil
             })}
           </div>
         )}
+        <div className="flex flex-wrap gap-4">
+          <Segmentos etiqueta="SKU" valor={filtros.sku} onChange={cambiar("sku")}
+            opciones={[["", "Todos", conteos.sku[0]], ["con", "Con SKU", conteos.sku[1]], ["sin", "Sin SKU", conteos.sku[2]]]} />
+          <Segmentos etiqueta="Mercado Libre" valor={filtros.pub} onChange={cambiar("pub")}
+            apagado={pubOk ? undefined : pub.estado === "cargando" ? "Leyendo lo publicado en Mercado Libre…" : "No se pudo leer lo publicado en Mercado Libre."}
+            opciones={[["", "Todos", conteos.pub[0]], ["si", "Publicados", pubOk ? conteos.pub[1] : null], ["no", "Sin publicar", pubOk ? conteos.pub[2] : null]]} />
+        </div>
         <p className="text-[11px] leading-relaxed text-slate-500">
           {filtros.val
             ? "Productos con mercancía que el catálogo marca para validar. "
             : "Todo el catálogo, con o sin motivos para validar. "}
-          {prioridad ? <>Orden: <b>{prioridad[1].toLowerCase()}</b> ({prioridad[2]}); empatan las otras dos prioridades. El retorno es venta esperada a precio de ML: la pestaña no trae costos.</> : null}
+          {prioridad ? <>Orden: <b>{prioridad[1].toLowerCase()}</b> ({prioridad[2]}); empatan las otras dos prioridades. El retorno es venta esperada a precio de ML: la pestaña no trae costos. </> : null}
+          {pubOk
+            ? <>Publicado = en Mercado Libre <b>hoy</b>, activa o pausada, en cualquiera de las dos cuentas{pub.actualizado ? <> (sync de ML del {hora(pub.actualizado)})</> : null}.</>
+            : pub.estado === "cargando" ? "Leyendo lo publicado en Mercado Libre…" : <span className="text-amber-700">No se pudo leer lo publicado en Mercado Libre: el filtro y la columna no lo muestran.</span>}
         </p>
       </div>
 
@@ -209,7 +262,7 @@ export default function Productos({ D, filtros, setFiltros }: { D: Catalogo; fil
 
       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-card">
         <div ref={caja} className="overflow-x-auto">
-          <table className="w-full min-w-[1700px] border-collapse text-sm">
+          <table className="w-full min-w-[1840px] border-collapse text-sm">
             <thead className="bg-slate-50 text-[10.5px] font-semibold uppercase tracking-wide text-slate-500">
               <tr>
                 {COLS.map(([k, nom, cl]) => {
@@ -230,7 +283,7 @@ export default function Productos({ D, filtros, setFiltros }: { D: Catalogo; fil
               </tr>
             </thead>
             <tbody>
-              {trozo.length === 0 && <tr><td colSpan={12} className="py-14 text-center text-sm text-slate-400">Nada con esos filtros.</td></tr>}
+              {trozo.length === 0 && <tr><td colSpan={COLS.length} className="py-14 text-center text-sm text-slate-400">Nada con esos filtros.</td></tr>}
               {trozo.map((r) => {
                 const ab = !!abiertas[r._i];
                 return (
@@ -247,6 +300,7 @@ export default function Productos({ D, filtros, setFiltros }: { D: Catalogo; fil
                         <div className="mt-1 flex flex-wrap gap-1"><Estado r={r} />{r.td && !r._mv.length ? <Etiqueta>título por confirmar</Etiqueta> : null}
                           {r._mv.filter((m) => m !== "sin_sku").map((m) => <Etiqueta key={m} tono="amber">{CORTO_MOTIVO[m]}</Etiqueta>)}</div>
                       </td>
+                      <td className="min-w-[140px] px-3 py-2.5"><Publicacion r={r} /></td>
                       <td className="max-w-[180px] px-3 py-2.5">
                         <div className="text-xs font-semibold text-slate-700">{c1(D, r)}</div>
                         <div className="text-[11px] text-slate-500">{c2(D, r)}{r.kq === "r" ? " · predicha" : r.kq === "p" ? " · estimada" : ""}</div>
@@ -290,7 +344,7 @@ export default function Productos({ D, filtros, setFiltros }: { D: Catalogo; fil
                     </tr>
                     {ab && (
                       <tr>
-                        <td colSpan={12} className="border-b border-slate-200 p-0">
+                        <td colSpan={COLS.length} className="border-b border-slate-200 p-0">
                           <div className="sticky left-0" style={{ width: ancho || undefined }}><Detalle D={D} r={r} /></div>
                         </td>
                       </tr>

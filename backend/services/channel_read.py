@@ -648,6 +648,30 @@ def publicados_ml(skus: list[str]) -> dict[str, list[dict[str, Any]]]:
     return res
 
 
+def publicados_ml_todos() -> dict[str, list[dict[str, Any]]]:
+    """
+    ``{ SKU: [{cuenta, situacion}] }`` de TODOS los SKUs vivos en ML, con la MISMA
+    definición que :func:`publicados_ml` (`_SIT_PUBLICADO_ML`: activa o pausada, con
+    listing_id), en una sola consulta. Es para quien necesita el universo entero de una
+    vez —la pestaña Catálogo, 13,800 SKUs (v0.708.0)— en vez de preguntar por lotes. La
+    llave va en MAYÚSCULAS (kubera guarda el SKU como citext).
+    """
+    filas = sdb.fetch_all(
+        """select upper(l.sku::text) as sku, a.legacy_code as cuenta, l.situacion
+             from channel.listings l
+             join core.accounts a on a.id = l.account_id
+            where l.canal = 'mercado_libre'
+              and nullif(l.listing_id, '') is not null
+              and lower(coalesce(l.situacion, '')) = any(%s)
+            order by 1, 2""",
+        (list(_SIT_PUBLICADO_ML),))
+    res: dict[str, list[dict[str, Any]]] = {}
+    for f in filas:
+        res.setdefault(f["sku"], []).append(
+            {"cuenta": f["cuenta"], "situacion": str(f["situacion"] or "").lower()})
+    return res
+
+
 def frescura_listings_ml() -> str | None:
     """
     ``max(updated_at)`` de las filas de ML, en ISO, o ``None``.

@@ -67,9 +67,51 @@ class Servicio(unittest.TestCase):
         self.assertEqual(cm.exception.status_code, 404)
 
 
+class Publicados(unittest.TestCase):
+    """v0.708.0: qué está publicado HOY en ML, con la definición única del panel (activa o pausada)."""
+
+    def setUp(self):
+        catalogo.olvidar()
+
+    def tearDown(self):
+        catalogo.olvidar()
+
+    def test_la_consulta_usa_la_definicion_unica(self):
+        from unittest import mock
+        from services import channel_read
+        filas = [{"sku": "TEC-0110-NEG", "cuenta": "BEKURA", "situacion": "active"},
+                 {"sku": "TEC-0110-NEG", "cuenta": "SANCORFASHION", "situacion": "Paused"}]
+        with mock.patch.object(channel_read.sdb, "fetch_all", return_value=filas) as q:
+            res = channel_read.publicados_ml_todos()
+        self.assertEqual(q.call_args.args[1], (list(channel_read._SIT_PUBLICADO_ML),))
+        self.assertIn("nullif(l.listing_id, '') is not null", q.call_args.args[0])
+        self.assertEqual(res, {"TEC-0110-NEG": [{"cuenta": "BEKURA", "situacion": "active"},
+                                                {"cuenta": "SANCORFASHION", "situacion": "paused"}]})
+
+    def test_servicio_compacta_y_guarda_cinco_minutos(self):
+        from unittest import mock
+        from services import channel_read
+        todos = {"TEC-0110-NEG": [{"cuenta": "BEKURA", "situacion": "active"}]}
+        with mock.patch.object(channel_read, "publicados_ml_todos", return_value=todos) as q, \
+                mock.patch.object(channel_read, "frescura_listings_ml", return_value="2026-10-30T17:00:00+00:00"):
+            a = catalogo.publicados()
+            b = catalogo.publicados()
+        self.assertEqual(q.call_count, 1)
+        self.assertIs(a, b)
+        self.assertEqual(a, {"actualizado": "2026-10-30T17:00:00+00:00", "ml": {"TEC-0110-NEG": [["BEKURA", "active"]]}})
+
+    def test_si_kubera_falla_es_503(self):
+        from unittest import mock
+        from fastapi import HTTPException
+        with mock.patch.object(catalogo, "publicados", side_effect=RuntimeError("sin BD")):
+            with self.assertRaises(HTTPException) as cm:
+                asyncio.run(router.publicados())
+        self.assertEqual(cm.exception.status_code, 503)
+
+
 class Permisos(unittest.TestCase):
     def test_rutas_piden_operador(self):
-        for ruta in ("/api/catalogo", "/api/catalogo/img/f0"):
+        for ruta in ("/api/catalogo", "/api/catalogo/img/f0", "/api/catalogo/publicados"):
             self.assertEqual(rbac.rol_requerido("GET", ruta), "operador")
             self.assertFalse(rbac.permite("lectura", "GET", ruta))
             self.assertTrue(rbac.permite("operador", "GET", ruta))

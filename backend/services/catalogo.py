@@ -19,6 +19,12 @@ QUÉ ES
 
 SOLO LECTURA de archivos del repo. Se leen una vez por proceso y se quedan en memoria: solo cambian con un deploy.
 
+LO PUBLICADO EN MERCADO LIBRE (v0.708.0)
+    Lo único que NO es foto: `publicados()` dice qué SKUs están publicados HOY en ML, por cuenta, con la definición
+    única del panel (`channel_read.publicados_ml_todos`: activa o pausada, la misma de Costos) y la hora del último
+    sync de 15 min (`frescura_listings_ml`). Un SELECT a kubera, cinco minutos en memoria. Es para el filtro y la
+    columna «Publicado» de la pestaña (Brandon, 30-oct-2026).
+
 EL PACKING LIST PARA LA IA (v0.706.0)
     «Mejorar con IA» de Mercado Libre lee de aquí el título del renglón del packing list (`titulos_pl`: lo que se le
     compró al proveedor) y, si el producto no tiene foto en la tienda, la foto de ese renglón (`foto_pl`, recortada de
@@ -32,6 +38,7 @@ import io
 import json
 import re
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -119,6 +126,28 @@ def foto_pl(sku: str) -> bytes | None:
     return buf.getvalue()
 
 
+PUBLICADOS_TTL = 300   # segundos: el sync que alimenta `channel.listings` corre cada 15 min
+_publicados: dict[str, Any] = {"t": 0.0, "dato": None}
+_lock_publicados = threading.Lock()
+
+
+def publicados() -> dict[str, Any]:
+    """BLOQUEANTE (kubera). {actualizado, ml: {SKU: [[cuenta, situacion]]}} de lo publicado HOY en Mercado Libre.
+
+    `situacion` es `active` o `paused`. Un SKU que no viene no está publicado en ML. `actualizado` es la hora del
+    último sync: si el sync se detiene, la pantalla lo enseña en vez de contestar con una foto vieja."""
+    with _lock_publicados:
+        if _publicados["dato"] is not None and time.monotonic() - _publicados["t"] < PUBLICADOS_TTL:
+            return _publicados["dato"]
+    from services import channel_read
+    todos = channel_read.publicados_ml_todos()
+    dato = {"actualizado": channel_read.frescura_listings_ml(),
+            "ml": {sku: [[p["cuenta"], p["situacion"]] for p in pubs] for sku, pubs in todos.items()}}
+    with _lock_publicados:
+        _publicados.update(t=time.monotonic(), dato=dato)
+    return dato
+
+
 def olvidar() -> None:
     """Vacía la caché (pruebas, o tras dejar archivos nuevos en la carpeta)."""
     global _indice
@@ -126,3 +155,5 @@ def olvidar() -> None:
         _cache.clear()
     with _lock_indice:
         _indice = None
+    with _lock_publicados:
+        _publicados.update(t=0.0, dato=None)
