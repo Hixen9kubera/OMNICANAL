@@ -21,7 +21,7 @@ import AppNavbar from "@/components/AppNavbar";
 import { ProveedorFotos } from "@/components/catalogo/Fotos";
 import Productos from "@/components/catalogo/Productos";
 import { Contenedores, Empate, Metodo, PorCategoria } from "@/components/catalogo/Otras";
-import { type Catalogo, type Filtros, SIN_FILTROS, hora, nf, preparar, sumar } from "@/components/catalogo/logica";
+import { type Catalogo, type Filtros, POR_VALIDAR, SIN_FILTROS, hora, nf, preparar, sumar } from "@/components/catalogo/logica";
 import { ApiError, catalogoDatos, mensajeDeError } from "@/lib/api";
 import { quienSoy } from "@/lib/sesion";
 
@@ -56,7 +56,8 @@ function Catalogo() {
   const [noDisponible, setNoDisponible] = useState(false);
   const [intento, setIntento] = useState(0);
   const [pestana, setPestana] = useState<Pestana>("pro");
-  const [filtros, setFiltros] = useState<Filtros>(SIN_FILTROS);
+  // Abre en «Por validar» (Brandon, 30-oct-2026); un «Ver productos» de otra vista abre el catálogo completo.
+  const [filtros, setFiltros] = useState<Filtros>(POR_VALIDAR);
 
   useEffect(() => {
     const ctl = new AbortController();

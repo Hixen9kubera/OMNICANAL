@@ -37,6 +37,8 @@ export interface Fila {
   _i: number; _q: number | null; _fm: boolean; _cm: string | null; _fa: boolean; _pm: number | null; _pa: number | null;
   _dp: number | null; _vm: number | null; _va: number | null; _em: number | null; _ea: number | null;
   _tm: number | null; _ta: number | null; _m: string | null; _b: string; _parte?: number;
+  /** Por qué hay que validarlo (llaves de MOTIVOS); vacío = nada que validar. */
+  _mv: string[];
 }
 
 export interface Contenedor {
@@ -166,6 +168,7 @@ export function preparar(R: Fila[]): void {
     r._ta = r._va != null ? r._va : r._ea;
     r._m = r.cm ? ["foto", "texto", "foto_odoo", "foto_parecida", "cantidad", "ia", "bodega"].filter((k) => r.cm!.indexOf(k) >= 0)[0] ?? null : null;
     r._b = `${r.s} ${r.t} ${r.n || ""} ${Object.keys(r.ct || {}).join(" ")}`.toLowerCase();
+    r._mv = motivos(r);
   });
 }
 
@@ -193,10 +196,48 @@ export function enContenedor(r: Fila, c: string): Fila {
 
 // ── Filtros ──────────────────────────────────────────────────────────────────
 
-export interface Filtros { q: string; cat: string; sub: string; est: string; con: string; pre: string; emp: string }
-export const SIN_FILTROS: Filtros = { q: "", cat: "", sub: "", est: "", con: "", pre: "", emp: "" };
+/** `val`: "" = todo el catálogo · "*" = lo que hay que validar, por cualquier motivo · una llave de MOTIVOS. */
+export interface Filtros { q: string; cat: string; sub: string; est: string; con: string; pre: string; emp: string; val: string }
+export const SIN_FILTROS: Filtros = { q: "", cat: "", sub: "", est: "", con: "", pre: "", emp: "", val: "" };
+/** Como abre la pestaña (Brandon, 30-oct-2026): «que muestre lo que necesitamos validar primero que nada». */
+export const POR_VALIDAR: Filtros = { ...SIN_FILTROS, val: "*" };
+
+// ── Por validar (v0.705.0) ───────────────────────────────────────────────────
+//
+// Lo que el propio catálogo marca como dudoso, en un producto que TODAVÍA TIENE MERCANCÍA y se vende (lo SOLD OUT y
+// los insumos no se validan: no hay nada que vender). Cada motivo sale de un dato del artifact, no de una regla nueva.
+
+export const MOTIVOS: [string, string, string][] = [
+  ["precio", "Precio de ML por revisar", "El paquete de precios v3 lo dejó marcado: las fuentes difieren mucho, la única fuente es parcial o no hubo fuentes."],
+  ["bodega", "Contenedor sin validar por bodega", "Sus piezas son las que declara el proveedor: bodega todavía no las contó."],
+  ["titulo", "Título por confirmar", "La IA avisó que el título lo está suponiendo, o pidió que lo revise una persona."],
+  ["foto", "La foto no corresponde", "La foto no corresponde al título, o la del catálogo y la del packing list son productos distintos."],
+  ["sin_sku", "Sin SKU", "Renglones del packing list a los que nadie les ha puesto SKU."],
+  ["empate", "Empate inferido por IA", "La IA emparejó el SKU con su renglón por el nombre y las piezas: confirmarlo al validar el contenedor."],
+  ["sin_precio", "Sin precio de ML", "No tiene precio de Mercado Libre: ni medido ni estimado."],
+  ["cuenta", "La cuenta no cuadra", "Salió más de lo comprado, o Odoo lo cuenta en otra unidad."],
+];
+
+export function motivos(r: Fila): string[] {
+  if (r.pc == null || r.nv || r.so || !((r._q ?? 0) > 0)) return [];
+  const m: string[] = [];
+  const v3 = v3de(r) || {};
+  if (v3.rv) m.push("precio");
+  if (!(r.rn || []).some((x) => x.av != null)) m.push("bodega");
+  if (r.td || r.trv) m.push("titulo");
+  if (r.tv === "n" || r.tfm === "n") m.push("foto");
+  if (r.sin) m.push("sin_sku");
+  if ((r.cm || []).includes("ia")) m.push("empate");
+  if (!r.ml && !r.em) m.push("sin_precio");
+  if (r.dm || r.uf) m.push("cuenta");
+  return m;
+}
 
 export function pasa(D: Catalogo, r: Fila, E: Filtros): boolean {
+  if (E.val) {
+    const ms = r._mv;
+    if (!ms.length || (E.val !== "*" && !ms.includes(E.val))) return false;
+  }
   if (E.q && r._b.indexOf(E.q) < 0) return false;
   if (E.cat && c1(D, r) !== E.cat) return false;
   if (E.sub && c2(D, r) !== E.sub) return false;
@@ -226,16 +267,35 @@ export function pasa(D: Catalogo, r: Fila, E: Filtros): boolean {
 
 export type Orden = "s" | "pc" | "ps" | "pq" | "lb" | "mlm" | "_tm" | "azm" | "_ta";
 
+/**
+ * Las tres prioridades que pidió Brandon (30-oct-2026): «ordenar de mayor retorno, mayor ticket, mayor stock».
+ * Retorno = lo que queda × su precio de ML (`_tm`); ticket = precio de ML por pieza (`_pm`); stock = piezas que
+ * quedan. La elegida manda y las otras dos desempatan, en ese orden. Sin costos en la pestaña, «retorno» es venta
+ * esperada, no utilidad.
+ */
+export const PRIORIDADES: [Orden, string, string][] = [
+  ["_tm", "Mayor retorno", "piezas que quedan × precio de ML"],
+  ["mlm", "Mayor ticket", "precio de ML por pieza"],
+  ["pq", "Mayor stock", "piezas que quedan"],
+];
+
 export function ordenar(l: Fila[], k: Orden, d: number): Fila[] {
-  const val = (r: Fila): number | string | null | undefined =>
-    k === "mlm" ? r._pm : k === "azm" ? r._pa : (r as unknown as Record<string, number | string | null>)[k];
-  return l.sort((a, b) => {
-    const x = val(a), y = val(b);
-    if (x == null && y == null) return a.s < b.s ? -1 : 1;
+  const val = (r: Fila, c: Orden): number | string | null | undefined =>
+    c === "mlm" ? r._pm : c === "azm" ? r._pa : (r as unknown as Record<string, number | string | null>)[c];
+  // Si se ordena por una prioridad, las otras dos desempatan (descendente).
+  const desempate = PRIORIDADES.map((p) => p[0]).filter((c) => c !== k && PRIORIDADES.some((p) => p[0] === k));
+  const cmp = (a: Fila, b: Fila, c: Orden, dir: number): number => {
+    const x = val(a, c), y = val(b, c);
+    if (x == null && y == null) return 0;
     if (x == null) return 1;
     if (y == null) return -1;
-    if (typeof x === "string") return d * (x < (y as string) ? -1 : x > (y as string) ? 1 : 0);
-    return d * ((x as number) - (y as number)) || (a.s < b.s ? -1 : 1);
+    if (typeof x === "string") return dir * (x < (y as string) ? -1 : x > (y as string) ? 1 : 0);
+    return dir * ((x as number) - (y as number));
+  };
+  return l.sort((a, b) => {
+    let r = cmp(a, b, k, d);
+    for (const c of desempate) if (!r) r = cmp(a, b, c, -1);
+    return r || (a.s < b.s ? -1 : 1);
   });
 }
 

@@ -2,17 +2,24 @@
 
 // Productos.tsx — La pestaña «Productos» del CATÁLOGO: filtros, totales de lo filtrado, la tabla (50 por página,
 // ordenable) y el detalle de cada fila. Mismos filtros y cuentas que el artifact.
+//
+// POR VALIDAR (v0.705.0, Brandon, 30-oct-2026): «filtrar para que muestre lo que necesitamos validar primero que nada
+// y ordenar de mayor retorno, mayor ticket, mayor stock». La pestaña abre en «Por validar» (los motivos salen de
+// `logica.ts::motivos`) ordenada por mayor retorno; «Todo el catálogo» quita ese filtro.
 
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardCopy, Search, X } from "lucide-react";
+import { ArrowDownWideNarrow, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardCheck, ClipboardCopy, Search, X } from "lucide-react";
 
 import { THEME_FALLBACK } from "@/lib/theme";
 import { Foto } from "./Fotos";
 import Detalle from "./Detalle";
 import { CeldaPrecio, CeldaValor, Estado, Etiqueta, Mini, SoldOut, TriCab } from "./Celdas";
 import {
-  CORTO, type Catalogo, type Fila, type Filtros, type Orden, c1, c2, enContenedor, nf, ordenar, pasa, sumar, tsv,
+  CORTO, MOTIVOS, PRIORIDADES, SIN_FILTROS, type Catalogo, type Fila, type Filtros, type Orden, c1, c2, enContenedor, nf,
+  ordenar, pasa, sumar, tsv,
 } from "./logica";
+
+const CORTO_MOTIVO: Record<string, string> = Object.fromEntries(MOTIVOS.map(([k, n]) => [k, n]));
 
 const ML = THEME_FALLBACK.mercado_libre;
 const AZ = THEME_FALLBACK.amazon;
@@ -56,7 +63,7 @@ const COLS: [Orden | "", string, string][] = [
 
 export default function Productos({ D, filtros, setFiltros }: { D: Catalogo; filtros: Filtros; setFiltros: (f: Filtros) => void }) {
   const [busca, setBusca] = useState(filtros.q);
-  const [orden, setOrden] = useState<{ k: Orden; d: number }>({ k: "pq", d: -1 });
+  const [orden, setOrden] = useState<{ k: Orden; d: number }>({ k: "_tm", d: -1 });
   const [pag, setPag] = useState(0);
   const [abiertas, setAbiertas] = useState<Record<number, boolean>>({});
   const [copiado, setCopiado] = useState<string | null>(null);
@@ -90,7 +97,18 @@ export default function Productos({ D, filtros, setFiltros }: { D: Catalogo; fil
   const t = useMemo(() => sumar(vista), [vista]);
   const pags = Math.max(1, Math.ceil(vista.length / POR_PAGINA));
   const trozo = vista.slice(pag * POR_PAGINA, pag * POR_PAGINA + POR_PAGINA);
-  const hayFiltros = Object.values(filtros).some(Boolean);
+  const hayFiltros = Object.entries(filtros).some(([k, v]) => k !== "val" && !!v);
+  // Cuántos productos hay que validar, y por cada motivo (sobre todo el catálogo, no sobre lo filtrado).
+  const porMotivo = useMemo(() => {
+    const c: Record<string, number> = { "*": 0 };
+    D.R.forEach((r) => {
+      if (!r._mv.length) return;
+      c["*"]++;
+      r._mv.forEach((m) => { c[m] = (c[m] || 0) + 1; });
+    });
+    return c;
+  }, [D]);
+  const prioridad = PRIORIDADES.find((p) => p[0] === orden.k && orden.d < 0);
 
   const cambiar = (k: keyof Filtros) => (v: string) => setFiltros({ ...filtros, [k]: v, ...(k === "cat" ? { sub: "" } : {}) });
   const ordenarPor = (k: Orden) => setOrden((o) => (o.k === k ? { k, d: -o.d } : { k, d: k === "s" ? 1 : -1 }));
@@ -103,6 +121,53 @@ export default function Productos({ D, filtros, setFiltros }: { D: Catalogo; fil
 
   return (
     <div className="space-y-4">
+      <div className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-card">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div className="inline-flex rounded-xl bg-slate-100 p-1" role="radiogroup" aria-label="Qué productos ver">
+            {([["*", "Por validar", porMotivo["*"]], ["", "Todo el catálogo", D.R.length]] as [string, string, number][]).map(([v, nom, n]) => {
+              const on = v ? !!filtros.val : !filtros.val;
+              return (
+                <button key={nom} type="button" role="radio" aria-checked={on} onClick={() => setFiltros({ ...filtros, val: v })}
+                  className={`inline-flex items-center gap-2 rounded-lg px-3.5 py-2 text-sm font-semibold transition ${on ? "bg-white text-indigo-700 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}>
+                  {v && <ClipboardCheck size={15} aria-hidden />}{nom}
+                  <span className={`rounded-full px-2 py-0.5 text-[11px] tabular-nums ${on ? "bg-indigo-100 text-indigo-700" : "bg-slate-200 text-slate-600"}`}>{nf(n)}</span>
+                </button>
+              );
+            })}
+          </div>
+          <label className="flex min-w-[240px] flex-col gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            <span className="inline-flex items-center gap-1"><ArrowDownWideNarrow size={13} aria-hidden /> Ordenar por</span>
+            <span className="relative">
+              <select value={prioridad ? prioridad[0] : ""} onChange={(e) => e.target.value && setOrden({ k: e.target.value as Orden, d: -1 })}
+                className="w-full appearance-none rounded-xl border border-indigo-300 bg-white py-2 pl-3 pr-8 text-sm font-semibold normal-case tracking-normal text-slate-800 outline-none transition focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100">
+                {!prioridad && <option value="">La columna que elegiste en la tabla</option>}
+                {PRIORIDADES.map(([k, nom, que]) => <option key={k} value={k}>{nom} · {que}</option>)}
+              </select>
+              <ChevronDown size={14} className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400" aria-hidden />
+            </span>
+          </label>
+        </div>
+        {filtros.val && (
+          <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Motivo">
+            {([["*", "Todos los motivos", "Cualquier motivo"], ...MOTIVOS] as [string, string, string][]).map(([k, nom, que]) => {
+              const on = filtros.val === k;
+              return (
+                <button key={k} type="button" role="radio" aria-checked={on} title={que} onClick={() => setFiltros({ ...filtros, val: k })}
+                  className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold transition ${on ? "border-amber-400 bg-amber-50 text-amber-900" : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"}`}>
+                  {nom} <span className="tabular-nums opacity-70">{nf(porMotivo[k] || 0)}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+        <p className="text-[11px] leading-relaxed text-slate-500">
+          {filtros.val
+            ? "Productos con mercancía que el catálogo marca para validar. "
+            : "Todo el catálogo, con o sin motivos para validar. "}
+          {prioridad ? <>Orden: <b>{prioridad[1].toLowerCase()}</b> ({prioridad[2]}); empatan las otras dos prioridades. El retorno es venta esperada a precio de ML: la pestaña no trae costos.</> : null}
+        </p>
+      </div>
+
       <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-card">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
           <label className="flex min-w-0 flex-col gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500 sm:col-span-2 xl:col-span-1">
@@ -123,7 +188,7 @@ export default function Productos({ D, filtros, setFiltros }: { D: Catalogo; fil
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-2">
           {hayFiltros && (
-            <button type="button" onClick={() => setFiltros({ q: "", cat: "", sub: "", est: "", con: "", pre: "", emp: "" })}
+            <button type="button" onClick={() => setFiltros({ ...SIN_FILTROS, val: filtros.val })}
               className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50">
               <X size={13} aria-hidden /> Quitar filtros
             </button>
@@ -179,7 +244,8 @@ export default function Productos({ D, filtros, setFiltros }: { D: Catalogo; fil
                         </button>
                         <div className="mt-0.5 text-[13px] leading-snug text-slate-800">{r.t}</div>
                         {r.n && <div className="text-[11px] text-slate-400">{r.n}</div>}
-                        <div className="mt-1 flex flex-wrap gap-1"><Estado r={r} />{r.td ? <Etiqueta>título por confirmar</Etiqueta> : null}</div>
+                        <div className="mt-1 flex flex-wrap gap-1"><Estado r={r} />{r.td && !r._mv.length ? <Etiqueta>título por confirmar</Etiqueta> : null}
+                          {r._mv.filter((m) => m !== "sin_sku").map((m) => <Etiqueta key={m} tono="amber">{CORTO_MOTIVO[m]}</Etiqueta>)}</div>
                       </td>
                       <td className="max-w-[180px] px-3 py-2.5">
                         <div className="text-xs font-semibold text-slate-700">{c1(D, r)}</div>

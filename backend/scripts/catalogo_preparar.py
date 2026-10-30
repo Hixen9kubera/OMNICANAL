@@ -145,6 +145,17 @@ def _foto_de(f: dict[str, Any]) -> dict[str, Any] | None:
     return x or None
 
 
+def retorno(r: dict[str, Any]) -> float | None:
+    """El valor de lo que queda a precio de ML (`_tm` de la pantalla, `logica.ts::preparar`): piezas que quedan × la
+    media de ML si es medida (o viene del archivo de Eduardo), si no × su estimado."""
+    if r.get("pc") is None:
+        return None
+    ml, em = r.get("ml") or {}, r.get("em")
+    medido = ml.get("o") == "e" or (not r.get("sin") and (ml.get("n") or 0) >= 2 and not ml.get("x") and ml.get("o") != "c")
+    precio = ml.get("m") if medido and ml else (em[0] if em else None)
+    return None if precio is None else (r.get("pq") or 0) * precio
+
+
 def huellas_por_fila(d: dict[str, Any], pl: dict[str, Any]) -> list[list[str]]:
     """El sha1 de las fotos de los renglones de cada fila, en orden y sin repetir. `fo` es la fila de EXCEL (+1)."""
     filas = {(a["id"], f["fila"]): f for a in pl["originales"] for f in a.get("filas") or []}
@@ -297,10 +308,10 @@ def armar(cat: Path, cache: Path, salida: Path, lado: int = LADO, cols: int = CO
     orden: list[tuple[str, Any]] = []
     por_fila: dict[int, tuple[int | None, str | None]] = {}
     cuenta = {"pl_original": 0, "pl_artifact": 0, "odoo": 0, "sin": 0}
-    # Las fotos se acomodan en las hojas en el ORDEN EN QUE ABRE LA TABLA (más piezas que quedan primero, como
-    # `ordenar` de la pantalla): la primera página pide una hoja, no cuarenta.
+    # Las fotos se acomodan en las hojas en el ORDEN EN QUE ABRE LA TABLA (mayor RETORNO primero —piezas que quedan ×
+    # precio de ML—, como `ordenar` de la pantalla desde v0.705.0): la primera página pide una hoja, no cuarenta.
     R = d["R"]
-    vista = sorted(range(len(R)), key=lambda i: (R[i].get("pc") is None, -(R[i].get("pq") or 0), R[i]["s"]))
+    vista = sorted(range(len(R)), key=lambda i: (-(retorno(R[i]) or -1), -(R[i].get("pq") or 0), R[i]["s"]))
     for idx in vista:
         r, hs = R[idx], huellas[idx]
         disponibles = [h for h in hs if h in medios and min(medida(h)) > 0]

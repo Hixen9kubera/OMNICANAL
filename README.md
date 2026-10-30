@@ -1001,6 +1001,41 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.705.0 — CATÁLOGO abre en «Por validar», ordenado por mayor retorno; y el método para publicar a ML desde ahí
+
+Brandon (30-oct-2026): «necesito filtrar para que muestre lo que necesitamos validar primero que nada y ordenar de
+mayor retorno, mayor ticket, mayor stock», y «guarda el progreso de cómo es que publicaste para que podamos empezar a
+publicar desde catálogo a mercado libre».
+
+**Por validar.** La vista «Productos» abre en **Por validar**: los productos que TODAVÍA tienen mercancía (ni SOLD OUT
+ni insumos) y que el propio catálogo marca por algún motivo. Cada motivo sale de un dato del artifact
+(`logica.ts::motivos`), con su conteo sobre el catálogo completo:
+
+| Motivo | Sale de |
+|---|---|
+| Precio de ML por revisar | `v3.rv` del paquete de precios v3 |
+| Contenedor sin validar por bodega | ningún renglón en un archivo validado (`rn[].av`) |
+| Título por confirmar | `td` (la IA lo supone) o `trv` (revisar con una persona) |
+| La foto no corresponde | `tv = n` (foto ≠ título) o `tfm = n` (foto del catálogo ≠ la del packing list) |
+| Sin SKU | renglones sin SKU |
+| Empate inferido por IA | `cm` incluye `ia` |
+| Sin precio de ML | ni medido ni estimado |
+| La cuenta no cuadra | salió de más (`dm`) u otra unidad en Odoo (`uf`) |
+
+Medido al construirlo: 7,418 de los 14,321 productos con packing list tienen al menos un motivo (antes de quitar lo
+SOLD OUT). Un chip por motivo filtra solo ese; «Todo el catálogo» quita el filtro, y un «Ver productos» de otra vista
+abre el catálogo completo. Cada fila lleva sus motivos en ámbar.
+
+**Ordenar por** (selector arriba de la tabla): **mayor retorno** (piezas que quedan × precio de ML, `_tm`), **mayor
+ticket** (precio de ML por pieza) o **mayor stock** (piezas que quedan); la elegida manda y las otras dos desempatan.
+Abre en mayor retorno. Sin costos en la pestaña, «retorno» es venta esperada, no utilidad. Las hojas de fotos se
+volvieron a acomodar en ese orden (`catalogo_preparar.py::retorno`) para que la primera página siga pidiendo una sola.
+
+**El método para publicar** quedó escrito en [docs/PUBLICAR_DESDE_CATALOGO.md](docs/PUBLICAR_DESDE_CATALOGO.md): las
+dos tandas del 28-oct (15 SKUs, 30 publicaciones pausadas), cada paso con su ruta del panel y sus reglas (precio media ×
+0.97, categoría confirmada, limpiar lo que inventa la IA, sin datos fiscales ni garantía, medidas de Amazon solo con
+match, la foto) y lo que falta para el botón «Publicar en ML» de la pestaña.
+
 ### v0.704.0 — CATÁLOGO: fuera la cuenta del inventario y el valor total (solo van en el artifact)
 
 Brandon (29-oct-2026), al revisar la pestaña: las secciones del valor de la mercancía a precio de ML y de Amazon, los
