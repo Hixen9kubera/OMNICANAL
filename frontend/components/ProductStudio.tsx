@@ -2140,14 +2140,14 @@ export default function ProductStudio({
                         : ""}
                     </div>
                     {reporteIA.vision.lo_que_se_ve && (
-                      <div className="text-slate-600">Se ve: {reporteIA.vision.lo_que_se_ve}</div>
+                      <div className="italic text-slate-600">{reporteIA.vision.lo_que_se_ve}</div>
                     )}
                     {reporteIA.vision.coincide === "no" && (
                       <div className="flex items-start gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-2 py-1.5 text-rose-700">
                         <AlertTriangle size={12} className="mt-0.5 shrink-0" />
                         <span>
-                          <strong>Las fotos muestran otro producto.</strong> El texto se escribió según el nombre
-                          actual: revisa la foto antes de publicar.
+                          <strong>La foto muestra otro producto (u otra versión).</strong> El texto se escribió
+                          según los títulos de referencia: revisa la foto antes de publicar.
                         </span>
                       </div>
                     )}
