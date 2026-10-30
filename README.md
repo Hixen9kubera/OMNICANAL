@@ -1019,8 +1019,9 @@ $0.00076 por clic** (medido). Sin marcas ni modelos en títulos ni descripciones
   cortan a 15; el parte dice cuántos se descartaron (`mercado.con_marca`). Las listas no las tienen todas («realme»,
   «acefast», «lg», «airpod» en singular): ésas las frena solo el prompt.
 
-Lo que NO se tocó y queda por decidir: los ATRIBUTOS de ML `MODEL`/`ALPHANUMERIC_MODEL` salen con códigos («F9-5» del
-packing list, «SF-T022», «YWX 501»): la regla de no usar modelos (Brandon, 30-oct) hoy cubre título y descripción.
+Lo que NO se tocó, por decisión de Brandon (30-oct: «Déjalo así»): los ATRIBUTOS de ML `MODEL`/`ALPHANUMERIC_MODEL`
+siguen con el código que traigan («F9-5» del packing list, «SF-T022», «YWX 501» de Woo). La regla de no usar marcas ni
+modelos es para el título y la descripción.
 
 ### v0.706.0 — «Mejorar con IA» de Mercado Libre: una foto, el título del packing list y las palabras de los más vendidos; sin marcas ni modelos
 
