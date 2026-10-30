@@ -51,14 +51,19 @@ Todo va por las rutas del PANEL, con la sesión de quien publica: nada de script
 ### 3. Título, descripción y atributos
 
 1. `POST /api/ia/mejorar` con `{canal: "mercado_libre", cuenta: "BEKURA", producto: {nombre, categoria (ruta),
-   ml_cat_id, sku, wc_id, descripcion, precio, atributos}}`. La `descripcion` que se le pasa es una frase con lo que SÍ
-   se sabe del producto (título del catálogo, renglón del packing list, foto).
-2. **Limpiar lo que la IA inventa.** En cada tanda inventó datos: número de piezas, watts, canales, material,
-   «carburo de tungsteno», ángulos, capacidad de carga, compatibilidades de marca. Se quitan del atributo y de la
-   descripción; un atributo que no se sabe va vacío.
-3. **Datos fiscales: NO se llenan ni se tocan** (v0.699.0 los excluye solos). **Garantía: la IA nunca la escribe**
-   (v0.700.0).
-4. Guardar en Woo: `POST /api/productos/{sku}/contenido {wc_id, titulo, descripcion, atributos}` con los atributos ya
+   ml_cat_id, sku, wc_id, descripcion, precio, atributos, imagenes}}`. **Desde v0.706.0** la IA ve UNA foto (la
+   primera de `imagenes` que baje; sin fotos, la del packing list), lee el título del renglón del packing list y
+   parafrasea el título con los términos más buscados y los títulos de los más vendidos de la categoría. Mandar en
+   `imagenes` las URLs de la galería de Woo en su orden.
+2. **Revisar el parte** de la respuesta: `prohibidos` (marcas o modelos que quedaron: NO se publica con ellos, regla
+   de Brandon del 30-oct), `vision.coincide` (`no` = la foto es otro producto: revisar la foto antes de publicar),
+   `vision.dudas` y `mercado.cubiertos`.
+3. **Limpiar lo que la IA inventa.** En las tandas del 28-oct (cuando solo leía texto) inventó número de piezas, watts,
+   canales, material, «carburo de tungsteno», ángulos, capacidad de carga y compatibilidades de marca. El prompt nuevo
+   lo prohíbe, pero se revisa igual: se quita del atributo y de la descripción; un atributo que no se sabe va vacío.
+4. **Datos fiscales: NO se llenan ni se tocan** (v0.699.0 los excluye solos). **Garantía: la IA nunca la escribe**
+   (v0.700.0). **Marcas y modelos: nunca** en título ni descripción (Brandon, 30-oct-2026).
+5. Guardar en Woo: `POST /api/productos/{sku}/contenido {wc_id, titulo, descripcion, atributos}` con los atributos ya
    limpios.
 
 ### 4. Medidas y peso

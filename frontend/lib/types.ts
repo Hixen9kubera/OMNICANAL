@@ -690,6 +690,32 @@ export interface MejorarResp {
   };
   /** El documento quedó en enrich.channel_content (origen `ia`). */
   guardado?: { ok: boolean; campos?: number; motivo?: string } | null;
+  /* ── Solo ML (v0.706.0) ───────────────────────────────────────────── */
+  /** La foto que vio la IA y si es el producto de los títulos. `ok: false` = solo leyó el texto. */
+  vision?: {
+    ok: boolean;
+    motivo?: string;
+    modelo?: string;
+    costo_usd?: number;
+    foto?: string;
+    coincide?: "si" | "parcial" | "no" | "";
+    lo_que_se_ve?: string;
+    dudas?: string[];
+    /** Marcas que la IA puso y quitó al pedírselo. */
+    marcas_corregidas?: string[];
+  };
+  /** El título del renglón del packing list (del proveedor) que se le pasó. */
+  titulos_pl?: string[];
+  /** Las palabras de ML de la categoría: más buscados y más vendidos, y cuáles cubre el título. */
+  mercado?: {
+    categoria: string;
+    terminos: string[];
+    lideres: string[];
+    fuente: { terminos: string; lideres: string };
+    cubiertos?: string[];
+  } | null;
+  /** Marcas y modelos que QUEDARON en lo generado: se quitan antes de publicar. */
+  prohibidos?: { marcas: string[]; modelos: string[] };
 }
 
 // ── Precio de competencia sugerido ───────────────────────────────────

@@ -1001,6 +1001,52 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.706.0 — «Mejorar con IA» de Mercado Libre: una foto, el título del packing list y las palabras de los más vendidos; sin marcas ni modelos
+
+Brandon (30-oct-2026): «con que sólo se mande 1 foto con el título que tengamos de packing list o que ya tengamos
+anteriormente», «lo parafraseamos con las keywords que te arroja el mercado libre en los más vendidos» y «OJO … no debe
+de usarse nombres de MARCAS, ni MODELOS … no podemos usar esos nombres en nuestra publicación».
+
+**Antes.** El botón mandaba solo TEXTO (nombre actual, descripción, categoría y atributos) a DeepSeek, que no ve
+imágenes. Con un nombre genérico, en inglés o de otro producto escribía a ciegas, y en cada tanda del 28-oct inventó
+watts, piezas y material.
+
+**Ahora (solo ML; los demás canales no cambian).** `ia_generadores._ml_con_foto` va a OpenRouter con los modelos que
+midió Crear (`openai/gpt-6-luna`, respaldo `google/gemini-2.5-flash`) y le manda:
+
+- **UNA foto**: la principal de la galería. El Estudio manda las tres primeras (`imagenes`, campo nuevo de
+  `ProductoCtx`) y el backend baja, en orden, la primera que responda. Si la tienda no tiene fotos, la del renglón del
+  packing list, recortada de las hojas de la pestaña Catálogo (`catalogo.foto_pl`). Se LEE, no se sube a ningún lado.
+- **Los títulos de referencia**: el nombre actual y el del renglón del packing list (`catalogo.titulos_pl`). Es un
+  campo nuevo de `catalogo.json.gz`, `pt` (11,717 de las 13,777 filas con SKU), que `catalogo_preparar.py titulos`
+  agrega sin rehacer las hojas y `armar` ya incluye. Sin precio: el repo es público.
+- **Las palabras de Mercado Libre de la categoría**: hasta 15 términos MÁS BUSCADOS (`/trends`) y 10 títulos de los MÁS
+  VENDIDOS (`/highlights`). Primero lo que ya midió Competencia (`enrich.market_terms`, `enrich.market_bestsellers`); lo
+  que falte se le pregunta a ML en vivo (gratis, token de BEKURA).
+- **El prompt** (`_ML_CON_FOTO`): la foto dice qué es; los títulos, lo que la foto no muestra; el título se parafrasea
+  con los términos más buscados que SÍ describan al producto y la estructura de los más vendidos; NO INVENTAR; marcas y
+  modelos PROHIBIDOS (`_SIN_MARCAS_NI_MODELOS`, también «tipo X» y «compatible con X»).
+
+**Marcas y modelos: la IA propone, el código revisa.** Las marcas de las dos listas del panel (`marcas_renombre`, las
+de renombre de Competencia, y `terminos_protegidos`, las de Amazon), SIN la excepción de compatibilidad de Amazon: si
+aparece una, se le pide UNA corrección con la misma foto; si sigue, sale en rojo en el Estudio (`prohibidos`). Los
+códigos de modelo que venían en los datos y la IA repitió («UX-06») solo se reportan: «GU10» o «M8» son medidas y
+quitarlos a ciegas estropearía el título. Las nuestras (Ferrahome, Kubera) no cuentan.
+
+**Respuesta**: `vision` (foto usada, modelo, costo, `coincide` si/parcial/no, `lo_que_se_ve`, `dudas`,
+`marcas_corregidas`), `titulos_pl`, `mercado` (términos, títulos, de dónde salieron y `cubiertos`, recalculado por el
+servidor con `competencia_store._cubre`) y `prohibidos`. Los atributos siguen en `ml_atributos` (los reales de la
+categoría) y ahora reciben lo que se vio y el título del packing list. Un título de más de 60 caracteres queda en
+`dudas`. El Estudio pinta todo eso bajo el botón.
+
+**Sin llave, sin foto, sin crédito (402) o sin respuesta**: DeepSeek → Claude, solo texto, con la misma prohibición de
+marcas y modelos y las mismas palabras de ML. El parte dice por qué no hubo foto.
+
+**Costo**: del orden de $0.0004–0.001 de dólar por clic (Luna con una foto, medido en Crear el 27-oct); una corrección
+por marca repite la llamada. Las palabras de ML no cuestan.
+
+Pruebas: `tests/test_ia_ml_fotos.py` (28). Sin prueba en vivo desde aquí: la llave de OpenRouter solo está en Railway.
+
 ### v0.705.0 — CATÁLOGO abre en «Por validar», ordenado por mayor retorno; y el método para publicar a ML desde ahí
 
 Brandon (30-oct-2026): «necesito filtrar para que muestre lo que necesitamos validar primero que nada y ordenar de

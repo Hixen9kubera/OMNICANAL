@@ -1043,6 +1043,8 @@ export default function ProductStudio({
       ml_cat_id: catMlId || meta?.categoria_ml?.category_id || null,
       sku,
       atributos,
+      // ML ve UNA foto desde v0.706.0: la primera de éstas que se pueda bajar.
+      imagenes: (galeria ?? []).slice(0, 3).map((g) => g.src).filter(Boolean),
     };
     // El precio de competencia ya NO va aquí (v0.686.0): dependía de SerpApi
     // —agotado— y la IA lo estimaba sin datos ($399 para un producto que se vende
@@ -1094,7 +1096,7 @@ export default function ProductStudio({
     }
     setMejorando(false);
   }, [data, sku, canal, titulo, descripcion, atributos, campos.precioRegular, campos.costo, categoriaMLTexto, categoriaWC,
-      esML, cuentaSel, soloVistaAgrupada]);
+      esML, cuentaSel, soloVistaAgrupada, galeria]);
 
   // ── Publicar / actualizar en el canal (paso 4) ──────────────────────
   const itemIdSel = datosCanal?.item_id ?? null;
@@ -2082,6 +2084,88 @@ export default function ProductStudio({
               pide el título). Ver backend/services/ml_atributos.depurar. */}
           {reporteIA && (conParteIA || esML) && (
             <div className="mt-2 space-y-1.5 rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-[11px] leading-relaxed">
+              {/* ML desde v0.706.0: marcas y modelos que quedaron (PROHIBIDOS, Brandon
+                  30-oct), la foto que vio, el título del packing list y las palabras
+                  de ML que cubre el título. Sin foto, avisa que solo leyó. */}
+              {esML && !!(reporteIA.prohibidos?.marcas.length || reporteIA.prohibidos?.modelos.length) && (
+                <div className="flex items-start gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-2 py-1.5 text-rose-700">
+                  <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+                  <span>
+                    <strong>Quítalo antes de publicar: no podemos usar marcas ni modelos.</strong>
+                    {!!reporteIA.prohibidos?.marcas.length && <> Marcas: {reporteIA.prohibidos.marcas.join(", ")}.</>}
+                    {!!reporteIA.prohibidos?.modelos.length && (
+                      <> Posibles modelos: {reporteIA.prohibidos.modelos.join(", ")}.</>
+                    )}
+                  </span>
+                </div>
+              )}
+              {esML && !!reporteIA.titulos_pl?.length && (
+                <div className="text-slate-500">
+                  Título del packing list: <strong className="text-slate-700">{reporteIA.titulos_pl.join(" · ")}</strong>
+                </div>
+              )}
+              {esML && reporteIA.mercado && (
+                reporteIA.mercado.terminos.length || reporteIA.mercado.lideres.length ? (
+                  <div className="text-slate-500">
+                    Palabras de Mercado Libre: {reporteIA.mercado.terminos.length} más buscados
+                    {reporteIA.mercado.fuente.terminos !== "sin datos" ? ` (${reporteIA.mercado.fuente.terminos})` : ""}
+                    {" · "}{reporteIA.mercado.lideres.length} títulos de más vendidos
+                    {reporteIA.mercado.fuente.lideres !== "sin datos" ? ` (${reporteIA.mercado.fuente.lideres})` : ""}.
+                    {" "}El título cubre{" "}
+                    <strong className="text-slate-700">
+                      {reporteIA.mercado.cubiertos?.length ? reporteIA.mercado.cubiertos.join(", ") : "ninguno"}
+                    </strong>
+                    {(() => {
+                      const faltan = reporteIA.mercado.terminos
+                        .filter((t) => !reporteIA.mercado?.cubiertos?.includes(t))
+                        .slice(0, 5);
+                      return faltan.length ? <> · no cubre: {faltan.join(", ")}</> : null;
+                    })()}
+                  </div>
+                ) : (
+                  <div className="text-slate-500">Mercado Libre no publica más buscados ni más vendidos de esta categoría.</div>
+                )
+              )}
+              {esML && reporteIA.vision && (
+                reporteIA.vision.ok ? (
+                  <div className="space-y-1">
+                    <div className="text-slate-500">
+                      La IA vio <strong className="text-slate-700">{reporteIA.vision.foto}</strong>
+                      {reporteIA.vision.modelo ? ` (${reporteIA.vision.modelo})` : ""}
+                      {reporteIA.vision.marcas_corregidas?.length
+                        ? ` · había puesto ${reporteIA.vision.marcas_corregidas.join(", ")} y se le pidió quitarlo`
+                        : ""}
+                    </div>
+                    {reporteIA.vision.lo_que_se_ve && (
+                      <div className="text-slate-600">Se ve: {reporteIA.vision.lo_que_se_ve}</div>
+                    )}
+                    {reporteIA.vision.coincide === "no" && (
+                      <div className="flex items-start gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-2 py-1.5 text-rose-700">
+                        <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+                        <span>
+                          <strong>Las fotos muestran otro producto.</strong> El texto se escribió según el nombre
+                          actual: revisa la foto antes de publicar.
+                        </span>
+                      </div>
+                    )}
+                    {reporteIA.vision.coincide === "parcial" && (
+                      <div className="text-amber-700">
+                        El nombre actual era genérico o incompleto: el título se completó con lo que se ve.
+                      </div>
+                    )}
+                    {!!reporteIA.vision.dudas?.length && (
+                      <div className="text-amber-700">
+                        <strong>No lo afirmó (revísalo):</strong>
+                        <ul className="ml-3 list-disc">
+                          {reporteIA.vision.dudas.map((d) => <li key={d}>{d}</li>)}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="text-amber-700">{reporteIA.vision.motivo}</div>
+                )
+              )}
               {reporteIA.product_type && (
                 <div className="text-slate-500">
                   {esAmazon

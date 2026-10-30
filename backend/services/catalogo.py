@@ -18,12 +18,22 @@ QUÉ ES
     ~2.5 MB. El navegador lo abre y la pantalla hace las cuentas, como el artifact.
 
 SOLO LECTURA de archivos del repo. Se leen una vez por proceso y se quedan en memoria: solo cambian con un deploy.
+
+EL PACKING LIST PARA LA IA (v0.706.0)
+    «Mejorar con IA» de Mercado Libre lee de aquí el título del renglón del packing list (`titulos_pl`: lo que se le
+    compró al proveedor) y, si el producto no tiene foto en la tienda, la foto de ese renglón (`foto_pl`, recortada de
+    las hojas). Solo se LEEN; no se suben a Woo, a Odoo ni al artifact (regla de Brandon, 29-oct-2026: esa foto vive
+    en la pestaña).
 """
 from __future__ import annotations
 
+import gzip
+import io
+import json
 import re
 import threading
 from pathlib import Path
+from typing import Any
 
 CARPETA = Path(__file__).resolve().parent.parent / "data" / "catalogo"
 NOMBRE_HOJA = re.compile(r"^f\d{1,4}$")
@@ -60,7 +70,59 @@ def hoja(nombre: str) -> bytes:
     return _leer(f"img/{nombre}.webp")
 
 
+_indice: dict[str, Any] | None = None
+_lock_indice = threading.Lock()
+
+
+def _indice_pl() -> dict[str, Any]:
+    """BLOQUEANTE, la primera vez: {lado, cols, por_hoja, foto: {SKU: índice}, titulos: {SKU: [..]}}. `foto` solo
+    lleva las filas cuya foto ES la del packing list (`fo == "pl"`). Del catálogo abierto se queda esto, no los ~14 MB."""
+    global _indice
+    with _lock_indice:
+        if _indice is None:
+            datos = json.loads(gzip.decompress(datos_gz()))
+            f = (datos.get("meta") or {}).get("fotos") or {}
+            fotos: dict[str, int] = {}
+            titulos: dict[str, list[str]] = {}
+            for r in datos.get("R") or []:
+                sku = str(r.get("s") or "").strip().upper()
+                if not sku or r.get("sin"):
+                    continue
+                if r.get("fo") == "pl" and r.get("f") is not None:
+                    fotos.setdefault(sku, int(r["f"]))
+                if r.get("pt"):
+                    titulos.setdefault(sku, [str(t) for t in r["pt"] if t])
+            _indice = {"lado": int(f.get("lado") or 192), "cols": int(f.get("cols") or 10),
+                       "por_hoja": int(f.get("por_hoja") or 100), "foto": fotos, "titulos": titulos}
+        return _indice
+
+
+def titulos_pl(sku: str) -> list[str]:
+    """BLOQUEANTE. El título de los renglones del packing list del SKU (del proveedor: inglés o chino), o []."""
+    return list(_indice_pl()["titulos"].get((sku or "").strip().upper()) or [])
+
+
+def foto_pl(sku: str) -> bytes | None:
+    """BLOQUEANTE. JPEG de la foto del renglón del packing list del SKU (192 px), o None si no tiene."""
+    from PIL import Image
+
+    idx = _indice_pl()
+    i = idx["foto"].get((sku or "").strip().upper())
+    if i is None:
+        return None
+    lado, cols = idx["lado"], idx["cols"]
+    h, c = divmod(i, idx["por_hoja"])
+    x, y = (c % cols) * lado, (c // cols) * lado
+    im = Image.open(io.BytesIO(hoja(f"f{h}"))).convert("RGB").crop((x, y, x + lado, y + lado))
+    buf = io.BytesIO()
+    im.save(buf, "JPEG", quality=90)
+    return buf.getvalue()
+
+
 def olvidar() -> None:
     """Vacía la caché (pruebas, o tras dejar archivos nuevos en la carpeta)."""
+    global _indice
     with _lock:
         _cache.clear()
+    with _lock_indice:
+        _indice = None

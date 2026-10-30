@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any
 
 import httpx
@@ -328,6 +329,353 @@ _MEJORAR: dict[str, dict[str, Any]] = {
 }
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Mercado Libre: UNA FOTO, el título del packing list y las palabras de ML
+# (v0.706.0, pedido de Brandon el 30-oct-2026)
+#
+# Hasta aquí «Mejorar con IA» de ML solo LEÍA el nombre actual, la descripción,
+# la categoría y los atributos, y se los mandaba a DeepSeek, que no ve imágenes.
+# Con un nombre genérico («CALZADO»), en inglés o de otro producto escribía a
+# ciegas, e inventaba lo que no sabía (watts, piezas, material) en cada tanda
+# del 28-oct.
+#
+# Ahora el mensaje lleva:
+#   · UNA foto: la principal de la tienda (la que verá el comprador); si no se
+#     puede bajar, la siguiente; si la tienda no tiene, la del renglón del
+#     packing list de la pestaña Catálogo;
+#   · el título de ese renglón del packing list (`catalogo.titulos_pl`: lo que se
+#     le compró al proveedor), junto al nombre actual;
+#   · las PALABRAS DE MERCADO LIBRE de la categoría: los términos más buscados
+#     (`/trends`) y los títulos de los más vendidos (`/highlights`). Primero lo
+#     que ya midió Competencia (`enrich.market_terms`, `market_bestsellers`); si
+#     la categoría no está medida, se le preguntan a ML en vivo (gratis).
+# Va a OpenRouter con los modelos que midió Crear (`OPENROUTER_MODELOS_SEO`).
+# Sin llave, sin foto o sin respuesta, sigue DeepSeek → Claude con el mismo texto
+# (sin la foto). Los atributos siguen en `ml_atributos`, ya con lo que se vio.
+# ─────────────────────────────────────────────────────────────────────────────
+MAX_FOTOS_TIENDA = 3      # de la galería se intentan, en orden, hasta bajar UNA
+TOPE_TERMINOS = 15        # términos más buscados que se le pasan (ML publica hasta 50)
+TOPE_LIDERES = 10         # títulos de los más vendidos que se le pasan
+
+_SIN_MARCAS_NI_MODELOS = (
+    "MARCAS Y MODELOS: PROHIBIDOS. Ni el título ni la descripción llevan NINGÚN nombre de marca ni de "
+    "modelo: ni los que se lean en la foto (logos, texto impreso), ni los del packing list, ni los del "
+    "nombre actual, ni los que traigan los títulos de los más vendidos o los términos más buscados. "
+    "Tampoco como comparación o compatibilidad: nada de «tipo X», «estilo X», «compatible con X» ni "
+    "«para X» cuando X es una marca o un modelo. Los códigos de modelo (como «UX-06» o «XR-500») "
+    "tampoco van. Describe el producto con palabras genéricas: lo que es, para qué sirve y sus "
+    "características (medidas, capacidad, potencia, color). No podemos publicar nombres de marcas ni de "
+    "modelos."
+)
+
+_PALABRAS_ML = (
+    "Si te paso PALABRAS DE MERCADO LIBRE (los términos que más busca la gente en la categoría y los "
+    "títulos de los más vendidos), parafrasea el título con ellas: usa los términos más buscados que SÍ "
+    "describan a este producto, los de más arriba primero, con la estructura de los títulos que más "
+    "venden. Nunca metas un término que no le corresponda (otro material, otra medida, otro uso) solo "
+    "porque se busca, ni uno que lleve una marca o un modelo: de esos toma solo las palabras genéricas."
+)
+
+_ML_CON_FOTO = (
+    "Eres experto en publicaciones de Mercado Libre México. Con la FOTO, los TÍTULOS DE REFERENCIA y "
+    "las PALABRAS DE MERCADO LIBRE, propón el título y la descripción para publicar el producto.\n\n"
+    "CÓMO SE USAN LAS FUENTES\n"
+    "- La FOTO dice qué es el producto, su color, su forma y qué piezas se ven.\n"
+    "- Los TÍTULOS DE REFERENCIA —el del packing list, que es el del proveedor y casi siempre viene en "
+    "inglés o chino, y el nombre actual en la tienda— dicen qué se compró y lo que la foto no muestra: "
+    "medidas, cantidad, modelo, voltaje. Pueden venir genéricos («tape»), en otro idioma o con faltas: "
+    "úsalos para saber qué es, no los copies.\n"
+    "- " + _PALABRAS_ML + "\n"
+    "- Si la foto muestra un producto DISTINTO al de los títulos de referencia (otro producto, no otro "
+    "color ni otro ángulo), no los mezcles: escribe según los títulos, pon \"coincide\": \"no\" y di en "
+    "\"dudas\" qué se ve en la foto.\n\n"
+    + _SIN_MARCAS_NI_MODELOS + "\n\n"
+    "NO INVENTES. Afirma solo lo que se ve en la foto o lo que dicen los datos. Watts, voltaje, número "
+    "de piezas, medidas, capacidad, material, compatibilidades, certificaciones y marcas: si no están en "
+    "una de las dos fuentes, no se mencionan. Si dudas de un dato, déjalo fuera y anótalo en \"dudas\".\n\n"
+    "TÍTULO: máximo 60 caracteres, español de México. Empieza por el tipo de producto con las palabras "
+    "con que la gente lo busca; luego lo que lo distingue (función principal, medida o cantidad si se "
+    "conoce, color si se ve). Sin marcas ni modelos, sin signos promocionales y sin palabras en "
+    "mayúsculas sostenidas.\n"
+    "DESCRIPCIÓN: texto plano, sin HTML ni emojis, de 80 a 200 palabras: un párrafo de qué es y para "
+    "qué sirve, viñetas con «- » con lo que se ve y lo que dicen los datos, y un cierre con sus usos. "
+    "Sin teléfonos, correos, enlaces ni datos de contacto. " + sin_garantia.REGLA + "\n\n"
+    "Responde SOLO con este JSON:\n"
+    '{"titulo": "...", "descripcion": "...", '
+    '"lo_que_se_ve": "<una o dos frases: qué producto se ve, color, material aparente y qué incluye>", '
+    '"coincide": "si | parcial | no", "dudas": ["..."], '
+    '"atributos": [{"nombre": "..", "valor": ".."}]}\n'
+    "\"coincide\": \"si\" cuando la foto y los títulos de referencia son el mismo producto; \"parcial\" "
+    "cuando los títulos son genéricos o les falta lo que la foto muestra; \"no\" cuando son productos "
+    "distintos. En \"atributos\" van solo los que se ven o vienen en los datos."
+)
+
+
+def _sin_vision(motivo: str) -> dict[str, Any]:
+    return {"ok": False, "vision": {"ok": False, "motivo": motivo}}
+
+
+def _del_catalogo(sku: str, que: str) -> Any:
+    """BLOQUEANTE. `titulos_pl` o `foto_pl` del SKU en la pestaña Catálogo; vacío si no hay o si falla."""
+    if not sku:
+        return [] if que == "titulos_pl" else None
+    try:
+        from services import catalogo
+        return getattr(catalogo, que)(sku)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("mejorar ML: %s de %s no se pudo leer: %s", que, sku, exc)
+        return [] if que == "titulos_pl" else None
+
+
+async def _lideres_en_vivo(cat: str) -> list[str]:
+    """Los títulos de los más vendidos de la categoría, preguntados a ML (`/highlights`, gratis). Solo los
+    productos de catálogo: las publicaciones sueltas de otros vendedores dan 403. Nunca lanza."""
+    from services import precio_sugerido
+    try:
+        cli = await precio_sugerido._cliente_ml()  # noqa: SLF001
+        if cli is None:
+            return []
+        async with cli:
+            top = (await precio_sugerido._get(cli, f"/highlights/MLM/category/{cat}") or {}).get("content") or []  # noqa: SLF001
+            ids = [h["id"] for h in top if h.get("type") == "PRODUCT" and h.get("id")][:TOPE_LIDERES]
+            prods = await asyncio.gather(*(precio_sugerido._get(cli, f"/products/{i}") for i in ids))  # noqa: SLF001
+        return [str(p["name"]).strip() for p in prods if isinstance(p, dict) and p.get("name")]
+    except Exception as exc:  # noqa: BLE001
+        log.warning("mejorar ML: más vendidos de %s en vivo: %s", cat, exc)
+        return []
+
+
+async def _mercado_ml(cat: str) -> dict[str, Any] | None:
+    """Las PALABRAS DE MERCADO LIBRE de la categoría: {categoria, terminos, lideres, fuente}. None sin categoría.
+    Primero lo que guardó Competencia; lo que falte, en vivo. Nunca lanza."""
+    if not cat:
+        return None
+    from services import competencia_ml, competencia_store
+
+    def _guardado() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        return (competencia_store.terminos_categoria(cat, None, TOPE_TERMINOS),
+                competencia_store.ranking_categoria(cat, None, TOPE_LIDERES))
+
+    try:
+        terminos, lideres = await asyncio.to_thread(_guardado)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("mejorar ML: palabras guardadas de %s: %s", cat, exc)
+        terminos, lideres = [], []
+    out: dict[str, Any] = {
+        "categoria": cat,
+        "terminos": [str(t["termino"]).strip() for t in terminos if t.get("termino")][:TOPE_TERMINOS],
+        "lideres": [str(x["titulo"]).strip() for x in sorted(lideres, key=lambda x: x.get("posicion") or 999)
+                    if x.get("titulo")][:TOPE_LIDERES],
+    }
+    out["fuente"] = {k: "competencia" if out[k] else "sin datos" for k in ("terminos", "lideres")}
+    if not out["terminos"]:
+        try:
+            vivo = await asyncio.to_thread(competencia_ml.tendencias, cat)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("mejorar ML: /trends de %s en vivo: %s", cat, exc)
+            vivo = None
+        if vivo:
+            out["terminos"] = [str(t["keyword"]).strip() for t in vivo if t.get("keyword")][:TOPE_TERMINOS]
+            out["fuente"]["terminos"] = "en vivo"
+    if not out["lideres"]:
+        out["lideres"] = await _lideres_en_vivo(cat)
+        if out["lideres"]:
+            out["fuente"]["lideres"] = "en vivo"
+    return out
+
+
+def _referencias(titulos_pl: list[str], mercado: dict[str, Any] | None) -> str:
+    """El título del packing list y las palabras de ML, en texto, para el mensaje (con foto o sin ella)."""
+    partes: list[str] = []
+    if titulos_pl:
+        partes.append("Título del packing list (del proveedor): " + " | ".join(titulos_pl))
+    if mercado and mercado.get("terminos"):
+        partes.append("\nPALABRAS DE MERCADO LIBRE — términos más buscados de la categoría, de más a menos:\n"
+                      + "\n".join(f"{i}. {t}" for i, t in enumerate(mercado["terminos"], 1)))
+    if mercado and mercado.get("lideres"):
+        partes.append("\nPALABRAS DE MERCADO LIBRE — títulos de los más vendidos de la categoría:\n"
+                      + "\n".join(f"#{i} {t}" for i, t in enumerate(mercado["lideres"], 1)))
+    return "\n".join(partes)
+
+
+async def _foto_para_ia(cli: httpx.AsyncClient, producto: dict[str, Any]) -> tuple[str, str] | None:
+    """(de dónde salió, data-URL) de UNA foto: la primera de la galería que se pueda bajar (máx.
+    `MAX_FOTOS_TIENDA` intentos) y, si la tienda no tiene, la del packing list. None si no hay ninguna."""
+    import base64
+
+    from services import crear_producto  # perezoso: módulo pesado; aquí solo su reductor de fotos
+
+    urls = [u for u in (producto.get("imagenes") or [])
+            if isinstance(u, str) and u.startswith(("http://", "https://"))][:MAX_FOTOS_TIENDA]
+    for i, url in enumerate(urls):
+        try:
+            r = await cli.get(url, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0"})
+            if r.status_code == 200:
+                foto = await asyncio.to_thread(crear_producto._foto_data_url, r.content)  # noqa: SLF001
+                if foto:
+                    return ("la principal de la tienda" if i == 0 else
+                            f"la {i + 1}ª de la tienda (la principal no se pudo bajar)"), foto
+            log.warning("mejorar ML: foto %s HTTP %d", url, r.status_code)
+        except httpx.HTTPError as exc:
+            log.warning("mejorar ML: no se pudo bajar la foto %s: %s", url, exc)
+    pl = await asyncio.to_thread(_del_catalogo, str(producto.get("sku") or "").strip(), "foto_pl")
+    if pl:
+        return ("la del renglón del packing list (la tienda no tiene foto)",
+                "data:image/jpeg;base64," + base64.b64encode(pl).decode())
+    return None
+
+
+def _coincide(valor: Any) -> str:
+    v = _sin_acentos(str(valor or "")).strip().lower()
+    return v if v in ("si", "parcial", "no") else ""
+
+
+# ── Marcas y modelos: la IA propone, el código revisa ────────────────────────
+# Regla de Brandon (30-oct-2026): «no debe de usarse nombres de MARCAS, ni
+# MODELOS … no podemos usar esos nombres en nuestra publicación». El prompt lo
+# prohíbe (`_SIN_MARCAS_NI_MODELOS`), pero un modelo que escribe «estilo Bose»
+# no siente que desobedece: describe. Así que aquí se revisa lo que devolvió.
+#   · MARCAS: las de las dos listas del panel —`marcas_renombre` (las de renombre
+#     de Competencia) y `terminos_protegidos` (las de Amazon)— y SIN la excepción
+#     de compatibilidad que tiene Amazon: en ML tampoco va «compatible con
+#     iPhone». Si aparece una, se le pide UNA corrección a la IA; si sigue, se
+#     reporta para que una persona la quite antes de publicar.
+#   · MODELOS: no hay lista posible. Se marcan los códigos (letras y números,
+#     como «UX-06») que venían en los datos y la IA repitió. Solo se REPORTAN:
+#     «GU10» o «M8» son medidas, y quitarlas a ciegas estropearía el título.
+_CODIGO = re.compile(r"(?<![\w-])(?=[\w-]*[A-Za-z])(?=[\w-]*\d)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*(?![\w-])")
+_MEDIDA = re.compile(r"^\d+(?:[.,]\d+)?(?:x\d+(?:[.,]\d+)?)*(?:w|v|a|ah|mah|wh|gb|tb|mb|cm|mm|m|km|kg|g|mg|l|ml|"
+                     r"oz|lb|pz|pzs|pza|pzas|pcs|p|k|hz|khz|mhz|ghz|db|in|pulg|lm|btu|rpm|psi|x)?$", re.I)
+
+
+def _marcas_en(texto: str) -> list[str]:
+    """Las marcas de las listas del panel que aparecen en el texto, por palabras completas. Las nuestras no."""
+    from services import marcas_renombre, terminos_protegidos
+
+    halladas: list[str] = []
+    alias, _, largo = marcas_renombre._indice()  # noqa: SLF001
+    palabras = marcas_renombre.normalizar(texto).split()
+    for i in range(len(palabras)):
+        for n in range(1, largo + 1):
+            if i + n > len(palabras):
+                break
+            m = alias.get(" ".join(palabras[i:i + n]))
+            if m and m not in halladas and marcas_renombre.normalizar(m) not in terminos_protegidos.PROPIAS:
+                halladas.append(m)
+    ya = {marcas_renombre.normalizar(h) for h in halladas}
+    for m in terminos_protegidos._PATRON.finditer(texto or ""):  # noqa: SLF001
+        k = m.group(0)
+        if k.lower() not in terminos_protegidos.PROPIAS and marcas_renombre.normalizar(k) not in ya:
+            halladas.append(k)
+            ya.add(marcas_renombre.normalizar(k))
+    return halladas
+
+
+def _modelos_en(texto: str, fuentes: str) -> list[str]:
+    """Los códigos de modelo de `fuentes` (los datos que recibió la IA) que reaparecen en `texto`."""
+    codigos = {c for c in _CODIGO.findall(fuentes or "") if len(c) >= 3 and not _MEDIDA.match(c)}
+    return sorted(c for c in codigos
+                  if re.search(rf"(?<![\w-]){re.escape(c)}(?![\w-])", texto or "", re.IGNORECASE))
+
+
+def _prohibidos(data: dict[str, Any], fuentes: str) -> dict[str, list[str]]:
+    """{marcas, modelos} que quedaron en lo generado. Las marcas se buscan también en los atributos."""
+    texto = "\n".join(str(data.get(k) or "") for k in ("titulo", "descripcion"))
+    valores = "\n".join(str(a.get("valor") or "") for a in data.get("atributos") or [] if isinstance(a, dict))
+    return {"marcas": _marcas_en(f"{texto}\n{valores}"), "modelos": _modelos_en(texto, fuentes)}
+
+
+async def _preguntar(cli: httpx.AsyncClient, modelo: str, mensajes: list[dict[str, Any]]) -> dict[str, Any]:
+    """Una llamada a OpenRouter: {status, data, texto, usd}. `data` = {} si no trajo título."""
+    from services import crear_producto  # perezoso, como arriba
+
+    body = {
+        "model": modelo, "max_tokens": 2000, "temperature": 0.3,
+        "reasoning": {"effort": "low", "exclude": True},
+        "response_format": {"type": "json_object"},
+        "messages": mensajes,
+    }
+    try:
+        resp = await cli.post(crear_producto._OR_URL, json=body, timeout=120, headers={  # noqa: SLF001
+            "Authorization": f"Bearer {settings.openrouter_api_key}", "X-Title": "Kubera Omnicanal"})
+    except httpx.HTTPError as exc:
+        log.warning("mejorar ML: OpenRouter %s falló: %s", modelo, exc)
+        return {"status": 0, "data": {}, "texto": "", "usd": 0.0}
+    if resp.status_code != 200:
+        log.warning("mejorar ML: OpenRouter %s HTTP %d: %s", modelo, resp.status_code, resp.text[:150])
+        return {"status": resp.status_code, "data": {}, "texto": "", "usd": 0.0}
+    try:
+        d = resp.json()
+        texto = ((d.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+        usd = float((d.get("usage") or {}).get("cost") or 0)
+    except (ValueError, AttributeError, IndexError, TypeError):
+        texto, usd = "", 0.0
+    data = _parse_json(texto)
+    if not isinstance(data, dict) or not str(data.get("titulo") or "").strip():
+        log.warning("mejorar ML: OpenRouter %s no trajo título", modelo)
+        data = {}
+    return {"status": 200, "data": data, "texto": texto, "usd": usd}
+
+
+async def _ml_con_foto(producto: dict[str, Any], referencias: str) -> dict[str, Any]:
+    """Título, descripción y lo que se ve, por OpenRouter VIENDO una foto. Nunca lanza.
+
+    {"ok": True, "data": {titulo, descripcion, atributos}, "vision": {...}} o
+    {"ok": False, "vision": {"ok": False, "motivo": ...}}: con ok=False, quien llama sigue con el texto."""
+    from services import crear_producto  # perezoso, como arriba
+
+    if not settings.openrouter_api_key:
+        return _sin_vision("Sin OPENROUTER_API_KEY: la IA solo leyó el texto.")
+    fuentes = f"{_contexto(producto)}\n{referencias}"
+    async with httpx.AsyncClient(timeout=30) as cli:
+        foto = await _foto_para_ia(cli, producto)
+        if not foto:
+            return _sin_vision("El producto no tiene foto que se pueda leer: la IA solo leyó el texto.")
+        de_donde, url = foto
+        mensajes: list[dict[str, Any]] = [
+            {"role": "system", "content": _ML_CON_FOTO},
+            {"role": "user", "content": [
+                {"type": "text", "text": f"Foto del producto: {de_donde}."},
+                {"type": "image_url", "image_url": {"url": url}},
+                {"type": "text", "text": f"Datos del producto:\n{fuentes}\n\nDevuelve SOLO el JSON indicado."},
+            ]},
+        ]
+        for modelo in crear_producto.OPENROUTER_MODELOS_SEO:
+            r = await _preguntar(cli, modelo, mensajes)
+            if r["status"] in (401, 402):
+                # La misma cuenta para todos los modelos: no tiene caso probar el siguiente.
+                return _sin_vision("OpenRouter " + ("sin crédito" if r["status"] == 402 else
+                                                    "rechazó la llave") + ": la IA solo leyó el texto.")
+            if not r["data"]:
+                continue
+            data, usd, corregidas = r["data"], r["usd"], []
+            marcas = _prohibidos(data, fuentes)["marcas"]
+            if marcas:
+                # UNA corrección, con la misma foto y el mismo modelo.
+                otra = await _preguntar(cli, modelo, mensajes + [
+                    {"role": "assistant", "content": r["texto"]},
+                    {"role": "user", "content": (
+                        f"Tu respuesta usa marcas, y están PROHIBIDAS en la publicación: {', '.join(marcas)}. "
+                        "Reescribe el JSON completo sin ningún nombre de marca ni de modelo (tampoco como "
+                        "«compatible con», «tipo» o «estilo»). Devuelve SOLO el JSON.")},
+                ])
+                usd += otra["usd"]
+                if otra["data"]:
+                    data, corregidas = otra["data"], marcas
+            dudas = data.pop("dudas", None)
+            vision = {
+                "ok": True, "modelo": modelo, "costo_usd": round(usd, 5), "foto": de_donde,
+                "coincide": _coincide(data.pop("coincide", "")),
+                "lo_que_se_ve": str(data.pop("lo_que_se_ve", "") or "").strip(),
+                "dudas": [str(x).strip() for x in dudas if str(x).strip()] if isinstance(dudas, list) else [],
+                "marcas_corregidas": corregidas,
+            }
+            log.info("mejorar ML con foto (%s) por %s ($%.5f) para %s",
+                     de_donde, modelo, usd, producto.get("sku"))
+            return {"ok": True, "data": data, "vision": vision}
+    return _sin_vision("OpenRouter no contestó: la IA solo leyó el texto.")
+
+
 def _parse_json(texto: str) -> dict[str, Any]:
     import json
     import re
@@ -378,22 +726,57 @@ async def mejorar(canal: str, producto: dict[str, Any], *,
         from services import walmart_ia
         return await walmart_ia.mejorar(producto)
 
-    cfg = _MEJORAR.get(canal) or _MEJORAR["mercado_libre"]
-    user = (
-        f"Datos del producto:\n{_contexto(producto)}\n\n"
-        "Mejora el contenido y devuelve SOLO el JSON indicado."
-    )
-    res = await asyncio.to_thread(_completar, cfg["system"], user, cfg["max_tokens"])
-    if not res.get("ok"):
-        return {"ok": False, "motivo": res.get("motivo"), "canal": canal}
-    data = _parse_json(res.get("texto", ""))
+    # Mercado Libre (v0.706.0): el título del packing list y las palabras de ML
+    # van en los dos caminos; la foto, solo en el de OpenRouter. Sin él, el texto.
+    vision: dict[str, Any] | None = None
+    mercado: dict[str, Any] | None = None
+    titulos_pl: list[str] = []
+    referencias = ""
+    data: dict[str, Any] = {}
+    res: dict[str, Any] = {}
+    if canal == "mercado_libre":
+        titulos_pl, mercado = await asyncio.gather(
+            asyncio.to_thread(_del_catalogo, str(producto.get("sku") or "").strip(), "titulos_pl"),
+            _mercado_ml(str(producto.get("ml_cat_id") or "").strip()))
+        referencias = _referencias(titulos_pl, mercado)
+        con_foto = await _ml_con_foto(producto, referencias)
+        vision = con_foto["vision"]
+        if con_foto.get("ok"):
+            data = con_foto["data"]
+            res = {"ok": True, "proveedor": "openrouter"}
+    extra_ml = ({"vision": vision, "mercado": mercado, "titulos_pl": titulos_pl}
+                if canal == "mercado_libre" else {})
     if not data:
-        return {"ok": False, "motivo": "La IA no devolvió JSON válido.",
-                "canal": canal, "crudo": res.get("texto", "")[:400]}
+        cfg = _MEJORAR.get(canal) or _MEJORAR["mercado_libre"]
+        user = (
+            f"Datos del producto:\n{_contexto(producto)}\n{referencias}\n\n"
+            "Mejora el contenido y devuelve SOLO el JSON indicado."
+        )
+        # Sin foto, en ML también valen la prohibición de marcas y modelos y las palabras de ML.
+        system = cfg["system"]
+        if canal == "mercado_libre":
+            system += "\n" + _SIN_MARCAS_NI_MODELOS + ("\n" + _PALABRAS_ML if referencias else "")
+        res = await asyncio.to_thread(_completar, system, user, cfg["max_tokens"])
+        if not res.get("ok"):
+            return {"ok": False, "motivo": res.get("motivo"), "canal": canal, **extra_ml}
+        data = _parse_json(res.get("texto", ""))
+        if not data:
+            return {"ok": False, "motivo": "La IA no devolvió JSON válido.",
+                    "canal": canal, "crudo": res.get("texto", "")[:400], **extra_ml}
     # La garantía la ponen las KAM en cada canal: aunque el modelo la escriba, no
     # llega a la descripción (`sin_garantia`, 28-oct-2026).
     if isinstance(data.get("descripcion"), str):
         data["descripcion"] = sin_garantia.quitar(data["descripcion"])
+
+    # ML: qué términos más buscados cubre DE VERDAD el título (la IA lo presume
+    # mal: ver `competencia_captura.sugerir_titulo`) y si se pasó de 60.
+    titulo_final = str(data.get("titulo") or "").strip()
+    if mercado is not None:
+        from services import competencia_store
+        mercado["cubiertos"] = [t for t in mercado["terminos"]
+                                if competencia_store._cubre(t, [titulo_final.lower()])]  # noqa: SLF001
+    if canal == "mercado_libre" and len(titulo_final) > 60 and (vision or {}).get("ok"):
+        vision["dudas"].append(f"El título tiene {len(titulo_final)} caracteres; Mercado Libre admite 60.")
 
     # Amazon: el título va SIN acentos (regla de negocio). El prompt ya lo pide,
     # pero los LLM a veces dejan una tilde suelta — se garantiza aquí quitándolas
@@ -412,6 +795,14 @@ async def mejorar(canal: str, producto: dict[str, Any], *,
                 f"{a.get('nombre')}: {a.get('valor')}"
                 for a in (producto.get("atributos") or []) if a.get("nombre")
             )
+            caracteristicas = _sin_html(str(producto.get("descripcion") or ""))[:1500]
+            if titulos_pl:
+                caracteristicas = f"Título del packing list: {' | '.join(titulos_pl)}\n{caracteristicas}"
+            if (vision or {}).get("lo_que_se_ve"):
+                # Lo que se vio en la foto va PRIMERO: con eso los atributos dejan
+                # de salir solo del título (v0.706.0).
+                caracteristicas = f"Lo que se ve en la foto: {vision['lo_que_se_ve']}\n{caracteristicas}"
+            caracteristicas = caracteristicas.strip()
             r = await ml_atributos.generar_atributos(
                 cat_id=str(producto["ml_cat_id"]).strip(),
                 # El título que SE VA A PUBLICAR: el que la IA acaba de proponer.
@@ -419,7 +810,7 @@ async def mejorar(canal: str, producto: dict[str, Any], *,
                 nombre=str(data.get("titulo") or producto.get("nombre", "")),
                 alibaba_titulo=producto.get("nombre", ""),
                 atributos_actuales=attrs_actuales,
-                caracteristicas_clave=_sin_html(str(producto.get("descripcion") or ""))[:1500],
+                caracteristicas_clave=caracteristicas,
                 sku=str(producto.get("sku") or ""),
                 variante=ia_variante.bloque(producto),
             )
@@ -458,7 +849,11 @@ async def mejorar(canal: str, producto: dict[str, Any], *,
 
     salida: dict[str, Any] = {"ok": True, "canal": canal,
                               "proveedor": res.get("proveedor"), "campos": data,
-                              **reporte_ml}
+                              **reporte_ml, **extra_ml}
+    if canal == "mercado_libre":
+        # La revisión FINAL, ya con los atributos de la categoría: marcas y modelos
+        # que sigan ahí se reportan para quitarlos antes de publicar (Brandon, 30-oct).
+        salida["prohibidos"] = _prohibidos(data, f"{_contexto(producto)}\n{referencias}")
     # ML guarda como los demás canales. Hasta aquí era el ÚNICO (con General)
     # que tiraba lo generado al cerrar el Estudio: Amazon, TikTok, Temu y
     # Walmart lo dejaban en `enrich.channel_content`. General NO se guarda: su

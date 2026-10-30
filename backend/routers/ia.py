@@ -47,6 +47,10 @@ class ProductoCtx(BaseModel):
     costo: float | None = None
     publico: str | None = None
     atributos: list[AtributoIn] = Field(default_factory=list)
+    # URLs de las fotos de la tienda, en el orden de la galería. Solo las usa
+    # «Mejorar con IA» de Mercado Libre (v0.706.0): la IA las VE, con la del
+    # packing list que tenga el SKU en la pestaña Catálogo.
+    imagenes: list[str] = Field(default_factory=list)
 
 
 class GenerarRequest(BaseModel):

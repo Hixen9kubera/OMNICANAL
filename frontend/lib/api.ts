@@ -76,6 +76,8 @@ export interface ProductoIA {
   ml_cat_id?: string | null;
   sku?: string | null;
   atributos?: { nombre: string; valor: string }[];
+  /** Fotos de la tienda en el orden de la galería: «Mejorar con IA» de ML ve la primera que baje (v0.706.0). */
+  imagenes?: string[];
 }
 
 /**

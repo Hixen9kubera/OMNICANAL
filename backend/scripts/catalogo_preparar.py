@@ -13,6 +13,8 @@ desde los packing lists): `backend/data/catalogo/catalogo.json.gz` y las hojas d
                  `datos/pl.json` (la huella de la foto de cada renglón del packing list) y las hojas del artifact
                  `img/g*.jpg` (fotos de Odoo) e `img/q*.jpg` (fotos de renglón). NO MODIFICA NADA DE ESA CARPETA:
                  el artifact es el respaldo de los datos (Brandon, 29-oct-2026).
+  titulos        Solo agrega a `catalogo.json.gz` el título de los renglones del packing list de cada fila (`pt`),
+                 sin rehacer las hojas. Lo lee «Mejorar con IA» de Mercado Libre (v0.706.0). `armar` ya lo incluye.
 
 LA FOTO DE CADA FILA (pedido de Brandon, 29-oct-2026: «cambiarás las imágenes de odoo a las de packing list»)
     1. La foto ORIGINAL de su renglón en el packing list: el catálogo guarda su sha1 (`pl.json`) y aquí se busca
@@ -170,6 +172,42 @@ def huellas_por_fila(d: dict[str, Any], pl: dict[str, Any]) -> list[list[str]]:
                     vistos.append(ft["s"])
         out.append(vistos)
     return out
+
+
+MAX_TITULOS_PL = 2      # títulos distintos del packing list por fila (v0.706.0)
+LARGO_TITULO_PL = 150
+
+
+def titulos_pl(d: dict[str, Any], pl: dict[str, Any]) -> list[list[str]]:
+    """El título de los renglones del packing list de cada fila: primero los del original del proveedor (inglés, o
+    chino si no hay), luego los del validado de bodega. Sin repetir y sin precio: es lo que «Mejorar con IA» de ML
+    lee como «título del packing list» (v0.706.0). `fo`/`fv` son filas de EXCEL (+1)."""
+    orig = {(a["id"], f["fila"]): f for a in pl["originales"] for f in a.get("filas") or []}
+    val = {(a["id"], f["fila"]): f for a in pl.get("validados") or [] for f in a.get("filas") or []}
+    out = []
+    for r in d["R"]:
+        vistos: list[str] = []
+        for rn in r.get("rn") or []:
+            candidatos = [orig.get((rn.get("ao"), fo - 1)) for fo in rn.get("fo") or []]
+            if rn.get("fv"):
+                candidatos.append(val.get((rn.get("av"), rn["fv"] - 1)))
+            for f in candidatos:
+                t = re.sub(r"\s+", " ", str((f or {}).get("titulo") or (f or {}).get("titulo_chn") or "")).strip()
+                if t and t.lower() not in {v.lower() for v in vistos}:
+                    vistos.append(t[:LARGO_TITULO_PL])
+        out.append(vistos[:MAX_TITULOS_PL])
+    return out
+
+
+def agregar_titulos(R: list[dict[str, Any]], d: dict[str, Any], pl: dict[str, Any]) -> int:
+    """Pone `pt` (títulos del packing list) en las filas con SKU. Devuelve cuántas lo llevan."""
+    n = 0
+    for x, pt in zip(R, titulos_pl(d, pl)):
+        x.pop("pt", None)
+        if pt and not x.get("sin"):
+            x["pt"] = pt
+            n += 1
+    return n
 
 
 def indice_medios(cache: Path, quiero: set[str]) -> dict[str, tuple[Path, str]]:
@@ -368,6 +406,7 @@ def armar(cat: Path, cache: Path, salida: Path, lado: int = LADO, cols: int = CO
         if fi is not None:
             x["f"], x["fo"] = fi, fo
         R.append(x)
+    print(f"{agregar_titulos(R, d, pl)} filas con título del packing list")
     estimacion = json.loads(json.dumps(d.get("estimacion") or {}))
     (estimacion.get("ml") or {}).pop("multiplo", None)
     doc = {
@@ -385,6 +424,22 @@ def armar(cat: Path, cache: Path, salida: Path, lado: int = LADO, cols: int = CO
           f"{(salida / 'catalogo.json.gz').stat().st_size / 1e6:.1f} MB")
 
 
+def titulos(cat: Path, salida: Path) -> None:
+    """Solo los títulos del packing list (`pt`) sobre el `catalogo.json.gz` que ya existe: no relee los .xlsx ni
+    rehace las hojas. Exige que sus filas sean las mismas del artifact y en el mismo orden."""
+    d = json.loads((cat / "datos_pl.json").read_text(encoding="utf-8"))
+    pl = json.loads((cat / "datos" / "pl.json").read_text(encoding="utf-8"))
+    ruta = salida / "catalogo.json.gz"
+    doc = json.loads(gzip.decompress(ruta.read_bytes()))
+    if [r["s"] for r in doc["R"]] != [r["s"] for r in d["R"]]:
+        raise SystemExit("Las filas de catalogo.json.gz no son las del artifact: corre `armar` completo.")
+    print(f"{agregar_titulos(doc['R'], d, pl)} filas con título del packing list")
+    comprobar_sin_costos(doc)
+    crudo = json.dumps(doc, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ruta.write_bytes(gzip.compress(crudo, 9, mtime=0))
+    print(f"catalogo.json.gz · {len(crudo) / 1e6:.1f} MB sin comprimir → {ruta.stat().st_size / 1e6:.1f} MB")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -396,9 +451,14 @@ def main() -> None:
     a.add_argument("--cache", required=True, type=Path)
     a.add_argument("--salida", type=Path, default=_BACKEND / "data" / "catalogo")
     a.add_argument("--lado", type=int, default=LADO)
+    t = sub.add_parser("titulos")
+    t.add_argument("catalogo", type=Path)
+    t.add_argument("--salida", type=Path, default=_BACKEND / "data" / "catalogo")
     args = ap.parse_args()
     if args.cmd == "bajar":
         bajar(args.cache, args.env)
+    elif args.cmd == "titulos":
+        titulos(args.catalogo, args.salida)
     else:
         armar(args.catalogo, args.cache, args.salida, lado=args.lado)
 
