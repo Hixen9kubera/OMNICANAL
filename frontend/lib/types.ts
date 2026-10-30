@@ -713,6 +713,8 @@ export interface MejorarResp {
     lideres: string[];
     fuente: { terminos: string; lideres: string };
     cubiertos?: string[];
+    /** Términos más buscados que traían una marca: no se usan. */
+    con_marca?: string[];
   } | null;
   /** Marcas y modelos que QUEDARON en lo generado: se quitan antes de publicar. */
   prohibidos?: { marcas: string[]; modelos: string[] };

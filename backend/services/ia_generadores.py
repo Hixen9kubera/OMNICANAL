@@ -355,6 +355,7 @@ _MEJORAR: dict[str, dict[str, Any]] = {
 # ─────────────────────────────────────────────────────────────────────────────
 MAX_FOTOS_TIENDA = 3      # de la galería se intentan, en orden, hasta bajar UNA
 TOPE_TERMINOS = 15        # términos más buscados que se le pasan (ML publica hasta 50)
+TOPE_TERMINOS_LEIDOS = 50  # los que se leen: los que llevan marca se descartan antes de cortar a 15
 TOPE_LIDERES = 10         # títulos de los más vendidos que se le pasan
 
 _SIN_MARCAS_NI_MODELOS = (
@@ -398,8 +399,12 @@ _ML_CON_FOTO = (
     "conoce, color si se ve). Sin marcas ni modelos, sin signos promocionales y sin palabras en "
     "mayúsculas sostenidas.\n"
     "DESCRIPCIÓN: texto plano, sin HTML ni emojis, de 80 a 200 palabras: un párrafo de qué es y para "
-    "qué sirve, viñetas con «- » con lo que se ve y lo que dicen los datos, y un cierre con sus usos. "
-    "Sin teléfonos, correos, enlaces ni datos de contacto. " + sin_garantia.REGLA + "\n\n"
+    "qué sirve, viñetas con «- » con sus características, y un cierre con sus usos. Sin teléfonos, "
+    "correos, enlaces ni datos de contacto. " + sin_garantia.REGLA + "\n"
+    "El título y la descripción se escriben para el COMPRADOR: no hables de la foto, de «la imagen», de "
+    "los datos, del packing list, del proveedor ni de tus dudas (nada de «la imagen muestra», «según la "
+    "información», «se observa» o «revisa las medidas»). Lo que no sea seguro se queda fuera y va solo "
+    "en \"dudas\".\n\n"
     "Responde SOLO con este JSON:\n"
     '{"titulo": "...", "descripcion": "...", '
     '"lo_que_se_ve": "<una o dos frases: qué producto se ve, color, material aparente y qué incluye>", '
@@ -453,8 +458,18 @@ async def _mercado_ml(cat: str) -> dict[str, Any] | None:
     from services import competencia_ml, competencia_store
 
     def _guardado() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        return (competencia_store.terminos_categoria(cat, None, TOPE_TERMINOS),
+        return (competencia_store.terminos_categoria(cat, None, TOPE_TERMINOS_LEIDOS),
                 competencia_store.ranking_categoria(cat, None, TOPE_LIDERES))
+
+    descartados: list[str] = []
+
+    def _sin_marca(terminos: list[str]) -> list[str]:
+        # Un término con marca («airpods», «redmi buds») no se puede usar: ni se le pasa
+        # a la IA ni cuenta para la cobertura (30-oct: 11 de 15 en Audífonos eran marcas).
+        limpios = []
+        for t in terminos:
+            (descartados if _marcas_en(t) else limpios).append(t)
+        return limpios[:TOPE_TERMINOS]
 
     try:
         terminos, lideres = await asyncio.to_thread(_guardado)
@@ -463,7 +478,7 @@ async def _mercado_ml(cat: str) -> dict[str, Any] | None:
         terminos, lideres = [], []
     out: dict[str, Any] = {
         "categoria": cat,
-        "terminos": [str(t["termino"]).strip() for t in terminos if t.get("termino")][:TOPE_TERMINOS],
+        "terminos": _sin_marca([str(t["termino"]).strip() for t in terminos if t.get("termino")]),
         "lideres": [str(x["titulo"]).strip() for x in sorted(lideres, key=lambda x: x.get("posicion") or 999)
                     if x.get("titulo")][:TOPE_LIDERES],
     }
@@ -475,8 +490,9 @@ async def _mercado_ml(cat: str) -> dict[str, Any] | None:
             log.warning("mejorar ML: /trends de %s en vivo: %s", cat, exc)
             vivo = None
         if vivo:
-            out["terminos"] = [str(t["keyword"]).strip() for t in vivo if t.get("keyword")][:TOPE_TERMINOS]
+            out["terminos"] = _sin_marca([str(t["keyword"]).strip() for t in vivo if t.get("keyword")])
             out["fuente"]["terminos"] = "en vivo"
+    out["con_marca"] = descartados
     if not out["lideres"]:
         out["lideres"] = await _lideres_en_vivo(cat)
         if out["lideres"]:
@@ -578,6 +594,35 @@ def _modelos_en(texto: str, fuentes: str) -> list[str]:
                   if re.search(rf"(?<![\w-]){re.escape(c)}(?![\w-])", texto or "", re.IGNORECASE))
 
 
+# La prueba en vivo del 30-oct: la descripción le hablaba al comprador de sus
+# fuentes («La imagen muestra…», «Los datos disponibles indican…», «Revisa las
+# medidas antes de comprar, ya que las fuentes…»). Eso va en "dudas", no en la
+# publicación.
+_FRASE_FUENTE = re.compile(
+    r"\b(?:la imagen|las im[aá]genes|en la foto|la foto (?:muestra|indica)|se observan?|"
+    r"los datos(?: disponibles)?|seg[uú]n (?:la informaci[oó]n|los datos)|la informaci[oó]n (?:del producto|disponible)|"
+    r"packing list|el proveedor|las fuentes|revisa las medidas)\b", re.IGNORECASE)
+
+
+def _frases_de_fuente(data: dict[str, Any]) -> list[str]:
+    """Las frases del título o la descripción que hablan de la foto o de los datos, no del producto."""
+    texto = "\n".join(str(data.get(k) or "") for k in ("titulo", "descripcion"))
+    vistas: list[str] = []
+    for m in _FRASE_FUENTE.finditer(texto):
+        if m.group(0).lower() not in (v.lower() for v in vistas):
+            vistas.append(m.group(0))
+    return vistas
+
+
+def _cubre(termino: str, titulo: str) -> bool:
+    """¿El título trae TODAS las palabras del término, como palabras completas y sin acentos? «lg» no
+    está en «pulgadas» y «audifonos» sí está en «Audífonos» (la prueba del 30-oct falló en los dos)."""
+    from services import marcas_renombre
+    palabras = set(marcas_renombre.normalizar(titulo).split())
+    buscadas = marcas_renombre.normalizar(termino).split()
+    return bool(buscadas) and all(p in palabras for p in buscadas)
+
+
 def _prohibidos(data: dict[str, Any], fuentes: str) -> dict[str, list[str]]:
     """{marcas, modelos} que quedaron en lo generado. Las marcas se buscan también en los atributos."""
     texto = "\n".join(str(data.get(k) or "") for k in ("titulo", "descripcion"))
@@ -650,18 +695,26 @@ async def _ml_con_foto(producto: dict[str, Any], referencias: str) -> dict[str, 
                 continue
             data, usd, corregidas = r["data"], r["usd"], []
             marcas = _prohibidos(data, fuentes)["marcas"]
-            if marcas:
+            frases = _frases_de_fuente(data)
+            if marcas or frases:
                 # UNA corrección, con la misma foto y el mismo modelo.
+                pedido = []
+                if marcas:
+                    pedido.append(f"usa marcas, y están PROHIBIDAS en la publicación: {', '.join(marcas)}; "
+                                  "quita todo nombre de marca o de modelo (tampoco como «compatible con», "
+                                  "«tipo» o «estilo»)")
+                if frases:
+                    pedido.append(f"le habla al comprador de tus fuentes ({', '.join(frases)}); escribe solo "
+                                  "sobre el producto y deja lo que no sea seguro en \"dudas\"")
                 otra = await _preguntar(cli, modelo, mensajes + [
                     {"role": "assistant", "content": r["texto"]},
-                    {"role": "user", "content": (
-                        f"Tu respuesta usa marcas, y están PROHIBIDAS en la publicación: {', '.join(marcas)}. "
-                        "Reescribe el JSON completo sin ningún nombre de marca ni de modelo (tampoco como "
-                        "«compatible con», «tipo» o «estilo»). Devuelve SOLO el JSON.")},
+                    {"role": "user", "content": "Tu respuesta " + "; y ".join(pedido) +
+                                                ". Reescribe el JSON completo. Devuelve SOLO el JSON."},
                 ])
                 usd += otra["usd"]
                 if otra["data"]:
                     data, corregidas = otra["data"], marcas
+                    frases = _frases_de_fuente(data)
             dudas = data.pop("dudas", None)
             vision = {
                 "ok": True, "modelo": modelo, "costo_usd": round(usd, 5), "foto": de_donde,
@@ -670,6 +723,9 @@ async def _ml_con_foto(producto: dict[str, Any], referencias: str) -> dict[str, 
                 "dudas": [str(x).strip() for x in dudas if str(x).strip()] if isinstance(dudas, list) else [],
                 "marcas_corregidas": corregidas,
             }
+            if frases:
+                vision["dudas"].append("La descripción todavía habla de la foto o de los datos («"
+                                       + "», «".join(frases) + "»): edítala antes de publicar.")
             log.info("mejorar ML con foto (%s) por %s ($%.5f) para %s",
                      de_donde, modelo, usd, producto.get("sku"))
             return {"ok": True, "data": data, "vision": vision}
@@ -772,9 +828,7 @@ async def mejorar(canal: str, producto: dict[str, Any], *,
     # mal: ver `competencia_captura.sugerir_titulo`) y si se pasó de 60.
     titulo_final = str(data.get("titulo") or "").strip()
     if mercado is not None:
-        from services import competencia_store
-        mercado["cubiertos"] = [t for t in mercado["terminos"]
-                                if competencia_store._cubre(t, [titulo_final.lower()])]  # noqa: SLF001
+        mercado["cubiertos"] = [t for t in mercado["terminos"] if _cubre(t, titulo_final)]
     if canal == "mercado_libre" and len(titulo_final) > 60 and (vision or {}).get("ok"):
         vision["dudas"].append(f"El título tiene {len(titulo_final)} caracteres; Mercado Libre admite 60.")
 

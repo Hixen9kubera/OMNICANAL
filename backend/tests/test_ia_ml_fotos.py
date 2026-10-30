@@ -301,6 +301,37 @@ class MarcasYModelos(unittest.TestCase):
         self.assertEqual(G._marcas_en("Funda compatible con iPhone 15"), ["iPhone"])
 
 
+class LoQueSalioEnLaPruebaEnVivo(unittest.TestCase):
+    """30-oct-2026, tres productos reales: la descripción hablaba de sus fuentes, «lg» contaba como cubierto por
+    «pulgadas», «audifonos» no contaba en «Audífonos» y 11 de 15 términos de Audífonos eran marcas."""
+
+    def test_la_descripcion_que_habla_de_sus_fuentes_se_corrige(self):
+        con_fuentes = {**BUENA, "descripcion": "La imagen muestra una piedra. Revisa las medidas antes de comprar."}
+        cli = _Cli([_respuesta_ia(con_fuentes), _respuesta_ia(BUENA)])
+        r, _, _ = _mejorar(cli)
+        self.assertEqual(len(cli.enviados), 2)
+        self.assertIn("La imagen", cli.enviados[1]["messages"][-1]["content"])
+        self.assertNotIn("imagen", r["campos"]["descripcion"])
+
+    def test_si_sigue_hablando_de_sus_fuentes_queda_en_dudas(self):
+        con_fuentes = {**BUENA, "descripcion": "Según los datos es de doble grano.", "dudas": []}
+        r, _, _ = _mejorar(_Cli([_respuesta_ia(con_fuentes), _respuesta_ia(con_fuentes)]))
+        self.assertTrue(any("habla de la foto o de los datos" in d for d in r["vision"]["dudas"]))
+
+    def test_cobertura_por_palabras_completas_y_sin_acentos(self):
+        self.assertFalse(G._cubre("lg", "Pantalla portátil 12 pulgadas LED"))
+        self.assertTrue(G._cubre("audifonos inalambricos", "Audífonos inalámbricos Bluetooth con estuche"))
+        self.assertTrue(G._cubre("tv", "Pantalla LED con TV digital"))
+
+    def test_los_terminos_con_marca_no_se_usan(self):
+        with mock.patch("services.competencia_store.terminos_categoria",
+                        return_value=[{"termino": "tenis adidas"}, {"termino": "tenis para correr"}]), \
+                mock.patch("services.competencia_store.ranking_categoria", return_value=[{"posicion": 1, "titulo": "A"}]):
+            m = asyncio.run(G._mercado_ml("MLM1"))
+        self.assertEqual(m["terminos"], ["tenis para correr"])
+        self.assertEqual(m["con_marca"], ["tenis adidas"])
+
+
 class PalabrasDeML(unittest.TestCase):
     def _correr(self, guardados, ranking, vivo_terminos=None, vivo_lideres=()):
         with mock.patch("services.competencia_store.terminos_categoria", return_value=guardados), \

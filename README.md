@@ -1001,6 +1001,27 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.707.0 — «Mejorar con IA» de ML: lo que enseñó la primera prueba en vivo
+
+Prueba del 30-oct-2026 en producción con tres productos sin publicar (CAM-0025-GRI colchoneta, TEC-0680-NEG audífonos,
+TEC-1629-NEG-LED pantalla de 12"): las tres por OpenRouter `gpt-6-luna` con la foto principal, 18–21 s y **$0.00061–
+$0.00076 por clic** (medido). Sin marcas ni modelos en títulos ni descripciones. Salieron tres defectos, corregidos:
+
+- **La descripción le hablaba al comprador de sus fuentes**: «La imagen muestra…», «Los datos disponibles indican…»,
+  «Se observan entradas…» y hasta «Revisa las medidas antes de comprar, ya que las fuentes disponibles muestran
+  dimensiones distintas». El prompt ahora dice que se escribe para el COMPRADOR y que lo que no es seguro va solo en
+  «dudas»; y `_frases_de_fuente` lo revisa: si aparece, entra en la MISMA corrección que las marcas, y si sigue, queda en
+  «dudas» para editarla.
+- **La cobertura de términos mentía**: «lg» contaba como cubierto porque está dentro de «pulgadas», y «audifonos» no
+  contaba en «Audífonos». `_cubre` ahora compara palabras completas y sin acentos.
+- **Los términos más buscados con marca se le pasaban a la IA**: en Audífonos, 11 de 15 eran marcas («airpods», «redmi
+  buds», «galaxy buds 2 pro»). Se leen hasta 50, se descartan los que traen una marca de las listas del panel y se
+  cortan a 15; el parte dice cuántos se descartaron (`mercado.con_marca`). Las listas no las tienen todas («realme»,
+  «acefast», «lg», «airpod» en singular): ésas las frena solo el prompt.
+
+Lo que NO se tocó y queda por decidir: los ATRIBUTOS de ML `MODEL`/`ALPHANUMERIC_MODEL` salen con códigos («F9-5» del
+packing list, «SF-T022», «YWX 501»): la regla de no usar modelos (Brandon, 30-oct) hoy cubre título y descripción.
+
 ### v0.706.0 — «Mejorar con IA» de Mercado Libre: una foto, el título del packing list y las palabras de los más vendidos; sin marcas ni modelos
 
 Brandon (30-oct-2026): «con que sólo se mande 1 foto con el título que tengamos de packing list o que ya tengamos

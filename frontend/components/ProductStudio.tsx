@@ -2109,6 +2109,9 @@ export default function ProductStudio({
                   <div className="text-slate-500">
                     Palabras de Mercado Libre: {reporteIA.mercado.terminos.length} más buscados
                     {reporteIA.mercado.fuente.terminos !== "sin datos" ? ` (${reporteIA.mercado.fuente.terminos})` : ""}
+                    {reporteIA.mercado.con_marca?.length
+                      ? `, sin ${reporteIA.mercado.con_marca.length} que traían marca`
+                      : ""}
                     {" · "}{reporteIA.mercado.lideres.length} títulos de más vendidos
                     {reporteIA.mercado.fuente.lideres !== "sin datos" ? ` (${reporteIA.mercado.fuente.lideres})` : ""}.
                     {" "}El título cubre{" "}
