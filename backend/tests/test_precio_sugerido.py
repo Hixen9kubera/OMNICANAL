@@ -227,7 +227,7 @@ class BusquedaSePagaUnaVez(unittest.TestCase):
              "peso_kg": 20.0, "envio_panel": None, "margen": 0.30}
 
     def _completo(self, cache=None, medidas=None, terminos=None, corridas=None, catalogo=None, datos=None,
-                  previa=None, juez=None):
+                  previa=None, juez=None, top=None, fotos=None):
         """Corre `completo` sin red. `cache`: {término: {filas, dias}}; `medidas`: {término: filas} que «raspa»;
         `corridas`: lo que Apify cobra por cada raspado (se anota en la cuenta de la consulta, como el de verdad);
         `catalogo`: lo que da el catálogo maestro; `previa`: la consulta de una hermana que se puede reusar."""
@@ -250,10 +250,10 @@ class BusquedaSePagaUnaVez(unittest.TestCase):
         medir_mock = mock.AsyncMock(side_effect=medir)
         juez_mock = mock.Mock(side_effect=juez or (lambda *a, **k: {"veredictos": {}, "usd": 0.0035,
                                                                    "unidades_nuestras": 1}))
-        fotos_mock = mock.AsyncMock(return_value={"usd": 0.004, "motivo": None, "juzgados": 6})
+        fotos_mock = mock.AsyncMock(side_effect=fotos) if fotos else             mock.AsyncMock(return_value={"usd": 0.004, "motivo": None, "juzgados": 6})
         anotado = []
         with mock.patch.object(ps, "datos_sku", mock.AsyncMock(return_value={**self.DATOS, **(datos or {})})), \
-                mock.patch.object(ps, "_cliente_ml", mock.AsyncMock(return_value=None)), \
+                mock.patch.object(ps, "_cliente_ml", mock.AsyncMock(return_value=Cliente() if top else None)),                 mock.patch.object(ps, "mas_vendidos", mock.AsyncMock(return_value=list(top or []))),                 mock.patch.object(ps, "comisiones", mock.AsyncMock(return_value=[])), \
                 mock.patch.object(ps, "_anotar", lambda res, dur: anotado.append(res)), \
                 mock.patch.object(ps, "_del_cache", lambda t: cache.get(t)), \
                 mock.patch.object(ps, "_hermana", return_value=previa), \
@@ -525,7 +525,7 @@ class LoQueSeRecorto(unittest.TestCase):
         caso.fotos.assert_not_called()
         self.assertEqual(r["reusado_de"], "MUE-0149-AZLMAR")
         self.assertEqual(r["costo_consulta"]["total"], 0.0)
-        self.assertEqual(r["referencia"]["grupo"], "foto")
+        self.assertEqual(r["referencia"]["grupo"], "modelo")       # las copiadas eran «mismo_modelo»
         self.assertEqual(r["referencia"]["n"], 20)
         self.assertTrue(any("Veredictos copiados de MUE-0149-AZLMAR" in a for a in r["avisos"]))
 
@@ -556,6 +556,73 @@ class LoQueSeRecorto(unittest.TestCase):
         self.assertNotIn("usd", r["amazon"])
         self.assertEqual(r["costo_consulta"]["total"], 0.0025)
         self.assertEqual(anotado[0]["modo"], "amazon")          # no le gana al completo en `ultimo`
+
+
+class ConsultaQueSiFunciona(unittest.TestCase):
+    """v0.709.1, lo que Brandon vio el 30-oct («el proceso de sugerir precios no funciona correctamente»): TEC-1880-NEG
+    buscó «kit para bicicleta» (la palabra del catálogo, de OTRO producto), ML bloqueó las dos búsquedas y el Estudio
+    siguió con el precio del catálogo sin decir por qué; y ORG-0875-BEI salió en $151 con 8 cajas del mismo DISEÑO
+    mientras las 2 del mismo MODELO exacto ($465 y $677) se recortaban por «extremas»."""
+
+    PEDALERA = "Pedalera ejercitadora brazos piernas doble pedal gym casa"
+
+    def test_se_parecen(self):
+        self.assertFalse(ps.se_parecen("kit para bicicleta", self.PEDALERA))
+        self.assertTrue(ps.se_parecen("pedal ejercicio", self.PEDALERA))            # «pedal» ~ «pedalera»
+        self.assertTrue(ps.se_parecen("termos acero inoxidable", "Termo de acero con asa"))
+        self.assertFalse(ps.se_parecen("", self.PEDALERA))
+
+    def test_la_palabra_del_catalogo_que_no_se_parece_no_se_usa(self):
+        caso = BusquedaSePagaUnaVez()
+        r, medir = caso._completo(medidas={"bolsas thank you regalo": _filas(30)},
+                                  catalogo={"ml": None, "amazon": {"q": "kit para bicicleta"}})
+        self.assertEqual(medir.call_args.args[0], ["bolsas thank you regalo"])   # el de la IA, con el título
+        self.assertTrue(any("kit para bicicleta" in a for a in r["avisos"]))
+
+    def test_si_ml_bloquea_se_comparan_por_foto_los_mas_vendidos(self):
+        caso = BusquedaSePagaUnaVez()
+        top = [{"id": f"MLM9{i}", "posicion": i + 1, "titulo": f"Mini bicicleta {i}", "precio": 500.0 + 10 * i,
+                "imagen": f"https://x/{i}.jpg", "url": f"https://x/p/{i}", "fuente": "mas_vendidos"} for i in range(6)]
+
+        async def fotos(nuestra, candidatos, unidades, basta):
+            for c in candidatos[:4]:
+                c.update(foto="mismo_modelo", foto_piezas=1)
+            return {"usd": 0.0018, "motivo": None, "juzgados": len(candidatos)}
+
+        r, _ = caso._completo(medidas={}, top=top, fotos=fotos,
+                              datos={"imagen": "https://x/n.jpg", "ml_cat_id": "MLM184769"})
+        candidatos = caso.fotos.call_args.args[1]
+        self.assertEqual(len(candidatos), 6)                   # todos: de los más vendidos decide la foto
+        self.assertEqual(r["referencia"]["grupo"], "modelo")
+        self.assertEqual(r["referencia"]["n"], 4)
+        self.assertTrue(any("más vendidos de la categoría" in a for a in r["avisos"]))
+        self.assertEqual(len(r["mas_vendidos"]), 6)
+        self.assertNotIn("foto", r["mas_vendidos"][0])         # la lista de contexto no se ensucia
+
+    def test_sin_foto_nuestra_no_hay_respaldo(self):
+        caso = BusquedaSePagaUnaVez()
+        top = [{"id": "MLM1", "posicion": 1, "titulo": "x", "precio": 500.0, "imagen": "https://x/1.jpg",
+                "url": "u", "fuente": "mas_vendidos"}]
+        r, _ = caso._completo(medidas={}, top=top, datos={"ml_cat_id": "MLM184769"})
+        caso.fotos.assert_not_called()
+        self.assertEqual(r["rivales"], [])
+
+    def test_el_modelo_exacto_manda(self):
+        g = {"modelo": [465, 677, 520], "foto": [129, 137, 138, 159, 160, 170, 175, 180, 465, 520, 677]}
+        self.assertEqual(ps.elegir_referencia(g)["grupo"], "modelo")
+        g["modelo"] = [465, 677]                               # con menos de 3, el de modelo o diseño
+        self.assertEqual(ps.elegir_referencia(g)["grupo"], "foto")
+
+    def test_org_0875_avisa_que_el_modelo_exacto_se_vende_lejos(self):
+        ref = ps.elegir_referencia({"foto": [129, 137, 138, 159, 160, 170, 175, 180]})
+        a = ps.aviso_modelo_lejos([465, 677], ref)
+        self.assertIn("2 publicaciones del MISMO modelo exacto", a)
+        self.assertIn("$465–$677", a)
+        self.assertIn("$129–$180", a)
+        self.assertIsNone(ps.aviso_modelo_lejos([165], ref))             # cerca: no estorba
+        self.assertIsNone(ps.aviso_modelo_lejos([], ref))
+        self.assertIsNone(ps.aviso_modelo_lejos([465], None))
+        self.assertIsNone(ps.aviso_modelo_lejos([465, 677, 520], ps.elegir_referencia({"modelo": [465, 677, 520]})))
 
 
 class CatalogoMaestro(unittest.TestCase):

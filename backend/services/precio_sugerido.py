@@ -114,7 +114,8 @@ FACTOR_ENVIO = 2.0            # …y cuesta ≥ 2× lo de un paquete ligero al m
 FACTOR_CATEGORIA = 2.5        # piso > 2.5× la mediana de los más vendidos de la categoría → revisar costo y peso
 
 ETIQUETAS = {
-    "foto": "Mismo modelo por foto",
+    "modelo": "Mismo modelo exacto por foto",
+    "foto": "Mismo modelo o diseño por foto",
     "titulo": "Mismo producto por título",
     "mas_vendidos": "Más vendidos de la categoría",
 }
@@ -189,9 +190,12 @@ def limites(precios: list[float], factor: float = FACTOR_EXTREMO) -> tuple[float
 
 
 def elegir_referencia(grupos: dict[str, list[float]]) -> dict[str, Any] | None:
-    """El primer grupo con al menos `MIN_GRUPO` precios, en orden de confianza: foto → título → más vendidos.
-    Si ninguno llega, el más grande que tenga algo, marcado `pocos`."""
-    orden = [g for g in ("foto", "titulo", "mas_vendidos") if grupos.get(g)]
+    """El primer grupo con al menos `MIN_GRUPO` precios, en orden de confianza: mismo modelo exacto por foto →
+    modelo o diseño por foto → título → más vendidos. Si ninguno llega, el más grande que tenga algo, marcado `pocos`.
+
+    «modelo» va aparte desde v0.709.1: mezclado con «mismo diseño», el grupo grande lo arrastraba y los del modelo
+    exacto se recortaban por «extremos» (ORG-0875-BEI, 30-oct: ver `aviso_modelo_lejos`)."""
+    orden = [g for g in ("modelo", "foto", "titulo", "mas_vendidos") if grupos.get(g)]
     for g in orden:
         r = resumen(grupos[g])
         if r and r["n"] >= MIN_GRUPO:
@@ -202,6 +206,30 @@ def elegir_referencia(grupos: dict[str, list[float]]) -> dict[str, Any] | None:
         if r:
             return {"grupo": g, "etiqueta": ETIQUETAS[g], "pocos": True, **r}
     return None
+
+
+FACTOR_LEJOS = 1.5            # el modelo exacto «está lejos» si su mediana sale de [P25 ÷ 1.5, P75 × 1.5]
+
+
+def aviso_modelo_lejos(modelo: list[float], ref: dict[str, Any] | None) -> str | None:
+    """
+    PURA. Hay publicaciones del MISMO modelo exacto, pero menos de `MIN_GRUPO` (así que no son la referencia), y se
+    venden lejos de ella: se dice, porque la referencia puede ser de otro producto parecido.
+
+    ORG-0875-BEI (30-oct-2026) salió en $151 con 8 cajas plegables del mismo DISEÑO ($129–$180); las 2 que el juez
+    vio como el mismo MODELO exacto —cestas de pícnic con tapa— se venden a $465 y $677, y se habían recortado por
+    «extremas».
+    """
+    if not modelo or not ref or ref.get("grupo") == "modelo":
+        return None
+    m = statistics.median(modelo)
+    if ref["p25"] / FACTOR_LEJOS <= m <= ref["p75"] * FACTOR_LEJOS:
+        return None
+    rango = f"${min(modelo):,.0f}" + (f"–${max(modelo):,.0f}" if len(modelo) > 1 else "")
+    return (f"{len(modelo)} {'publicación' if len(modelo) == 1 else 'publicaciones'} del MISMO modelo exacto "
+            f"se {'vende' if len(modelo) == 1 else 'venden'} a {rango}, lejos de la referencia "
+            f"({ref['etiqueta'].lower()}: ${ref['min']:,.0f}–${ref['max']:,.0f}). Revisa en «Ver publicaciones» "
+            "cuál es de verdad el nuestro antes de usar el precio.")
 
 
 def sugerir(ref: dict[str, Any] | None, piso_: float | None) -> dict[str, Any]:
@@ -229,6 +257,14 @@ def palabras(texto: str | None) -> set[str]:
     t = unicodedata.normalize("NFKD", str(texto or "").lower())
     t = "".join(c for c in t if not unicodedata.combining(c))
     return {w for w in re.findall(r"[a-z0-9]+", t) if len(w) >= 3 and w not in _VACIAS}
+
+
+def se_parecen(a: str | None, b: str | None) -> bool:
+    """¿Comparten al menos una palabra con significado (por sus primeras 5 letras, para que «pedal» y «pedalera» o
+    «termo» y «termos» cuenten)? La palabra clave del catálogo maestro salió del título del packing list, que a veces
+    es de OTRO producto: la de TEC-1880-NEG (una pedalera) es «kit para bicicleta» (v0.709.1)."""
+    pa, pb = {w[:5] for w in palabras(a)}, {w[:5] for w in palabras(b)}
+    return bool(pa & pb)
 
 
 def parecido(a: str | None, b: str | None) -> float:
@@ -827,6 +863,9 @@ async def _cerrar(d: dict[str, Any], modo: str, rivales: list[dict[str, Any]], g
                 r["_grupos"].remove(g)
                 r["extremo"] = True
     ref = elegir_referencia(grupos)
+    lejos = aviso_modelo_lejos(grupos.get("modelo") or [], ref)
+    if lejos:
+        avisos.append(lejos)
     s = sugerir(ref, piso_)
     precio = s["precio"]
     desglose = None
@@ -874,6 +913,10 @@ async def completo(entrada: dict[str, Any], avisar: Callable[[str], None] = lamb
     # La palabra clave del catálogo maestro ya es corta y en español: va TAL CUAL (recortarla le quitaría «uv» a
     # «linterna uv recargable») y con ella no se le pregunta a la IA. El título recortado queda de 2.º término.
     q_catalogo = ((await asyncio.to_thread(catalogo_precios.por_sku, d["sku"])).get("amazon") or {}).get("q")
+    if q_catalogo and not se_parecen(q_catalogo, d["titulo"]):
+        avisos.append(f"La palabra clave del catálogo («{q_catalogo}») no se parece al título del producto: "
+                      "se buscó con el título.")
+        q_catalogo = None
     propios = any(t and t.strip() for t in entrada.get("terminos") or [])
     terminos = terminos_busqueda(entrada.get("terminos"), None, d["titulo"])
     if not propios and q_catalogo:
@@ -934,6 +977,13 @@ async def completo(entrada: dict[str, Any], avisar: Callable[[str], None] = lamb
             avisos.append(f"Veredictos copiados de {previa.get('sku')} (el mismo producto en otro color, con los "
                           "mismos rivales): no se volvió a pagar a los jueces.")
         else:
+            if not rivales and top and d["imagen"]:
+                # ML bloqueó la búsqueda (o no trajo nada). Los más vendidos de la categoría llegan por la API, gratis
+                # y con su foto: se juzgan igual, y así un bloqueo no deja la consulta en blanco (v0.709.1; el 30-oct
+                # TEC-1880-NEG pagó y se quedó con el precio del catálogo, que comparaba contra pedales de bici).
+                rivales = [{**t, "mas_vendido": True} for t in top]
+                avisos.append("La búsqueda en ML no trajo publicaciones: se compararon por FOTO los "
+                              f"{len(rivales)} más vendidos de la categoría.")
             avisar("juez_titulo")
             juez = await asyncio.to_thread(
                 competencia_juez.juzgar_lote, {"titulo": d["titulo"]}, rivales,
@@ -945,7 +995,9 @@ async def completo(entrada: dict[str, Any], avisar: Callable[[str], None] = lamb
             unidades = juez.get("unidades_nuestras") or 1
 
             avisar("juez_fotos")
-            candidatos = sorted((r for r in rivales if r.get("clase_titulo") in ("mismo", "otro_paquete")),
+            # De los más vendidos decide la foto: sus títulos de catálogo casi nunca dicen lo mismo que el nuestro.
+            candidatos = sorted((r for r in rivales if r.get("clase_titulo") in ("mismo", "otro_paquete")
+                                 or r.get("fuente") == "mas_vendidos"),
                                 key=lambda r: r.get("posicion") or 999)[:MAX_FOTOS]
             if candidatos and d["imagen"]:
                 jf = await juez_fotos(d["imagen"], candidatos, unidades, FOTOS_BASTAN)
@@ -957,9 +1009,12 @@ async def completo(entrada: dict[str, Any], avisar: Callable[[str], None] = lamb
                 avisos.append("El SKU no tiene foto: no se compararon fotos.")
 
         for r in rivales:
+            foto = comparable_por_foto(r, unidades)
             r["_grupos"] = [g for g, si in (("titulo", r.get("clase_titulo") == "mismo"),
-                                            ("foto", comparable_por_foto(r, unidades))) if si]
-        grupos = {"foto": [r["precio"] for r in rivales if "foto" in r["_grupos"]],
+                                            ("modelo", foto and r.get("foto") == "mismo_modelo"),
+                                            ("foto", foto)) if si]
+        grupos = {"modelo": [r["precio"] for r in rivales if "modelo" in r["_grupos"]],
+                  "foto": [r["precio"] for r in rivales if "foto" in r["_grupos"]],
                   "titulo": [r["precio"] for r in rivales if "titulo" in r["_grupos"]],
                   "mas_vendidos": [t["precio"] for t in top if parecido(d["titulo"], t["titulo"]) >= UMBRAL_PARECIDO]}
 
@@ -994,9 +1049,10 @@ async def solo_amazon(entrada: dict[str, Any]) -> dict[str, Any]:
     titulo = (entrada.get("titulo") or "").strip()
     if not titulo:
         titulo = ((await woocommerce.obtener_producto_por_sku(sku)) or {}).get("nombre") or sku
-    q = (entrada.get("q") or "").strip() \
-        or ((await asyncio.to_thread(catalogo_precios.por_sku, sku)).get("amazon") or {}).get("q") \
-        or termino_corto(titulo)
+    q_catalogo = ((await asyncio.to_thread(catalogo_precios.por_sku, sku)).get("amazon") or {}).get("q")
+    if q_catalogo and not se_parecen(q_catalogo, titulo):
+        q_catalogo = None          # la del catálogo puede ser de otro producto (v0.709.1)
+    q = (entrada.get("q") or "").strip() or q_catalogo or termino_corto(titulo)
     az = await amazon_mercado.estudio(" ".join(q.split()).lower(), titulo)
     usd = float(az.pop("usd", 0.0) or 0.0)
     res = {"ok": True, "modo": "amazon", "sku": sku, "titulo": titulo, "amazon": az,

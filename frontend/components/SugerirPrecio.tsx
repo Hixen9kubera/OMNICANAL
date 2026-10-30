@@ -173,7 +173,7 @@ function ventanaML(r: PrecioSugeridoResp): Ventana {
       url: x.url,
       match: x.en_referencia ? "match" : "no_match",
       nota: [
-        x.foto === "mismo_modelo" ? "mismo modelo por foto" : x.foto === "mismo_diseno" ? "mismo diseño por foto" : "",
+        x.foto === "mismo_modelo" ? "mismo modelo EXACTO por foto" : x.foto === "mismo_diseno" ? "mismo diseño por foto" : "",
         x.clase_titulo && x.clase_titulo !== "mismo" ? `título: ${x.clase_titulo.replace("_", " ")}` : "",
         x.extremo ? "precio fuera de rango" : "",
       ].filter(Boolean).join(" · "),
@@ -416,7 +416,14 @@ export default function SugerirPrecio({
         ) : sugerido != null && ml ? (
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
             <span className="text-3xl font-black text-slate-800">{mxn(sugerido)}</span>
-            <span className="text-xs text-slate-500">un poco abajo de la media de Mercado Libre ({mxn(ml.media)})</span>
+            <span className="text-xs text-slate-500">
+              un poco abajo de la media de Mercado Libre ({mxn(ml.media)})
+              {res && !ref && ml.origen === "catalogo" && (
+                <span className="block font-semibold text-amber-800">
+                  La consulta completa no encontró el mismo producto: este precio es el del catálogo maestro.
+                </span>
+              )}
+            </span>
             <span className="flex flex-wrap gap-2">
               <button
                 type="button"
@@ -444,6 +451,19 @@ export default function SugerirPrecio({
             {cat?.ml ? "" : "Sin precio de Mercado Libre en el catálogo maestro. "}
             {res && !ref ? "La búsqueda completa no encontró el mismo producto en Mercado Libre." : "Presiona Completo para buscarlo."}
           </p>
+        )}
+
+        {/* Lo que pasó en la consulta completa (v0.709.1): ML bloqueó, la palabra del catálogo no servía, el modelo
+            exacto se vende lejos… Antes se guardaba y no se veía, y el precio parecía no moverse sin razón. */}
+        {res && res.avisos.length > 0 && !corriendo && (
+          <ul className="space-y-1 rounded-lg bg-amber-100/70 px-3 py-2 text-xs text-amber-900">
+            {res.avisos.map((a, i) => (
+              <li key={i} className="flex gap-1.5">
+                <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+                <span>{a}</span>
+              </li>
+            ))}
+          </ul>
         )}
 
         {medidas && (

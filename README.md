@@ -1001,6 +1001,26 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.709.1 — «Sugerir precio» que sí encuentra el producto (y dice qué pasó)
+
+Brandon (30-oct-2026), con el Estudio de TEC-1880-NEG abierto: «veo que el proceso de sugerir precios no funciona
+correctamente». Corrió Completo, pagó y el precio siguió en $275 sin explicación. Y al pedir las URLs de ORG-0875-BEI
+salió otro defecto. Cuatro arreglos:
+
+- **La palabra clave del catálogo solo se usa si se parece al título** (`se_parecen`: comparten una palabra por sus
+  primeras 5 letras). La de TEC-1880-NEG (una pedalera) es «kit para bicicleta» porque salió del título del packing
+  list, que era de otro producto; ahora se descarta, se busca con el título y se avisa. Lo mismo en «Amazon».
+- **Si ML bloquea la búsqueda, se comparan por FOTO los más vendidos de la categoría.** Llegan por la API (gratis) con
+  su foto; solo se paga el juez de fotos (~$0.005). Antes un bloqueo dejaba la consulta en blanco. Las dos búsquedas
+  de TEC-1880-NEG cayeron en el muro de ML (`account-verification`, visto en el dataset de Apify).
+- **El mismo modelo EXACTO por foto va primero** (grupo `modelo`, antes que «modelo o diseño»). ORG-0875-BEI salió en
+  $151 con 8 cajas plegables del mismo DISEÑO ($129–$180), y las 2 que el juez vio como el MISMO modelo —cestas de
+  pícnic con tapa, $465 y $677— se recortaron por «extremas» porque iban mezcladas en el mismo grupo. Con 3 o más del
+  modelo exacto, esos son la referencia; con menos, `aviso_modelo_lejos` dice si se venden lejos de la referencia.
+- **El Estudio enseña los avisos** de la consulta (bloqueo, palabra del catálogo descartada, modelo exacto lejos…) y
+  dice cuando el precio que muestra es el del catálogo maestro porque la consulta no encontró el mismo producto.
+- Pruebas: `tests/test_precio_sugerido.py` (69).
+
 ### v0.709.0 — «Sugerir precio» más barato: cinco recortes y el costo anotado sin duplicar
 
 Brandon (30-oct-2026), tras pasar 6 SKUs de baja confianza por el modo Completo: «¿es posible reducir aún más los
