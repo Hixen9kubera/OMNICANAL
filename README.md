@@ -1023,7 +1023,10 @@ salió otro defecto. Cuatro arreglos:
   2— y se pasa directo a los más vendidos por foto.
 - Verificado en producción: TEC-1880-NEG descartó «kit para bicicleta», ML bloqueó otra vez y con los 17 más vendidos
   salieron 5 del mismo modelo exacto ($484–$893); ORG-0875-BEI ya avisa de las 2 del modelo exacto a $465–$677.
-- Pruebas: `tests/test_precio_sugerido.py` (70).
+- **v0.709.3 (ajuste):** un SKU sin foto en Woo (los del catálogo que todavía no se dan de alta, como OFI-0230-NEG)
+  se compara contra la **foto del renglón del packing list** (`catalogo.foto_pl`, 192 px), leída en memoria como en
+  «Mejorar con IA» (v0.706.0). No se guarda en la consulta ni se sube a Woo: la regla de Brandon (29-oct) sigue.
+- Pruebas: `tests/test_precio_sugerido.py` (72).
 
 ### v0.709.0 — «Sugerir precio» más barato: cinco recortes y el costo anotado sin duplicar
 

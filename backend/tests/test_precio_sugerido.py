@@ -225,6 +225,7 @@ class BusquedaSePagaUnaVez(unittest.TestCase):
     BOLSAS = TerminosDeBusqueda.BOLSAS
     DATOS = {"sku": "VAR-0549-NEG", "titulo": BOLSAS, "costo": 456.45, "ml_cat_id": None, "imagen": None,
              "peso_kg": 20.0, "envio_panel": None, "margen": 0.30}
+    FOTO_PL = None          # lo que da la foto del packing list cuando el SKU no tiene foto en Woo
 
     def _completo(self, cache=None, medidas=None, terminos=None, corridas=None, catalogo=None, datos=None,
                   previa=None, juez=None, top=None, fotos=None, bloquea=()):
@@ -254,7 +255,7 @@ class BusquedaSePagaUnaVez(unittest.TestCase):
                                                                    "unidades_nuestras": 1}))
         fotos_mock = mock.AsyncMock(side_effect=fotos) if fotos else             mock.AsyncMock(return_value={"usd": 0.004, "motivo": None, "juzgados": 6})
         anotado = []
-        with mock.patch.object(ps, "datos_sku", mock.AsyncMock(return_value={**self.DATOS, **(datos or {})})), \
+        with mock.patch.object(ps, "datos_sku", mock.AsyncMock(return_value={**self.DATOS, **(datos or {})})),                 mock.patch.object(ps, "_foto_del_packing_list", return_value=self.FOTO_PL), \
                 mock.patch.object(ps, "_cliente_ml", mock.AsyncMock(return_value=Cliente() if top else None)),                 mock.patch.object(ps, "mas_vendidos", mock.AsyncMock(return_value=list(top or []))),                 mock.patch.object(ps, "comisiones", mock.AsyncMock(return_value=[])), \
                 mock.patch.object(ps, "_anotar", lambda res, dur: anotado.append(res)), \
                 mock.patch.object(ps, "_del_cache", lambda t: cache.get(t)), \
@@ -630,6 +631,45 @@ class ConsultaQueSiFunciona(unittest.TestCase):
         self.assertIsNone(ps.aviso_modelo_lejos([], ref))
         self.assertIsNone(ps.aviso_modelo_lejos([465], None))
         self.assertIsNone(ps.aviso_modelo_lejos([465, 677, 520], ps.elegir_referencia({"modelo": [465, 677, 520]})))
+
+    def test_sin_foto_en_woo_el_juez_usa_la_del_packing_list(self):
+        # v0.709.3: los SKUs del catálogo que no existen en Woo (OFI-0230-NEG y compañía) no tenían con qué
+        # compararse por foto; el juez usa la del renglón del packing list, en memoria.
+        caso = BusquedaSePagaUnaVez()
+        caso.FOTO_PL = "data:image/jpeg;base64,AAAA"
+        filas = _filas(10)
+        juez = lambda *a, **k: {"veredictos": {i: {"clase": "mismo", "motivo": "", "unidades_rival": 1}
+                                              for i in range(1, 11)}, "usd": 0.003, "unidades_nuestras": 1}
+        r, _ = caso._completo(cache={"bolsas thank you regalo": {"filas": filas, "dias": 1}}, juez=juez)
+        self.assertEqual(caso.fotos.call_args.args[0], "data:image/jpeg;base64,AAAA")
+        self.assertIsNone(r["imagen"])                         # la data-URL no se guarda en la consulta
+        self.assertTrue(any("foto del packing list" in a for a in r["avisos"]))
+
+    def test_juez_de_fotos_acepta_data_url(self):
+        class Cli:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def post(self, url, json=None, **k):
+                class R:
+                    status_code = 200
+
+                    def json(self):
+                        return {"choices": [{"message": {"content": '{"veredicto": "mismo_modelo"}'}}],
+                                "usage": {"cost": 0.0003}}
+                return R()
+
+        bajar = mock.AsyncMock(return_value="data:rival")
+        with mock.patch.object(ps.settings, "openrouter_api_key", "k"),                 mock.patch.object(ps, "_bajar_miniatura", bajar), mock.patch.object(ps.httpx, "AsyncClient", Cli):
+            r = asyncio.run(ps.juez_fotos("data:image/jpeg;base64,AAAA", [{"imagen": "https://x/1.jpg"}]))
+        self.assertEqual(r["juzgados"], 1)
+        self.assertEqual([c.args[1] for c in bajar.call_args_list], ["https://x/1.jpg"])   # solo el del rival
 
 
 class CatalogoMaestro(unittest.TestCase):

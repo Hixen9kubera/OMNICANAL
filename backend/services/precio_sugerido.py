@@ -601,7 +601,8 @@ async def juez_fotos(nuestra_url: str, rivales: list[dict[str, Any]], unidades_n
     juzgados = 0
     sem = asyncio.Semaphore(6)
     async with httpx.AsyncClient(timeout=60) as cli:
-        nuestra = await _bajar_miniatura(cli, nuestra_url)
+        # Ya en data-URL: la foto del packing list, leída en memoria (v0.709.3).
+        nuestra = nuestra_url if nuestra_url.startswith("data:") else await _bajar_miniatura(cli, nuestra_url)
         if not nuestra:
             return {"usd": 0.0, "motivo": "No se pudo leer la foto del producto.", "juzgados": 0}
 
@@ -733,6 +734,20 @@ async def datos_sku(entrada: dict[str, Any]) -> dict[str, Any]:
         "padre_id": prod.get("padre_id"),
         "firma": firma_variante(prod.get("atributos")),
     }
+
+
+def _foto_del_packing_list(sku: str) -> str | None:
+    """BLOQUEANTE. La foto del renglón del packing list del SKU (pestaña Catálogo) como data-URL para el juez, o None.
+    Solo como dato de entrada: la regla de Brandon (29-oct) es que esa foto vive en la pestaña y no se mueve a Woo,
+    a Odoo ni al artifact."""
+    from services import catalogo
+
+    try:
+        b = catalogo.foto_pl(sku)
+    except Exception as exc:  # noqa: BLE001 — sin foto se compara solo por título, como antes
+        log.warning("precio sugerido: sin foto del packing list para %s: %s", sku, exc)
+        return None
+    return _miniatura(b) if b else None
 
 
 def _hermana(d: dict[str, Any], terminos: list[str], ids: set[str]) -> dict[str, Any] | None:
@@ -908,6 +923,13 @@ async def completo(entrada: dict[str, Any], avisar: Callable[[str], None] = lamb
     avisar("datos")
     d = await datos_sku(entrada)
     avisos: list[str] = []
+    # Sin foto en Woo (un SKU del catálogo que todavía no se da de alta), el juez compara contra la foto del renglón
+    # del packing list. Se lee en memoria y no se guarda ni se sube a ningún lado (v0.709.3).
+    foto = d["imagen"]
+    if not foto:
+        foto = await asyncio.to_thread(_foto_del_packing_list, d["sku"])
+        if foto:
+            avisos.append("El producto no tiene foto en Woo: el juez comparó contra la foto del packing list (192 px).")
     gasto = {"apify": 0.0, "juez": 0.0, "fotos": 0.0}
 
     # La palabra clave del catálogo maestro ya es corta y en español: va TAL CUAL (recortarla le quitaría «uv» a
@@ -980,7 +1002,7 @@ async def completo(entrada: dict[str, Any], avisar: Callable[[str], None] = lamb
             avisos.append(f"Veredictos copiados de {previa.get('sku')} (el mismo producto en otro color, con los "
                           "mismos rivales): no se volvió a pagar a los jueces.")
         else:
-            if not rivales and top and d["imagen"]:
+            if not rivales and top and foto:
                 # ML bloqueó la búsqueda (o no trajo nada). Los más vendidos de la categoría llegan por la API, gratis
                 # y con su foto: se juzgan igual, y así un bloqueo no deja la consulta en blanco (v0.709.1; el 30-oct
                 # TEC-1880-NEG pagó y se quedó con el precio del catálogo, que comparaba contra pedales de bici).
@@ -1002,13 +1024,13 @@ async def completo(entrada: dict[str, Any], avisar: Callable[[str], None] = lamb
             candidatos = sorted((r for r in rivales if r.get("clase_titulo") in ("mismo", "otro_paquete")
                                  or r.get("fuente") == "mas_vendidos"),
                                 key=lambda r: r.get("posicion") or 999)[:MAX_FOTOS]
-            if candidatos and d["imagen"]:
-                jf = await juez_fotos(d["imagen"], candidatos, unidades, FOTOS_BASTAN)
+            if candidatos and foto:
+                jf = await juez_fotos(foto, candidatos, unidades, FOTOS_BASTAN)
                 gasto["fotos"] = jf["usd"]
                 fotos_juzgadas = jf.get("juzgados", 0)
                 if jf["motivo"]:
                     avisos.append(jf["motivo"])
-            elif not d["imagen"]:
+            elif not foto:
                 avisos.append("El SKU no tiene foto: no se compararon fotos.")
 
         for r in rivales:
