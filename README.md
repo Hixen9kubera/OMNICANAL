@@ -1001,6 +1001,37 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.709.0 — «Sugerir precio» más barato: cinco recortes y el costo anotado sin duplicar
+
+Brandon (30-oct-2026), tras pasar 6 SKUs de baja confianza por el modo Completo: «¿es posible reducir aún más los
+costos?» → «Sí, todos». Lo medido en esas 6 consultas (las 4 corridas de Apify, una por una): **$0.155 de verdad** —
+Apify $0.082 (53 %), juez de fotos $0.042 (27 %), jueces de texto $0.031 (20 %)—.
+
+- **Un solo intento por término** (`REINTENTOS_BUSQUEDA` 3 → 0). TEC-1880-NEG quedó bloqueado en los 4 intentos:
+  90 s y ~$0.03 por nada. Si ML bloquea, la referencia cae a los más vendidos de la categoría (API, gratis) y el
+  aviso lo dice. Competencia (en lote) sigue con 8.
+- **Caché de búsquedas de 30 días** (`DIAS_CACHE` 7 → 30): el conjunto de rivales es estable (8 de 10).
+- **El juez de fotos se detiene cuando ya alcanza**: revisa de 6 en 6 por posición y para con 8 del mismo modelo
+  (`FOTOS_BASTAN`, contando solo los de la misma cantidad de piezas); también para en seco si OpenRouter contesta
+  401/402. MUE-0149-AZLMAR juzgó 30 para quedarse con 12.
+- **Un color no se vuelve a juzgar**: si otra variante del MISMO padre, con los mismos atributos salvo el color
+  (`firma_variante`), ya se consultó con el mismo término y exactamente los mismos rivales, se copian sus veredictos
+  (`_hermana` + `copiar_veredictos`) y no se paga a los jueces. Otro paquete («Cantidad»: OFI-0101-NEG-4PZ / -5PZ)
+  no comparte: el juez por título decide distinto qué es «el mismo». La consulta guarda `padre_id`, `firma`,
+  `reusado_de` y `fotos_juzgadas`; el Estudio dice de quién copió.
+- **Amazon sale del completo**: no entra al precio y su juez (~$0.0025) se pagaba en cada consulta. El Estudio enseña
+  el Amazon del catálogo maestro y, para verlo en vivo, el botón nuevo **«Amazon · ~$0.003»**
+  (`POST /api/precio-sugerido/amazon`, operador; queda en la bitácora como acción `amazon`, que no le gana al
+  completo al reabrir).
+- **El costo anotado ya no se duplica**: cada consulta sumaba todo lo que Apify cobró DESDE que arrancó, y con varias
+  a la vez se llevaba las corridas de las demás (las 6 del 30-oct quedaron en $0.31). Ahora abre una cuenta
+  (`competencia_scraper.corridas`, un `ContextVar`) donde `_registrar_gasto` anota solo las corridas que lanza ella;
+  `ultimo` sigue releyendo el cobro final por sus ids. Las 6 consultas viejas se quedan con su número inflado.
+- Estimado con la tanda del 30-oct: **~$0.085 en vez de $0.155**. El botón dice ahora «Completo · $0.01–0.05».
+- Pruebas: `tests/test_precio_sugerido.py` (63): dos consultas a la vez no se llevan las corridas de la otra, el
+  juez de fotos para con 8 y no cuenta los diferentes ni los de otra cantidad, sin crédito no sigue, la firma sin
+  color, la hermana solo con misma firma/término/rivales, el completo con hermana no paga jueces, Amazon aparte.
+
 ### v0.708.0 — CATÁLOGO: con SKU / sin SKU y publicado en ML / sin publicar, con su columna
 
 Brandon (30-oct-2026): «sepárame los productos que tienen SKU de los que NO TIENEN SKU explícitamente, y además ponme

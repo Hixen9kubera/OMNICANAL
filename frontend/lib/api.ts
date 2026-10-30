@@ -788,8 +788,12 @@ export interface PrecioSugeridoResp {
   /** Publicaciones nuestras que salieron en la búsqueda y no cuentan como rivales (v0.688.0). */
   propias_fuera?: number;
   unidades_nuestras?: number;
-  /** Amazon por SP-API, gratis (v0.696.0). null si falló; ausente en consultas anteriores. */
+  /** Amazon por SP-API (v0.696.0). Desde v0.709.0 el completo ya no lo trae (null): va aparte, `precioSugeridoAmazon`. */
   amazon?: PrecioAmazon | null;
+  /** SKU de la hermana de otro color de la que se copiaron los veredictos (v0.709.0); null = se juzgó aquí. */
+  reusado_de?: string | null;
+  /** Rivales que vio el juez de fotos: se detiene al juntar 8 del mismo modelo (v0.709.0). */
+  fotos_juzgadas?: number;
   avisos: string[];
   costo_consulta: {
     apify: number;
@@ -896,6 +900,17 @@ export function medidasAmazon(p: { sku: string; asins: string[]; q?: string | nu
 
 export function precioSugeridoCompleto(e: PrecioSugeridoEntrada): Promise<PrecioSugeridoTrabajo> {
   return postJSON<PrecioSugeridoTrabajo>(`/api/precio-sugerido/completo`, e);
+}
+
+export interface PrecioAmazonVivo {
+  amazon: PrecioAmazon;
+  costo_consulta: { total: number };
+  consultado: string;
+}
+
+/** Amazon en vivo, APARTE del completo (v0.709.0): ~$0.003 del juez por título; la SP-API no cobra. */
+export function precioSugeridoAmazon(p: { sku: string; titulo?: string | null; q?: string | null }): Promise<PrecioAmazonVivo> {
+  return postJSON<PrecioAmazonVivo>(`/api/precio-sugerido/amazon`, p);
 }
 
 export function precioSugeridoTrabajo(jid: string, signal?: AbortSignal): Promise<PrecioSugeridoTrabajo> {

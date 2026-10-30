@@ -2,7 +2,8 @@
 precio_sugerido.py — «Sugerir precio» del Estudio (v0.686.0). Ver `services/precio_sugerido.py`.
 
   GET  /api/precio-sugerido/catalogo/{sku}  → GRATIS: lo que el catálogo maestro sabe del SKU (ML y Amazon) (v0.696.0)
-  POST /api/precio-sugerido/completo        → $0.01–0.10, 30 s–2 min: arranca el trabajo y devuelve su `jid`
+  POST /api/precio-sugerido/completo        → $0.01–0.05, 30 s–2 min: arranca el trabajo y devuelve su `jid`
+  POST /api/precio-sugerido/amazon          → ~$0.003, ~10 s: Amazon en vivo, APARTE del completo (v0.709.0)
   GET  /api/precio-sugerido/trabajo/{jid}   → cómo va (y el resultado al terminar)
   GET  /api/precio-sugerido/ultimo/{sku}    → la última consulta del SKU, para no volver a pagar
   POST /api/precio-sugerido/medidas-amazon  → GRATIS: medidas del paquete de los que hicieron match en Amazon (v0.696.0)
@@ -37,6 +38,12 @@ class Entrada(BaseModel):
     terminos: list[str] | None = None
 
 
+class EntradaAmazon(BaseModel):
+    sku: str = Field(min_length=1)
+    titulo: str | None = None
+    q: str | None = Field(default=None, max_length=120)
+
+
 class EntradaMedidas(BaseModel):
     sku: str = Field(min_length=1)
     asins: list[str] = Field(default_factory=list, max_length=amazon_mercado.MAX_MEDIDAS)
@@ -51,6 +58,17 @@ async def catalogo(sku: str) -> dict:
 @router.post("/completo")
 async def completo(req: Entrada) -> dict:
     return ps.arrancar_completo(req.model_dump())
+
+
+@router.post("/amazon")
+async def amazon(req: EntradaAmazon) -> dict:
+    try:
+        return await ps.solo_amazon(req.model_dump())
+    except amazon_mercado.SinAmazon as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        log.exception("Amazon en vivo de %s falló", req.sku)
+        raise HTTPException(status_code=502, detail=f"No se pudo leer Amazon: {exc}") from exc
 
 
 @router.get("/trabajo/{jid}")

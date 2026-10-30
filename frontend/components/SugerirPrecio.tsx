@@ -6,9 +6,10 @@
  * De dónde sale el precio:
  *   1. El CATÁLOGO MAESTRO (gratis, al abrir el SKU): la MEDIA de Mercado Libre
  *      con su mínimo y máximo, y lo que cobra Amazon por el mismo producto.
- *   2. Si el SKU no está en el catálogo, el botón COMPLETO ($0.01–0.10): busca en
- *      ML (juez por título y por FOTO) y en Amazon (SP-API, gratis) y queda
- *      guardado. Si ya hay una consulta completa, esa manda: es más reciente.
+ *   2. Si el SKU no está en el catálogo, el botón COMPLETO ($0.01–0.05): busca en
+ *      ML (juez por título y por FOTO) y queda guardado. Si ya hay una consulta
+ *      completa, esa manda: es más reciente. Amazon va APARTE desde v0.709.0 (botón
+ *      «Amazon», ~$0.003): no entra al precio y su juez se pagaba en cada consulta.
  *
  * La regla (Brandon, 28-oct): un poco abajo de la media de ML, nunca arriba de
  * la media ni del máximo → media × 0.97, hacia abajo al peso.
@@ -27,11 +28,13 @@ import {
   medidasAmazon,
   mensajeDeError,
   precioCatalogo,
+  precioSugeridoAmazon,
   precioSugeridoCompleto,
   precioSugeridoTrabajo,
   precioSugeridoUltimo,
   type MedidasAmazon,
   type PrecioAmazon,
+  type PrecioAmazonVivo,
   type PrecioCatalogo,
   type PrecioSugeridoResp,
   type PrecioSugeridoTrabajo,
@@ -258,6 +261,8 @@ export default function SugerirPrecio({
   const [ventana, setVentana] = useState<Ventana | null>(null);
   const [medidas, setMedidas] = useState<MedidasAmazon | null>(null);
   const [midiendo, setMidiendo] = useState(false);
+  const [azVivo, setAzVivo] = useState<PrecioAmazonVivo | null>(null);
+  const [buscandoAz, setBuscandoAz] = useState(false);
   const job = useTrabajoJob<PrecioSugeridoTrabajo>(jid, precioSugeridoTrabajo, 3000);
 
   // Al abrir el SKU: el catálogo maestro y la última consulta completa (no se vuelve a pagar).
@@ -268,6 +273,7 @@ export default function SugerirPrecio({
     setJid(null);
     setMedidas(null);
     setVentana(null);
+    setAzVivo(null);
     if (!sku) return;
     const ctl = new AbortController();
     setCargando(true);
@@ -313,13 +319,26 @@ export default function SugerirPrecio({
     : cat?.ml
       ? { min: cat.ml.min ?? cat.ml.media, media: cat.ml.media, max: cat.ml.max ?? cat.ml.media, origen: "catalogo" }
       : null;
-  // Amazon: igual, la consulta completa si trajo Amazon; si no, el catálogo.
-  const az = res?.amazon ?? cat?.amazon ?? null;
-  const azDeCompleto = !!res?.amazon;
+  // Amazon: lo buscado en vivo con el botón; si no, una consulta completa vieja que lo trajo; si no, el catálogo.
+  const az = azVivo?.amazon ?? res?.amazon ?? cat?.amazon ?? null;
+  const azDeCompleto = !azVivo && !!res?.amazon;
   const azStats: Stats | null = az?.media != null ? { min: az.min ?? null, media: az.media, max: az.max ?? null } : null;
 
   const sugerido = ml?.media ? Math.floor(ml.media * FACTOR_BAJO_MEDIA) : null;
   const corriendo = !!jid;
+
+  async function buscarAmazon() {
+    setError(null);
+    setBuscandoAz(true);
+    try {
+      setAzVivo(await precioSugeridoAmazon({ sku, titulo }));
+      setMedidas(null);
+    } catch (e) {
+      setError(mensajeDeError(e, "No se pudo buscar en Amazon."));
+    } finally {
+      setBuscandoAz(false);
+    }
+  }
 
   async function traerMedidas() {
     if (!az) return;
@@ -349,17 +368,31 @@ export default function SugerirPrecio({
         <span className="text-sm font-bold text-amber-900">Sugerir precio</span>
         <button
           type="button"
+          onClick={buscarAmazon}
+          disabled={disabled || buscandoAz}
+          title={
+            "Busca el producto en Amazon en vivo (SP-API) y separa con IA los que son el mismo producto. " +
+            "~$0.003 y ~10 s. No cambia el precio sugerido: es para comparar."
+          }
+          className="ml-auto flex items-center gap-1.5 rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-sm font-bold text-amber-800 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {buscandoAz ? <Loader2 size={15} className="animate-spin" /> : <Package size={15} />}
+          Amazon · ~$0.003
+        </button>
+        <button
+          type="button"
           onClick={correrCompleto}
           disabled={disabled || corriendo}
           title={
-            "Busca el producto en Mercado Libre (por título y por FOTO) y en Amazon, y guarda el resultado. " +
-            "~$0.01 y ~30 s si la búsqueda de ML ya está guardada; ~$0.05 y 1–1.5 min si hay que buscar; " +
-            "hasta ~$0.10 si ML bloquea y se reintenta. Amazon no cuesta."
+            "Busca el producto en Mercado Libre (por título y por FOTO) y guarda el resultado. " +
+            "~$0.01 y ~30 s si la búsqueda ya está guardada (30 días); ~$0.03 y ~1 min si hay que buscar. " +
+            "Un solo intento: si ML bloquea, ~$0.01 y queda con los más vendidos de la categoría. " +
+            "Otro color de un producto ya consultado copia sus veredictos y casi no cuesta."
           }
-          className="ml-auto flex items-center gap-1.5 rounded-lg bg-amber-600 px-3 py-1.5 text-sm font-bold text-white shadow-sm hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
+          className="flex items-center gap-1.5 rounded-lg bg-amber-600 px-3 py-1.5 text-sm font-bold text-white shadow-sm hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {corriendo ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />}
-          Completo · $0.01–0.10
+          Completo · $0.01–0.05
         </button>
       </header>
 
@@ -399,7 +432,7 @@ export default function SugerirPrecio({
                 onClick={traerMedidas}
                 disabled={disabled || midiendo || !az}
                 className="flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-                title={az ? "Medidas del paquete de las publicaciones de Amazon que hicieron match (gratis)" : "Sin datos de Amazon: corre Completo"}
+                title={az ? "Medidas del paquete de las publicaciones de Amazon que hicieron match (gratis)" : "Sin datos de Amazon: presiona «Amazon» arriba"}
               >
                 {midiendo ? <Loader2 size={13} className="animate-spin" /> : <Package size={13} />}
                 Medidas de Amazon
@@ -487,7 +520,13 @@ export default function SugerirPrecio({
             stats={azStats}
             detalle={az ? detalleAmazon(az) : ""}
             pie={
-              az ? (azDeCompleto && res ? `Completo · ${haceCuanto(res.consultado)}` : `Catálogo maestro · ${dia(cat?.fecha_amazon)}`) : ""
+              az
+                ? azVivo
+                  ? `En vivo · ${haceCuanto(azVivo.consultado)} · ${usd(azVivo.costo_consulta.total)}`
+                  : azDeCompleto && res
+                    ? `Completo · ${haceCuanto(res.consultado)}`
+                    : `Catálogo maestro · ${dia(cat?.fecha_amazon)}`
+                : ""
             }
             ventana={az ? ventanaAmazon(az) : null}
             onVer={setVentana}
@@ -499,6 +538,7 @@ export default function SugerirPrecio({
             Última consulta completa {haceCuanto(res.consultado)} · costó {usd(res.costo_consulta.total)}
             {res.costo_consulta.apify > 0 && res.costo_consulta.apify_final === false &&
               " (preliminar: Apify cobra el proxy unos minutos después)"}
+            {res.reusado_de && ` · veredictos copiados de ${res.reusado_de} (otro color)`}
             . Solo informativo: no cambia ningún precio.
           </p>
         )}

@@ -15,10 +15,10 @@ Prueba del 22-oct-2026 con TEC-0605 (2 pack de micrófonos lavalier, costo $82.0
 
 ── DE DÓNDE SALE EL PRECIO (v0.696.0) ──────────────────────────────────────────
   1. El CATÁLOGO MAESTRO (`catalogo_precios`, gratis, al abrir el SKU): la media de ML del v3 y lo de Amazon.
-  2. Si el SKU no está ahí, el modo COMPLETO ($0.01–0.10, ~30 s–2 min): búsqueda de ML con UN término corto → juez
+  2. Si el SKU no está ahí, el modo COMPLETO ($0.01–0.05, ~30 s–2 min): búsqueda de ML con UN término corto → juez
      por título (`competencia_juez.juzgar_lote`) → juez por FOTO, pareja por pareja (visión por OpenRouter) →
-     referencia de los del mismo modelo; y Amazon por SP-API (`amazon_mercado.estudio`, gratis). Corre en segundo
-     plano (POST da un `jid`) y queda guardado.
+     referencia de los del mismo modelo. Corre en segundo plano (POST da un `jid`) y queda guardado. Amazon va
+     APARTE desde v0.709.0 (`solo_amazon`): no entra al precio y su juez se pagaba en cada consulta.
   La regla del precio (Brandon, 28-oct) la aplica el Estudio: un poco abajo de la MEDIA de ML (media × 0.97, hacia
   abajo al peso). El modo rápido (los más vendidos de la categoría filtrados por título) se quitó en v0.696.0: no
   servía. El piso y la utilidad se siguen calculando aquí, pero el Estudio ya no los enseña.
@@ -36,6 +36,16 @@ Prueba del 22-oct-2026 con TEC-0605 (2 pack de micrófonos lavalier, costo $82.0
   búsqueda de ML: $0.0505 con imágenes, $0.038 sin ellas (`sin_media`). Un término bloqueado se reintenta y
   cada intento suma. El costo que se anota al terminar es PRELIMINAR; `competencia_scraper._cobro_final` lo
   corrige a los 3 min y `ultimo` relee el definitivo.
+
+── LO QUE SE RECORTÓ (v0.709.0, Brandon 30-oct) ────────────────────────────────
+  Medido con las 6 consultas del 30-oct ($0.155 de verdad: Apify 53 %, fotos 27 %, títulos 20 %):
+  · UN intento por término (`REINTENTOS_BUSQUEDA = 0`). TEC-1880-NEG quedó bloqueado en los 4 intentos: 90 s y
+    ~$0.03 por nada. Si ML bloquea, la referencia cae a los más vendidos de la categoría (gratis, por la API).
+  · El caché de búsquedas dura 30 días (`DIAS_CACHE`): el CONJUNTO de rivales es estable (8 de 10).
+  · El juez de fotos se detiene con `FOTOS_BASTAN` iguales, revisando de `LOTE_FOTOS` en `LOTE_FOTOS`.
+  · Un color no se vuelve a juzgar (`_hermana`): si otra variante del MISMO padre, con los mismos atributos salvo
+    el color, ya se consultó con el mismo término y los mismos rivales, se copian sus veredictos.
+  · Cada consulta cuenta SOLO sus corridas de Apify (`competencia_scraper.corridas`).
 
 ── CUANDO LOS DATOS NO CUADRAN (v0.687.0) ──────────────────────────────────────
   El piso es tan bueno como el costo y el peso del Estudio. VAR-0549-NEG (50 bolsas, 23-oct) salió en $1,139 con
@@ -86,14 +96,16 @@ CUENTA_ML = "BEKURA"          # cualquiera de las dos sirve para leer: la API no
 IVA = costos.IVA_RATE
 MARGEN_DEFAULT = 0.30         # margen mínimo sobre el COSTO (Brandon, 23-oct)
 MAX_FOTOS = 30                # rivales que pasan al juez de fotos (~$0.0003 cada pareja)
+FOTOS_BASTAN = 8              # con tantos del mismo modelo ya hay referencia: no se juzgan los demás (v0.709.0)
+LOTE_FOTOS = 6                # de cuántos en cuántos (por posición) antes de volver a contar
 MIN_GRUPO = 3                 # con menos, la mediana no es referencia
 UMBRAL_PARECIDO = 0.2         # más vendidos que cuentan como grupo: parecido de título mínimo (Jaccard)
 _BANDAS = ((499.99, 300.0), (1000.0, 750.0), (math.inf, 1500.0))   # (hasta, precio con el que se pregunta)
 # Búsqueda del modo completo. ML bloqueó el término LARGO (el título casi entero) en las dos primeras consultas
 # reales —TEC-0605 y VAR-0549-NEG, 23-oct— y cada bloqueo se reintentaba 8 veces: 3 min 43 s y $0.07 de Apify.
 PALABRAS_TERMINO = 5          # el título recortado a sus primeras palabras con significado
-REINTENTOS_BUSQUEDA = 3       # Competencia (en lote) sigue con 8
-DIAS_CACHE = 7                # una búsqueda guardada de hace menos de 7 días se reusa (Brandon, 23-oct)
+REINTENTOS_BUSQUEDA = 0       # un solo intento (Brandon, 30-oct); Competencia (en lote) sigue con 8
+DIAS_CACHE = 30               # una búsqueda guardada de hace menos de 30 días se reusa (Brandon, 30-oct; antes 7)
 MIN_CACHE = 20                # con menos filas guardadas (Competencia suele medir 10) se vuelve a raspar con 48
 MIN_RESULTADOS = 15           # el 2.º término solo se busca si el 1.º trae menos que esto
 # Avisos de datos que no cuadran (v0.687.0).
@@ -303,6 +315,47 @@ def comparable_por_foto(r: dict[str, Any], unidades_nuestras: int | None) -> boo
     return not (unidades_nuestras and piezas and piezas != unidades_nuestras)
 
 
+_ATRIBUTOS_COLOR = {"color", "colour", "colores", "color principal", "main color"}
+
+
+def _normal(texto: Any) -> str:
+    t = unicodedata.normalize("NFKD", str(texto or "").lower())
+    return " ".join("".join(c for c in t if not unicodedata.combining(c)).replace("_", " ").split())
+
+
+def firma_variante(atributos: list[dict[str, Any]] | None) -> list[list[str]]:
+    """
+    Lo que distingue a una variante de sus hermanas, SIN el color: [[nombre, valor]] ordenado (v0.709.0).
+
+    Dos variantes del mismo padre con la misma firma son el mismo producto en otro color (MUE-0149-AZLMAR / -GRI /
+    -VER: firma vacía) y comparten los veredictos de los jueces. Con otra firma son otro paquete
+    (OFI-0101-NEG-4PZ / -5PZ difieren en «Cantidad») y el juez por título decide distinto cuántas piezas son
+    «el mismo»: esas NO comparten.
+    """
+    out = []
+    for a in atributos or []:
+        nombre = _normal(a.get("nombre") or a.get("name"))
+        nombre = nombre[3:] if nombre.startswith("pa ") else nombre
+        if not nombre or nombre in _ATRIBUTOS_COLOR:
+            continue
+        valor = a.get("valor") if "valor" in a else a.get("options")
+        valor = ", ".join(map(str, valor)) if isinstance(valor, list) else valor
+        out.append([nombre, _normal(valor)])
+    return sorted(out)
+
+
+def copiar_veredictos(rivales: list[dict[str, Any]], previa: dict[str, Any]) -> int:
+    """PURA. Pasa a `rivales` lo que los jueces dijeron de cada uno en la consulta de una hermana (por id de
+    publicación) y devuelve las unidades de nuestro paquete que usó esa consulta."""
+    por_id = {r.get("id"): r for r in previa.get("rivales") or []}
+    for r in rivales:
+        p = por_id.get(r["id"]) or {}
+        for k in ("clase_titulo", "motivo_titulo", "unidades", "foto", "foto_razon", "foto_piezas"):
+            if k in p:
+                r[k] = p[k]
+    return int(previa.get("unidades_nuestras") or 1)
+
+
 def peso_de_atributos(atributos: list[dict[str, Any]] | None) -> float | None:
     """El peso real de la ficha de Woo («0.07 kg», «70 g», «1,2 kg»). None si no viene."""
     for a in atributos or []:
@@ -329,7 +382,6 @@ PASOS = {
     "buscando": "Buscando en Mercado Libre (alrededor de 1 min)…",
     "juez_titulo": "Separando los que son el mismo producto…",
     "juez_fotos": "Comparando fotos…",
-    "amazon": "Buscando en Amazon…",
     "calculando": "Calculando comisión, piso y sugerencia…",
     "listo": "Listo",
     "error": "Error",
@@ -498,18 +550,24 @@ _JUEZ_FOTOS = (
 )
 
 
-async def juez_fotos(nuestra_url: str, rivales: list[dict[str, Any]]) -> dict[str, Any]:
+async def juez_fotos(nuestra_url: str, rivales: list[dict[str, Any]], unidades_nuestras: int | None = None,
+                     basta: int | None = None) -> dict[str, Any]:
     """Nuestra foto contra la de cada rival, de una pareja a la vez (con todas en una sola imagen el modelo dio por
-    iguales a 41 de 61). Escribe `foto`, `foto_razon` y `foto_piezas` en cada rival. → {usd, motivo}"""
+    iguales a 41 de 61). Escribe `foto`, `foto_razon` y `foto_piezas` en cada rival. → {usd, motivo, juzgados}
+
+    Va de `LOTE_FOTOS` en `LOTE_FOTOS`, en el orden en que llegan (por posición), y con `basta` se detiene en cuanto
+    hay esos comparables (v0.709.0): MUE-0149-AZLMAR juzgó 30 para quedarse con 12, y con 8 ya había referencia.
+    Los que no se juzgan se quedan sin `foto`: no entran al grupo, como cualquiera que el juez no viera."""
     if not settings.openrouter_api_key:
-        return {"usd": 0.0, "motivo": "Sin llave de OpenRouter: no se compararon fotos."}
+        return {"usd": 0.0, "motivo": "Sin llave de OpenRouter: no se compararon fotos.", "juzgados": 0}
     usd = 0.0
     motivo = None
+    juzgados = 0
     sem = asyncio.Semaphore(6)
     async with httpx.AsyncClient(timeout=60) as cli:
         nuestra = await _bajar_miniatura(cli, nuestra_url)
         if not nuestra:
-            return {"usd": 0.0, "motivo": "No se pudo leer la foto del producto."}
+            return {"usd": 0.0, "motivo": "No se pudo leer la foto del producto.", "juzgados": 0}
 
         async def uno(r: dict[str, Any]) -> None:
             nonlocal usd, motivo
@@ -540,8 +598,15 @@ async def juez_fotos(nuestra_url: str, rivales: list[dict[str, Any]]) -> dict[st
             v = leer_veredicto_foto(texto)
             r.update(foto=v["veredicto"], foto_razon=v["razon"], foto_piezas=v["piezas"])
 
-        await asyncio.gather(*(uno(r) for r in rivales))
-    return {"usd": round(usd, 6), "motivo": motivo}
+        for ini in range(0, len(rivales), LOTE_FOTOS):
+            lote = rivales[ini:ini + LOTE_FOTOS]
+            await asyncio.gather(*(uno(r) for r in lote))
+            juzgados += len(lote)
+            if motivo:          # sin crédito o sin llave: los que siguen fallarían igual
+                break
+            if basta and sum(comparable_por_foto(r, unidades_nuestras) for r in rivales) >= basta:
+                break
+    return {"usd": round(usd, 6), "motivo": motivo, "juzgados": juzgados}
 
 
 # ── Datos del SKU, bitácora y caché ──────────────────────────────────────────
@@ -628,7 +693,36 @@ async def datos_sku(entrada: dict[str, Any]) -> dict[str, Any]:
         "peso_kg": float(peso) if peso else None,
         "envio_panel": float(panel["costo_fee_envio"]) if panel.get("costo_fee_envio") else None,
         "margen": float(entrada.get("margen") if entrada.get("margen") is not None else MARGEN_DEFAULT),
+        # Para reusar los veredictos de una hermana de otro color (v0.709.0).
+        "padre_id": prod.get("padre_id"),
+        "firma": firma_variante(prod.get("atributos")),
     }
+
+
+def _hermana(d: dict[str, Any], terminos: list[str], ids: set[str]) -> dict[str, Any] | None:
+    """
+    BLOQUEANTE (kubera, SELECT). La consulta completa de OTRA variante del mismo padre que se puede reusar tal cual:
+    misma firma (el mismo producto, solo cambia el color), mismo término y EXACTAMENTE los mismos rivales (el mismo
+    caché), hace menos de DIAS_CACHE días. None si no hay o si kubera no contesta: entonces se juzga, como antes.
+    """
+    if not d.get("padre_id") or not ids:
+        return None
+    from services import supabase_db as sdb
+
+    try:
+        filas = sdb.fetch_all(
+            "select sku, detalle from ops.process_log where proceso = %s and accion = 'completo' and estado = 'ok' "
+            "and sku <> %s and detalle->>'padre_id' = %s and created_at > now() - make_interval(days => %s) "
+            "order by id desc limit 5", (PROCESO, d["sku"], str(d["padre_id"]), DIAS_CACHE))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("precio sugerido: no se pudo buscar una hermana de %s: %s", d["sku"], exc)
+        return None
+    for f in filas:
+        det = f["detalle"] if isinstance(f["detalle"], dict) else json.loads(f["detalle"])
+        if (det.get("firma") == d.get("firma") and det.get("terminos") == terminos
+                and {r.get("id") for r in det.get("rivales") or []} == ids):
+            return det
+    return None
 
 
 def _anotar(res: dict[str, Any], duracion: float) -> None:
@@ -675,17 +769,12 @@ def _sumar_apify(filas: list[dict[str, Any]]) -> dict[str, Any]:
             "final": all(d.get("usd_final") for d in dets)}
 
 
-def _gasto_apify_desde(t0: datetime) -> dict[str, Any]:
-    """BLOQUEANTE (kubera, SELECT). Lo que Apify cobró desde `t0` según `competencia_scraper._registrar_gasto`,
-    con los ids de sus corridas. `final` = Apify ya asentó el cobro de todas (el proxy llega minutos después)."""
-    from services import supabase_db as sdb
-
-    try:
-        return _sumar_apify(sdb.fetch_all(
-            "select detalle from ops.process_log "
-            "where proceso = 'competencia' and origen = 'apify' and created_at >= %s", (t0,)))
-    except Exception:  # noqa: BLE001
-        return {"usd": 0.0, "runs": [], "final": True}
+def gasto_de_corridas(cuenta: list[dict[str, Any]]) -> dict[str, Any]:
+    """PURA. Lo que cobraron las corridas que lanzó ESTA consulta (`competencia_scraper.corridas`), con lo que Apify
+    anotó al terminar. Es preliminar mientras haya corridas: `ultimo` relee el cobro definitivo por sus ids.
+    Antes se sumaba todo lo cobrado desde que arrancó la consulta, y en paralelo se llevaba lo de las demás."""
+    return {"usd": round(sum(float(c.get("usd") or 0) for c in cuenta), 6),
+            "runs": [c["run_id"] for c in cuenta if c.get("run_id")], "final": not cuenta}
 
 
 def _cobro_de_corridas(runs: list[str]) -> dict[str, Any] | None:
@@ -771,11 +860,12 @@ async def _cerrar(d: dict[str, Any], modo: str, rivales: list[dict[str, Any]], g
 
 
 async def completo(entrada: dict[str, Any], avisar: Callable[[str], None] = lambda _p: None) -> dict[str, Any]:
-    """$0.01–0.10: búsqueda (del caché de Competencia o raspada) + juez por título + juez por foto + comisión real +
-    piso. Lo caro es Apify, y solo cuando hay que raspar (ver «LO QUE COBRA APIFY» arriba)."""
-    from services import amazon_mercado, catalogo_precios, competencia_juez, competencia_terminos
+    """$0.01–0.05: búsqueda (del caché de Competencia o raspada) + juez por título + juez por foto + comisión real +
+    piso. Lo caro es Apify, y solo cuando hay que raspar (ver «LO QUE COBRA APIFY» arriba). Los jueces no se pagan
+    si una hermana de otro color ya se consultó con los mismos rivales (ver «LO QUE SE RECORTÓ»)."""
+    from services import catalogo_precios, competencia_juez, competencia_scraper, competencia_terminos
 
-    t0, desde = time.monotonic(), datetime.now(timezone.utc)
+    t0 = time.monotonic()
     avisar("datos")
     d = await datos_sku(entrada)
     avisos: list[str] = []
@@ -802,15 +892,21 @@ async def completo(entrada: dict[str, Any], avisar: Callable[[str], None] = lamb
         bloqueados: set[str] = set()
         # Lo que escribió el usuario se busca completo; lo propuesto, de uno en uno: el 2.º solo si hace falta.
         buscados = terminos if propios else terminos[:1]
-        crudos, reusados = await buscar(buscados, bloqueados, avisos)
-        if not propios and terminos[1:] and sum(len(v) for v in crudos.values()) < MIN_RESULTADOS:
-            mas, mas_reusados = await buscar(terminos[1:], bloqueados, avisos)
-            crudos.update(mas)
-            reusados.update(mas_reusados)
-            buscados = terminos
+        # La cuenta de ESTA consulta: aquí se anotan solo las corridas de Apify que lance ella.
+        cuenta: list[dict[str, Any]] = []
+        marca = competencia_scraper.corridas.set(cuenta)
+        try:
+            crudos, reusados = await buscar(buscados, bloqueados, avisos)
+            if not propios and terminos[1:] and sum(len(v) for v in crudos.values()) < MIN_RESULTADOS:
+                mas, mas_reusados = await buscar(terminos[1:], bloqueados, avisos)
+                crudos.update(mas)
+                reusados.update(mas_reusados)
+                buscados = terminos
+        finally:
+            competencia_scraper.corridas.reset(marca)
         if bloqueados:
-            avisos.append(f"ML bloqueó la búsqueda de: {', '.join(sorted(bloqueados))} "
-                          f"({REINTENTOS_BUSQUEDA} intentos). Si faltan comparables, prueba con otro término.")
+            avisos.append(f"ML bloqueó la búsqueda de: {', '.join(sorted(bloqueados))} (un solo intento, para no "
+                          "pagar los bloqueos). Si faltan comparables, prueba con otro término.")
         vistos: dict[str, dict[str, Any]] = {}
         propias = 0
         for termino, filas in crudos.items():
@@ -830,25 +926,35 @@ async def completo(entrada: dict[str, Any], avisar: Callable[[str], None] = lamb
         if not rivales:
             avisos.append("La búsqueda en ML no trajo publicaciones con precio.")
 
-        avisar("juez_titulo")
-        juez = await asyncio.to_thread(
-            competencia_juez.juzgar_lote, {"titulo": d["titulo"]}, rivales,
-            modelo=settings.competencia_juez_modelo) if rivales else {"veredictos": {}, "usd": 0, "unidades_nuestras": 1}
-        gasto["juez"] = float(juez.get("usd") or 0)
-        for i, v in (juez.get("veredictos") or {}).items():
-            rivales[i - 1].update(clase_titulo=v["clase"], motivo_titulo=v["motivo"], unidades=v["unidades_rival"])
-        unidades = juez.get("unidades_nuestras") or 1
+        previa = await asyncio.to_thread(_hermana, d, buscados, {r["id"] for r in rivales})
+        fotos_juzgadas = 0
+        if previa:
+            # El mismo producto en otro color, con los mismos rivales: lo que dijeron los jueces no cambia.
+            unidades = copiar_veredictos(rivales, previa)
+            avisos.append(f"Veredictos copiados de {previa.get('sku')} (el mismo producto en otro color, con los "
+                          "mismos rivales): no se volvió a pagar a los jueces.")
+        else:
+            avisar("juez_titulo")
+            juez = await asyncio.to_thread(
+                competencia_juez.juzgar_lote, {"titulo": d["titulo"]}, rivales,
+                modelo=settings.competencia_juez_modelo) if rivales else {"veredictos": {}, "usd": 0,
+                                                                          "unidades_nuestras": 1}
+            gasto["juez"] = float(juez.get("usd") or 0)
+            for i, v in (juez.get("veredictos") or {}).items():
+                rivales[i - 1].update(clase_titulo=v["clase"], motivo_titulo=v["motivo"], unidades=v["unidades_rival"])
+            unidades = juez.get("unidades_nuestras") or 1
 
-        avisar("juez_fotos")
-        candidatos = sorted((r for r in rivales if r.get("clase_titulo") in ("mismo", "otro_paquete")),
-                            key=lambda r: r.get("posicion") or 999)[:MAX_FOTOS]
-        if candidatos and d["imagen"]:
-            jf = await juez_fotos(d["imagen"], candidatos)
-            gasto["fotos"] = jf["usd"]
-            if jf["motivo"]:
-                avisos.append(jf["motivo"])
-        elif not d["imagen"]:
-            avisos.append("El SKU no tiene foto: no se compararon fotos.")
+            avisar("juez_fotos")
+            candidatos = sorted((r for r in rivales if r.get("clase_titulo") in ("mismo", "otro_paquete")),
+                                key=lambda r: r.get("posicion") or 999)[:MAX_FOTOS]
+            if candidatos and d["imagen"]:
+                jf = await juez_fotos(d["imagen"], candidatos, unidades, FOTOS_BASTAN)
+                gasto["fotos"] = jf["usd"]
+                fotos_juzgadas = jf.get("juzgados", 0)
+                if jf["motivo"]:
+                    avisos.append(jf["motivo"])
+            elif not d["imagen"]:
+                avisos.append("El SKU no tiene foto: no se compararon fotos.")
 
         for r in rivales:
             r["_grupos"] = [g for g, si in (("titulo", r.get("clase_titulo") == "mismo"),
@@ -857,27 +963,44 @@ async def completo(entrada: dict[str, Any], avisar: Callable[[str], None] = lamb
                   "titulo": [r["precio"] for r in rivales if "titulo" in r["_grupos"]],
                   "mas_vendidos": [t["precio"] for t in top if parecido(d["titulo"], t["titulo"]) >= UMBRAL_PARECIDO]}
 
-        # Amazon no cobra (SP-API) y no debe tumbar lo de ML: si falla, se avisa.
-        avisar("amazon")
-        az = None
-        try:
-            az = await amazon_mercado.estudio(q_catalogo or (buscados[0] if buscados else termino_corto(d["titulo"])),
-                                              d["titulo"], unidades)
-            gasto["juez"] += az.pop("usd", 0.0)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("precio sugerido: Amazon de %s falló: %s", d["sku"], exc)
-            avisos.append(f"No se pudo leer Amazon: {exc}")
-
+        # Amazon ya NO va aquí (v0.709.0): no entra al precio y su juez se pagaba en cada consulta. El Estudio
+        # enseña el del catálogo maestro y, si se quiere en vivo, `solo_amazon` aparte.
         avisar("calculando")
-        raspados = [t for t in buscados if t not in reusados]
-        g = (await asyncio.to_thread(_gasto_apify_desde, desde) if raspados
-             else {"usd": 0.0, "runs": [], "final": True})
+        g = gasto_de_corridas(cuenta)
         gasto.update(apify=g["usd"], apify_runs=g["runs"], apify_final=g["final"])
         res = await _cerrar(d, "completo", rivales, grupos, cli, avisos, gasto,
                             {"terminos": buscados, "cache": reusados, "propias_fuera": propias,
-                             "unidades_nuestras": unidades, "mas_vendidos": top, "amazon": az}, top=top)
+                             "unidades_nuestras": unidades, "mas_vendidos": top, "amazon": None,
+                             "padre_id": d.get("padre_id"), "firma": d.get("firma"),
+                             "reusado_de": previa.get("sku") if previa else None,
+                             "fotos_juzgadas": fotos_juzgadas}, top=top)
     finally:
         if cli:
             await cli.aclose()
+    await asyncio.to_thread(_anotar, res, time.monotonic() - t0)
+    return res
+
+
+async def solo_amazon(entrada: dict[str, Any]) -> dict[str, Any]:
+    """
+    ~$0.003 (el juez por título; la SP-API no cobra): el bloque de Amazon del SKU, APARTE del completo (v0.709.0),
+    para cuando se quiere verlo en vivo. Busca con `q`, o con la palabra clave del catálogo maestro, o con el título
+    recortado. Queda en la bitácora con su costo (acción `amazon`: no le gana al completo en `ultimo`).
+    """
+    from services import amazon_mercado, catalogo_precios, woocommerce
+
+    t0 = time.monotonic()
+    sku = entrada["sku"]
+    titulo = (entrada.get("titulo") or "").strip()
+    if not titulo:
+        titulo = ((await woocommerce.obtener_producto_por_sku(sku)) or {}).get("nombre") or sku
+    q = (entrada.get("q") or "").strip() \
+        or ((await asyncio.to_thread(catalogo_precios.por_sku, sku)).get("amazon") or {}).get("q") \
+        or termino_corto(titulo)
+    az = await amazon_mercado.estudio(" ".join(q.split()).lower(), titulo)
+    usd = float(az.pop("usd", 0.0) or 0.0)
+    res = {"ok": True, "modo": "amazon", "sku": sku, "titulo": titulo, "amazon": az,
+           "costo_consulta": {"apify": 0.0, "juez": usd, "fotos": 0.0, "total": round(usd, 6)},
+           "consultado": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     await asyncio.to_thread(_anotar, res, time.monotonic() - t0)
     return res

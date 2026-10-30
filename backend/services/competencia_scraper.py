@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import json
 import logging
 import urllib.parse
@@ -100,6 +101,15 @@ def _proxy() -> dict[str, Any]:
     }
 
 
+# La cuenta de quien pidió el raspado (v0.709.0). «Sugerir precio» la abre antes de buscar y `_registrar_gasto`
+# anota ahí cada corrida que cobra mientras está abierta. Antes la consulta sumaba lo que Apify cobró DESDE que
+# arrancó, y con varias consultas a la vez cada una se llevaba las corridas de las demás: el 30-oct, 6 consultas
+# y 4 corridas quedaron anotadas en $0.31 cuando Apify cobró $0.155. Los hilos y tareas que se abren dentro
+# heredan la MISMA lista, así que lo que se anota llega a quien la abrió.
+corridas: contextvars.ContextVar[list[dict[str, Any]] | None] = contextvars.ContextVar("apify_corridas",
+                                                                                      default=None)
+
+
 def _registrar_gasto(actor: str, datos: dict[str, Any],
                      payload: dict[str, Any] | None = None) -> None:
     """
@@ -123,6 +133,9 @@ def _registrar_gasto(actor: str, datos: dict[str, Any],
     `_ESPERA_COBRO` segundos y corrige la fila (`usd` = lo cobrado; `usd_al_terminar` = lo de aquí;
     `usd_final` = true).
     """
+    cuenta = corridas.get()
+    if cuenta is not None and datos.get("id"):
+        cuenta.append({"run_id": datos["id"], "usd": datos.get("usageTotalUsd")})
     try:
         st = datos.get("stats") or {}
         urls = len((payload or {}).get("startUrls") or []) or None
