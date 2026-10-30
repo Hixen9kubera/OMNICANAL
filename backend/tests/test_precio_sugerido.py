@@ -227,7 +227,7 @@ class BusquedaSePagaUnaVez(unittest.TestCase):
              "peso_kg": 20.0, "envio_panel": None, "margen": 0.30}
 
     def _completo(self, cache=None, medidas=None, terminos=None, corridas=None, catalogo=None, datos=None,
-                  previa=None, juez=None, top=None, fotos=None):
+                  previa=None, juez=None, top=None, fotos=None, bloquea=()):
         """Corre `completo` sin red. `cache`: {término: {filas, dias}}; `medidas`: {término: filas} que «raspa»;
         `corridas`: lo que Apify cobra por cada raspado (se anota en la cuenta de la consulta, como el de verdad);
         `catalogo`: lo que da el catálogo maestro; `previa`: la consulta de una hermana que se puede reusar."""
@@ -239,6 +239,8 @@ class BusquedaSePagaUnaVez(unittest.TestCase):
 
         async def medir(terms, limite=10, bloqueados=None, reintentos=8, filas_out=None):
             for t in terms:
+                if t in bloquea and bloqueados is not None:
+                    bloqueados.add(t)
                 if t in medidas:
                     filas_out[t] = medidas[t]
             cuenta = competencia_scraper.corridas.get()
@@ -297,6 +299,11 @@ class BusquedaSePagaUnaVez(unittest.TestCase):
         self.assertEqual(r["costo_consulta"]["apify"], 0.0)
         self.assertEqual((r["costo_consulta"]["apify_runs"], r["costo_consulta"]["apify_final"]), ([], True))
         self.assertEqual(len(r["rivales"]), 25)
+
+    def test_si_ml_bloquea_el_primero_no_se_paga_el_segundo(self):
+        r, medir = self._completo(medidas={}, bloquea={"bolsas thank you regalo"})
+        self.assertEqual([c.args[0] for c in medir.call_args_list], [["bolsas thank you regalo"]])
+        self.assertTrue(any("ML bloqueó" in a for a in r["avisos"]))
 
     def test_lo_que_escribe_el_usuario_se_busca_completo(self):
         _, medir = self._completo(medidas={"bolsa a": _filas(30)}, terminos=["Bolsa A", "bolsa b"])

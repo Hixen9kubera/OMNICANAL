@@ -1019,7 +1019,11 @@ salió otro defecto. Cuatro arreglos:
   modelo exacto, esos son la referencia; con menos, `aviso_modelo_lejos` dice si se venden lejos de la referencia.
 - **El Estudio enseña los avisos** de la consulta (bloqueo, palabra del catálogo descartada, modelo exacto lejos…) y
   dice cuando el precio que muestra es el del catálogo maestro porque la consulta no encontró el mismo producto.
-- Pruebas: `tests/test_precio_sugerido.py` (69).
+- **v0.709.2 (ajuste):** si ML BLOQUEA el primer término ya no se paga el segundo —en TEC-1880-NEG cayó igual, 2 de
+  2— y se pasa directo a los más vendidos por foto.
+- Verificado en producción: TEC-1880-NEG descartó «kit para bicicleta», ML bloqueó otra vez y con los 17 más vendidos
+  salieron 5 del mismo modelo exacto ($484–$893); ORG-0875-BEI ya avisa de las 2 del modelo exacto a $465–$677.
+- Pruebas: `tests/test_precio_sugerido.py` (70).
 
 ### v0.709.0 — «Sugerir precio» más barato: cinco recortes y el costo anotado sin duplicar
 

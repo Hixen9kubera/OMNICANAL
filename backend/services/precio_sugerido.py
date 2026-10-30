@@ -940,7 +940,10 @@ async def completo(entrada: dict[str, Any], avisar: Callable[[str], None] = lamb
         marca = competencia_scraper.corridas.set(cuenta)
         try:
             crudos, reusados = await buscar(buscados, bloqueados, avisos)
-            if not propios and terminos[1:] and sum(len(v) for v in crudos.values()) < MIN_RESULTADOS:
+            # Si ML BLOQUEÓ el primero, el segundo cae igual (TEC-1880-NEG, 30-oct: 2 de 2) y se paga por nada: se
+            # pasa directo a los más vendidos por foto (v0.709.2).
+            if (not propios and terminos[1:] and not bloqueados
+                    and sum(len(v) for v in crudos.values()) < MIN_RESULTADOS):
                 mas, mas_reusados = await buscar(terminos[1:], bloqueados, avisos)
                 crudos.update(mas)
                 reusados.update(mas_reusados)
