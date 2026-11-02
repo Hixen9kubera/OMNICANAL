@@ -71,7 +71,11 @@ _MAX_SONDEOS = 240
 # «is bound to a different event loop» hasta reiniciar. Un semáforo de hilos
 # no pertenece a ningún loop; se pide sin bloquear el loop (sondeo corto), así
 # que una cancelación mientras espera no se queda con un lugar.
-_sem = threading.BoundedSemaphore(2)
+# CUÁNTAS: la cuenta de Apify tiene 64 GB de RAM para corridas simultáneas (Brandon, 2-nov-2026: «mándalos en
+# lote») y cada corrida pide 2 GB (`memory: 2048` en `_correr_actor`) → caben 32; 24 deja margen para lo que se
+# lance desde fuera del panel. Con 2, un lote de 37 «Sugerir precio» tardaba más de una hora haciendo fila.
+TOPE_APIFY = 24
+_sem = threading.BoundedSemaphore(TOPE_APIFY)
 
 
 @contextlib.asynccontextmanager

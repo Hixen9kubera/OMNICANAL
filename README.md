@@ -1001,6 +1001,15 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.710.1 (ajuste) — Hasta 24 corridas de Apify a la vez (eran 2)
+
+Brandon (2-nov-2026): «puedes mandarlos en lote, tengo 64 GB de RAM para su uso en Apify». El tope de corridas
+simultáneas de Apify del proceso (`competencia_scraper._sem`, un semáforo de hilos que comparten Competencia, el Radar
+y «Sugerir precio») era 2: un lote de 37 «Sugerir precio» —cada uno con una búsqueda de ~3.5 min en `apify/web-fetch`—
+se quedaba más de una hora haciendo fila. Cada corrida pide 2 GB (`memory: 2048`), así que en 64 GB caben 32; se deja
+en **24** para que quede margen a lo que se lance desde fuera del panel. No cambia lo que cuesta cada corrida (Apify
+cobra por evento y por proxy, no por esperar): solo deja de hacer fila.
+
 ### v0.710.0 — «Sugerir precio» busca con apify/web-fetch (navegador real)
 
 Brandon (2-nov-2026): «ahora vamos a usar fetch». El 30-oct ML mandó a su muro de login 8 de 9 búsquedas del actor de
