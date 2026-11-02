@@ -497,6 +497,103 @@ def _de_tarjeta(it: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# ── Búsquedas con `apify/web-fetch` (v0.710.0) ───────────────────────────────
+#
+# Medido el 30-oct-2026 con las búsquedas que el navegador de arriba no pudo ver (ML lo mandó a su muro en 8 de
+# 9 consultas de «Sugerir precio» ese día):
+#
+#   apify/web-fetch SIN navegador ........ muro 2 de 2 (búsqueda y más vendidos), 2–4 s
+#   apify/web-fetch CON navegador (wait) . 4 de 5 OK (48 publicaciones por búsqueda); 1 se agotó a los 200 s
+#   pamberton/cloudflare-bypass .......... captcha de ML
+#   apify/website-content-crawler ........ reCAPTCHA de ML
+#   apify/e-commerce-scraping-tool ....... rechaza ML México («Domain under maintenance»)
+#
+# Cobra por EVENTO: $0.0015 por página traída (tarifa BRONZE) más $0.00005 por GB al arrancar; una página que no se
+# trae no cuenta. Contra ~$0.017–0.03 de una página con proxy residencial aquí arriba, que además se paga aunque ML
+# la bloquee. A cambio tarda 3–3.5 min por página. Brandon (2-nov): «ahora vamos a usar fetch».
+#
+# Lo que trae: el JSON-LD de la página (`metadata.jsonLd`), un `Product` por resultado en el orden de la página con
+# título, precio, foto, URL, marca y calificación. Ventas y FULL no vienen ahí: el Estudio no los usa.
+# Va SIN el sufijo `_NoIndex_True`: así se midió.
+_ACTOR_FETCH = "apify~web-fetch"
+_ESPERA_FETCH_MS = 3000          # `wait` abre la página en un navegador real; sin él, el muro siempre
+_MURO_FETCH = ("account-verification", "/captcha", "suspicious-traffic")
+
+
+def _de_jsonld(pagina: dict[str, Any]) -> list[dict[str, Any]]:
+    """PURA. Las publicaciones del JSON-LD de una búsqueda de ML tal como las entrega `web-fetch`, como filas de
+    `busquedas` (la forma de `_de_tarjeta`). La posición es el orden en la página."""
+    grafo: list[Any] = []
+    for bloque in ((pagina.get("metadata") or {}).get("jsonLd") or []):
+        if isinstance(bloque, dict):
+            grafo.extend(bloque.get("@graph") or [])
+    filas = []
+    posicion = 0
+    for p in grafo:
+        if not isinstance(p, dict) or p.get("@type") != "Product":
+            continue
+        posicion += 1
+        oferta = p.get("offers") or {}
+        if isinstance(oferta, list):
+            oferta = oferta[0] if oferta else {}
+        url = str(oferta.get("url") or "").split("#")[0].split("?")[0]
+        m = re.search(r"/(?:up|p)/(MLMU?\d+)|/(MLM)-(\d{9,12})-", url)
+        calif = p.get("aggregateRating") or {}
+        filas.append({
+            "externo_id": (m.group(1) or f"{m.group(2)}{m.group(3)}") if m else None,
+            "posicion": posicion,
+            "titulo": p.get("name"),
+            "precio": _num(oferta.get("price")),
+            "precio_lista": None,
+            "descuento": None,
+            "vendidos": None,
+            "rating": _num(calif.get("ratingValue")),
+            "seller": None,
+            "marca": (p.get("brand") or {}).get("name") if isinstance(p.get("brand"), dict) else None,
+            "imagen": p.get("image"),
+            "url": url or None,
+            "envio_gratis": None,
+            "es_full": None,
+            "catalog_id": None,
+        })
+    return filas
+
+
+async def buscar_terminos_fetch(terminos: list[str], limite: int = 10,
+                                bloqueados: set[str] | None = None) -> dict[str, list[dict[str, Any]]]:
+    """
+    Búsqueda de varios términos con `apify/web-fetch` en navegador real. → { termino: [filas] }
+
+    Una corrida por término (el actor toma UNA url), a la vez hasta lo que deje `_turno`. Lo que no se pudo ver —el
+    muro de ML o una corrida que se agotó o falló— va a `bloqueados`, NUNCA a «sin resultados»: un vacío se guarda
+    como «ML no tiene nada» y no se vuelve a pagar en 30 días.
+    """
+    consultas = [t.strip() for t in dict.fromkeys(terminos) if t and t.strip()]
+
+    async def uno(q: str) -> tuple[str, list[dict[str, Any]] | None]:
+        url = f"https://listado.mercadolibre.com.mx/{urllib.parse.quote(q.replace(' ', '-'))}"
+        paginas = await _correr_actor(_ACTOR_FETCH, {"url": url, "formats": ["text"], "wait": _ESPERA_FETCH_MS},
+                                      limite_lectura=1)
+        if not paginas:
+            return q, None
+        pag = paginas[0]
+        cargada = str((pag.get("fetch") or {}).get("loadedUrl") or "")
+        if any(m in cargada for m in _MURO_FETCH):
+            return q, None
+        return q, [f for f in _de_jsonld(pag) if f["externo_id"]][:limite]
+
+    out: dict[str, list[dict[str, Any]]] = {}
+    for q, filas in await asyncio.gather(*(uno(q) for q in consultas)):
+        if filas is None:
+            if bloqueados is not None:
+                bloqueados.add(q)
+            log.warning("buscar_terminos_fetch: no se pudo ver %r (muro de ML o corrida fallida)", q)
+        elif filas:
+            out[q] = filas
+    log.info("buscar_terminos_fetch: %s consultas → %s con resultados", len(consultas), len(out))
+    return out
+
+
 # ── Más vendidos por categoría (página /mas-vendidos/{cat}) ─────────────────
 #
 # HALLAZGO que cambió el diseño: los actores ESPECIALIZADOS en ML no sirven para

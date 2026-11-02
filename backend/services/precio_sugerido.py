@@ -47,6 +47,11 @@ Prueba del 22-oct-2026 con TEC-0605 (2 pack de micrófonos lavalier, costo $82.0
     el color, ya se consultó con el mismo término y los mismos rivales, se copian sus veredictos.
   · Cada consulta cuenta SOLO sus corridas de Apify (`competencia_scraper.corridas`).
 
+── LA BÚSQUEDA VA POR apify/web-fetch (v0.710.0, Brandon 2-nov) ────────────────
+  `MOTOR_BUSQUEDA = "fetch"`: un navegador real que el 30-oct pasó el muro de ML en 4 de 5 búsquedas, cuando el de
+  proxy residencial quedó bloqueado en 8 de 9. ~$0.0016 por página contra ~$0.017–0.03, pero 3–3.5 min. Lo que no
+  se pudo ver queda como bloqueado (nunca como «vacío») y la referencia cae a los más vendidos por foto.
+
 ── CUANDO LOS DATOS NO CUADRAN (v0.687.0) ──────────────────────────────────────
   El piso es tan bueno como el costo y el peso del Estudio. VAR-0549-NEG (50 bolsas, 23-oct) salió en $1,139 con
   costo $456.45 y 20 kg, cuando la categoría vende a ~$159. La respuesta trae `categoria` (todos los más vendidos,
@@ -106,6 +111,7 @@ _BANDAS = ((499.99, 300.0), (1000.0, 750.0), (math.inf, 1500.0))   # (hasta, pre
 PALABRAS_TERMINO = 5          # el título recortado a sus primeras palabras con significado
 REINTENTOS_BUSQUEDA = 0       # un solo intento (Brandon, 30-oct); Competencia (en lote) sigue con 8
 DIAS_CACHE = 30               # una búsqueda guardada de hace menos de 30 días se reusa (Brandon, 30-oct; antes 7)
+MOTOR_BUSQUEDA = "fetch"      # apify/web-fetch en navegador real (Brandon, 2-nov): ver competencia_scraper
 MIN_CACHE = 20                # con menos filas guardadas (Competencia suele medir 10) se vuelve a raspar con 48
 MIN_RESULTADOS = 15           # el 2.º término solo se busca si el 1.º trae menos que esto
 # Avisos de datos que no cuadran (v0.687.0).
@@ -415,7 +421,7 @@ PASOS = {
     "encolado": "En cola…",
     "datos": "Leyendo el producto…",
     "mas_vendidos": "Leyendo los más vendidos de la categoría…",
-    "buscando": "Buscando en Mercado Libre (alrededor de 1 min)…",
+    "buscando": "Buscando en Mercado Libre (3–4 min)…",
     "juez_titulo": "Separando los que son el mismo producto…",
     "juez_fotos": "Comparando fotos…",
     "calculando": "Calculando comisión, piso y sugerencia…",
@@ -690,7 +696,8 @@ async def buscar(terminos: list[str], bloqueados: set[str],
         medidas: dict[str, list[dict[str, Any]]] = {}
         try:
             await competencia_captura.medir_busquedas(faltan, limite=48, bloqueados=bloqueados,
-                                                      reintentos=REINTENTOS_BUSQUEDA, filas_out=medidas)
+                                                      reintentos=REINTENTOS_BUSQUEDA, filas_out=medidas,
+                                                      motor=MOTOR_BUSQUEDA)
         except Exception as exc:  # noqa: BLE001 — lo raspado (ya pagado) se usa aunque no se haya guardado
             log.warning("precio sugerido: la búsqueda no se guardó en el caché: %s", exc)
             avisos.append("La búsqueda no se pudo guardar en el caché de Competencia: la próxima se vuelve a pagar.")
@@ -973,8 +980,8 @@ async def completo(entrada: dict[str, Any], avisar: Callable[[str], None] = lamb
         finally:
             competencia_scraper.corridas.reset(marca)
         if bloqueados:
-            avisos.append(f"ML bloqueó la búsqueda de: {', '.join(sorted(bloqueados))} (un solo intento, para no "
-                          "pagar los bloqueos). Si faltan comparables, prueba con otro término.")
+            avisos.append(f"No se pudo ver la búsqueda de: {', '.join(sorted(bloqueados))} (muro de ML o se agotó el "
+                          "tiempo). Si faltan comparables, prueba con otro término.")
         vistos: dict[str, dict[str, Any]] = {}
         propias = 0
         for termino, filas in crudos.items():

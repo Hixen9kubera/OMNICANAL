@@ -1001,6 +1001,35 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.710.0 — «Sugerir precio» busca con apify/web-fetch (navegador real)
+
+Brandon (2-nov-2026): «ahora vamos a usar fetch». El 30-oct ML mandó a su muro de login 8 de 9 búsquedas del actor de
+siempre (`apify/playwright-scraper` con proxy residencial), y la referencia de casi todo el lote de caminadoras salió
+de los más vendidos por foto. Se probaron cinco actores con las búsquedas bloqueadas:
+
+| Actor | Resultado | Tiempo | Costo |
+|---|---|---|---|
+| `apify/web-fetch` sin navegador | muro (2 de 2) | 2–4 s | $0.0015 |
+| `apify/web-fetch` con navegador (`wait`) | **4 de 5 OK** (48 publicaciones por búsqueda); 1 se agotó a los 200 s | 3–3.5 min | **~$0.0016** |
+| `pamberton/cloudflare-bypass` | captcha de ML | 21 s | ~$0.0003 |
+| `apify/website-content-crawler` (Firefox, residencial MX) | reCAPTCHA | 19 s | ~$0.005 |
+| `apify/e-commerce-scraping-tool` | rechaza ML México («Domain under maintenance») | 3 s | ~$0.0001 |
+
+- **`competencia_scraper.buscar_terminos_fetch`**: una corrida de `apify~web-fetch` por término, con `wait` (navegador
+  real) y SIN el sufijo `_NoIndex_True` (así se midió). Lee el JSON-LD de la página (`_de_jsonld`): un `Product` por
+  resultado con título, precio (con centavos), foto, URL, marca y calificación, en el orden de la página. Ventas y FULL
+  no vienen ahí; el Estudio no los usa.
+- **El muro o una corrida fallida/agotada es BLOQUEO, nunca «vacío»**: un vacío se guarda como «ML no tiene nada» y no se
+  vuelve a pagar en 30 días. Bloqueado, la referencia cae a los más vendidos por foto (v0.709.1).
+- **`medir_busquedas(motor="fetch")`**: solo «Sugerir precio» lo pide (`MOTOR_BUSQUEDA`); Competencia en lote sigue con
+  el navegador de siempre. El cobro se anota igual (`_registrar_gasto`, cuenta por consulta de v0.709.0).
+- Costo por página: $0.0015 por página traída (tarifa BRONZE) + $0.00005 por GB al arrancar, contra ~$0.017–0.03 con
+  proxy residencial, que además se paga aunque ML bloquee. A cambio, una consulta Completo tarda 3–4 min en vez de ~1.
+  **Por confirmar** con la facturación de Apify en las primeras consultas: si `usageTotalUsd` de estas corridas
+  incluye el cómputo que en el pago por evento no se cobra.
+- Pruebas: `tests/test_precio_sugerido.py` (76): el JSON-LD sale en orden y con centavos, la búsqueda va en navegador
+  y sin sufijo, el muro y la corrida fallida son bloqueo, y `medir_busquedas` solo usa fetch si se pide.
+
 ### v0.709.1 — «Sugerir precio» que sí encuentra el producto (y dice qué pasó)
 
 Brandon (30-oct-2026), con el Estudio de TEC-1880-NEG abierto: «veo que el proceso de sugerir precios no funciona

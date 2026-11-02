@@ -1294,7 +1294,8 @@ async def capturar_rankings_categorias(periodo: str | None = None,
 async def medir_busquedas(terminos: list[str], limite: int = 10,
                           bloqueados: set[str] | None = None,
                           reintentos: int = 8,
-                          filas_out: dict[str, list[dict[str, Any]]] | None = None) -> dict[str, int]:
+                          filas_out: dict[str, list[dict[str, Any]]] | None = None,
+                          motor: str = "navegador") -> dict[str, int]:
     """
     Mide la BÚSQUEDA GENERAL de estos términos y la guarda. → {término: filas}.
 
@@ -1344,12 +1345,19 @@ async def medir_busquedas(terminos: list[str], limite: int = 10,
     quede en el caché de términos y la reusen Competencia y los SKUs parecidos. Pasa `reintentos` (3: hay alguien
     esperando frente a la pantalla) y `filas_out`, que recibe las filas ya enriquecidas de cada término ANTES de
     guardarlas: si el guardado falla, lo que se pagó no se pierde.
+
+    `motor` (v0.710.0): "navegador" es el de siempre (`buscar_terminos`, proxy residencial); "fetch" es
+    `apify/web-fetch` (`buscar_terminos_fetch`), que el 30-oct pasó el muro de ML donde el otro no y cuesta ~10×
+    menos, pero tarda 3–3.5 min. Lo usa «Sugerir precio»; Competencia en lote sigue con el navegador.
     """
     if not terminos:
         return {}
     murados: set[str] = bloqueados if bloqueados is not None else set()
-    res = await competencia_scraper.buscar_terminos(terminos, limite=limite,
-                                                   bloqueados=murados, reintentos=reintentos)
+    if motor == "fetch":
+        res = await competencia_scraper.buscar_terminos_fetch(terminos, limite=limite, bloqueados=murados)
+    else:
+        res = await competencia_scraper.buscar_terminos(terminos, limite=limite,
+                                                       bloqueados=murados, reintentos=reintentos)
     periodo = competencia_store.periodo_actual()
     nuestras = await asyncio.to_thread(_nuestras_publicaciones)
     guardadas: dict[str, int] = {}

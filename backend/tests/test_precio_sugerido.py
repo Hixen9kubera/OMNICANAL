@@ -238,7 +238,7 @@ class BusquedaSePagaUnaVez(unittest.TestCase):
         corridas = [{"run_id": "R1", "usd": 0.038}] if corridas is None else corridas
         estudio = mock.AsyncMock(return_value={"q": "x", "vistos": 0, "publicaciones": [], "usd": 0.002})
 
-        async def medir(terms, limite=10, bloqueados=None, reintentos=8, filas_out=None):
+        async def medir(terms, limite=10, bloqueados=None, reintentos=8, filas_out=None, motor="navegador"):
             for t in terms:
                 if t in bloquea and bloqueados is not None:
                     bloqueados.add(t)
@@ -277,6 +277,7 @@ class BusquedaSePagaUnaVez(unittest.TestCase):
         args, kw = medir.call_args
         self.assertEqual(args[0], ["bolsas thank you regalo"])     # el 2.º no hizo falta
         self.assertEqual((kw["limite"], kw["reintentos"]), (48, 0))   # v0.709.0: un bloqueo no se paga 4 veces
+        self.assertEqual(kw["motor"], "fetch")                         # v0.710.0: apify/web-fetch
         self.assertEqual(r["terminos"], ["bolsas thank you regalo"])
         self.assertEqual(r["cache"], {})
         self.assertEqual(len(r["rivales"]), 30)
@@ -304,7 +305,7 @@ class BusquedaSePagaUnaVez(unittest.TestCase):
     def test_si_ml_bloquea_el_primero_no_se_paga_el_segundo(self):
         r, medir = self._completo(medidas={}, bloquea={"bolsas thank you regalo"})
         self.assertEqual([c.args[0] for c in medir.call_args_list], [["bolsas thank you regalo"]])
-        self.assertTrue(any("ML bloqueó" in a for a in r["avisos"]))
+        self.assertTrue(any("No se pudo ver la búsqueda" in a for a in r["avisos"]))
 
     def test_lo_que_escribe_el_usuario_se_busca_completo(self):
         _, medir = self._completo(medidas={"bolsa a": _filas(30)}, terminos=["Bolsa A", "bolsa b"])
@@ -670,6 +671,85 @@ class ConsultaQueSiFunciona(unittest.TestCase):
             r = asyncio.run(ps.juez_fotos("data:image/jpeg;base64,AAAA", [{"imagen": "https://x/1.jpg"}]))
         self.assertEqual(r["juzgados"], 1)
         self.assertEqual([c.args[1] for c in bajar.call_args_list], ["https://x/1.jpg"])   # solo el del rival
+
+
+class BuscarConWebFetch(unittest.TestCase):
+    """v0.710.0 (Brandon, 2-nov): «Sugerir precio» busca con apify/web-fetch en navegador real. El 30-oct pasó el muro
+    de ML en 4 de 5 búsquedas; el actor de proxy residencial quedó bloqueado en 8 de 9."""
+
+    PAGINA = {"fetch": {"loadedUrl": "https://listado.mercadolibre.com.mx/red-de-practica-de-beisbol"},
+              "metadata": {"jsonLd": [{"@context": "https://schema.org", "@graph": [
+                  {"@type": "Product", "name": "Red Béisbol Práctica Bateo 7x7 Kit", "image": "https://x/1.jpg",
+                   "brand": {"@type": "Brand", "name": "Genérica"},
+                   "offers": {"@type": "Offer", "price": 2782, "url":
+                              "https://www.mercadolibre.com.mx/red-beisbol-7x7-kit/p/MLM2080090215"}},
+                  {"@type": "Product", "name": "Red de práctica 2x2m",
+                   "aggregateRating": {"ratingValue": 4.8, "ratingCount": 5},
+                   "offers": {"@type": "Offer", "price": 1132.43, "url":
+                              "https://www.mercadolibre.com.mx/red-de-bateo-2x2m/up/MLMU3064760173"}},
+                  {"@type": "Product", "name": "Red suelta", "offers": {"price": 189.98, "url":
+                   "https://articulo.mercadolibre.com.mx/MLM-2058385007-red-suelta-_JM?searchVariation=1"}},
+                  {"@type": "SearchResultsPage", "name": "Red de practica de beisbol"}]},
+                  {"@context": "https://schema.org", "@type": "ItemList", "itemListElement": []}]}}
+
+    def test_del_jsonld_salen_las_filas_en_orden(self):
+        from services import competencia_scraper as cs
+        filas = cs._de_jsonld(self.PAGINA)
+        self.assertEqual([f["externo_id"] for f in filas], ["MLM2080090215", "MLMU3064760173", "MLM2058385007"])
+        self.assertEqual([f["posicion"] for f in filas], [1, 2, 3])
+        self.assertEqual(filas[1]["precio"], 1132.43)                  # con centavos: no `_entero`
+        self.assertEqual(filas[1]["rating"], 4.8)
+        self.assertEqual(filas[0]["marca"], "Genérica")
+        self.assertEqual(filas[2]["url"], "https://articulo.mercadolibre.com.mx/MLM-2058385007-red-suelta-_JM")
+        self.assertEqual(cs._de_jsonld({"metadata": {"jsonLd": None}}), [])
+
+    def _buscar(self, paginas_por_url):
+        from services import competencia_scraper as cs
+        pedidas = []
+
+        async def correr(actor, payload, limite_lectura=200, respaldo=None):
+            pedidas.append((actor, payload))
+            return paginas_por_url.get(payload["url"], [])
+
+        bloqueados = set()
+        with mock.patch.object(cs, "_correr_actor", correr):
+            out = asyncio.run(cs.buscar_terminos_fetch(["red de practica de beisbol", "banco de pesas"],
+                                                       limite=48, bloqueados=bloqueados))
+        return out, bloqueados, pedidas
+
+    def test_trae_la_busqueda_en_navegador_y_sin_sufijo(self):
+        out, bloqueados, pedidas = self._buscar({
+            "https://listado.mercadolibre.com.mx/red-de-practica-de-beisbol": [self.PAGINA]})
+        self.assertEqual(len(out["red de practica de beisbol"]), 3)
+        actor, payload = pedidas[0]
+        self.assertEqual(actor, "apify~web-fetch")
+        self.assertEqual(payload["wait"], 3000)                        # sin navegador, el muro siempre
+        self.assertNotIn("_NoIndex_True", payload["url"])
+        self.assertEqual(bloqueados, {"banco de pesas"})               # la corrida que no trajo nada
+
+    def test_el_muro_y_la_corrida_fallida_son_bloqueo_no_vacio(self):
+        muro = {"fetch": {"loadedUrl": "https://www.mercadolibre.com.mx/gz/account-verification?go=x"},
+                "metadata": {"jsonLd": []}}
+        out, bloqueados, _ = self._buscar({
+            "https://listado.mercadolibre.com.mx/red-de-practica-de-beisbol": [muro]})
+        self.assertEqual(out, {})
+        self.assertEqual(bloqueados, {"red de practica de beisbol", "banco de pesas"})
+
+    def test_medir_busquedas_usa_fetch_solo_si_se_pide(self):
+        from services import competencia_captura as cc
+        fetch = mock.AsyncMock(return_value={})
+        navegador = mock.AsyncMock(return_value={})
+        with mock.patch.object(cc.competencia_scraper, "buscar_terminos_fetch", fetch), \
+                mock.patch.object(cc.competencia_scraper, "buscar_terminos", navegador), \
+                mock.patch.object(cc, "_nuestras_publicaciones", return_value={}), \
+                mock.patch.object(cc.competencia_store, "periodo_actual", return_value="2026-11-01"), \
+                mock.patch.object(cc.competencia_store, "marcar_busqueda_bloqueada"), \
+                mock.patch.object(cc.competencia_store, "reemplazar_busqueda", return_value=0):
+            asyncio.run(cc.medir_busquedas(["t"], limite=48, motor="fetch"))
+            fetch.assert_called_once()
+            navegador.assert_not_called()
+            asyncio.run(cc.medir_busquedas(["t"], limite=10))           # Competencia en lote: como siempre
+            navegador.assert_called_once()
 
 
 class CatalogoMaestro(unittest.TestCase):

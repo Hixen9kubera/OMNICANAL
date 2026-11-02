@@ -385,8 +385,8 @@ export default function SugerirPrecio({
           disabled={disabled || corriendo}
           title={
             "Busca el producto en Mercado Libre (por título y por FOTO) y guarda el resultado. " +
-            "~$0.01 y ~30 s si la búsqueda ya está guardada (30 días); ~$0.03 y ~1 min si hay que buscar. " +
-            "Un solo intento: si ML bloquea, ~$0.01 y queda con los más vendidos de la categoría. " +
+            "~$0.01 y ~30 s si la búsqueda ya está guardada (30 días); ~$0.01–0.02 y 3–4 min si hay que buscar " +
+            "(navegador real, el que pasa el muro de ML). Si aun así no se ve, queda con los más vendidos por foto. " +
             "Otro color de un producto ya consultado copia sus veredictos y casi no cuesta."
           }
           className="flex items-center gap-1.5 rounded-lg bg-amber-600 px-3 py-1.5 text-sm font-bold text-white shadow-sm hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
