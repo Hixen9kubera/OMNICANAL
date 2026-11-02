@@ -586,6 +586,12 @@ async def _preview_ml(req: dict[str, Any]) -> dict[str, Any]:
             f"{p['cuenta']}: la publicación anterior ({p['item_id']}) fue eliminada "
             "en Mercado Libre — se CREARÁ una nueva (pausada)."
         )
+    faltantes = [] if req.get("_hijas") else _cuentas_faltantes_ml(req, pubs)
+    cuentas += faltantes
+    crear_falta: list[tuple[int, str]] = []    # igual que `recrear`, para la cuenta que nunca la tuvo
+    for c in faltantes:
+        crear_falta.append((len(avisos), c))
+        avisos.append(f"{c}: no tiene esta publicación — se CREARÁ (pausada).")
     r: dict[str, Any] | None = None
     if not pubs or not vivos:
         # En modo crear el payload lo arma el pipeline de publicaciones_ready. Va ANTES
@@ -604,8 +610,9 @@ async def _preview_ml(req: dict[str, Any]) -> dict[str, Any]:
             avisos.extend(r.get("avisos") or [])
         elif r and r.get("motivo"):
             avisos.append(r["motivo"])
-    elif len(pubs) == 1:
-        avisos.append(f"Solo está publicado en {cuentas[0]} (la otra cuenta no lo tiene aún).")
+    elif len(pubs) == 1 and not faltantes:
+        avisos.append(f"Solo está publicado en {cuentas[0]} (la otra cuenta no lo tiene aún; para crearla, "
+                      "confirma con «crear_faltantes»).")
     if len(title) > ML_TITULO_MAX:
         avisos.append(f"El título tiene {len(title)} caracteres (Mercado Libre máx {ML_TITULO_MAX}).")
 
@@ -616,7 +623,7 @@ async def _preview_ml(req: dict[str, Any]) -> dict[str, Any]:
     # el payload), al candado de peso y medidas, que entonces se mide aquí.
     categoria = None
     aviso_medidas: str | None = None
-    if not vivos or muertos:
+    if not vivos or muertos or faltantes:
         r_alta = r if (r and r.get("ok")) else None
         if r_alta is None:
             prod_alta = await _prod_alta(req)
@@ -633,6 +640,8 @@ async def _preview_ml(req: dict[str, Any]) -> dict[str, Any]:
                 for i, p in recrear:
                     avisos[i] = (f"{p['cuenta']}: la publicación anterior ({p['item_id']}) "
                                  f"fue eliminada en Mercado Libre y NO se re-creará — {falta}")
+                for i, c in crear_falta:
+                    avisos[i] = f"{c}: no tiene esta publicación y NO se creará — {falta}"
                 r_alta = None
         if r_alta is not None:
             from services import publicar_ready
@@ -1313,6 +1322,21 @@ def wp_db_disponible() -> bool:
     return wp_db.disponible()
 
 
+def _cuentas_faltantes_ml(req: dict[str, Any], pubs: list[dict[str, Any]]) -> list[str]:
+    """Las cuentas de ML que NUNCA tuvieron publicación de este SKU, solo si se pide `crear_faltantes`.
+
+    Lote del 2-nov-2026: 12 SKUs quedaron en una sola cuenta (ML rechazó la foto o pidió GTIN solo en la
+    otra) y el panel no tenía cómo crearlos en la que faltaba —con una viva solo ACTUALIZABA—. Las cuentas
+    con publicación BORRADA ya se re-creaban (`muertos`); esto cubre la que nunca la tuvo. Es explícito: un
+    SKU puede estar en una sola cuenta a propósito, y actualizarlo no debe abrir otra publicación.
+    """
+    if not req.get("crear_faltantes") or not pubs:
+        return []
+    from services.publicar_ready import _CUENTAS_ML
+    con = {p["cuenta"] for p in pubs}
+    return [c for c in _CUENTAS_ML if c not in con]
+
+
 async def _confirmar_ml(req: dict[str, Any]) -> dict[str, Any]:
     sku = req.get("sku")
     wc_id = req.get("wc_id")
@@ -1351,13 +1375,15 @@ async def _confirmar_ml(req: dict[str, Any]) -> dict[str, Any]:
     vivos = [p for p in pubs if estados.get(p["cuenta"], {}).get("vivo", True)]
     muertos = [p for p in pubs if not estados.get(p["cuenta"], {}).get("vivo", True)]
 
+    faltantes = [] if es_padre else _cuentas_faltantes_ml(req, pubs)
+
     if not vivos:
         if es_padre:
             from fastapi import HTTPException
             from services.publicar_ready import MSG_PADRE
             raise HTTPException(409, MSG_PADRE)
         return await _crear_ml(sku, wc_id, campos,
-                               cuentas=[p["cuenta"] for p in muertos],
+                               cuentas=[p["cuenta"] for p in muertos] + faltantes,
                                categoria_confirmada=confirmada,
                                categoria_motivo=motivo_cat)
 
@@ -1391,9 +1417,10 @@ async def _confirmar_ml(req: dict[str, Any]) -> dict[str, Any]:
         )
         resultados.append(res)
 
-    if muertos:
+    a_crear = [p["cuenta"] for p in muertos] + faltantes
+    if a_crear:
         r_crear = await _crear_ml(sku, wc_id, campos,
-                                  cuentas=[p["cuenta"] for p in muertos],
+                                  cuentas=a_crear,
                                   categoria_confirmada=confirmada,
                                   categoria_motivo=motivo_cat)
         filas = r_crear.get("resultados") or []
@@ -1401,9 +1428,9 @@ async def _confirmar_ml(req: dict[str, Any]) -> dict[str, Any]:
             f["modo"] = "crear"
         resultados.extend(filas)
         if not filas:  # p. ej. sin wc_id o sin BD de WordPress
-            for p in muertos:
+            for cuenta in a_crear:
                 resultados.append({
-                    "cuenta": p["cuenta"], "item_id": "", "ok": False,
+                    "cuenta": cuenta, "item_id": "", "ok": False,
                     "error": r_crear.get("motivo") or "No se pudo re-crear la publicación.",
                     "ml_status": None, "modo": "crear",
                 })

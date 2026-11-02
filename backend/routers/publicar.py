@@ -94,6 +94,9 @@ class PublicarRequest(BaseModel):
     # salió en ROJO (`services/categoria_vectores.py`). Con CATEGORIA_VEC_CANDADO es
     # obligatorio en rojo; siempre queda guardado con la revisión.
     categoria_motivo: str | None = None
+    # Mercado Libre: si el SKU está publicado en UNA cuenta y la otra nunca lo tuvo, también se
+    # CREA ahí (pausado). Explícito a propósito: actualizar una publicación no abre otra cuenta sola.
+    crear_faltantes: bool = False
 
     def a_dict(self) -> dict[str, Any]:
         d = self.model_dump()

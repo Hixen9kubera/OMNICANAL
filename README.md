@@ -1001,6 +1001,26 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.714.0 — Publicar en Mercado Libre la cuenta que FALTA (`crear_faltantes`)
+
+Lote del 2-nov-2026: 12 SKUs quedaron publicados en UNA sola cuenta (ML rechazó la foto o pidió GTIN solo en la
+otra). Con una publicación viva, `confirmar` solo ACTUALIZABA; la vista previa decía «Solo está publicado en X (la
+otra cuenta no lo tiene aún)» y no había cómo crearla. Las cuentas con publicación **borrada** ya se re-creaban
+(`muertos` → `crear_ml(cuentas=[...])`); faltaba la que **nunca** la tuvo.
+
+- `PublicarRequest.crear_faltantes` (default `false`): con `true`, `_confirmar_ml` actualiza la viva como siempre y
+  manda a `crear_ml` las cuentas sin publicación junto con las borradas —mismo pipeline, misma categoría
+  confirmada, nace pausada—. La vista previa avisa «BEKURA: no tiene esta publicación — se CREARÁ (pausada)» y
+  corre la revisión de categoría (hay alta).
+- **Explícito a propósito**: un SKU puede estar en una sola cuenta a propósito; actualizarlo no abre otra.
+- Un SKU **padre** nunca abre cuentas (igual que con las borradas).
+- Sin botón en el panel todavía: se usa por API (`POST /api/publicar/preview` y `/confirmar` con `"crear_faltantes": true`).
+
+- Convive con el candado de peso y medidas de v0.713.0 (Eduardo): si el alta se frena por medidas, el aviso de la
+  cuenta faltante dice «NO se creará» en vez de «se CREARÁ», igual que con la cuenta borrada.
+
+Pruebas: `tests/test_publicar_cuenta_faltante.py`.
+
 ### v0.713.0 — El Publicador lista los borradores; «Crear Productos» se apaga
 
 Eduardo (2-nov-2026): «Hay que desactivar crear productos y en publicador hay que añadir los skus que esten en draft
