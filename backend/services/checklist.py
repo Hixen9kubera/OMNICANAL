@@ -1050,8 +1050,8 @@ def detalle_sync(sku: str) -> dict[str, Any]:
             "categoria_nombre": nombre.get("nombre"),
             "campos": campos, "fila": _evaluar(real, ctx),
             "motivo": None if cat else
-            "Sin categoría de ML no se sabe qué pide; se asigna en Crear Productos o "
-            "en el Publicador."}
+            "Sin categoría de ML no se sabe qué pide; se asigna en el Estudio del "
+            "Publicador."}
 
 
 def guardar_atributos_sync(sku: str, valores: dict[str, Any]) -> dict[str, Any]:

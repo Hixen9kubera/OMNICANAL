@@ -164,10 +164,18 @@ async def _categoria_de_producto(producto: dict[str, Any]) -> list[dict[str, Any
     return [{"id": c.get("id"), "nombre": c.get("name")} for c in cats]
 
 
-# Nota: "draft" NO aparece aquí — los drafts solo se ven en Crear Productos.
+# Nota: "draft" NO aparece en «inactivo». Desde el 2-nov-2026 el Publicador sí
+# lista los drafts (ver VISTAS), pero el filtro «Inactivos / Sin publicar» de
+# Omnicanal todavía no los cuenta: moverlo a la presencia en canales es el paso 4,
+# aparte.
+#
+# «borrador» (2-nov-2026) es el filtro «Solo borradores» del Publicador: la cola de
+# trabajo que daba Crear Productos (draft + inprogress), ahora que los borradores
+# viven revueltos con lo publicado. Espejo en `wp_db._ESTADOS_PANEL`.
 _ESTADOS_WC = {
     "publicado": ["publish"],
     "inactivo": ["pending", "inprogress", "ready", "private"],
+    "borrador": ["draft", "inprogress"],
 }
 _ORDEN_SQL = {
     "stock_desc": "stock_odoo DESC",
@@ -196,8 +204,12 @@ async def listar_productos(
     """
     Lista productos paginados. Devuelve (items_normalizados, total, total_pages).
 
-    - `vista`: qué pestaña pide el listado — `productos` (publish/pending/ready),
-      `crear` (draft/inprogress) u `omnicanal` (todos). Ver VISTAS.
+    - `vista`: qué pestaña pide el listado — `productos` (el Publicador:
+      publish/pending/ready/private y también draft/inprogress desde el
+      2-nov-2026), `crear` (draft/inprogress) u `omnicanal` (todos). Ver VISTAS.
+    - `orden`: `reciente` (fecha de alta), `stock_desc`/`stock_asc` o
+      `precio_desc`/`precio_asc`. Sin otro filtro, el orden por stock lo
+      resuelve el índice cacheado (`wc_ids_para_vista`), no una consulta.
 
     - `categoria` (id WC) → ruta nativa de WooCommerce (param category).
     - `search` / `estados` / `orden` por stock o precio / `skus` → se resuelven
@@ -250,12 +262,20 @@ async def listar_productos(
     # 29. Sin wp_db esa ruta queda de respaldo.
     from services import wp_db
     cats: list[int] | None = None
-    if categoria and wp_db.disponible():
+    # `disponible()` en hilo (regla 11): cada 5 min hace un SELECT 1 a Hostinger.
+    if categoria and await asyncio.to_thread(wp_db.disponible):
         cats = await _categoria_con_descendientes(categoria)
 
+    # El orden por STOCK ya no manda a la consulta (2-nov-2026): sin otro filtro
+    # lo resuelve el índice cacheado, que trae el stock de cada fila (el de un
+    # padre variable = la suma de sus variantes). Es el orden por omisión del
+    # Publicador —con los ~3,700 drafts dentro, «más reciente primero» enterraba
+    # lo trabajado— y así cada página cuesta un `include` a la REST, como
+    # «reciente», en vez de COUNT + ORDER BY sobre todo el catálogo. El precio
+    # sigue yendo por SQL: el índice no lo trae.
     usa_db = bool(
         search or estados or skus or cats or ids_productos is not None
-        or orden in ("stock_desc", "stock_asc", "precio_desc", "precio_asc")
+        or orden in ("precio_desc", "precio_asc")
     )
 
     # LISTADO APLANADO (Brandon, 9-sep-2026): cada variante es su propia fila y
@@ -269,8 +289,7 @@ async def listar_productos(
     # variaciones por `include` (probado 9-sep: `include=<id de variante>` → []),
     # así que aplanar sin wp_db daría una pantalla VACÍA en vez de una mala.
     if aplanar:
-        from services import wp_db
-        if not wp_db.disponible():
+        if not await asyncio.to_thread(wp_db.disponible):
             if estricto:
                 raise wp_db.FiltroExactoNoAplicable(
                     "sin la base de WordPress no hay listado aplanado que filtrar")
@@ -444,8 +463,12 @@ async def listar_productos(
                     })
                     if rs.status_code == 200:
                         vistos = {p["id"] for p in data}
-                        # drafts fuera desde aquí: la vista los excluye igual (abajo),
-                        # pero si contaran en `total` quedaría "1 producto" con lista vacía
+                        # Solo los estados de la VISTA, desde aquí y no solo en la red
+                        # de seguridad de abajo: si contara en `total` lo que la vista
+                        # tira después, quedaría "1 producto" con la lista vacía. Antes
+                        # esto era un `!= "draft"` fijo, que en el Publicador escondía
+                        # justo el SKU en borrador que alguien pegó (2-nov-2026: los
+                        # drafts ya son del Publicador).
                         #
                         # Y VARIACIONES fuera: Woo resuelve `?sku=DEC-0161-EST` a la
                         # VARIACIÓN (type='variation', id propio ≠ el del padre), que
@@ -454,8 +477,10 @@ async def listar_productos(
                         # ya la lista anidada. Ése era el "producto repetido" al pegar
                         # SKUs de variante en Filtrar SKUs (ago-2026). La variante se
                         # ve por su padre; el complemento solo suma productos reales.
+                        de_la_vista = VISTAS.get(vista, VISTAS["productos"])
                         extras = [p for p in rs.json()
-                                  if p["id"] not in vistos and p.get("status") != "draft"
+                                  if p["id"] not in vistos
+                                  and (de_la_vista is None or p.get("status") in de_la_vista)
                                   and p.get("type") != "variation"]
                         if estados:  # el complemento respeta el filtro de estado activo
                             permitidos = {v for e in estados for v in _ESTADOS_WC.get(e, [])}
@@ -479,8 +504,9 @@ async def listar_productos(
                     total_pages = 1
         else:
             # GENERAL sin filtros: los wc_ids que le tocan a esta VISTA (ver
-            # VISTAS). Paginamos sobre el índice cacheado.
-            ids_vista = await wc_ids_para_vista(vista)
+            # VISTAS), en el orden pedido (fecha o stock). Paginamos sobre el
+            # índice cacheado.
+            ids_vista = await wc_ids_para_vista(vista, orden)
             total = len(ids_vista)
             total_pages = max(1, (total + per_page - 1) // per_page)
             pagina_ids = ids_vista[(page - 1) * per_page: page * per_page]
@@ -500,7 +526,10 @@ async def listar_productos(
 
         # Red de seguridad: venga de la ruta que venga (categoría, búsqueda por
         # SKU exacto, cache DB desactualizado…), solo pasan los estados de la
-        # vista. Omnicanal no filtra: los muestra todos, incluidos los drafts.
+        # vista. Omnicanal no filtra: los muestra todos, incluidos los drafts. El
+        # Publicador (`productos`) también deja pasar draft/inprogress desde el
+        # 2-nov-2026; lo que todavía tira son los demás estados de WordPress
+        # (future, trash…).
         permitidos_vista = VISTAS.get(vista, VISTAS["productos"])
         if permitidos_vista is not None:
             data = [p for p in data if p.get("status") in permitidos_vista]
@@ -550,11 +579,28 @@ async def listar_productos(
     # cacheado por el hosting (anti-bot) justo después de un guardado, mostrando
     # un precio viejo. La DB no tiene ese problema. Para padres `variable` esto
     # también trae el `_price` ya sincronizado desde sus variantes.
+    #
+    # En la MISMA consulta vienen las metas del semáforo (categoría ML y medidas,
+    # ver `faltantes_para_publicar`); de una variante, también las de su padre,
+    # que es de donde las hereda al publicar. `padre` sale de lo que ya trajo la
+    # fila (`variantes_como_productos`); un producto de la REST no lo trae.
+    #
+    # Las VARIANTES de cada familia («Por padre») van en el mismo lote, con su
+    # padre: una familia no se publica como tal (el candado del padre la frena en
+    # todos los canales), así que su semáforo es el resumen del de sus variantes
+    # (`_semaforo_familia`). Sin ellas el chip juzgaba las metas del PADRE.
+    #
+    # `to_thread` (regla 11): son consultas a MySQL, y `disponible()` hace un
+    # SELECT 1 cada 5 min. Antes corrían síncronas dentro de esta corrutina.
     try:
         from services import wp_db
-        if wp_db.disponible():
-            frescos = wp_db.precios_y_costo_por_wc_id(
-                [{"wc_id": it["wc_id"], "tipo": it.get("tipo")} for it in items if it.get("wc_id")])
+        if await asyncio.to_thread(wp_db.disponible):
+            lote = [{"wc_id": it["wc_id"], "tipo": it.get("tipo"), "padre": p.get("parent_id")}
+                    for p, it in zip(data, items) if it.get("wc_id")]
+            lote += [{"wc_id": v["wc_id"], "tipo": "variation", "padre": it["wc_id"]}
+                     for it in items if it.get("wc_id")
+                     for v in (it.get("variantes") or []) if v.get("wc_id")]
+            frescos = await asyncio.to_thread(wp_db.precios_y_costo_por_wc_id, lote)
             for it in items:
                 f = frescos.get(it["wc_id"])
                 if not f:
@@ -577,10 +623,170 @@ async def listar_productos(
                     propio = propios.get(v.get("sku"))
                     v["costo"] = propio if propio is not None else it["costo"]
                     v["costo_propio"] = propio is not None
+                # Después de los precios frescos: el semáforo juzga el precio que
+                # se va a pintar, no el de la REST cacheada.
+                if it.get("variantes"):
+                    _semaforo_familia(it, f, frescos)
+                elif f.get("publicar") is not None:
+                    it["faltantes"] = faltantes_para_publicar(it, f["publicar"])
+                    it["avisos_publicar"] = avisos_para_publicar(f["publicar"])
     except Exception as exc:  # noqa: BLE001
         log.warning("listar_productos: no se pudo refrescar precio/costo desde DB: %s", exc)
 
     return items, total, total_pages
+
+
+# ── Semáforo de completitud del Publicador (2-nov-2026) ───────────────────────
+# Sin Crear Productos ya nadie dice qué le falta a un producto antes de
+# publicarlo: Crear lo dejaba en su resumen («falta: categoría, precio,
+# imágenes…», crear_producto.py) y ahora los ~3,700 drafts nacidos de Odoo entran
+# directo al Publicador con solo su identidad. Este es ese resumen por fila.
+#
+# Sale SOLO de lo que la fila ya trae: precio y stock del listado, la foto, y las
+# metas de la consulta de precios frescos. Ninguna llamada por fila.
+#
+# QUÉ SE MIRA Y POR QUÉ, en el orden en que se pinta:
+#   · categoria_ml — la categoría de ML GUARDADA en el producto: la meta
+#     `ml_categoria_id` (el selector del panel) o `ml_category_id` (el predictor
+#     de Crear), la de una variante heredada del padre. Es lo primero que lee
+#     `publicar_ready.construir_prod`. Ojo, el semáforo es más estricto que el
+#     alta: sin meta, la vista previa todavía puede proponer una por la categoría
+#     de WooCommerce («ML: MLM…» en su descripción, `ml_revision_categoria.
+#     categoria_de_alta`), y ofrece la curada de kubera para «Usar esta». Ninguna
+#     de las dos cuenta aquí: resolverlas costaría un mapa por fila, y lo que
+#     apaga el faltante es GUARDAR una (el selector del Estudio, o «Usar esta» en
+#     la vista previa, que la vuelve meta). La curada (`channel.product_category`)
+#     es la ruta gris que pinta `categoria_path` (routers/productos.py); el
+#     selector del Estudio NO viene prellenado con ella (`studio.metadata` lee
+#     solo la meta), por eso la pantalla la marca como sugerida.
+#   · precio — regular u oferta > 0 (ML, TikTok y Temu frenan sin precio).
+#   · stock — ≥ 1 en el listado.
+#   · fotos — al menos una.
+#   · medidas — la MISMA regla del candado del alta de ML
+#     (`publicar_ready.faltan_medidas_ml`): peso, largo, ancho y alto > 0 y una
+#     densidad entre 0.001 y 30 g/cm³. Sin eso ML NO da de alta (antes el vendor
+#     inventaba 1000 g y 30×20×15 cm); si el chip usara otra regla diría «Listo»
+#     sobre algo que la vista previa frena (p. ej. 500 «kg» en 10×10×10 cm).
+#
+# UNA FAMILIA no se juzga con las metas del padre: el padre no se publica en
+# ningún canal (el candado del padre lo frena), se publica cada variante. Su fila
+# lleva `faltantes = None` y el resumen `variantes_listas` ({listas, total}); cada
+# variante, sus propios `faltantes` (`_semaforo_familia`).
+#
+# El semáforo no es un candado: cada canal sigue validando lo suyo al publicar.
+# Es lo que evita abrir el Estudio de 40 productos para saber cuál está listo.
+#
+# AVISOS (`avisos_publicar`, 2-nov-2026): lo que NO falta pero conviene revisar
+# antes de publicar. Hoy uno: `medidas_relleno` —peso y medidas de 1 kg y
+# 30×20×15 cm, el relleno que se inventaba cuando faltaban—, con la MISMA regla
+# de la vista previa de ML (`publicar_ready.medidas_de_relleno_ml`). Pasa el
+# candado (son > 0 y cuadran), así que no es faltante: la fila puede estar
+# «completa» y aun así llevarlo. Se juzga sobre las mismas metas efectivas que
+# `faltantes` (con herencia del padre: peso y medidas como paquete,
+# `wp_db.medidas_del_padre`). En una familia va por variante,
+# `variantes_listas.con_relleno` las cuenta y `variantes_listas.relleno_del_padre`
+# dice si el padre tiene guardado ese mismo relleno (de ahí lo toman las variantes
+# sin peso ni medidas propias).
+FALTANTES_PUBLICAR = ("categoria_ml", "precio", "stock", "fotos", "medidas")
+AVISOS_PUBLICAR = ("medidas_relleno",)
+_MEDIDAS = (("weight", "_weight"), ("length", "_length"),
+            ("width", "_width"), ("height", "_height"))
+
+
+def _positivo(v: Any) -> bool:
+    try:
+        return v not in (None, "") and float(v) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def faltantes_para_publicar(item: dict[str, Any], metas: dict[str, Any]) -> list[str]:
+    """
+    Lo que le falta a una fila del listado para publicarse, en el orden de
+    `FALTANTES_PUBLICAR`. Lista vacía = datos completos («Listo para publicar»).
+
+    `item` es la fila ya armada (precio, stock, imagen); `metas`, lo que
+    `wp_db.precios_y_costo_por_wc_id` devuelve en `publicar` (las de la fila, con
+    las del padre ya rellenando huecos si es variante).
+    """
+    # Import tardío: `publicar_ready` carga el vendor, y este módulo lo importa
+    # media aplicación. La regla es una función pura; no hay ciclo.
+    from services.publicar_ready import faltan_medidas_ml
+
+    salida: list[str] = []
+    if not (str(metas.get("ml_categoria_id") or "").strip()
+            or str(metas.get("ml_category_id") or "").strip()):
+        salida.append("categoria_ml")
+    if not (_positivo(item.get("precio_base")) or _positivo(item.get("precio_oferta"))
+            or _positivo(item.get("precio"))):
+        salida.append("precio")
+    if not _positivo(item.get("stock")):
+        salida.append("stock")
+    if not item.get("imagen"):
+        salida.append("fotos")
+    if faltan_medidas_ml({clave: metas.get(meta) for clave, meta in _MEDIDAS}):
+        salida.append("medidas")
+    return salida
+
+
+def avisos_para_publicar(metas: dict[str, Any]) -> list[str]:
+    """
+    Lo que conviene revisar en una fila aunque no le falte nada, en el orden de
+    `AVISOS_PUBLICAR`. `metas` son las mismas de `faltantes_para_publicar`. Pura.
+    """
+    from services.publicar_ready import medidas_de_relleno_ml   # import tardío: ver arriba
+
+    salida: list[str] = []
+    if medidas_de_relleno_ml({clave: metas.get(meta) for clave, meta in _MEDIDAS}):
+        salida.append("medidas_relleno")
+    return salida
+
+
+def _semaforo_familia(it: dict[str, Any], f_padre: dict[str, Any],
+                      frescos: dict[int, dict[str, Any]]) -> None:
+    """
+    El semáforo de una FAMILIA («Por padre»), sobre sus variantes. Muta `it`.
+
+    Cada variante se juzga con SUS datos y lo que hereda al publicar
+    (`postmeta_con_herencia`): las metas de `publicar` ya vienen con las del padre
+    rellenando huecos; sin precio propio cae al `_price` del padre (el último
+    respaldo de `construir_prod`) y sin foto propia, a la del padre. El stock no se
+    hereda nunca (`wp_db._NO_HEREDA`). Una variante sin metas (no vino en la
+    consulta) no se juzga y no cuenta como lista.
+
+    Cada variante juzgada lleva también sus `avisos_publicar`; las que traen el
+    relleno de medidas se cuentan en `variantes_listas.con_relleno` (solo si hay
+    alguna). Una variante con relleno y sin faltantes SÍ cuenta como lista: el
+    relleno es aviso, no faltante. Si además el PADRE tiene guardado ese relleno
+    (sus propias metas, `f_padre['publicar']`), `relleno_del_padre` lo dice: las
+    variantes sin peso ni medidas propias lo toman de él, y corregirlo ahí las
+    corrige a todas.
+    """
+    it["faltantes"] = None          # el padre no se publica: no hay «Listo» que pintar
+    listas = juzgadas = con_relleno = 0
+    for v in it.get("variantes") or []:
+        fv = frescos.get(v.get("wc_id")) if v.get("wc_id") else None
+        if not fv or fv.get("publicar") is None:
+            continue
+        fila = {
+            "precio_base": fv.get("precio_base"),
+            "precio_oferta": fv.get("precio_oferta"),
+            "precio": fv.get("precio") or v.get("precio") or f_padre.get("precio"),
+            "stock": v.get("stock"),
+            "imagen": v.get("imagen") or it.get("imagen"),
+        }
+        v["faltantes"] = faltantes_para_publicar(fila, fv["publicar"])
+        v["avisos_publicar"] = avisos_para_publicar(fv["publicar"])
+        juzgadas += 1
+        listas += not v["faltantes"]
+        con_relleno += "medidas_relleno" in v["avisos_publicar"]
+    resumen: dict[str, Any] = {"listas": listas, "total": len(it.get("variantes") or [])}
+    if con_relleno:
+        resumen["con_relleno"] = con_relleno
+        metas_padre = f_padre.get("publicar")
+        if metas_padre is not None and "medidas_relleno" in avisos_para_publicar(metas_padre):
+            resumen["relleno_del_padre"] = True
+    it["variantes_listas"] = resumen if juzgadas else None
 
 
 async def listar_categorias(limite: int = 300, vista: str | None = None) -> list[dict[str, Any]]:
@@ -659,7 +865,8 @@ def _buscar_wc_ids_wp(
     sus variantes porque el LIKE las alcanza a todas.
 
     El filtro de estado sale de `VISTAS`, así que cada pestaña ve lo suyo:
-    Productos publish/pending/ready, Crear draft/inprogress, Omnicanal todo.
+    el Publicador publish/pending/ready/private y draft/inprogress (desde el
+    2-nov-2026), Crear draft/inprogress, Omnicanal todo.
 
     `skus_exactos` cambia el LIKE por igualdad, y la diferencia es enorme.
     El LIKE existe porque la caja «Filtrar SKUs» recibe lo que teclea una
@@ -750,12 +957,33 @@ def _buscar_wc_ids_wp(
     _precio_sub = (f"(SELECT prm.meta_value FROM {P}postmeta prm "
                    f"WHERE prm.post_id=p.ID AND prm.meta_key='_price' "
                    f"ORDER BY prm.meta_id LIMIT 1)")
+    # El stock de un PADRE variable es la suma de sus variantes (`stock_de_padre`):
+    # el suyo propio está vacío porque no gestiona stock, y ordenar por él mandaba
+    # al final a toda familia con mercancía. SUM sobre cero hijas es NULL, así que
+    # un producto sin variantes cae a su `_stock`. Entra en el ORDER BY y no en el
+    # COUNT, pero OJO con el costo: MySQL la evalúa en CADA fila filtrada antes del
+    # LIMIT, no solo en las de la página. Con un filtro grande (una categoría de
+    # ~2,000, «Solo borradores» ~3,700) son miles de subconsultas por clic. Sin
+    # medir todavía contra Hostinger: medirlo en el sandbox antes de producción y,
+    # si pesa, ordenar los ids filtrados en memoria con el stock del índice cacheado.
+    _stock_hijas = (f"(SELECT SUM(CAST(COALESCE((SELECT vsm.meta_value "
+                    f"FROM {P}postmeta vsm WHERE vsm.post_id=vh.ID "
+                    f"AND vsm.meta_key='_stock' ORDER BY vsm.meta_id LIMIT 1),0) AS SIGNED)) "
+                    f"FROM {P}posts vh WHERE vh.post_parent=p.ID "
+                    f"AND vh.post_type='product_variation' AND vh.post_status<>'trash')")
+    _stock_fila = f"CAST(COALESCE({_stock_hijas},{_stock_sub},0) AS SIGNED)"
     orden_sql = {
-        "stock_desc": f"CAST(COALESCE({_stock_sub},0) AS SIGNED) DESC",
-        "stock_asc": f"CAST(COALESCE({_stock_sub},0) AS SIGNED) ASC",
+        "stock_desc": f"{_stock_fila} DESC",
+        "stock_asc": f"{_stock_fila} ASC",
         "precio_desc": f"CAST(COALESCE({_precio_sub},0) AS DECIMAL(12,2)) DESC",
         "precio_asc": f"CAST(COALESCE({_precio_sub},0) AS DECIMAL(12,2)) ASC",
-    }.get(orden, "p.post_date DESC")
+    }.get(orden)
+    # Desempate: con los drafts dentro hay MILES de filas en stock 0, y sin un
+    # orden total una fila puede repetirse en dos páginas mientras otra no sale
+    # nunca (el mismo motivo del `wc_id DESC` de `wp_db.indice_plano`). A igual
+    # valor manda la fecha, como en el índice cacheado.
+    orden_sql = (f"{orden_sql}, p.post_date DESC, p.ID DESC" if orden_sql
+                 else "p.post_date DESC, p.ID DESC")
 
     base = (f"""FROM {P}posts p
                 LEFT JOIN {P}postmeta sk ON sk.post_id=p.ID AND sk.meta_key='_sku'
@@ -828,7 +1056,11 @@ def _buscar_wc_ids_db(
             "sin la base de WordPress el filtro exacto no se puede aplicar")
 
     # Respaldo: sin acceso directo a WordPress se usa la maestra (incompleta).
-    where = ["wc_id IS NOT NULL", "(status_wc IS NULL OR status_wc <> 'draft')"]
+    # Ya NO se excluyen los drafts (2-nov-2026): son del Publicador, y Omnicanal
+    # los mostraba siempre. Lo que una vista no deba ver lo tira la red de
+    # seguridad de `listar_productos`. El `status_wc` de aquí, además, es de
+    # julio: la maestra está congelada.
+    where = ["wc_id IS NOT NULL"]
     args: list[Any] = []
     if search:
         where.append("(sku LIKE %s OR nombre LIKE %s)")
@@ -950,6 +1182,9 @@ _cand_cache_ts: float = 0.0
 # TTL amplio: cada escaneo son ~90 requests y el hosting bloquea por volumen
 # (protección anti-bot); el cache viejo se sirve al instante igual.
 _CAND_TTL = 60 * 15  # 15 min
+# Edad mínima del índice para que un refresco FORZADO lo reconstruya (ver
+# `indice_catalogo`): las recargas seguidas de la app comparten la misma consulta.
+_CAND_REFRESCO_MIN = 60.0
 _cand_lock = asyncio.Lock()  # evita que se construya el índice más de una vez a la vez
 
 
@@ -1043,7 +1278,8 @@ async def _construir_indice_catalogo() -> list[dict[str, Any]]:
         except Exception as exc:  # noqa: BLE001
             log.warning("Índice de catálogo por MySQL falló, uso API: %s", exc)
 
-    productos = await _escanear_catalogo("id,sku,name,status", max_paginas=200)
+    productos = await _escanear_catalogo("id,sku,name,status,stock_quantity",
+                                         max_paginas=200)
     if productos is None:
         return _cand_cache  # WooCommerce no respondió: conservamos lo previo
 
@@ -1053,6 +1289,9 @@ async def _construir_indice_catalogo() -> list[dict[str, Any]]:
             "sku": p.get("sku") or f"WC-{p['id']}",
             "nombre": p.get("name", ""),
             "estado": p.get("status"),
+            # Para el orden por stock del Publicador. Por REST un padre variable
+            # no trae el suyo (no gestiona stock): queda en None y va al final.
+            "stock": p.get("stock_quantity"),
         }
         for p in productos
     ]
@@ -1075,21 +1314,31 @@ async def _refrescar_indice_bg() -> None:
 
 async def indice_catalogo(refrescar: bool = False) -> list[dict[str, Any]]:
     """
-    Devuelve [{wc_id, sku, nombre, estado}] de TODO el catálogo de WooCommerce.
+    Devuelve [{wc_id, sku, nombre, estado, stock}] de TODO el catálogo de
+    WooCommerce (`stock`: el del producto, o la suma de sus variantes si es
+    padre; lo usa el orden por stock de `wc_ids_para_vista`).
 
-    Cacheado en memoria (TTL 5 min). Como escanear todo el catálogo tarda, usa
-    stale-while-revalidate: si el cache expiró pero existe, devuelve lo que hay al
-    instante y refresca en segundo plano; solo bloquea cuando el cache está vacío.
+    Cacheado en memoria (TTL `_CAND_TTL`, 15 min). Como escanear todo el catálogo
+    tarda, usa stale-while-revalidate: si el cache expiró pero existe, devuelve lo
+    que hay al instante y refresca en segundo plano; solo bloquea cuando el cache
+    está vacío.
+
+    `refrescar=True` (lo pide `POST /api/sync/catalogo`, que el frontend llama en
+    CADA carga de la app) reconstruye, salvo que el índice tenga menos de
+    `_CAND_REFRESCO_MIN` (60 s): desde el 2-nov-2026 la consulta suma el stock de
+    las ~7.5k variantes, y cinco recargas en un minuto eran cinco reconstrucciones
+    en fila (bajo `_cand_lock`) contra el MySQL compartido de Hostinger.
     """
     edad = time.time() - _cand_cache_ts
-    if _cand_cache and not refrescar:
-        if edad >= _CAND_TTL:
+    if _cand_cache and (not refrescar or edad < _CAND_REFRESCO_MIN):
+        if not refrescar and edad >= _CAND_TTL:
             asyncio.create_task(_refrescar_indice_bg())  # refresco en segundo plano
         return _cand_cache
 
     # Cache vacío (arranque en frío) o refresco forzado → construir ahora.
     async with _cand_lock:
-        if _cand_cache and not refrescar and (time.time() - _cand_cache_ts) < _CAND_TTL:
+        edad = time.time() - _cand_cache_ts
+        if _cand_cache and edad < (_CAND_REFRESCO_MIN if refrescar else _CAND_TTL):
             return _cand_cache  # otra corrutina ya lo construyó mientras esperábamos
         return await _construir_indice_catalogo()
 
@@ -1362,32 +1611,61 @@ def actualizar_estado_en_cache(wc_id: int, estado: str) -> None:
         quitar_de_drafts(wc_id)
 
 
-# ── Reparto del catálogo entre las tres vistas (regla de Brandon, 29-jul) ─────
-# Cada producto vive en UNA pestaña según su estado en WooCommerce, salvo
-# Omnicanal que los muestra todos:
+# ── Reparto del catálogo entre las vistas ──────────────────────────────────────
+# Regla de Brandon (29-jul), cada producto en UNA pestaña según su estado en
+# WooCommerce, salvo Omnicanal que los muestra todos:
 #
 #   Productos  → publish + pending + ready     (lo que ya está resuelto)
 #   Crear      → draft + inprogress            (lo que falta trabajar)
 #   Omnicanal  → TODOS                         (la vista de control)
 #
-# Antes, "Productos" mostraba todo MENOS draft, así que se colaban los 229
-# `inprogress` que pertenecen a Crear, y Omnicanal escondía los 4,650 drafts —
-# por eso un producto en draft pero VIVO en un canal era invisible en el panel
-# (caso TEC-1841-ROS, que vendió estando oculto; ver v0.29.0).
+# SE ACABÓ EL REPARTO (Eduardo, 2-nov-2026): el estado draft se salta y Crear se
+# apaga, así que lo que falta trabajar se trabaja en el Publicador mismo. La
+# vista `productos` (el Publicador) suma draft + inprogress: los ~3,700 drafts
+# nacidos de Odoo y los padres en borrador cuyas variantes ya estaban listas.
+# Qué le falta a cada uno lo dice el semáforo (`faltantes_para_publicar`) y para
+# que no tapen lo ya trabajado el Publicador ordena por stock (`orden`).
+# `crear` queda igual mientras exista su pestaña; `omnicanal` también.
+#
+# Ojo: el `post_status` ya NO dice si algo está publicado —eso es la presencia en
+# canales (routers/productos.py)—, y una vista desconocida cae a `productos`.
+#
+# Antes de todo esto, "Productos" mostraba todo MENOS draft, así que se colaban
+# los 229 `inprogress` que pertenecían a Crear, y Omnicanal escondía los 4,650
+# drafts — por eso un producto en draft pero VIVO en un canal era invisible en
+# el panel (caso TEC-1841-ROS, que vendió estando oculto; ver v0.29.0).
+#
+# Espejo en SQL: `wp_db._VISTAS_SQL`. Se cambian JUNTAS.
 VISTAS: dict[str, set[str] | None] = {
-    "productos": {"publish", "pending", "ready", "private"},
+    "productos": {"publish", "pending", "ready", "private", "draft", "inprogress"},
     "crear": {"draft", "inprogress"},
     "omnicanal": None,          # None = sin filtro, entran todos
 }
 
 
-async def wc_ids_para_vista(vista: str = "productos") -> list[int]:
-    """wc_ids del catálogo que le tocan a una vista. Ver VISTAS."""
+async def wc_ids_para_vista(vista: str = "productos", orden: str = "reciente") -> list[int]:
+    """
+    wc_ids del catálogo que le tocan a una vista (ver VISTAS), en `orden`.
+
+    El índice viene ya por fecha de alta, la más reciente primero (`reciente`).
+    `stock_desc`/`stock_asc` lo reordenan EN MEMORIA con el stock que trae cada
+    fila del índice —el de un padre variable es la suma de sus variantes, la
+    misma regla que `stock_de_padre`—. El orden es estable: a igual stock manda
+    la fecha. Sin stock conocido la fila cuenta como 0. Cualquier otro orden
+    deja el de fecha (el de precio no llega aquí: va por SQL).
+
+    El stock del índice tiene la edad del índice (hasta 15 min, `_CAND_TTL`); el
+    número que se PINTA es el fresco de la REST. Con la vía de respaldo (índice
+    por REST, sin wp_db) un padre variable no trae stock propio y cae al final.
+    """
     catalogo = await indice_catalogo()
     permitidos = VISTAS.get(vista, VISTAS["productos"])
-    if permitidos is None:
-        return [p["wc_id"] for p in catalogo]
-    return [p["wc_id"] for p in catalogo if p["estado"] in permitidos]
+    filas = (catalogo if permitidos is None
+             else [p for p in catalogo if p["estado"] in permitidos])
+    if orden in ("stock_desc", "stock_asc"):
+        signo = -1 if orden == "stock_desc" else 1
+        filas = sorted(filas, key=lambda p: signo * (p.get("stock") or 0))
+    return [p["wc_id"] for p in filas]
 
 
 async def wc_ids_sin_draft() -> list[int]:

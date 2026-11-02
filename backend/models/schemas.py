@@ -77,6 +77,26 @@ class VarianteResumen(BaseModel):
     # TypeScript, y pydantic 2 DESCARTA en silencio las llaves que no declara —
     # por eso el `drop_off` de las variantes nunca llegó al navegador.
     flujo: dict[str, Any] | None = None
+    # Semáforo del Publicador de ESTA variante (2-nov-2026): una familia se
+    # publica por variante, así que cada una trae lo suyo (con lo que hereda del
+    # padre). Mismos códigos y misma regla que `Producto.faltantes`.
+    faltantes: list[str] | None = None
+    # Lo que no falta pero hay que revisar (`Producto.avisos_publicar`).
+    avisos_publicar: list[str] | None = None
+
+
+class VariantesListas(BaseModel):
+    """El semáforo de una FAMILIA en el Publicador: cuántas de sus variantes
+    tienen los datos completos (`faltantes == []`). La fila del padre no se juzga
+    con sus propias metas: el padre no se publica en ningún canal.
+    `con_relleno`: cuántas traen el peso y las medidas de relleno (aviso, no
+    faltante: una variante con relleno y sin faltantes cuenta como lista).
+    `relleno_del_padre`: el padre tiene guardado ese mismo relleno, y de ahí lo
+    toman las variantes sin peso ni medidas propias."""
+    listas: int
+    total: int
+    con_relleno: int = 0
+    relleno_del_padre: bool = False
 
 
 class HermanasPendientes(BaseModel):
@@ -198,6 +218,24 @@ class Producto(BaseModel):
     # siguiente (`inventario_flujo.sello`). `None` cuando no hay nada honesto
     # que decir: la foto apagada o calentando, o un SKU sintético `WC-<id>`.
     flujo: dict[str, Any] | None = None
+
+    # Semáforo del Publicador (2-nov-2026, al saltarse el draft): qué le falta
+    # para publicarse, de `woocommerce.FALTANTES_PUBLICAR` —categoria_ml,
+    # precio, stock, fotos, medidas—. `[]` = listo para publicar. `None` = no
+    # se pudo juzgar (sin la base de WordPress no hay metas) o no es General:
+    # ausente no es «listo». En una familia es `None` y manda `variantes_listas`.
+    faltantes: list[str] | None = None
+    variantes_listas: VariantesListas | None = None
+    # Lo que NO falta pero conviene revisar antes de publicar, de
+    # `woocommerce.AVISOS_PUBLICAR`: hoy solo `medidas_relleno` (1 kg y 30×20×15
+    # cm, el relleno que se inventaba cuando faltaban; pasa el candado de ML, la
+    # vista previa lo avisa). `[]` = nada que revisar; `None` = no se juzgó (igual
+    # que `faltantes`). En una familia va por variante.
+    avisos_publicar: list[str] | None = None
+    # ¿`categoria_path` es la categoría de ML curada en kubera (`channel_read.
+    # rutas_de`) y no la de Woo? Con «Falta: categoría ML» en la misma fila, esa
+    # ruta es una SUGERENCIA (no está guardada en el producto) y así se pinta.
+    categoria_kubera: bool = False
 
     # Tipo de producto en WooCommerce: simple | variable (padre) | variation
     tipo: str | None = None

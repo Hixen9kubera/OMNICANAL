@@ -3,8 +3,8 @@ canales.py — Registro de canales y refresco contra la API en vivo.
 
   GET  /api/canales
        → config de las pestañas (id, label, color, habilitado, totales).
-         General trae DOS totales (sin borradores y catálogo completo): ver
-         `listar_canales`.
+         General trae DOS totales (el del Publicador y el catálogo completo;
+         desde el 2-nov-2026 casi coinciden): ver `listar_canales`.
 
   POST /api/canales/{canal}/refrescar/{sku}
        → refresca en vivo precio/stock/FULL/categoría de ese SKU contra la API
@@ -47,18 +47,25 @@ async def listar_canales(incluir_totales: bool = True):
     """
     Config de las pestañas con su total.
 
-    General lleva DOS totales, y NO son el mismo número (el 23-sep-2026 el
-    panel decía 3,035 en la pestaña y 7,288 en el encabezado de Omnicanal, y
-    nadie sabía por qué):
+    General lleva DOS totales (el 23-sep-2026 el panel decía 3,035 en la
+    pestaña y 7,288 en el encabezado de Omnicanal, y nadie sabía por qué):
 
-    - `total_productos` — lo que cuenta la pestaña General: vista «productos»
-      (publish/pending/ready/private), SIN borradores. Medido en producción:
-      publish 1,996 + pending 914 + ready 128 = 3,038 (3,035 en vivo).
+    - `total_productos` — lo que cuenta la pestaña General: la vista
+      «productos», la del Publicador. Hasta el 2-nov-2026 era SIN borradores
+      (publish 1,996 + pending 914 + ready 128 = 3,038 medido el 23-sep); desde
+      que el draft se salta (Eduardo) suma también draft e inprogress.
     - `total_catalogo` — lo que cuenta el encabezado de Omnicanal y su «Todas»:
-      vista «omnicanal», TODOS los estados. Los mismos 3,038 + 4,250 draft
-      = 7,288. La diferencia es todo lo que queda fuera de la vista
-      «productos» (draft, inprogress…); medido, hoy son solo draft. El
-      frontend la calcula solo si los dos son números.
+      vista «omnicanal», TODOS los estados (3,038 + 4,250 draft = 7,288 aquel
+      día). El frontend resta los dos y pinta la diferencia, solo si los dos
+      son números.
+
+    Con los drafts dentro del Publicador las dos cifras casi coinciden: la
+    diferencia ya no son los borradores sino lo que ninguna pestaña de trabajo
+    lista (`future` y demás estados raros de WordPress; trash, auto-draft e
+    inherit no entran en ninguna). Se conservan los dos campos —y su
+    contrato: None si falla, nunca 0— para no romper la API ni el
+    encabezado de Omnicanal; si la diferencia se queda en cero, retirar
+    `total_catalogo` es una limpieza aparte.
 
     En ninguno cuentan las variantes: van dentro del padre. Los dos siguen el
     mismo `LISTADO_APLANADO` que el encabezado (aquí no se pasa `aplanar`),

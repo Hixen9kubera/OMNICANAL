@@ -272,7 +272,10 @@ export function listarProductos(
   // el anidado"), no la ausencia de una. Omitirlo deja mandar al flag de Railway.
   if (p.aplanar !== undefined) q.set("aplanar", String(p.aplanar));
   // Qué pestaña pide el listado: reparte el catálogo por estado de WooCommerce.
-  // productos = publish/pending/ready · crear = draft/inprogress · omnicanal = todos.
+  // productos = el Publicador: publish/pending/ready/private y, desde el
+  // 2-nov-2026, también draft/inprogress · crear = draft/inprogress ·
+  // omnicanal = todos. En General cada fila trae además `faltantes` y
+  // `avisos_publicar` (el semáforo de completitud; ver app/productos/page.tsx).
   if (p.vista) q.set("vista", p.vista);
   return getJSON<RespuestaProductos>(`/api/productos?${q.toString()}`, signal);
 }

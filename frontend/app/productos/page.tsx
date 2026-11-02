@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Search, RotateCw, ImageIcon, Wand2, ChevronRight, Pencil, Layers, Loader2, Warehouse, Split, PowerOff } from "lucide-react";
+import { Search, RotateCw, ImageIcon, Wand2, ChevronRight, Pencil, Layers, Loader2, Warehouse, Split, PowerOff, ArrowDownUp, FilePen } from "lucide-react";
 
 import AppNavbar from "@/components/AppNavbar";
 import Pagination from "@/components/Pagination";
@@ -17,19 +17,19 @@ import {
   configEstudio, leerModosPublicacion, listarCanales, listarCategorias, listarProductos,
   type CategoriaWC,
 } from "@/lib/api";
-import type { CanalInfo, EstudioConfig, ModoPublicacion, Paginacion, Producto } from "@/lib/types";
+import type { CanalInfo, EstudioConfig, ModoPublicacion, Paginacion, Producto, VarianteResumen } from "@/lib/types";
 
 const PER_PAGE = 40;
 const INDIGO = "#4F46E5";
 
 /**
- * Cómo se lista el catálogo, igual que en Crear Productos. «Por padre» = la
- * familia en una fila. «Por variante» = cada hija es su propia fila, y es la
- * ÚNICA forma de ver una variante ya procesada cuyo padre sigue en borrador:
- * Crear no le cambia el estado al padre (para no llevarse a las hermanas sin
- * trabajar), así que por padre esa familia no existe en esta pantalla. Antes la
- * pantalla no mandaba `aplanar` y decidía LISTADO_APLANADO, apagado en Railway:
- * ROP-0246 y 13 familias más, con 87 variantes listas, no se encontraban (30-sep).
+ * Cómo se lista el catálogo. «Por padre» = la familia en una fila. «Por
+ * variante» = cada hija es su propia fila. Antes «Por variante» era la ÚNICA
+ * forma de ver una variante ya procesada cuyo padre seguía en borrador; desde
+ * el 2-nov-2026 el Publicador lista también los borradores (Eduardo: el estado
+ * draft se salta y Crear Productos se apaga), así que las dos formas enseñan el
+ * catálogo entero. La pantalla manda `aplanar` siempre: sin él decidía
+ * LISTADO_APLANADO, apagado en Railway (ROP-0246 y 13 familias más, 30-sep).
  */
 type ModoLista = "padre" | "variante";
 const LS_MODO = "omnicanal:publicador:modo";
@@ -42,6 +42,223 @@ function leerModoGuardado(): ModoLista {
   }
 }
 
+/**
+ * Orden de la lista (2-nov-2026). Con los ~3,700 borradores nacidos de Odoo
+ * dentro, «más reciente primero» —el orden de siempre— llenaba las primeras
+ * páginas de altas que nadie ha trabajado. Por omisión va primero lo que tiene
+ * stock: es lo que se puede vender hoy. Los valores son los que ya entiende
+ * `GET /api/productos?orden=`.
+ */
+type OrdenLista = "stock_desc" | "reciente" | "precio_desc" | "precio_asc" | "stock_asc";
+const ORDEN_POR_OMISION: OrdenLista = "stock_desc";
+const LS_ORDEN = "omnicanal:publicador:orden";
+const ORDENES: { valor: OrdenLista; texto: string }[] = [
+  { valor: "stock_desc", texto: "Con stock primero" },
+  { valor: "reciente", texto: "Más recientes" },
+  { valor: "precio_desc", texto: "Precio: mayor a menor" },
+  { valor: "precio_asc", texto: "Precio: menor a mayor" },
+  { valor: "stock_asc", texto: "Menos stock primero" },
+];
+
+function leerOrdenGuardado(): OrdenLista {
+  try {
+    const v = localStorage.getItem(LS_ORDEN);
+    return ORDENES.some((o) => o.valor === v) ? (v as OrdenLista) : ORDEN_POR_OMISION;
+  } catch {
+    return ORDEN_POR_OMISION;
+  }
+}
+
+/**
+ * SEMÁFORO DE COMPLETITUD (2-nov-2026). Lo que Crear decía al terminar
+ * («falta: categoría, precio…») ya no lo dice nadie, y los borradores llegan
+ * aquí solo con su identidad. El backend juzga cada fila con lo que ya trae
+ * (`woocommerce.faltantes_para_publicar`): `[]` = datos completos;
+ * `null`/ausente = no se pudo juzgar, y entonces no se pinta nada (ausente no
+ * es «listo»).
+ *
+ * UNA FAMILIA no se juzga con las metas del padre (el padre no se publica en
+ * ningún canal): trae `faltantes: null` y `variantes_listas` = {listas, total},
+ * y cada variante sus propios `faltantes`. El chip de la fila es ese resumen.
+ *
+ * «Listo para publicar» solo donde todavía no hay ningún canal (`publicado` =
+ * presencia en al menos uno, routers/productos.py); con canales el mismo
+ * semáforo dice «Datos completos»: no hay nada que publicar por primera vez.
+ *
+ * AVISOS (`avisos_publicar`, 2-nov-2026): lo que NO falta pero hay que revisar.
+ * Hoy solo `medidas_relleno`: 1 kg y 30×20×15 cm, el relleno que se inventaba
+ * cuando faltaban (`publicar_ready.medidas_de_relleno_ml`). Pasa el candado de
+ * Mercado Libre y la vista previa lo avisa sin frenar. Sin faltantes, el chip
+ * es «¿Medidas reales?» con contorno ámbar y sin relleno (`CHIP_AVISO`: no se
+ * confunde con el ámbar sólido de «Falta: …», que sí frena) en lugar del verde
+ * o el gris; con faltantes, manda el de faltantes y el aviso va en su `title`.
+ * Ya publicado, la ayuda cambia: corregir en Costos NO toca la publicación viva
+ * de Mercado Libre (actualizar no manda peso ni medidas). En una familia, por
+ * variante, y `relleno_del_padre` dice si el relleno sale del padre.
+ *
+ * Estos campos todavía no están en el tipo compartido `Producto`: se declaran aquí.
+ */
+type VarianteConSemaforo = VarianteResumen & {
+  faltantes?: string[] | null;
+  avisos_publicar?: string[] | null;
+};
+type ProductoPublicador = Producto & {
+  faltantes?: string[] | null;
+  avisos_publicar?: string[] | null;
+  variantes_listas?: {
+    listas: number;
+    total: number;
+    con_relleno?: number;
+    relleno_del_padre?: boolean;
+  } | null;
+  categoria_kubera?: boolean;
+};
+
+// La misma frase que la vista previa de ML (`publicar_ready.MSG_MEDIDAS_RELLENO_ML`).
+const AYUDA_RELLENO =
+  "Mercado Envíos cobrará el envío con 1 kg y 30×20×15 cm: son el peso y las medidas de relleno que se usaban cuando faltaban. Si no son las reales, captúralas en Costos del Estudio (kg y cm) antes de publicar.";
+// Ya publicado: actualizar una publicación viva de Mercado Libre solo manda
+// título, atributos y descripción (`publicar._update_ml_una`), nunca el paquete.
+const AYUDA_RELLENO_PUBLICADO =
+  "Si ya está en Mercado Libre, corregir aquí no cambia esa publicación: Mercado Envíos puede seguir cobrando el envío con 1 kg y 30×20×15 cm, el peso y las medidas de relleno que se usaban cuando faltaban. Esa se corrige en Mercado Libre. Capturar las reales en Costos del Estudio (kg y cm) sirve para las próximas altas.";
+const ayudaRelleno = (publicado: boolean) => (publicado ? AYUDA_RELLENO_PUBLICADO : AYUDA_RELLENO);
+const conRelleno = (avisos: string[] | null | undefined) =>
+  Array.isArray(avisos) && avisos.includes("medidas_relleno");
+
+const BORRADORES = new Set(["draft", "inprogress"]);
+const esBorrador = (estado: string | null | undefined) => !!estado && BORRADORES.has(estado);
+
+const NOMBRE_FALTANTE: Record<string, string> = {
+  categoria_ml: "categoría ML",
+  precio: "precio",
+  stock: "stock",
+  fotos: "fotos",
+  medidas: "medidas",
+};
+
+/** Ayuda de cada faltante. La de categoría depende de si hay una sugerida. */
+function ayudaFaltante(f: string, conSugerida: boolean): string {
+  switch (f) {
+    case "categoria_ml":
+      return conSugerida
+        ? "Sin categoría de Mercado Libre guardada en el producto. Hay una sugerida por kubera (la ruta gris): confírmala con «Usar esta» en la vista previa de Mercado Libre, o elígela en el selector de categoría del Estudio."
+        : "Sin categoría de Mercado Libre guardada en el producto: elígela en el selector de categoría del Estudio. (Al publicar, la vista previa a veces propone una por la categoría de la tienda; aquí solo cuenta la guardada.)";
+    case "precio":
+      return "Sin precio regular ni de oferta mayor a 0.";
+    case "stock":
+      return "Sin existencias (stock menor a 1).";
+    case "fotos":
+      return "Sin ninguna foto.";
+    case "medidas":
+      return "Sin peso y las tres medidas reales (o si no cuadran entre sí) Mercado Libre NO da de alta. Se capturan en Costos del Estudio (kg y cm).";
+    default:
+      return f;
+  }
+}
+
+// El chip se encoge y se recorta (el detalle completo va en el `title`): en una
+// ventana angosta la columna del título mide ~160–240 px y un chip rígido se
+// pintaba encima de Tipo y Variantes.
+const CHIP_BASE =
+  "inline-block min-w-0 max-w-full truncate rounded px-1.5 py-0.5 text-[10px] font-bold ring-1";
+const CHIP_VERDE = `${CHIP_BASE} bg-emerald-50 text-emerald-700 ring-emerald-200`;
+const CHIP_AMBAR = `${CHIP_BASE} bg-amber-50 text-amber-700 ring-amber-200`;
+const CHIP_GRIS = `${CHIP_BASE} bg-slate-50 text-slate-500 ring-slate-200`;
+// Aviso que NO frena (medidas de relleno): contorno ámbar sin relleno, para no
+// leerse como el ámbar sólido de «Falta: …». La etiqueta empieza por «¿», que
+// sobrevive al recorte.
+const CHIP_AVISO = `${CHIP_BASE} bg-white text-amber-700 ring-amber-300`;
+const ETIQUETA_RELLENO = "¿Medidas reales?";
+
+function ChipCompletitud({ p }: { p: ProductoPublicador }) {
+  // FAMILIA: el resumen de sus variantes.
+  if (p.variantes_listas) {
+    const { listas, total } = p.variantes_listas;
+    const variantes = p.variantes as VarianteConSemaforo[];
+    const recorta = (xs: string[]) => (xs.length > 8 ? [...xs.slice(0, 8), `… y ${xs.length - 8} más`] : xs);
+    const pendientes = variantes
+      .filter((v) => Array.isArray(v.faltantes) && v.faltantes.length > 0)
+      .map((v) => `${v.sku}: ${v.faltantes!.map((f) => NOMBRE_FALTANTE[f] ?? f).join(", ")}`);
+    const rellenas = variantes.filter((v) => conRelleno(v.avisos_publicar)).map((v) => v.sku);
+    const nRelleno = p.variantes_listas.con_relleno ?? rellenas.length;
+    const todasListas = listas === total && total > 0;
+    const delPadre = !!p.variantes_listas.relleno_del_padre;
+    const title = [
+      "Una familia se publica por variante: este semáforo resume el de sus variantes (cada una con lo que hereda del padre).",
+      ...(todasListas && nRelleno > 0 ? ["", `${listas} de ${total} ${total === 1 ? "variante lista" : "variantes listas"}.`] : []),
+      ...(pendientes.length ? ["", "Les falta:", ...recorta(pendientes)] : []),
+      ...(rellenas.length
+        ? [
+            "",
+            "Con 1 kg y 30×20×15 cm (el relleno de cuando faltaban):",
+            ...recorta(rellenas),
+            ...(delPadre
+              ? [`El padre (${p.sku}) tiene guardado ese mismo relleno y las variantes sin peso ni medidas propias lo toman de él: corregirlo en el padre las corrige a todas; si no, captura las de cada variante.`]
+              : []),
+            ayudaRelleno(!!p.publicado),
+          ]
+        : []),
+    ].join("\n");
+    // Todas listas pero alguna con el relleno: no es verde (Mercado Envíos cobraría
+    // con el relleno si no son sus medidas). Con variantes a medias manda el conteo.
+    if (todasListas && nRelleno > 0) {
+      return (
+        <span title={title} className={CHIP_AVISO}>
+          {ETIQUETA_RELLENO}
+        </span>
+      );
+    }
+    return (
+      <span title={title} className={todasListas ? CHIP_VERDE : CHIP_AMBAR}>
+        {listas} de {total} {total === 1 ? "variante lista" : "variantes listas"}
+      </span>
+    );
+  }
+  const faltantes = p.faltantes;
+  if (faltantes === null || faltantes === undefined) return null;
+  const relleno = conRelleno(p.avisos_publicar);
+  if (faltantes.length === 0 && relleno) {
+    // Datos completos pero con el relleno: aviso, no verde ni gris. Ya publicado,
+    // la ayuda dice que corregir aquí no cambia lo que está en Mercado Libre.
+    return (
+      <span title={ayudaRelleno(!!p.publicado)} className={CHIP_AVISO}>
+        {ETIQUETA_RELLENO}
+      </span>
+    );
+  }
+  if (faltantes.length === 0) {
+    return p.publicado ? (
+      <span
+        title="Ya está en al menos un canal y tiene categoría ML, precio, stock, fotos y medidas."
+        className={CHIP_GRIS}
+      >
+        Datos completos
+      </span>
+    ) : (
+      <span
+        title="Todavía no está en ningún canal y tiene categoría ML, precio, stock, fotos y medidas. Cada canal valida lo suyo al publicar."
+        className={CHIP_VERDE}
+      >
+        Listo para publicar
+      </span>
+    );
+  }
+  const conSugerida = !!p.categoria_kubera && p.categoria_path.length > 0;
+  return (
+    <span
+      title={[
+        ...faltantes.map((f) => ayudaFaltante(f, conSugerida)),
+        ...(relleno ? ["", `Además: ${ayudaRelleno(!!p.publicado)}`] : []),
+      ].join("\n")}
+      className={CHIP_AMBAR}
+    >
+      {faltantes.length > 2
+        ? `Faltan ${faltantes.length}: ${faltantes.map((f) => NOMBRE_FALTANTE[f] ?? f).join(" · ")}`
+        : `Falta: ${faltantes.map((f) => NOMBRE_FALTANTE[f] ?? f).join(" · ")}`}
+    </span>
+  );
+}
+
 function precioMXN(v: number | null): string {
   if (v === null || v === undefined) return "—";
   return new Intl.NumberFormat("es-MX", {
@@ -52,7 +269,7 @@ function precioMXN(v: number | null): string {
 
 export default function ProductosPage() {
   const [canales, setCanales] = useState<CanalInfo[]>([]);
-  const [productos, setProductos] = useState<Producto[]>([]);
+  const [productos, setProductos] = useState<ProductoPublicador[]>([]);
   const [pag, setPag] = useState<Paginacion>({
     page: 1, per_page: PER_PAGE, total: 0, total_pages: 1,
     tiene_anterior: false, tiene_siguiente: false,
@@ -76,6 +293,23 @@ export default function ProductosPage() {
   // no se pide la lista dos veces ni se pinta un instante el modo equivocado.
   const [modo, setModo] = useState<ModoLista | null>(null);
   useEffect(() => setModo(leerModoGuardado()), []);
+  // Mismo patrón que el modo: `null` hasta leer localStorage, para no pedir la
+  // lista dos veces (una por omisión y otra con lo guardado).
+  const [orden, setOrden] = useState<OrdenLista | null>(null);
+  // «Solo borradores» (2-nov-2026): la cola de trabajo que daba Crear Productos
+  // (draft + inprogress, `estados=borrador` en el backend) ahora que los
+  // borradores viven revueltos con lo publicado. `/crear` manda aquí con
+  // `?borradores=1`. Se lee en el MISMO efecto que el orden para que la primera
+  // petición ya lleve el filtro (las dos actualizaciones se agrupan).
+  const [soloBorradores, setSoloBorradores] = useState(false);
+  useEffect(() => {
+    try {
+      if (new URLSearchParams(window.location.search).get("borradores") === "1") {
+        setSoloBorradores(true);
+      }
+    } catch { /* sin filtro */ }
+    setOrden(leerOrdenGuardado());
+  }, []);
   const [cargando, setCargando] = useState(true);
   // Arranque en frío del backend: el índice de WooCommerce puede tardar varios
   // segundos en construirse. Mientras tanto, "0 resultados" no significa que
@@ -157,7 +391,8 @@ export default function ProductosPage() {
 
   const cargar = useCallback(() => {
     const ctrl = new AbortController();
-    if (modo === null) return () => ctrl.abort(); // aún no se sabe el modo
+    // Aún no se sabe el modo o el orden (se leen de localStorage al montar).
+    if (modo === null || orden === null) return () => ctrl.abort();
     setCargando(true);
     listarProductos(
       {
@@ -165,9 +400,12 @@ export default function ProductosPage() {
         search: busqueda || undefined, skus: skusFiltro || undefined,
         dropOff: dropOff || undefined,
         categoria,
-        // Solo lo ya resuelto: publish / pending / ready. Lo que falta trabajar
-        // (draft / inprogress) vive en Crear Productos.
+        estados: soloBorradores ? ["borrador"] : undefined,
+        // El Publicador: lo publicado, pendiente o listo Y los borradores
+        // (draft / inprogress) desde el 2-nov-2026 — lo que falta trabajar se
+        // trabaja aquí; qué le falta a cada uno lo dice el semáforo de la fila.
         vista: "productos",
+        orden,
         // SIEMPRE explícito: sin valor el backend decide por LISTADO_APLANADO y
         // la pantalla dejaría de mostrar lo que dice el control.
         aplanar: modo === "variante",
@@ -180,7 +418,7 @@ export default function ProductosPage() {
         // Sin búsqueda/filtro y 0 resultados → probablemente el índice de
         // WooCommerce todavía se está construyendo (arranque en frío). Reintenta
         // en vez de mostrar "no encontrados".
-        if (!busqueda && !skusFiltro && !categoria && r.paginacion.total === 0 && reintentos.current < 45) {
+        if (!busqueda && !skusFiltro && !categoria && !soloBorradores && r.paginacion.total === 0 && reintentos.current < 45) {
           reintentos.current += 1;
           setPreparando(true);
           setTimeout(() => cargar(), 1000);
@@ -205,7 +443,7 @@ export default function ProductosPage() {
       })
       .finally(() => setCargando(false));
     return () => ctrl.abort();
-  }, [page, busqueda, skusFiltro, dropOff, categoria, modo]);
+  }, [page, busqueda, skusFiltro, dropOff, categoria, modo, orden, soloBorradores]);
 
   useEffect(() => cargar(), [cargar]);
 
@@ -215,6 +453,13 @@ export default function ProductosPage() {
     setExpandidos(new Set());
     setPage(1);
     setModo(nuevo);
+  }
+
+  function cambiarOrden(nuevo: OrdenLista) {
+    if (nuevo === orden) return;
+    try { localStorage.setItem(LS_ORDEN, nuevo); } catch { /* sin recordar */ }
+    setPage(1);
+    setOrden(nuevo);
   }
 
   function irPagina(p: number) {
@@ -240,8 +485,8 @@ export default function ProductosPage() {
               </div>
               <h1 className="mt-1 text-3xl font-extrabold tracking-tight">Publicador</h1>
               <p className="mt-1 max-w-xl text-sm opacity-90">
-                Tu catálogo de WooCommerce. Haz clic en un producto para ver su ficha completa y
-                generar contenido optimizado por canal con IA.
+                Tu catálogo de WooCommerce, borradores incluidos. Haz clic en un producto para ver su
+                ficha completa, completar lo que le falte y generar contenido optimizado por canal con IA.
               </p>
             </div>
             <div className="text-right">
@@ -271,7 +516,7 @@ export default function ProductosPage() {
             <PowerOff size={15} className="shrink-0" />
             Desactivar por canal
           </button>
-          {/* Mismo control que Crear Productos. */}
+          {/* Por padre / Por variante. */}
           <div
             role="group"
             aria-label="Cómo listar los productos"
@@ -279,9 +524,9 @@ export default function ProductosPage() {
           >
             {([
               { valor: "padre", texto: "Por padre", Icono: Layers,
-                ayuda: "Una fila por familia. Una familia cuyo padre sigue en borrador no aparece aquí aunque ya tenga variantes procesadas" },
+                ayuda: "Una fila por familia, con sus variantes adentro. Incluye los borradores. El semáforo de una familia resume el de sus variantes («3 de 5 variantes listas»): se publica por variante" },
               { valor: "variante", texto: "Por variante", Icono: Split,
-                ayuda: "Una fila por variante: aparecen las variantes ya procesadas en Crear aunque su padre siga en borrador" },
+                ayuda: "Una fila por variante, cada una con su SKU, su precio y su stock. Incluye las de padres en borrador" },
             ] as const).map(({ valor, texto, Icono, ayuda }) => {
               const activo = modo === valor;
               return (
@@ -303,6 +548,22 @@ export default function ProductosPage() {
               );
             })}
           </div>
+          {/* ORDEN. Por omisión, lo que tiene stock primero: con los borradores
+              dentro, el orden por fecha enterraba lo ya trabajado. */}
+          <label className="relative">
+            <span className="sr-only">Ordenar la lista</span>
+            <ArrowDownUp size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <select
+              value={orden ?? ORDEN_POR_OMISION}
+              onChange={(e) => cambiarOrden(e.target.value as OrdenLista)}
+              title="Orden de la lista. A igual valor, va primero lo más reciente"
+              className="appearance-none rounded-lg border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm font-medium text-slate-600 outline-none focus:ring-2 focus:ring-indigo-300"
+            >
+              {ORDENES.map((o) => (
+                <option key={o.valor} value={o.valor}>{o.texto}</option>
+              ))}
+            </select>
+          </label>
           <div className="relative">
             <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
@@ -350,6 +611,24 @@ export default function ProductosPage() {
           >
             <Warehouse size={15} className="shrink-0" />
             Solo DROP OFF
+          </button>
+          {/* SOLO BORRADORES — la cola de trabajo que antes vivía en Crear
+              Productos. Se acumula con todo lo demás; el semáforo de cada fila
+              dice qué le falta. */}
+          <button
+            onClick={() => { setSoloBorradores(!soloBorradores); setPage(1); }}
+            title={soloBorradores
+              ? "Mostrando SOLO los borradores (draft / en proceso en WooCommerce): lo que antes se trabajaba en Crear Productos."
+              : "Filtrar a los borradores (draft / en proceso): lo que antes se trabajaba en Crear Productos."}
+            className={[
+              "inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium",
+              soloBorradores
+                ? "border-amber-300 bg-amber-50 text-amber-700"
+                : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
+            ].join(" ")}
+          >
+            <FilePen size={15} className="shrink-0" />
+            Solo borradores
           </button>
           <button
             onClick={cargar}
@@ -441,6 +720,17 @@ export default function ProductosPage() {
                         <span className="shrink-0 rounded bg-slate-100 px-1.5 font-mono text-[10px] text-slate-400">
                           {p.sku}
                         </span>
+                        {/* BORRADOR: el estado de WooCommerce, que la fila no
+                            pintaba. Desde que Crear se apagó es lo que distingue
+                            lo que falta trabajar de lo ya resuelto. */}
+                        {esBorrador(p.estado) && (
+                          <span
+                            title={`Borrador en WooCommerce (${p.estado}): todavía no se trabajó. Antes vivía en Crear Productos.`}
+                            className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-800"
+                          >
+                            Borrador
+                          </span>
+                        )}
                         {/* DROP OFF: mismo distintivo, mismo violeta y mismo
                             significado que en Omnicanal y en Inventario. Se
                             pinta con el filtro puesto o sin el. */}
@@ -456,14 +746,33 @@ export default function ProductosPage() {
                       {p.descripcion_corta && (
                         <p className="mt-0.5 line-clamp-1 text-xs text-slate-500">{p.descripcion_corta}</p>
                       )}
-                      {p.categoria_path.length > 0 && (
-                        <div className="mt-1 flex items-center gap-1 text-[11px] text-slate-400">
-                          {p.categoria_path.map((c, i) => (
-                            <span key={i} className="flex items-center gap-1">
-                              {i > 0 && <ChevronRight size={10} />}
-                              {c.nombre}
-                            </span>
-                          ))}
+                      {/* Semáforo + categoría en un renglón: el chip primero,
+                          porque la ruta se trunca y el chip no debe perderse
+                          (el chip también se recorta, con el detalle en su title).
+                          Con «Falta: categoría ML» la ruta de kubera NO está
+                          guardada en el producto: se pinta como SUGERIDA, no
+                          como si ya la tuviera. */}
+                      {(p.categoria_path.length > 0 || Array.isArray(p.faltantes) || !!p.variantes_listas) && (
+                        <div className="mt-1 flex min-w-0 items-center gap-2 overflow-hidden">
+                          <ChipCompletitud p={p} />
+                          {p.categoria_path.length > 0 && (
+                            <div className="flex min-w-0 items-center gap-1 overflow-hidden text-[11px] text-slate-400">
+                              {p.categoria_kubera && p.faltantes?.includes("categoria_ml") && (
+                                <span
+                                  title="La categoría de Mercado Libre que kubera tiene curada para este SKU. No está guardada en el producto: confírmala con «Usar esta» en la vista previa de Mercado Libre o elígela en el Estudio."
+                                  className="shrink-0 whitespace-nowrap font-semibold italic text-slate-500"
+                                >
+                                  Sugerida por kubera:
+                                </span>
+                              )}
+                              {p.categoria_path.map((c, i) => (
+                                <span key={i} className="flex shrink-0 items-center gap-1 whitespace-nowrap">
+                                  {i > 0 && <ChevronRight size={10} />}
+                                  {c.nombre}
+                                </span>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>

@@ -3,6 +3,11 @@ El estado con que se HIDRATA una variante tiene que ser el mismo con que la
 cuenta el índice (`wp_db._estado_efectivo`). Si no, el Publicador dice «87» y
 pinta cero: el filtro de la vista tira las filas que el índice sí contó.
 
+Desde el 2-nov-2026 el Publicador (vista «productos») también lista draft e
+inprogress (Eduardo: el estado draft se salta), así que ahí la marca ya no
+decide: una variante de un padre en borrador entra con marca o sin ella. Sigue
+decidiendo en Crear, que solo ve lo NO procesado.
+
     cd backend && python -m unittest tests.test_estado_variante -v
 """
 import unittest
@@ -30,6 +35,14 @@ class EstadoVariante(unittest.TestCase):
         e = wp_db._estado_variante("draft", "x")
         self.assertIn(e, wp_db._VISTAS_SQL["productos"])
         self.assertNotIn(e, wp_db._VISTAS_SQL["crear"])
+
+    def test_sin_marca_tambien_entra_al_publicador_y_sigue_en_crear(self):
+        # La regla vieja era «sin marca = solo Crear». Desde el 2-nov-2026 el
+        # borrador es del Publicador; Crear lo sigue viendo mientras exista.
+        for padre in ("draft", "inprogress"):
+            e = wp_db._estado_variante(padre, None)
+            self.assertIn(e, wp_db._VISTAS_SQL["productos"])
+            self.assertIn(e, wp_db._VISTAS_SQL["crear"])
 
 
 if __name__ == "__main__":

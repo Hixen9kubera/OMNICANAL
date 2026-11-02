@@ -651,6 +651,10 @@ export interface CostoOverrides {
   precio_sugerido?: number | null;  // "Precio oferta"
   // Costo TOTAL a mano (campo "Costo" del Estudio): manda sobre producto+flete.
   costo_unitario?: number | null;
+  // Peso y medidas que el Estudio enseña DEL PADRE ("peso", "largo", "ancho",
+  // "alto"): se calcula con su valor, pero no se guardan en la variante (ni en
+  // costos ni en WooCommerce). `RecalcularCostos.medidas_heredadas`.
+  medidas_heredadas?: string[];
 }
 
 // ── Mejorar con IA (un botón por canal) ──────────────────────────────
@@ -872,6 +876,10 @@ export interface PublicarPreview {
   modo?: string;
   payload?: Record<string, unknown> | null;
   avisos?: string[];
+  // ML con ALTA: el peso y las medidas son el relleno de 1 kg y 30×20×15 cm
+  // (`publicar_ready.MSG_MEDIDAS_RELLENO_ML`). Aviso, no freno; va aparte de
+  // `avisos` para pintarlo arriba del modal, donde se lee antes de confirmar.
+  aviso_medidas?: string | null;
   // ML con ALTA (crear, o re-crear donde la borraron): la categoría a revisar.
   categoria?: RevisionCategoriaML | null;
 }

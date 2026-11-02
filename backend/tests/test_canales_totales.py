@@ -4,10 +4,15 @@
 El 23-sep-2026 el panel decía 3,035 en la pestaña General y 7,288 en el
 encabezado de Omnicanal, y nadie sabía por qué. Son dos listados distintos:
 
-- `total_productos` = vista «productos» (publish/pending/ready/private), SIN
-  borradores → 3,035.
+- `total_productos` = vista «productos», la del Publicador → 3,035 aquel día,
+  cuando era SIN borradores (publish/pending/ready/private).
 - `total_catalogo`  = vista «omnicanal», TODOS los estados → 7,288. La resta
-  (4,250) son los borradores que el frontend hace visibles.
+  (4,250) eran los borradores que el frontend hacía visibles.
+
+Desde el 2-nov-2026 la vista «productos» suma draft e inprogress (el estado
+draft se salta), así que hoy las dos cifras casi coinciden. Estas pruebas no
+dependen de eso —`listar_productos` va simulado—: fijan de qué VISTA sale cada
+total, que es lo que no cambia. Las cifras de abajo son las del 23-sep.
 
 Estas pruebas fijan de qué vista sale cada uno, que se piden en paralelo, que
 la caída de uno no tumba al otro (queda en None, nunca 0) y que ningún otro
@@ -40,8 +45,9 @@ from services import amazon, meli, temu_panel, tiktok_panel, walmart_panel  # no
 from services import woocommerce  # noqa: E402
 from test_regla_11_productos import sincronas_en_corrutinas  # noqa: E402
 
-# Las cifras medidas en producción el 23-sep-2026.
-SIN_BORRADORES = 3035
+# Las cifras medidas en producción el 23-sep-2026 (la pestaña aún sin
+# borradores; ver el docstring).
+PESTANA = 3035
 CATALOGO = 7288
 
 
@@ -58,7 +64,7 @@ class _Base(unittest.TestCase):
             vista = kw.get("vista", "productos")
             if vista in self.falla:
                 raise RuntimeError(f"WordPress caído ({vista})")
-            total = CATALOGO if vista == "omnicanal" else SIN_BORRADORES
+            total = CATALOGO if vista == "omnicanal" else PESTANA
             return [], total, total
 
         parches = [
@@ -88,7 +94,7 @@ class _Base(unittest.TestCase):
 class DosTotalesDeGeneral(_Base):
     def test_total_productos_sale_de_la_vista_por_defecto(self):
         general = self._canales()[Canal.GENERAL.value]
-        self.assertEqual(general["total_productos"], SIN_BORRADORES)
+        self.assertEqual(general["total_productos"], PESTANA)
         llamada = self._llamada("productos")
         # La llamada de siempre: sin vista explícita (la de la pestaña General).
         self.assertNotIn("vista", llamada)
@@ -114,7 +120,7 @@ class DosTotalesDeGeneral(_Base):
             vista = kw.get("vista", "productos")
             entraron.add(vista)
             await asyncio.wait_for(_ambas(entraron), timeout=2)
-            total = CATALOGO if vista == "omnicanal" else SIN_BORRADORES
+            total = CATALOGO if vista == "omnicanal" else PESTANA
             return [], total, total
 
         async def _ambas(conjunto: set[str]):
@@ -123,14 +129,14 @@ class DosTotalesDeGeneral(_Base):
 
         with mock.patch.object(woocommerce, "listar_productos", side_effect=_listar):
             general = self._canales()[Canal.GENERAL.value]
-        self.assertEqual(general["total_productos"], SIN_BORRADORES)
+        self.assertEqual(general["total_productos"], PESTANA)
         self.assertEqual(general["total_catalogo"], CATALOGO)
 
     def test_si_falla_el_catalogo_sigue_el_total_de_la_pestana(self):
         self.falla = {"omnicanal"}
         general = self._canales()[Canal.GENERAL.value]
         self.assertIsNone(general["total_catalogo"])   # «—», nunca 0
-        self.assertEqual(general["total_productos"], SIN_BORRADORES)
+        self.assertEqual(general["total_productos"], PESTANA)
 
     def test_si_falla_el_total_de_la_pestana_sigue_el_catalogo(self):
         self.falla = {"productos"}

@@ -1752,7 +1752,14 @@ class Settings(BaseSettings):
     # nadie lo apretaba, esos SKUs existían en Odoo y no en Woo: el ETL nocturno
     # los daba de alta como `odoo_only` y el acta salía `con_deltas` — el 13-ago
     # las TRES altas del hueco fueron eso (ACC-0816-AMA/AZL/ROS).
-    sync_odoo_skus_enabled: bool = True
+    # APAGADO POR OMISIÓN desde el 2-nov-2026 (era True). Odoo salió el 15-oct:
+    # `sincronizar_drafts` le pide el catálogo a una API cortada y el alta
+    # automática ya sólo falla («Odoo no devolvió catálogo»). Además los drafts
+    # dejaron de tener pestaña propia: la de «Crear Productos» se apagó y su botón
+    # «Sincronizar Odoo» contesta 410. Sin la variable no hay job `alta_skus_odoo`
+    # (scheduler.py). Es un flujo vivo: apagarlo en producción lleva el dale de
+    # Brandon antes del push (regla 3 de CLAUDE.md).
+    sync_odoo_skus_enabled: bool = False
     sync_odoo_skus_min: int = 360          # cada 6 h: llega antes del ETL de las 00:15
     sync_odoo_skus_limite: int = 100       # mismo lote que el botón
     # SOLO IDENTIDAD: el alta NO siembra inventario (ver _borrador_wc). En true

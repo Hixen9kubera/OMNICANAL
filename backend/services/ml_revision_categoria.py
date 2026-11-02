@@ -24,6 +24,9 @@ QUÉ HACE
     alta ese `prod` — la regla de `publisher_core.build_payload` (meta, salvo que el
     mapeo de la categoría de Woo la pise), sin tocar `vendor/`.
   · `motivo_sin_confirmar(confirmada, real)`: motivo para NO crear, o None.
+  · `candidata_curada(curada)`: la categoría CURADA de kubera (`channel.product_category`)
+    con su ruta, para ofrecerla en la tarjeta junto a las del predictor. Solo se OFRECE:
+    la que va a salir sigue siendo la del panel (regla 2) hasta que la persona la elija.
 
 EL CANDADO. El modal de Publicar manda `categoria_confirmada` —la categoría que la
 persona vio y marcó como revisada— y `publicar_ready.crear_ml` no da de alta si no es
@@ -59,6 +62,14 @@ ORIGENES = {
     "crear": "Propuesta automática al crear el producto",
     "woo": "Por la categoría de WooCommerce",
     "ninguna": "Sin categoría asignada",
+}
+
+# `channel.product_category.source` en palabras (los cuatro que escriben el ETL y el panel).
+FUENTES_CURADA = {
+    "panel": "Elegida a mano en el panel",
+    "real": "La de su publicación en Mercado Libre",
+    "costos_ml": "La que usó Costos",
+    "predictor": "Propuesta del predictor",
 }
 
 MSG_SIN_CATEGORIA = (
@@ -163,6 +174,37 @@ async def revisar(categoria_id: str | None, titulo: str | None) -> dict[str, Any
         # Se sabe el ID pero no su ruta: no se puede comparar, solo verla a ojo.
         return {"actual": actual, "sugeridas": sugeridas, "veredicto": "sin_sugerencia"}
     return {"actual": actual, "sugeridas": sugeridas, "veredicto": veredicto(actual, sugeridas)}
+
+
+async def candidata_curada(curada: dict[str, Any] | None) -> dict[str, Any] | None:
+    """
+    La categoría CURADA de kubera como candidata de la tarjeta, con su ruta. Nunca lanza.
+
+    POR QUÉ (2-nov-2026, el Publicador sin el paso por Crear). La curada de
+    `channel.product_category` solo llegaba a la meta de Woo a través de Crear
+    (`crear_producto.categoria_ml`); un draft que entra directo al Publicador sale con
+    la del predictor, con la del mapeo de Woo o sin ninguna. Aquí se OFRECE junto a las
+    del predictor; no se aplica sola: «Usar esta» la guarda como elección del panel
+    (meta `ml_categoria_id`), que es la que manda (regla 2).
+
+    `curada` es lo que devuelve `channel_read.categoria_curada` ({category_id,
+    category_name, fuente}). None si no hay. Si ML no contesta por ella, sale con el
+    nombre de kubera y `ilegible`: se ve a ojo, igual que la actual.
+    """
+    cid = str((curada or {}).get("category_id") or "").strip()
+    if not cid:
+        return None
+    det = None
+    try:
+        async with httpx.AsyncClient(base_url=API, timeout=12.0) as cli:
+            det = await _categoria(cli, cid)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("categoría curada %s: %s", cid, exc)
+    if det is None:
+        det = {"category_id": cid, "name": str(curada.get("category_name") or "").strip() or cid,
+               "ruta": "", "niveles": [], "publicable": True, "ilegible": True}
+    fuente = str(curada.get("fuente") or "").strip()
+    return {**det, "fuente": fuente, "fuente_texto": FUENTES_CURADA.get(fuente, "Curada en kubera")}
 
 
 def categoria_de_alta(prod: dict[str, Any]) -> str:

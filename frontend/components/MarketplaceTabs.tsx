@@ -18,14 +18,15 @@ function formatoTotal(n: number | null): string {
   return new Intl.NumberFormat("es-MX").format(n);
 }
 
-/** La pestaña General cuenta con la vista «productos» de Woo (publicados,
- *  pendientes y listos) y el encabezado y «Todo el catálogo» con la vista
- *  «omnicanal», que suma los borradores. Son dos cifras verdaderas de dos
- *  preguntas distintas: se dice cuál es cuál en la propia pastilla para que la
- *  diferencia no se lea como un error (Eduardo, 23-sep). */
+/** La pestaña General cuenta con la vista «productos» de Woo —la del
+ *  Publicador— y el encabezado y «Todo el catálogo» con la vista «omnicanal».
+ *  Hasta el 2-nov-2026 la primera no contaba los borradores y la pastilla lo
+ *  decía («· sin borradores», Eduardo, 23-sep); desde que el estado draft se
+ *  salta y Crear Productos se apaga, los cuenta, y las dos cifras casi
+ *  coinciden. La ayuda dice qué entra para que nadie busque la diferencia. */
 const GENERAL = "general";
 const AYUDA_GENERAL =
-  "Publicados, pendientes y listos. Los borradores de Crear Productos no cuentan aquí.";
+  "Todo lo que lista el Publicador: publicados, pendientes, listos y borradores.";
 
 export default function MarketplaceTabs({ canales, activo, onSelect, motivoDeshabilitado }: Props) {
   return (
@@ -89,9 +90,6 @@ export default function MarketplaceTabs({ canales, activo, onSelect, motivoDesha
                 }}
               >
                 {formatoTotal(c.total_productos)}
-                {c.id === GENERAL && (
-                  <span className="font-semibold opacity-80"> · sin borradores</span>
-                )}
               </span>
             ) : null}
           </button>

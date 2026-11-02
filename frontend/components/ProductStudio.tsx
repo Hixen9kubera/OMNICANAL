@@ -168,6 +168,59 @@ const CAMPOS_VACIOS: Campos = {
 
 const str = (v: number | null | undefined) => (v === null || v === undefined ? "" : String(v));
 
+// PESO Y MEDIDAS HEREDADOS DEL PADRE (2-nov-2026). Una variante sin peso ni
+// medidas propias toma las de la familia como PAQUETE (`wp_db.medidas_del_padre`)
+// y `metadata_producto` avisa cuáles en `heredado`, con la clave de WooCommerce.
+// El Estudio las enseña y calcula el precio con ellas (es el paquete con el que
+// se va a publicar), pero NO las guarda como propias de la variante: viajan en
+// `medidas_heredadas` (ver `estadoMedidas` y `overridesCosto`).
+const CLAVE_MEDIDA = { peso: "_weight", largo: "_length", ancho: "_width", alto: "_height" } as const;
+type CampoMedida = keyof typeof CLAVE_MEDIDA;
+const CAMPOS_MEDIDA = Object.keys(CLAVE_MEDIDA) as CampoMedida[];
+const CAJA = ["largo", "ancho", "alto"] as const;
+const esCampoMedida = (k: keyof Campos): k is CampoMedida => k in CLAVE_MEDIDA;
+
+// Qué pasa al guardar con un peso o una medida que se enseña DEL PADRE:
+//   padre  → nadie cambió nada del paquete: se calcula con él y no se guarda.
+//   propio → se cambió otro dato del paquete: se guarda como suyo de la variante.
+//   suelto → sólo el peso venía del padre, porque la caja de la variante es la
+//            misma; la caja cambió y ese peso ya no le corresponde: se calcula con
+//            él, pero no se guarda (falta el peso real).
+type EstadoHeredado = "padre" | "propio" | "suelto";
+const noSeGuarda = (e: EstadoHeredado | undefined) => e === "padre" || e === "suelto";
+
+// Precio regular, precio oferta y costo también se heredan del padre cuando la
+// variante no los tiene (`metadata_producto`): misma idea, sin paquete.
+const CLAVE_PRECIO = { precioRegular: "_regular_price", precioOferta: "_sale_price", costo: "costo" } as const;
+const DINERO_PRECIO = { precioRegular: "precio_regular", precioOferta: "precio_oferta", costo: "costo" } as const;
+type CampoPrecio = keyof typeof CLAVE_PRECIO;
+const esCampoPrecio = (k: keyof Campos): k is CampoPrecio => k in CLAVE_PRECIO;
+
+// Peso y medidas de la metadata, salvo los que la persona ya escribió (`escritas`):
+// esos se quedan como están en `prev`.
+function medidasDe(d: Partial<Record<CampoMedida, number | null>>, prev: Campos,
+                   escritas: ReadonlySet<CampoMedida>): Pick<Campos, CampoMedida> {
+  const de = (c: CampoMedida) => (escritas.has(c) ? prev[c] : str(d[c]));
+  return { peso: de("peso"), largo: de("largo"), ancho: de("ancho"), alto: de("alto") };
+}
+
+const TITULO_DEL_PADRE: Record<EstadoHeredado | "precio", string> = {
+  padre:
+    "Esta variante no tiene este dato propio: se toma el de la familia porque es el mismo paquete. " +
+    "El precio se calcula con él, pero al guardar no se copia a la variante: lo sigue heredando. " +
+    "Si cambias otro dato del paquete, la marca cambia y dice qué pasará con éste al guardar.",
+  propio:
+    "Es el dato de la familia, pero cambiaste otro del paquete: al guardar, éste se guarda " +
+    "como propio de la variante (en costos y en WooCommerce).",
+  suelto:
+    "El peso venía de la familia porque la caja de la variante era la misma. Cambiaste la caja, " +
+    "así que ese peso ya no le corresponde: el precio se calcula con él, pero no se guarda. " +
+    "Escribe el peso real de esta variante.",
+  precio:
+    "Esta variante no tiene este dato propio: se enseña el de la familia. Al guardar no se copia " +
+    "a la variante; si lo escribes, se guarda el tuyo.",
+};
+
 // Lo que Amazon cuenta en los términos de búsqueda: BYTES UTF-8, no caracteres.
 // `"cañón".length` son 5 y sus bytes son 7. Contar caracteres deja pasar textos
 // que Amazon ignora completos, sin avisar. Es el mismo cálculo que hace
@@ -605,6 +658,17 @@ export default function ProductStudio({
   const [guardandoPrecios, setGuardandoPrecios] = useState(false);
   const [precioMsg, setPrecioMsg] = useState<{ ok: boolean; texto: string } | null>(null);
 
+  // Peso y medidas que la persona escribió (o llenó con «Usar estas medidas»):
+  // protege lo tecleado de la metadata que llega tarde, igual que
+  // `preciosTocados`. Qué cuenta como cambiado lo decide `estadoMedidas`
+  // comparando contra lo prellenado: teclear y volver al mismo número no cambia.
+  const medidasEscritas = useRef<Set<CampoMedida>>(new Set());
+  // Precio regular, oferta o costo escritos a mano, campo por campo: el que se
+  // escribió se guarda aunque coincida con el del padre (ver `precioDelPadre`).
+  const [preciosEscritos, setPreciosEscritos] = useState<ReadonlySet<CampoPrecio>>(new Set());
+  // El SKU abierto ahora mismo: la relectura tras guardar no pinta otro producto.
+  const skuVivo = useRef(sku);
+
   const cargandoCampos = useRef(false);
 
   // ── Tema del canal seleccionado ────────────────────────────────────
@@ -647,6 +711,8 @@ export default function ProductStudio({
     setCostoCalc(null);
     setCostoFresco(false);
     setCostoMsg(null);
+    medidasEscritas.current = new Set();
+    skuVivo.current = sku;
   }, [sku]);
 
   // ── Semilla del bloque COSTOS: costo_producto + desglose actual ─────
@@ -706,14 +772,14 @@ export default function ProductStudio({
         setGtinGuardado(m.gtin ?? null);
         const d = m.dinero || ({} as StudioMetadata["dinero"]);
         // Este fetch llega DESPUÉS de abrir el modal: si el usuario ya escribió
-        // un precio, respetarlo — antes lo pisaba en silencio.
+        // un precio, un peso o una medida, respetarlo — antes lo pisaba en silencio.
         setCampos((prev) => ({
           precioRegular: preciosTocados.current ? prev.precioRegular : str(d.precio_regular),
           precioOferta: preciosTocados.current ? prev.precioOferta : str(d.precio_oferta),
           costo: preciosTocados.current ? prev.costo : str(d.costo),
           alibabaUrl: m.alibaba_url ?? "",
           alibabaPrecio: str(m.alibaba_precio),
-          peso: str(d.peso), largo: str(d.largo), ancho: str(d.ancho), alto: str(d.alto),
+          ...medidasDe(d, prev, medidasEscritas.current),
         }));
         // Pre-llenar "Costo producto (USD)" con el precio de Alibaba SOLO si aún
         // no hay costo (validado/final): sugerencia editable para no re-teclearlo.
@@ -729,6 +795,7 @@ export default function ProductStudio({
   useEffect(() => {
     preciosTocados.current = false;
     setPreciosEditados(false);
+    setPreciosEscritos(new Set());
     setPrecioMsg(null);
   }, [sku]);
 
@@ -975,12 +1042,52 @@ export default function ProductStudio({
   }, [gtin, gtinGuardado, wcIdEscritura, soloVistaAgrupada]);
 
   const setCampo = (k: keyof Campos, v: string) => {
-    if (k === "precioRegular" || k === "precioOferta" || k === "costo") {
+    if (esCampoPrecio(k)) {
       preciosTocados.current = true;   // protege lo tecleado del fetch de metadata
       setPreciosEditados(true);        // y saca el botón de guardar
+      setPreciosEscritos((s) => (s.has(k) ? s : new Set(s).add(k)));
     }
+    // Incluye «Usar estas medidas» de Sugerir precio, que llena los cuatro por aquí.
+    if (esCampoMedida(k)) medidasEscritas.current.add(k);
     setCampos((c) => ({ ...c, [k]: v }));
   };
+
+  // Los pesos y medidas que hoy enseñan el dato del PADRE (los que
+  // `metadata_producto` reportó en `heredado` y siguen con ese valor), y qué
+  // pasa con cada uno al guardar (`EstadoHeredado`). Es por campo: tocar uno no
+  // le quita la marca a los demás. Pinta la marca y decide `medidas_heredadas`.
+  // Se compara contra lo prellenado (`meta.dinero`), así que volver al mismo
+  // número no cuenta como cambio.
+  const estadoMedidas = useMemo(() => {
+    const res = new Map<CampoMedida, EstadoHeredado>();
+    const d = meta?.dinero;
+    const h = new Set(meta?.heredado ?? []);
+    const heredadas = CAMPOS_MEDIDA.filter((c) => h.has(CLAVE_MEDIDA[c]));
+    if (!d || !heredadas.length) return res;
+    const cambiada = (c: CampoMedida) => aNumero(campos[c]) !== (d[c] ?? null);
+    const hayCambios = CAMPOS_MEDIDA.some(cambiada);
+    // Sólo el peso viene del padre, y es porque la caja propia es la misma que
+    // la suya (`wp_db.medidas_del_padre`): si la caja cambia, ya no le toca.
+    const pesoPorLaCaja = heredadas.length === 1 && heredadas[0] === "peso"
+      && CAJA.every((c) => (d[c] ?? 0) > 0);
+    for (const c of heredadas) {
+      if (cambiada(c)) continue;  // lo escribió la persona: es suyo, sin marca
+      res.set(c, !hayCambios ? "padre" : pesoPorLaCaja ? "suelto" : "propio");
+    }
+    return res;
+  }, [meta?.dinero, meta?.heredado, campos.peso, campos.largo, campos.ancho, campos.alto]);
+
+  // Precio regular, oferta o costo que se enseña DEL PADRE: heredado, nadie lo
+  // escribió y sigue con el valor de la familia (Regenerar lo cambia por el
+  // calculado, que ya no es del padre). Al guardar viaja en null: el backend
+  // deriva el precio del costo, y el costo sale del bloque COSTOS. Antes se
+  // mandaba tal cual y el costo de la familia quedaba como costo propio de la
+  // variante (y desde ahí el recosteo del padre ya no le copiaba el precio).
+  const precioDelPadre = (c: CampoPrecio) =>
+    (meta?.heredado ?? []).includes(CLAVE_PRECIO[c]) && !preciosEscritos.has(c)
+    && aNumero(campos[c]) === (meta?.dinero?.[DINERO_PRECIO[c]] ?? null);
+  const precioParaGuardar = (c: CampoPrecio) => (precioDelPadre(c) ? null : aNumero(campos[c]));
+
   const setAtributo = (i: number, valor: string) =>
     setAtributos((a) => a.map((x, j) => (j === i ? { ...x, valor } : x)));
   const setBullet = (i: number, v: string) =>
@@ -1168,12 +1275,23 @@ export default function ProductStudio({
     return usd != null && tc > 0 ? Math.round(usd * tc * 100) / 100 : usd;
   };
 
+  // Peso y medidas: se calcula con LO QUE SE VE (también lo del padre, que es el
+  // paquete con el que se va a publicar: `reqPublicar` y `construir_prod` usan
+  // lo mismo), y lo del padre que no se debe guardar viaja aparte, en
+  // `medidas_heredadas`: el backend calcula con él pero no lo escribe en
+  // costos_validados ni en WooCommerce. Mandarlo en null dejaba el precio con lo
+  // que la variante tiene en costos (casi siempre nada: 0.5 kg, caja de 10 cm y
+  // Flete CBM en $0); mandarlo sin la lista lo congelaba como propio de la
+  // variante, y de ahí a las guías de Temu, que a propósito no heredan.
+  // Va aquí y no sólo en los dos guardados porque Regenerar usa lo mismo: la
+  // vista previa tiene que dar el precio que después se guarda.
   const overridesCosto = (): CostoOverrides => ({
     costo_producto: costoProductoMXN(),
     largo: numOrNull(campos.largo),
     ancho: numOrNull(campos.ancho),
     alto: numOrNull(campos.alto),
     peso: numOrNull(campos.peso),
+    medidas_heredadas: CAMPOS_MEDIDA.filter((c) => noSeGuarda(estadoMedidas.get(c))),
     margen: (aNumero(margen) ?? 0) / 100,
     incluir_envio: incluirEnvio,
     auto_cbm: true,
@@ -1198,6 +1316,7 @@ export default function ProductStudio({
     if (c.precio_base != null || c.precio_sugerido != null) {
       preciosTocados.current = false;
       setPreciosEditados(false);
+      setPreciosEscritos(new Set());
     }
     setCampos((p) => ({
       ...p,
@@ -1229,6 +1348,26 @@ export default function ProductStudio({
   // lee el precio de costos_finales, así que escribir solo en Woo dejaría el
   // Estudio mostrando el viejo. El backend recalcula el desglose con este
   // precio, y "Regenerar" abajo lo vuelve a derivar del costo si hace falta.
+  // Tras un guardado que llegó a WooCommerce: vuelve a leer qué tiene ahora la
+  // variante (peso, medidas, precios y qué sigue viniendo del padre). Sin esto la
+  // pantalla seguía con las marcas de antes de guardar y «Publicar» mandaba un
+  // paquete que ya no era el de Woo. Sólo toca `meta.dinero`, `meta.heredado` y
+  // los cuatro campos del paquete: los precios ya los puso el guardado.
+  async function releerTrasGuardar() {
+    const s = sku;
+    if (!s) return;
+    medidasEscritas.current = new Set();
+    try {
+      const m = await studioMetadata(s, wcIdActivo);
+      if (skuVivo.current !== s) return;
+      setMeta((prev) => (prev ? { ...prev, dinero: m.dinero, heredado: m.heredado } : prev));
+      const d = m.dinero || ({} as StudioMetadata["dinero"]);
+      setCampos((prev) => ({ ...prev, ...medidasDe(d, prev, medidasEscritas.current) }));
+    } catch {
+      /* se queda lo de la pantalla */
+    }
+  }
+
   async function guardarPrecios() {
     if (!sku || soloVistaAgrupada) return;
     setGuardandoPrecios(true);
@@ -1236,10 +1375,11 @@ export default function ProductStudio({
     try {
       const r = await costoGuardar(sku, {
         ...overridesCosto(),
-        // El costo escrito aquí es el TOTAL y manda sobre producto+flete.
-        costo_unitario: numOrNull(campos.costo),
-        precio_base: numOrNull(campos.precioRegular),
-        precio_sugerido: numOrNull(campos.precioOferta),
+        // El costo escrito aquí es el TOTAL y manda sobre producto+flete. Lo que
+        // se enseña del padre y nadie escribió va en null (`precioDelPadre`).
+        costo_unitario: precioParaGuardar("costo"),
+        precio_base: precioParaGuardar("precioRegular"),
+        precio_sugerido: precioParaGuardar("precioOferta"),
         sincronizar_woo: true,
       });
       const f = (r.finales ?? {}) as Record<string, unknown>;
@@ -1268,6 +1408,8 @@ export default function ProductStudio({
             : "Guardado (no se pudo sincronizar con WooCommerce).",
         });
       }
+      // Si Woo no se actualizó, releerlo pisaría lo tecleado con lo de antes.
+      if (r.sincronizado_woo) void releerTrasGuardar();
       onGuardado?.();
     } catch (e) {
       setPrecioMsg({
@@ -1290,8 +1432,8 @@ export default function ProductStudio({
       const r = await costoGuardar(sku, {
         ...overridesCosto(),
         ...(preciosTocados.current ? {
-          precio_base: numOrNull(campos.precioRegular),
-          precio_sugerido: numOrNull(campos.precioOferta),
+          precio_base: precioParaGuardar("precioRegular"),
+          precio_sugerido: precioParaGuardar("precioOferta"),
         } : {}),
         sincronizar_woo: true,
       });
@@ -1320,6 +1462,8 @@ export default function ProductStudio({
             ? `Costo guardado en la base, pero WooCommerce NO se actualizó: ${r.sync_error}`
             : "Guardado en la base de datos.",
       });
+      // Si Woo no se actualizó, releerlo pisaría lo tecleado con lo de antes.
+      if (r.sincronizado_woo) void releerTrasGuardar();
       onGuardado?.();
     } catch (e) {
       setCostoMsg({ ok: false, texto: mensajeDeError(e, "No se pudo guardar el costo.") });
@@ -2902,15 +3046,18 @@ export default function ProductStudio({
                 <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
                   <Campo label="Precio regular" prefijo="$" moneda="MXN" value={campos.precioRegular}
                     onChange={(v) => setCampo("precioRegular", v)} acento={tema.acento}
-                    nota={esGeneral ? undefined : `Se publica en ${canalInfo?.label ?? canal}`} />
+                    nota={esGeneral ? undefined : `Se publica en ${canalInfo?.label ?? canal}`}
+                    insignia={precioDelPadre("precioRegular") ? <MarcaDelPadre estado="precio" /> : undefined} />
                   <Campo label="Precio oferta" prefijo="$" moneda="MXN" value={campos.precioOferta}
-                    onChange={(v) => setCampo("precioOferta", v)} acento={tema.acento} />
+                    onChange={(v) => setCampo("precioOferta", v)} acento={tema.acento}
+                    insignia={precioDelPadre("precioOferta") ? <MarcaDelPadre estado="precio" /> : undefined} />
                   {/* OJO: este "Costo" NO es el "Costo producto" de abajo. Aquí
                       va el total en pesos, ya con flete; abajo, la compra en
                       dólares. La nota lo dice porque el nombre no alcanza. */}
                   <Campo label="Costo" prefijo="$" moneda="MXN" value={campos.costo}
                     onChange={(v) => setCampo("costo", v)} acento={tema.acento}
-                    nota="Total por pieza, ya con flete" />
+                    nota="Total por pieza, ya con flete"
+                    insignia={precioDelPadre("costo") ? <MarcaDelPadre estado="precio" /> : undefined} />
                   <div>
                     <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">
                       Stock <span className="normal-case text-slate-300">(solo lectura)</span>
@@ -2921,6 +3068,13 @@ export default function ProductStudio({
                     </div>
                   </div>
                 </div>
+                {/* El title no se ve en el teléfono: la regla se dice también aquí. */}
+                {(["precioRegular", "precioOferta", "costo"] as const).some(precioDelPadre) && (
+                  <p className="text-[11px] text-violet-700">
+                    Lo marcado <strong>del padre</strong> es de la familia: al guardar no se copia a esta variante, se
+                    calcula con lo suyo. Si es el mismo, escríbelo.
+                  </p>
+                )}
 
                 {/* El bloque sigue montado mientras haya mensaje: si dependiera
                     solo de `preciosEditados`, al guardar bien se desmontaría y
@@ -3000,7 +3154,11 @@ export default function ProductStudio({
                       </span>
                     </div>
                   </div>
-                  <Campo label="Peso (kg)" value={campos.peso} onChange={(v) => setCampo("peso", v)} acento={tema.acento} />
+                  <div>
+                    <Campo label="Peso (kg)" value={campos.peso} onChange={(v) => setCampo("peso", v)} acento={tema.acento} />
+                    {/* Debajo y no en el rótulo: con «se guardará como suyo» no cabe. */}
+                    {estadoMedidas.has("peso") && <div className="mt-1"><MarcaDelPadre estado={estadoMedidas.get("peso")!} /></div>}
+                  </div>
                   <Campo label="Margen (%)" value={margen} onChange={setMargen} acento={tema.acento} />
                   <div>
                     <Campo label="Comisión ML (%)" value={comision} onChange={setComision} acento={tema.acento} />
@@ -3025,13 +3183,38 @@ export default function ProductStudio({
                   </div>
                   <div className="grid grid-cols-3 gap-2">
                     {(["largo", "ancho", "alto"] as const).map((k) => (
-                      <input key={k} value={campos[k]} onChange={(e) => setCampo(k, e.target.value)} placeholder={k}
-                        className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:ring-2" style={{ outlineColor: tema.acento }} />
+                      <div key={k}>
+                        <input value={campos[k]} onChange={(e) => setCampo(k, e.target.value)} placeholder={k}
+                          aria-label={k}
+                          className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:ring-2" style={{ outlineColor: tema.acento }} />
+                        {/* Debajo y no dentro del campo: en el teléfono cada uno mide un tercio. */}
+                        {estadoMedidas.has(k) && <div className="mt-1"><MarcaDelPadre estado={estadoMedidas.get(k)!} /></div>}
+                      </div>
                     ))}
                   </div>
                   <p className="mt-1 text-[11px] text-slate-400">
                     Flete por pieza (CBM) = volumen × ${(costoCalc?.tarifa_cbm_m3 ?? 7500).toLocaleString("es-MX")}/m³ (contenedor estándar).
                   </p>
+                  {/* El title no se ve en el teléfono: la regla se dice también aquí. */}
+                  {[...estadoMedidas.values()].includes("padre") && (
+                    <p className="mt-1 text-[11px] text-violet-700">
+                      Lo marcado <strong>del padre</strong> es el paquete de la familia: el precio se calcula con él, pero
+                      guardar no lo copia a esta variante. Si cambias otro dato del paquete, la marca dice qué pasará
+                      con él al guardar.
+                    </p>
+                  )}
+                  {[...estadoMedidas.values()].includes("propio") && (
+                    <p className="mt-1 text-[11px] text-amber-700">
+                      Cambiaste el paquete: al guardar, lo marcado <strong>se guardará como suyo</strong> pasa a ser de esta
+                      variante, en costos y en WooCommerce.
+                    </p>
+                  )}
+                  {estadoMedidas.get("peso") === "suelto" && (
+                    <p className="mt-1 text-[11px] text-amber-700">
+                      El peso venía del padre porque la caja era la misma. Cambiaste la caja: ese peso <strong>no se guarda</strong>.
+                      Escribe el peso real de esta variante.
+                    </p>
+                  )}
                 </div>
 
                 {/* Regenerar (preview) */}
@@ -3080,7 +3263,7 @@ export default function ProductStudio({
                 )}
                 <p className="text-[11px] text-slate-400">
                   <strong>Regenerar</strong> recalcula sin escribir — y descarta el precio que hayas puesto a mano arriba, volviendo al derivado del costo.
-                  {" "}<strong>Guardar</strong> persiste en la base y actualiza WooCommerce (precio regular/oferta, costo, peso y dimensiones); si fijaste un precio arriba, guarda <strong>ese</strong>.
+                  {" "}<strong>Guardar</strong> persiste en la base y actualiza WooCommerce (precio regular/oferta, costo, peso y dimensiones; lo marcado <strong>del padre</strong>, sólo si dice «se guardará como suyo»); si fijaste un precio arriba, guarda <strong>ese</strong>.
                 </p>
               </section>
 
@@ -3388,6 +3571,16 @@ export default function ProductStudio({
                     </div>
                   )}
 
+                  {/* Peso y medidas de RELLENO (`aviso_medidas`): aviso, no freno. Arriba
+                      y no en la caja de avisos, que queda al fondo del cuerpo (debajo del
+                      payload) mientras el botón de confirmar está en el pie fijo: así se
+                      lee antes de confirmar sin tener que bajar. */}
+                  {previewPub.aviso_medidas && (
+                    <div className="flex items-start gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
+                      <AlertTriangle size={13} className="mt-0.5 shrink-0" /> {previewPub.aviso_medidas}
+                    </div>
+                  )}
+
                   {revisionCatML(previewPub) && (
                     <RevisionCategoriaML
                       revision={revisionCatML(previewPub)!}
@@ -3601,6 +3794,22 @@ export default function ProductStudio({
   );
 }
 
+// «del padre» junto a un dato que la variante toma de su familia (ver
+// `estadoMedidas` y `precioDelPadre`). Violeta, el mismo de la foto heredada de
+// la galería, mientras no se guarda; ámbar con el texto de lo que va a pasar
+// cuando guardar SÍ cambia algo (el color solo no basta).
+function MarcaDelPadre({ estado }: { estado: EstadoHeredado | "precio" }) {
+  const ambar = estado === "propio" || estado === "suelto";
+  const extra = estado === "propio" ? " · se guardará como suyo" : estado === "suelto" ? " · no se guarda" : "";
+  return (
+    <span title={TITULO_DEL_PADRE[estado]}
+      className={["inline-flex cursor-help items-center gap-0.5 rounded-md px-1.5 py-0.5 text-[9.5px] font-bold normal-case tracking-normal",
+        ambar ? "bg-amber-50 text-amber-800" : "bg-violet-50 text-violet-700"].join(" ")}>
+      <Layers size={9} className="shrink-0" /> del padre{extra}
+    </span>
+  );
+}
+
 // `soloLectura` pinta el valor como espejo (mismo look que Stock) en vez de un
 // input: un campo que se ve editable pero cuyo valor no persiste en ningún lado
 // es una trampa — TEC-2352-GRI se publicó en $374.11 con $629 escrito en
@@ -3614,9 +3823,11 @@ export default function ProductStudio({
    El dólar se tiñe de ámbar (la excepción) y el peso queda en el tono neutro;
    ambos llevan su chip, porque el color solo no basta para quien no lo
    distingue. Mismo tratamiento que la pantalla de Costos: components/Moneda. */
-function Campo({ label, value, onChange, acento, prefijo, soloLectura, nota, moneda }: {
+function Campo({ label, value, onChange, acento, prefijo, soloLectura, nota, moneda, insignia }: {
   label: string; value: string; onChange?: (v: string) => void; acento: string;
   prefijo?: string; soloLectura?: boolean; nota?: string; moneda?: Moneda;
+  /** Marca junto al rótulo (p. ej. «del padre»). */
+  insignia?: React.ReactNode;
 }) {
   const t = moneda ? TONO[moneda] : null;
   return (
@@ -3625,6 +3836,7 @@ function Campo({ label, value, onChange, acento, prefijo, soloLectura, nota, mon
         <span className="inline-flex items-center gap-1">
           {label}
           {moneda && <ChipMoneda moneda={moneda} />}
+          {insignia}
         </span>
         {soloLectura && <span className="normal-case text-slate-300"> (solo lectura)</span>}
       </label>

@@ -529,6 +529,9 @@ def iniciar() -> None:
     # que existen en Odoo y faltan en la tienda — solo la identidad, sin
     # inventario (candado en woocommerce._borrador_wc). Era el único paso del
     # pipeline que esperaba a que alguien apretara un botón.
+    # APAGADO POR OMISIÓN desde el 2-nov-2026 (`SYNC_ODOO_SKUS_ENABLED` vale false
+    # sin la variable): Odoo salió el 15-oct y el catálogo que pide ya no existe,
+    # y la pestaña «Crear Productos», a la que llegaban esos drafts, se apagó.
     if settings.sync_odoo_skus_enabled:
         from services import creacion
 

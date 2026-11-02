@@ -61,14 +61,9 @@ async def lifespan(app: FastAPI):
     vigilante_loop.iniciar()
     # Arranca el sync programado de inventario (cada N min).
     scheduler.iniciar()
-    # Calienta el Ã­ndice de "Crear Productos" en segundo plano (escanea WooCommerce),
-    # para que la primera visita a esa vista no espere la construcciÃ³n del Ã­ndice.
-    # En staging no hay credenciales de Woo: sin WC_URL el warm-up no aplica.
+    # El precalentamiento del índice de drafts de «Crear Productos» se fue con
+    # esa pestaña (2-nov-2026): sólo servía para su primera visita.
     import asyncio
-    if settings.wc_url:
-        asyncio.create_task(woocommerce.indice_candidatos())
-    else:
-        log.info("Sin WC_URL configurada â€” omito el precalentamiento del Ã­ndice de Woo.")
     # Calienta el cachÃ© de VENTAS (Ãºltimos 14 dÃ­as por cuenta, secuencial para no
     # saturar ML): la tabla persiste entre deploys, asÃ­ que tras el primer
     # llenado esto solo refresca HOY y el tab abre al instante. Necesita MySQL
@@ -233,7 +228,7 @@ app = FastAPI(
         "Temu, Shein)."
     ),
 
-    version="0.712.0",
+    version="0.713.0",
     lifespan=lifespan,
     # /docs, /redoc y /openapi.json publican el mapa COMPLETO de los 84
     # endpoints: rutas, parámetros y esquemas. Con la API abierta eso es un
@@ -358,7 +353,7 @@ def raiz():
     return {
         "app": "OMNICANAL Â· Kubera",
 
-        "version": "0.712.0",
+        "version": "0.713.0",
         "docs": "/docs",
         "canales": [c["id"] for c in lista_canales()],
     }

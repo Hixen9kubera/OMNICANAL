@@ -1,46 +1,42 @@
 """
-crear.py — Alta de productos (canal "Crear Productos").
+crear.py — Lo que queda bajo /api/crear después de apagar la pestaña "Crear
+Productos" (2-nov-2026, Eduardo: saltarse el estado draft).
 
-  GET  /api/crear/drafts/plan
-       → Diff Odoo↔WooCommerce en modo SIMULACIÓN: qué SKUs están en Odoo y
-         faltan en Woo. No escribe nada.
+  RETIRADOS (410 Gone). Servían SOLO a la pestaña /crear y al alta vieja
+  Odoo→Woo; los borradores (draft) ahora se trabajan y publican desde el
+  Publicador (/productos), y el alta murió con Odoo (15-oct):
+       GET  /api/crear/drafts/plan        POST /api/crear/drafts/sincronizar
+       GET  /api/crear/candidatos         GET  /api/crear/categorias
+       POST /api/crear/productos          GET  /api/crear/progreso
+       POST /api/crear/destrabar
 
-  POST /api/crear/drafts/sincronizar?limite=
-       → Crea en WooCommerce (status=draft) los SKUs faltantes, hasta `limite`
-         por corrida (progresivo: se ejecuta varias veces hasta llegar a cero).
-
-  GET  /api/crear/candidatos?page=&per_page=&search=
-       → Productos que están en Odoo pero AÚN NO listos/publicados en WooCommerce
-         (status_wc != ready/publish). Son los candidatos a crear.
-
-  POST /api/crear/productos
-       → Recibe la selección (sku + odoo_id + URL de Alibaba) para dar de alta.
-         La URL de Alibaba es OBLIGATORIA por producto.
-         NOTA: la lógica real de creación se implementa en la siguiente fase;
-         por ahora este endpoint valida la carga y la acepta.
+  SIGUEN VIVOS (el router NO se desmonta: los usan el Estudio del Publicador,
+  /costos y la bitácora):
 
   GET  /api/crear/historial            (+ /historial/{sku})
        → Bitácora PERSISTENTE de creaciones (tabla crear_logs). A diferencia de
-         /progreso (memoria) y de los logs de Railway (se purgan con cada
+         la cola en memoria y de los logs de Railway (se purgan con cada
          deploy), esto conserva el rastro completo de cada creación.
 
   GET  /api/crear/auditoria
        → Cruza los SKUs completados en crear_logs contra WooCommerce y reporta
          los productos creados que ya NO existen (eliminados o en papelera).
+
+  POST /api/crear/gtin · POST /api/crear/categoria-ml · GET /api/crear/categorias-ml[/{id}]
+  /api/crear/costos/*  (detalle, preview, revisar, recalcular, listado, bulk,
+                        contenedores, embarques)
 """
 from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 from config import settings
-from core.seguridad import requiere_api_key
-from models.schemas import Paginacion, Producto, RespuestaProductos
 from services import (alertas, bitacora_read, categorias_write, core_write, costing_read,
-                      costing_write, costos, creacion, crear_producto, db, kubera_mirror,
+                      costing_write, costos, crear_producto, db, kubera_mirror,
                       lecturas_fuente, woocommerce)
 from services import sku_provisional
 
@@ -50,153 +46,79 @@ router = APIRouter(prefix="/api/crear", tags=["crear"])
 PER_PAGE_DEFAULT = 40
 PER_PAGE_MAX = 100
 
-# Canal virtual (no es un marketplace real): se muestra en su propia vista.
-_CANAL_CREAR = "crear"
+
+# ── Pestaña «Crear Productos» y alta Odoo→Woo: RETIRADAS (410) ─────────────────
+#
+# 2-nov-2026 (Eduardo: «saltarse por completo el estado draft»). La pestaña /crear
+# se apagó: los borradores (draft) aparecen directo en el Publicador y ahí se
+# trabajan y publican. Estas siete rutas servían SOLO a esa pestaña —su lista de
+# candidatos, el autocompletado de categorías de Woo, la cola en memoria que
+# encolaba «Crear» y su avance— y al alta Odoo→Woo (`creacion.plan_drafts` /
+# `sincronizar_drafts`, botón y cron `alta_skus_odoo`), que pedía el catálogo a
+# Odoo: la API se cortó el 15-oct y ya sólo podía fallar. Antes de retirarlas se
+# buscó quién las llama en todo frontend/ y backend/: sólo `app/crear/page.tsx`
+# (vía lib/api.ts). Las del Estudio y /costos (gtin, categoria-ml, categorias-ml,
+# costos/*) y la bitácora (historial, auditoria) siguen vivas más abajo.
+#
+# Mismo molde que `/api/sync/woo` (routers/sync.py): 410 y no 404, para que quien
+# tenga un enlace o un script viejo lea POR QUÉ en vez de creer que se equivocó de
+# URL. Las rutas siguen declaradas, y con ellas sus reglas de RBAC (core/rbac.py:
+# `/api/crear` operador, `/api/crear/destrabar` admin). Los servicios NO se borran:
+# `creacion` y `crear_producto` tienen otros lectores (scheduler, ia_generadores,
+# studio, channel_read, bitacora_read, costing_mirror, variables…).
+_CREAR_RETIRADO = {
+    "retirado": True,
+    "motivo": ("retirado: la pestaña Crear Productos se apagó (2-nov-2026). Los "
+               "borradores (draft) ahora se trabajan y publican desde el Publicador "
+               "(/productos); el alta Odoo→Woo murió con Odoo (15-oct)."),
+    "ir_a": "/productos",
+}
 
 
-# ── Sincronización Odoo → WooCommerce (drafts) ─────────────────────────────────
+def _retirado() -> HTTPException:
+    return HTTPException(status_code=410, detail=_CREAR_RETIRADO)
+
 
 @router.get("/drafts/plan")
-async def drafts_plan(
-    muestra: int = Query(50, ge=1, le=500, description="Cuántos faltantes devolver en el detalle"),
-):
-    """Diff Odoo↔Woo en modo simulación: no escribe nada."""
-    plan = await creacion.plan_drafts()
-    if not plan.get("ok"):
-        raise HTTPException(502, plan.get("motivo", "No se pudo calcular el plan."))
-    return {
-        "ok": True,
-        "odoo_total": plan["odoo_total"],
-        "woo_total": plan["woo_total"],
-        "faltantes_total": plan["faltantes_total"],
-        "muestra": plan["faltantes"][:muestra],
-    }
+async def drafts_plan():
+    """RETIRADO (410). Diff Odoo↔Woo del alta de drafts; Odoo salió el 15-oct."""
+    raise _retirado()
 
 
 @router.post("/drafts/sincronizar")
-async def drafts_sincronizar(
-    limite: int = Query(100, ge=1, le=500, description="Máximo de drafts a crear en esta corrida"),
-):
-    """Crea como draft en WooCommerce los SKUs de Odoo que faltan (hasta `limite`)."""
-    resultado = await creacion.sincronizar_drafts(limite)
-    if not resultado.get("ok"):
-        raise HTTPException(502, resultado.get("motivo", "La sincronización falló."))
-    return resultado
+async def drafts_sincronizar():
+    """RETIRADO (410). Creaba drafts en Woo desde el catálogo de Odoo."""
+    raise _retirado()
 
 
-@router.get("/candidatos", response_model=RespuestaProductos)
-async def candidatos(
-    page: int = Query(1, ge=1),
-    per_page: int = Query(PER_PAGE_DEFAULT, ge=1, le=PER_PAGE_MAX),
-    search: str | None = Query(None, description="Búsqueda por SKU o nombre"),
-    skus: str | None = Query(None, description="Lista de SKUs separados por coma: solo esos se muestran"),
-    orden: str = Query("valor_desc", description="campo_dirección: valor|costo|stock|tipo + _asc|_desc"),
-    categoria: str | None = Query(None, description="Filtro por nombre de categoría (parcial)"),
-    aplanar: bool | None = Query(None, description="Cada variante como fila propia, para procesarla sola. Sin valor, manda LISTADO_APLANADO"),
-):
-    # `.strip()` en el valor: mismo defecto que en `routers/productos.py`. El
-    # marcador del campo dice "TEC-0001, ORG-0885, caminadora" —con espacios— y
-    # los términos después del primero llegaban con el espacio pegado, así que
-    # el `ilike` no los encontraba.
-    skus_filtro = [s.strip() for s in (skus or "").split(",") if s.strip()] or None
-    # Índice agrupado por convención de SKU (CAT-####[-DETALLE]): una fila por
-    # padre conceptual o producto único; ordenable por valor/costo/stock/tipo.
-    grupos, total = await creacion.listar_candidatos_agrupados(
-        page, per_page, search, skus_filtro, orden, categoria, aplanar
-    )
-
-    # Datos mostrados: TODO en vivo desde WooCommerce (nombre, precio, stock,
-    # estado, imagen, categoría). Tolerante: si WooCommerce falla, lista vacía.
-    try:
-        items_raw = await creacion.items_candidatos(grupos) if grupos else []
-    except Exception as exc:  # noqa: BLE001
-        log.warning("WooCommerce no disponible: %s", exc)
-        items_raw = []
-
-    items = [Producto(**i) for i in items_raw]
-    total_pages = max(1, (total + per_page - 1) // per_page)
-    paginacion = Paginacion(
-        page=page,
-        per_page=per_page,
-        total=total,
-        total_pages=total_pages,
-        tiene_anterior=page > 1,
-        tiene_siguiente=page < total_pages,
-    )
-    # `completo` = "ya no falta índice por construir", y el panel reintenta cada
-    # 4 s mientras sea false. Con MySQL el listado se lee FRESCO y completo en
-    # cada carga (creacion.listar_candidatos_agrupados), pero se seguía
-    # reportando drafts_completo(), que solo lo enciende el escaneo por API —
-    # escaneo que con MySQL nunca corre. Resultado: false para siempre, o sea
-    # "Preparando el catálogo…" y recarga infinita (reporte del 5-ago).
-    from services import wp_db
-    return RespuestaProductos(
-        canal=_CANAL_CREAR, items=items, paginacion=paginacion,
-        completo=True if wp_db.disponible() else woocommerce.drafts_completo(),
-    )
-
-
-# ── Alta de productos ──────────────────────────────────────────────────────────
-
-class CrearItem(BaseModel):
-    sku: str
-    wc_id: int | None = None
-    alibaba_url: str = Field(..., description="URL del producto en Alibaba (obligatoria)")
-
-
-class CrearRequest(BaseModel):
-    items: list[CrearItem]
-    # VESTIGIAL desde el 4-ago: crear sin costo ya es el comportamiento normal
-    # (todo termina en `pending`), así que este flag ya no cambia nada. Se sigue
-    # aceptando para no romper llamadas existentes.
-    permitir_sin_costo: bool = False
+@router.get("/candidatos")
+async def candidatos():
+    """RETIRADO (410). La lista de drafts de la pestaña Crear: hoy viven en el Publicador."""
+    raise _retirado()
 
 
 @router.post("/productos")
-async def crear_productos(req: CrearRequest):
-    if not req.items:
-        raise HTTPException(422, "No se recibió ningún producto para crear.")
-
-    # La URL de Alibaba es obligatoria por producto.
-    sin_url = [i.sku for i in req.items if not (i.alibaba_url or "").strip()]
-    if sin_url:
-        raise HTTPException(
-            422,
-            f"Falta la URL de Alibaba para: {', '.join(sin_url)}",
-        )
-
-    encolados = crear_producto.encolar(
-        [i.model_dump() for i in req.items], req.permitir_sin_costo)
-    log.info("Creación encolada: %d de %d producto(s)", encolados, len(req.items))
-    return {
-        "ok": True,
-        "recibidos": len(req.items),
-        "encolados": encolados,
-        "mensaje": (
-            f"{encolados} producto(s) en proceso: Alibaba → IA → imágenes → "
-            "categoría ML → WooCommerce. Al terminar aparecen en Productos "
-            "(pending), tengan costo o no. Sigue el avance en esta vista."
-        ),
-    }
+async def crear_productos():
+    """RETIRADO (410). Encolaba «Crear» (Alibaba → IA → Woo → pending) en memoria."""
+    raise _retirado()
 
 
-@router.post("/destrabar", dependencies=[Depends(requiere_api_key)])
-async def destrabar(aplicar: bool = False, max_items: int = 500):
-    """
-    Saca de `inprogress` los productos atorados y los pasa a `pending`.
-
-    Limpieza del limbo que se acumuló mientras `inprogress` era un desenlace
-    posible: son productos YA procesados (scrape, imágenes, categoría) a los que
-    solo les quedó mal la etiqueta, así que no se re-scrapea nada.
-    Por defecto es SIMULACRO: dice qué movería. Con `aplicar=true` lo hace.
-    """
-    return await crear_producto.destrabar_inprogress(aplicar, max_items)
+@router.post("/destrabar")
+async def destrabar():
+    """RETIRADO (410). Limpieza de `inprogress` de la pestaña Crear."""
+    raise _retirado()
 
 
 @router.get("/progreso")
 async def progreso():
-    """Avance de la cola de creación (en memoria)."""
-    return {"items": crear_producto.progreso()}
+    """RETIRADO (410). Avance de la cola en memoria de Crear."""
+    raise _retirado()
+
+
+@router.get("/categorias")
+async def categorias_disponibles():
+    """RETIRADO (410). Autocompletado de categorías de Woo del filtro de Crear."""
+    raise _retirado()
 
 
 # ── Historial persistente de creaciones (tabla crear_logs) ─────────────────────
@@ -358,17 +280,6 @@ async def auditoria_creaciones(dias: int = Query(30, ge=1, le=365)):
         "ok": True, "dias": dias, "creados": len(rows), "existentes": existentes,
         "desaparecidos": desaparecidos, "sin_wc_id": sin_wc_id,
     }
-
-
-@router.get("/categorias")
-async def categorias_disponibles():
-    """Solo categorías PADRE (nivel raíz) de Woo, para el autocompletado."""
-    arbol = await woocommerce._cargar_categorias()
-    nombres = sorted(
-        {d["name"] for d in arbol.values() if not d.get("parent")},
-        key=str.casefold,
-    )
-    return {"categorias": nombres}
 
 
 class GuardarGtin(BaseModel):
@@ -655,11 +566,24 @@ class RecalcularCostos(BaseModel):
     # auto_cbm: deriva costo_cbm de las dims (× tarifa) salvo que venga explícito.
     auto_cbm: bool = True
     sincronizar_woo: bool = True
+    # Peso y medidas que el Estudio enseña DEL PADRE (la variante no los tiene
+    # propios: `wp_db.medidas_del_padre`). Llegan CON su valor en `peso`/`largo`/
+    # `ancho`/`alto` para que el precio salga con el paquete que se va a publicar,
+    # pero NO se guardan como propios de la variante: costos_validados conserva lo
+    # que ya tenía y WooCommerce no los recibe. Sin esto el Estudio tenía que
+    # elegir entre calcular con 0.5 kg y caja de 10 cm (mandarlos en null) o
+    # congelar el dato de la familia en la variante (mandarlos tal cual).
+    medidas_heredadas: list[str] = []
 
     def _overrides(self) -> dict:
         ov = self.model_dump(
-            exclude={"incluir_envio", "margen", "auto_cbm", "sincronizar_woo"})
+            exclude={"incluir_envio", "margen", "auto_cbm", "sincronizar_woo",
+                     "medidas_heredadas"})
         return {k: v for k, v in ov.items() if v is not None}
+
+    def _no_guardar(self) -> set[str]:
+        """Las de `medidas_heredadas` que son peso o medida; lo demás se ignora."""
+        return {k for k in self.medidas_heredadas if k in costos.MEDIDAS_BASE}
 
 
 @router.get("/costos/_contenedores")
@@ -784,9 +708,15 @@ def _tiene_costo_propio(variacion: dict) -> bool:
     return False
 
 
-async def _sync_woo_costo(sku: str, fila: dict, cat_elegida: str | None = None) -> bool:
+async def _sync_woo_costo(sku: str, fila: dict, cat_elegida: str | None = None,
+                          no_escribir: set[str] | frozenset[str] = frozenset()) -> bool:
     """
     Escribe a WooCommerce precio regular/oferta + costo + peso/dimensiones + categoría ML.
+
+    `no_escribir` son las medidas que el Estudio enseñó DEL PADRE
+    (`RecalcularCostos.medidas_heredadas`): el peso no se manda si está ahí, y la
+    caja no se manda si está cualquiera de las tres. Así la variación sigue sin
+    peso ni medidas propias y sigue heredando el paquete de la familia.
 
     `cat_elegida` es la categoría que vino en la PETICIÓN (la que la persona
     tenía en pantalla al guardar el costo). Esa se escribe como elección del
@@ -820,9 +750,10 @@ async def _sync_woo_costo(sku: str, fila: dict, cat_elegida: str | None = None) 
         "sale_price": f"{float(fila['precio_sugerido']):.2f}",
         "meta_data": meta,
     }
-    if fila.get("peso") is not None:
+    if fila.get("peso") is not None and "peso" not in no_escribir:
         payload["weight"] = f"{float(fila['peso']):.3f}"
-    if fila.get("largo") and fila.get("ancho") and fila.get("alto"):
+    if (fila.get("largo") and fila.get("ancho") and fila.get("alto")
+            and not {"largo", "ancho", "alto"} & set(no_escribir)):
         payload["dimensions"] = {
             "length": f"{float(fila['largo']):.2f}",
             "width": f"{float(fila['ancho']):.2f}",
@@ -932,9 +863,12 @@ async def costos_recalcular(sku: str, req: RecalcularCostos):
     """
     if sku_provisional.es_provisional(sku):
         raise HTTPException(422, f"{sku}: {sku_provisional.MENSAJE}")
+    # Lo heredado del padre se usa para calcular, no se guarda (ver el campo).
+    no_guardar = req._no_guardar()
     fila = await run_in_threadpool(
         costos.recalcular, sku, req._overrides(),
-        req.incluir_envio, req.margen, costos.DEFAULT_ACCOUNT, req.auto_cbm)
+        req.incluir_envio, req.margen, costos.DEFAULT_ACCOUNT, req.auto_cbm,
+        conservar=no_guardar)
     if not fila:
         raise HTTPException(
             422, "No se pudo guardar: falta el costo (costo producto/dimensiones).")
@@ -954,7 +888,7 @@ async def costos_recalcular(sku: str, req: RecalcularCostos):
     synced, sync_error = False, None
     if req.sincronizar_woo:
         try:
-            synced = await _sync_woo_costo(sku, fila, req.ml_cat_id)
+            synced = await _sync_woo_costo(sku, fila, req.ml_cat_id, no_guardar)
         except Exception as exc:  # noqa: BLE001
             sync_error = f"{type(exc).__name__}: {exc}"[:200]
             alertas.avisar(f"sync_woo_costo:{sku}",

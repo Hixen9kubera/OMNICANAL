@@ -76,6 +76,23 @@ MSG_SIN_INVENTARIO_LIBRO = (
 MSG_SIN_STOCK_LIBRO = ("Sin piezas vendibles en el libro de kubera (libre de las bodegas "
                        "menos ventas DROP sin OV = 0): no se publica.")
 MSG_LIBRO_NO_DISPONIBLE = "No se pudo leer el libro de inventario de kubera: no se publica"
+# Peso y medidas del ALTA en ML (ver `faltan_medidas_ml`). Empiezan por la
+# consecuencia: la vista previa los enseña como el motivo de que NO se publique.
+MSG_SIN_MEDIDAS_ML = (
+    "No se da de alta en Mercado Libre: faltan el peso o las medidas reales ({faltan}). "
+    "Sin ellas el envío se cobraría con 1000 g y 30×20×15 cm inventados. Captúralas en "
+    "Costos del Estudio (peso en kg, medidas en cm) y vuelve a abrir la vista previa.")
+MSG_MEDIDAS_NO_CUADRAN_ML = (
+    "No se da de alta en Mercado Libre: el peso y las medidas no cuadran ({peso} kg en "
+    "{largo}×{ancho}×{alto} cm = {densidad} g/cm³; Mercado Libre acepta de 0.001 a 30). "
+    "Revisa en Costos del Estudio que el peso esté en kg y las medidas en cm.")
+# Peso y medidas de RELLENO guardados en Woo (ver `medidas_de_relleno_ml`). Es AVISO,
+# no candado: la vista previa lo pinta (`aviso_medidas`) y el botón de confirmar
+# sigue. Empieza por la consecuencia, igual que el chip del Publicador.
+MSG_MEDIDAS_RELLENO_ML = (
+    "Mercado Envíos cobrará el envío con 1 kg y 30×20×15 cm: son el peso y las "
+    "medidas de relleno que se usaban cuando faltaban. Si no son las reales, "
+    "captúralas en Costos del Estudio antes de confirmar.")
 
 _configurado = False
 
@@ -944,19 +961,109 @@ def _motivo_sin_stock(prod: dict[str, Any]) -> str:
     return MSG_SIN_INVENTARIO_WOO if prod.get("sin_inventario_woo") else MSG_SIN_STOCK_ML
 
 
-async def _candado_alta_ml(wc_id: int) -> str | None:
+# PESO Y MEDIDAS REALES (2-nov-2026, el Publicador sin el paso por Crear). Crear
+# llenaba `weight` y `dimensions` en Woo desde costos o desde Alibaba; un draft que
+# llega directo al Publicador trae lo que dejó Odoo, casi siempre nada. Con eso el
+# vendor no manda las medidas del paquete (publisher_core.py: «las 4 juntas o
+# ninguna», densidad entre 0.001 y 30 g/cm³), ML contesta `missing.seller.package.
+# dimensions` y su reintento las INVENTA: 1000 g y 30×20×15 cm (publisher_core.py
+# ~550-569). El envío de Mercado Envíos se cobra con esas medidas. No se toca el
+# vendor (regla 1): el alta se frena aquí, igual que el stock en cero.
+_MEDIDAS_ML = (("weight", "peso (kg)"), ("length", "largo (cm)"),
+               ("width", "ancho (cm)"), ("height", "alto (cm)"))
+_DENSIDAD_ML = (0.001, 30.0)   # g/cm³, la misma ventana que publisher_core.build_payload
+
+
+def _medida_real(valor: Any) -> tuple[float | None, str | None]:
+    """(número > 0, None) o (None, por qué no sirve). Pura."""
+    if valor in (None, ""):
+        return None, None
+    try:
+        n = float(str(valor).strip())
+    except (TypeError, ValueError):
+        return None, f"«{valor}» no es un número"
+    return (n, None) if n > 0 else (None, None)
+
+
+def faltan_medidas_ml(prod: dict[str, Any]) -> str | None:
+    """
+    Motivo para NO dar de alta en ML por peso o medidas, o None. Pura.
+
+    Lee lo mismo que lee el vendor (`prod['weight'|'length'|'width'|'height']`, que
+    `construir_prod` arma con lo del Estudio sobre lo de Woo). Real = número > 0.
+    Si están las cuatro pero la densidad cae fuera de la ventana del vendor, también
+    frena: el vendor las omitiría y el resultado sería el mismo relleno.
+    """
+    nums: dict[str, float] = {}
+    faltan: list[str] = []
+    for clave, etiqueta in _MEDIDAS_ML:
+        n, porque = _medida_real(prod.get(clave))
+        if n is None:
+            faltan.append(f"{etiqueta} — {porque}" if porque else etiqueta)
+        else:
+            nums[clave] = n
+    if faltan:
+        return MSG_SIN_MEDIDAS_ML.format(faltan=", ".join(faltan))
+    densidad = nums["weight"] * 1000 / (nums["length"] * nums["width"] * nums["height"])
+    if not _DENSIDAD_ML[0] <= densidad <= _DENSIDAD_ML[1]:
+        return MSG_MEDIDAS_NO_CUADRAN_ML.format(
+            peso=f"{nums['weight']:g}", largo=f"{nums['length']:g}",
+            ancho=f"{nums['width']:g}", alto=f"{nums['height']:g}",
+            densidad=f"{densidad:.4g}")
+    return None
+
+
+# MEDIDAS DE RELLENO (Eduardo, 2-nov-2026). 1 kg y 30×20×15 cm son lo que el vendor
+# inventa cuando faltan (publisher_core.py ~550-569: «1000 g» y 30/20/15 cm) y
+# también quedaron GUARDADAS en Woo en productos ya publicados (94 con ese relleno
+# exacto, medido ese día). Pasan `faltan_medidas_ml`: son > 0 y su densidad (0.111
+# g/cm³) cae dentro de la ventana. No se frenan —puede existir un producto que de
+# verdad mida eso—; se avisa. Woo guarda el peso en kg: 1000 NO es relleno.
+_RELLENO_ML_PESO = 1.0                       # kg
+_RELLENO_ML_MEDIDAS = (15.0, 20.0, 30.0)     # cm, en orden: se comparan ordenadas
+_RELLENO_ML_TOLERANCIA = 1e-6                # redondeo («1.000», «30.0»)
+
+
+def medidas_de_relleno_ml(prod: dict[str, Any]) -> bool:
+    """
+    ¿El peso y las medidas del alta son el relleno de 1 kg y 30×20×15 cm? Pura.
+
+    Lee lo mismo que `faltan_medidas_ml` (`prod['weight'|'length'|'width'|'height']`).
+    True solo si las cuatro son números reales (> 0), el peso es 1 kg y las tres
+    medidas, en CUALQUIER orden, son 30, 20 y 15 cm. Con alguna faltante o que no es
+    número, False: de eso se encarga el candado.
+    """
+    nums: list[float] = []
+    for clave, _etiqueta in _MEDIDAS_ML:
+        n, _porque = _medida_real(prod.get(clave))
+        if n is None:
+            return False
+        nums.append(n)
+    peso, *medidas = nums
+    if abs(peso - _RELLENO_ML_PESO) >= _RELLENO_ML_TOLERANCIA:
+        return False
+    return all(abs(m - r) < _RELLENO_ML_TOLERANCIA
+               for m, r in zip(sorted(medidas), _RELLENO_ML_MEDIDAS))
+
+
+async def _candado_alta_ml(wc_id: int, prod: dict[str, Any] | None = None) -> str | None:
     """
     Motivo para NO crear, o None. Es el embudo de TODA alta de ML
-    (`preview_crear_ml` y `crear_ml`), así que el candado del padre vale
-    aunque alguien llame aquí sin pasar por el dispatcher de `publicar.py`.
-    Sin BD de WordPress no se puede medir: se deja pasar (construir_prod
-    fallaría igual un paso después).
+    (`preview_crear_ml` y `crear_ml`), así que sus candados valen aunque alguien
+    llame aquí sin pasar por el dispatcher de `publicar.py`:
+      1. el PADRE: sin BD de WordPress no se puede medir y se deja pasar
+         (construir_prod fallaría igual);
+      2. con el `prod` ya leído, el PESO y las MEDIDAS reales (`faltan_medidas_ml`).
+    El padre va primero: su mensaje es el que sirve (no se arregla con medidas).
+    La ACTUALIZACIÓN de una publicación viva no pasa por aquí.
     """
     try:
         if await asyncio.to_thread(wp_db.hijas_vivas, int(wc_id)):
             return MSG_PADRE
     except Exception as exc:  # noqa: BLE001
         log.warning("candado del padre (%s): %s", wc_id, exc)
+    if prod is not None:
+        return faltan_medidas_ml(prod)
     return None
 
 
@@ -971,12 +1078,16 @@ async def preview_crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
     real), así la vista previa es rápida.
     """
     configurar()
-    motivo = await _candado_alta_ml(wc_id)
-    if motivo:
-        return {"ok": False, "motivo": motivo}
     prod = await asyncio.to_thread(construir_prod, sku, wc_id, campos)
+    # Los mismos candados que `crear_ml`: la vista previa enseña lo que el alta va a
+    # frenar (padre, peso y medidas, stock) antes de confirmar. `frena` distingue esos
+    # rechazos —`crear_ml` los repite tal cual— de un «no pude armar la vista previa»:
+    # con él, `publicar._preview_ml` contesta que NO se publica, sin botón de confirmar.
+    motivo = await _candado_alta_ml(wc_id, prod)
+    if motivo:
+        return {"ok": False, "motivo": motivo, "frena": True}
     if _stock_real(prod) < 1:
-        return {"ok": False, "motivo": _motivo_sin_stock(prod)}
+        return {"ok": False, "motivo": _motivo_sin_stock(prod), "frena": True}
     token = meli._access_token(cuenta)
     if not token:
         return {"ok": False, "motivo": f"Sin token de Mercado Libre para {cuenta}."}
@@ -1030,10 +1141,12 @@ async def crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
                                 "error": motivo, "ml_status": None}
                                for c in objetivo]}
 
-    motivo = await _candado_alta_ml(wc_id)
+    prod = await asyncio.to_thread(construir_prod, sku, wc_id, campos)
+    # Padre, y peso y medidas reales ANTES del pipeline: con ellos en blanco el
+    # vendor inventa 1000 g y 30×20×15 cm (ver `faltan_medidas_ml`).
+    motivo = await _candado_alta_ml(wc_id, prod)
     if motivo:
         return _rechazo(motivo)
-    prod = await asyncio.to_thread(construir_prod, sku, wc_id, campos)
     # STOCK EN CERO, HONESTO (11-sep-2026). Con stock 0 el vendor publica
     # `DEFAULT_QUANTITY = 1` (publisher_core.py:212: `if prod['stock'] else 1`)
     # y el anuncio nace ofreciendo una pieza que Odoo no tiene. No se toca el
@@ -1053,6 +1166,13 @@ async def crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
     if motivo:
         log.info("alta ML frenada (%s): %s", sku, motivo)
         return _rechazo(motivo)
+    # Medidas de relleno: AVISO de la vista previa, no freno (`medidas_de_relleno_ml`).
+    # Aquí solo queda en el log, para saber después qué altas salieron con ellas: va
+    # DESPUÉS de los candados (padre, medidas, stock, categoría), así que no cuenta
+    # las que se rechazaron.
+    if medidas_de_relleno_ml(prod):
+        log.info("alta ML %s con medidas de relleno (1 kg y 30×20×15 cm): pasó los "
+                 "candados y va al pipeline", sku)
     prod, avisos_atributos = await asyncio.to_thread(_atributos_ml_para_alta, prod, campos, objetivo[0])
     if avisos_atributos:
         log.info("alta ML %s — atributos ajustados: %s", sku, " | ".join(avisos_atributos))

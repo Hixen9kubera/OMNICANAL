@@ -71,7 +71,8 @@ class CamposPublicar(BaseModel):
     backend_search_terms: str | None = None
     bullets: list[str] = Field(default_factory=list)
     atributos: list[AtributoIn] = Field(default_factory=list)
-    # Datos usados al CREAR en Amazon (precio y dimensiones)
+    # Precio y paquete que enseña el Estudio: Amazon los usa al CREAR, y Temu y
+    # TikTok el peso y las medidas para el paquete del anuncio.
     precio_regular: float | None = None
     peso: float | None = None
     largo: float | None = None

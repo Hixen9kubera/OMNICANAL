@@ -324,7 +324,7 @@ async def listar_productos(
     estados: str | None = Query(None, description="Filtro de estado, coma-separado: publicado,inactivo"),
     categoria: int | None = Query(None, description="ID de categoría WooCommerce (canal general)"),
     skus: str | None = Query(None, description="Lista de SKUs/términos separados por coma: filtra y busca a la vez"),
-    vista: str = Query("productos", description="productos (publish/pending/ready) | crear (draft/inprogress) | omnicanal (todos)"),
+    vista: str = Query("productos", description="productos (el Publicador: publish/pending/ready/private y, desde el 2-nov-2026, draft/inprogress) | crear (draft/inprogress) | omnicanal (todos)"),
     revisado: bool = Query(False, description="Solo productos con el COSTO VALIDADO (marca revisado_at, migración 0032). Todos los canales"),
     drop_off: bool = Query(False, description="Solo productos con existencias en el almacén DROP OFF de Odoo (id 142). Todos los canales"),
     etapa: str | None = Query(None, max_length=40, description="Etapa del flujo del SKU: recibido | bodega_3de4 | en_full | en_drop. Se suma con AND a todo lo demás; la lista la resuelve el sistema, así que cualquier falla da 503 y nunca una lista incompleta"),
@@ -491,6 +491,15 @@ async def listar_productos(
         # NO se toca `categoria_id`: el filtro de la pantalla es por categoría de
         # WOO, y cambiarlo por el id de ML dejaría a la gente filtrando por una
         # taxonomía y viendo otra. Solo cambia lo que se MUESTRA.
+        #
+        # Tampoco cambia `faltantes` (el semáforo, ya armado en
+        # `woocommerce.listar_productos`): una fila puede pintar aquí la ruta de
+        # kubera y aun así decir «Falta: categoría ML», porque el publicador de
+        # ML lee la meta de Woo y no esta. Por eso viaja `categoria_kubera`: con
+        # el faltante, la pantalla pinta la ruta como SUGERIDA. El selector del
+        # Estudio NO viene prellenado con ella (`studio.metadata` lee solo la
+        # meta); se vuelve meta con «Usar esta» en la vista previa de ML (la
+        # tarjeta de la curada) o eligiéndola en el selector.
         # `to_thread` y no llamada directa: las dos abren psycopg2, que BLOQUEA,
         # y esto corre dentro de la corrutina del listado (regla 11 — el mismo
         # defecto costó el apagón del 13-ago). En paralelo porque son
@@ -509,6 +518,7 @@ async def listar_productos(
             it["canales"] = pres.get(it["sku"], [])
             it["origen"] = "woocommerce"
             it["costo"] = _costo_kubera(it["sku"], it.get("costo"))
+            it["categoria_kubera"] = bool(rutas_kub.get(it["sku"]))
             it["categoria_path"] = rutas_kub.get(it["sku"]) or it.get("categoria_path") or []
             for v in (it.get("variantes") or []):
                 v["canales"] = pres.get(v["sku"], [])

@@ -10,6 +10,11 @@ Medido ese día contra WordPress: «Por padre» pasó de 3,774 a 3,765 (las 9
 familias terminadas: ROP-0246 23/23, VAR-0004 15/15…), las 3 a medias se
 quedaron con sus 12 variantes hechas ocultas, y «Por variante» no cambió (6,628).
 
+Esto es SOLO de Crear. Desde el 2-nov-2026 el Publicador lista también los
+borradores (draft/inprogress en `_VISTAS_SQL["productos"]`), así que esas
+familias —terminadas o a medias— salen ahí enteras, padre incluido; lo fija
+`tests.test_publicador_drafts`. Aquí no cambia nada mientras Crear exista.
+
     cd backend && python -m unittest tests.test_crear_familias_terminadas -v
 """
 import unittest

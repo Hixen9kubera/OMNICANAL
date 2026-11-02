@@ -1001,6 +1001,73 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.713.0 — El Publicador lista los borradores; «Crear Productos» se apaga
+
+Eduardo (2-nov-2026): «Hay que desactivar crear productos y en publicador hay que añadir los skus que esten en draft
+para que aparezcan ahi directamente». Es el primer tramo para dejar el estado del producto en publicado / no publicado.
+El estado `draft` solo repartía pantallas: publicar nunca lo miraba. Lo que de verdad hacía Crear (categoría de ML,
+precio de Costos, fotos, medidas) pasa a candados y avisos al publicar.
+
+**Paso 1: los borradores entran al Publicador.**
+- `VISTAS["productos"]` y `_VISTAS_SQL["productos"]` suman `draft` e `inprogress`. Se quitan las exclusiones fijas de
+  draft del complemento por SKU exacto y del respaldo sobre la maestra.
+- Orden con selector («Con stock primero», que es el de omisión, más «Más recientes», precio y «Menos stock»).
+  `indice_catalogo` trae el stock en la misma consulta (propio o suma de variantes vivas). Medido contra la base de
+  WordPress: 0.8 s contra 0.7 s de la consulta anterior.
+- Semáforo por fila (`Producto.faltantes`): categoría ML, precio, stock, fotos y medidas, con la misma regla de
+  medidas que el candado. La fila de una familia resume a sus variantes («N de M variantes listas»). Si kubera tiene
+  una categoría curada, se marca «Sugerida por kubera».
+- Filtro «Solo borradores» (`estados=borrador`), insignia «Borrador», y «Listo para publicar» solo sin canales.
+
+**Paso 2: candados al publicar.**
+- Aviso cuando el precio regular se aparta de `costos_finales` (más de 2 % o $5).
+- Amazon frena si el precio es ≤ 0 o si no hay tipo de producto. «No se pudo preguntar» (429/5xx/timeout) se
+  distingue de «Amazon no propuso ninguno». Antes caía a `HOME`.
+- ML frena el alta si faltan el peso o las tres medidas reales, o si no cuadran entre sí (densidad
+  0.001–30 g/cm³). Antes el vendor rellenaba 1000 g y 30×20×15. La vista previa dice que no se da de alta y no
+  ofrece Confirmar.
+- La vista previa muestra la categoría curada de kubera como candidata.
+
+**Paso 3: «Crear Productos» se apaga.**
+- Sale de la barra; `/crear` manda a `/productos?borradores=1`. Las rutas que solo usaba Crear contestan 410.
+  Las de `/api/crear` que usa el Estudio (categorías ML, GTIN, costos) siguen igual.
+- `SYNC_ODOO_SKUS_ENABLED` vale `false` sin la variable (el alta automática desde Odoo ya solo fallaba desde el
+  15-oct). Se quita el precalentamiento del índice de drafts en el arranque.
+
+**Peso y medidas: el paquete del padre y el relleno.**
+- La variante hereda peso y medidas del padre como PAQUETE (`wp_db.medidas_del_padre`), no clave por clave
+  (Eduardo: «herencia en bloque»). Un 0 cuenta como vacío. Sin ninguna medida real, la variante toma las del padre
+  juntas; con su caja y el peso en 0, toma el peso del padre solo si la caja es la misma; en cualquier otro caso no
+  hereda y el candado pide lo real. Así no se junta el peso de una pieza con la caja de otra. Lo usan el alta
+  (`postmeta_con_herencia`), el Estudio (`metadata_producto`) y el semáforo (`precios_y_costo_por_wc_id`).
+  Walmart (`fundir_padre`) sigue clave por clave: sin candado, lo que no hereda lo rellena con 0.3 kg y 10 cm.
+- El relleno de 1 kg y 30×20×15 cm guardado en Woo es un AVISO, no un freno: la vista previa de ML lo enseña en
+  su propia caja (`aviso_medidas`) y el Publicador pinta «¿Medidas reales?». En lo ya publicado, el aviso aclara
+  que la publicación viva se corrige en Mercado Libre.
+- El Estudio marca «del padre» en peso, medidas, costo y precios heredados. El costeo calcula con lo que se ve,
+  pero lo heredado que nadie cambió no se guarda como propio ni en `costos_validados` ni en Woo
+  (`RecalcularCostos.medidas_heredadas`).
+
+**Lo que sigue (otra persona).** Esta versión deja la base: el freno y el aviso actúan al publicar, uno por uno.
+- Filtros de trabajo en el Publicador: «Falta medidas», «Falta categoría» y «Costo sin validar».
+- Relleno revisado de medidas desde `costing.costos_validados` (mezcla pieza y caja master: revisar antes de usar).
+- Freno de medidas también en Amazon, Walmart y Temu, que hoy publican con sus valores por omisión.
+- Auditoría por API (solo GET) de las medidas y la categoría de lo que ya está vivo en ML.
+- Peso y medidas en kubera: tarea 3.11 del plan maestro de salida de Woo.
+
+**Antes de producción.**
+- Regla 3: apagar `alta_skus_odoo` requiere el dale de Brandon. Hay que revisar en Railway si existe
+  `SYNC_ODOO_SKUS_ENABLED`.
+- Con el código viejo, `GET /api/crear/progreso` sin nada en cola (la cola vive en memoria).
+- Los candados de medidas y de tipo de Amazon valen para todo el catálogo, no solo para los ex-borradores.
+
+Verificado en el sandbox (kubera yvootpbz, WordPress de producción en solo lectura y proxy que solo deja pasar GET):
+7,298 productos en el Publicador, 3,725 con «Solo borradores», 13,272 filas por variante, búsqueda con borradores
+dentro, `/crear` redirige y `/api/crear/progreso` da 410, y el Estudio marca «del padre» en una variante que hereda
+el paquete. Pruebas: 3,929, con el único error heredado (`test_competencia_juez_rutas`). Nuevas:
+`test_publicador_drafts.py`, `test_publicar_candados.py`, `test_crear_retirado.py`, `test_medidas_cero_hereda.py`,
+`test_medidas_relleno.py` y `test_medidas_heredadas_costeo.py`.
+
 ### v0.712.0 — Fotos para ML: se agranda el PRODUCTO, porque Mercado Libre recorta el fondo blanco
 
 Brandon (2-nov-2026): «revisa cómo está el publicador de Mercado Libre y cómo gestiona esos errores… hace

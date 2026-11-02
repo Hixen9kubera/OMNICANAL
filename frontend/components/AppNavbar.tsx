@@ -8,7 +8,6 @@ import {
   LayoutDashboard,
   Package,
   Share2,
-  PackagePlus,
   TrendingUp,
   LineChart,
   FileText,
@@ -90,8 +89,7 @@ interface NavItem {
 // Sandbox sin login (ver SesionGuard): ahí no hay rol que confirmar.
 const SIN_LOGIN = process.env.NEXT_PUBLIC_AUTH_OFF === "true";
 
-// Navegación principal de la app. OMNICANAL, PRODUCTOS y CREAR PRODUCTOS están
-// implementados; el resto se marca "próximamente".
+// Navegación principal de la app. Lo que aún no existe se marca "próximamente".
 const ITEMS: NavItem[] = [
   // ANÁLISIS abre la barra (Eduardo, 31-jul) y absorbió a VENTAS como entrada
   // de su submenú — ya no es pestaña propia. La ruta /ventas no cambia: esa
@@ -150,7 +148,10 @@ const ITEMS: NavItem[] = [
         descripcion: "Borrador, reserva de stock, entrega y cancelación" },
     ],
   },
-  { id: "crear", label: "Crear Productos", icon: PackagePlus, href: "/crear" },
+  // «Crear Productos» SE QUITÓ de la barra (2-nov-2026, Eduardo: saltarse el
+  // estado draft). Los borradores aparecen directo en el Publicador y ahí se
+  // trabajan. No va como `oculta`: eso la seguiría enseñando al admin, y /crear
+  // ya sólo redirige al Publicador (la ruta queda para los enlaces guardados).
   { id: "costos", label: "Costos", icon: Calculator, href: "/costos" },
   // Va aquí, entre Costos y Competencia (handoff de diseño, 4-sep). Estaba al
   // FINAL, detrás del scroll horizontal del navbar — la única pestaña que

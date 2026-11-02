@@ -8,6 +8,13 @@ import type { CategoriaRevisada, RevisionCategoriaML, RevisionVectores } from "@
 /** Igual que `categoria_vectores.MOTIVO_MIN` en el backend. */
 const MOTIVO_MIN = 10;
 
+/**
+ * La categoría CURADA en kubera (`channel.product_category`), que la vista previa ofrece
+ * como candidata (`ml_revision_categoria.candidata_curada`, 2-nov-2026). Antes la copiaba
+ * Crear a la meta; sin Crear solo se OFRECE: «Usar esta» la guarda como elección del panel.
+ */
+type CuradaKubera = CategoriaRevisada & { fuente?: string; fuente_texto?: string };
+
 interface Props {
   revision: RevisionCategoriaML;
   /** La persona marcó «Revisé la categoría». Sin eso no se habilita Confirmar. */
@@ -130,6 +137,9 @@ export default function RevisionCategoriaML({
   const idsVec = new Set(vectores && vectores.color !== "verde" ? vectores.propuestas.map((p) => p.category_id) : []);
   const idsPredictor = new Set(sugeridas.map((s) => s.category_id));
   const propuestasVec = vectores ? vectores.propuestas.filter((p) => !idsPredictor.has(p.category_id)) : [];
+  // La curada no cambia la que va (regla 2): se enseña y se elige a mano.
+  const curada = (revision as RevisionCategoriaML & { curada?: CuradaKubera | null }).curada ?? null;
+  const curadaEsLaActual = !!curada && curada.category_id === actual?.category_id;
 
   return (
     <div className="rounded-xl border-2 p-3" style={{ borderColor: revisada ? "#10b981" : acento }}>
@@ -160,6 +170,37 @@ export default function RevisionCategoriaML({
         <Icono size={14} className="mt-0.5 shrink-0" /> {v.texto}
       </div>
 
+      {curada && (
+        <div className="mt-2">
+          <div className="mb-1 text-[11px] font-semibold text-slate-500">La curada en kubera para este SKU</div>
+          <div className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs">
+            <div className="min-w-0">
+              <Ruta c={curada} acento={acento} />
+              <span className="font-mono text-[10px] text-slate-400">
+                {curada.category_id}
+                {curada.fuente_texto ? ` · ${curada.fuente_texto}` : ""}
+              </span>
+              {idsPredictor.has(curada.category_id) && (
+                <span className="ml-1.5 rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-bold text-sky-700">
+                  también la propone ML
+                </span>
+              )}
+            </div>
+            {curadaEsLaActual ? (
+              <span className="shrink-0 rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700">LA QUE VA</span>
+            ) : (
+              <button
+                onClick={() => onCambiar(curada.category_id)}
+                disabled={bloqueado || cambiando || curada.publicable === false}
+                className="shrink-0 rounded-lg border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              >
+                Usar esta
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {sugeridas.length > 0 && (
         <div className="mt-2">
           <div className="mb-1 text-[11px] font-semibold text-slate-500">Lo que propone Mercado Libre para el título</div>
@@ -174,6 +215,11 @@ export default function RevisionCategoriaML({
                     {idsVec.has(s.category_id) && (
                       <span className="ml-1.5 rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-bold text-violet-700">
                         también por texto y fotos
+                      </span>
+                    )}
+                    {curada?.category_id === s.category_id && (
+                      <span className="ml-1.5 rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-bold text-sky-700">
+                        la curada en kubera
                       </span>
                     )}
                   </div>

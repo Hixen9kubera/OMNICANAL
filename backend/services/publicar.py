@@ -284,6 +284,126 @@ async def _aviso_imagenes(req: dict[str, Any]) -> str | None:
     return imagenes_variante.aviso_legible(r[1]) if r else None
 
 
+# ═══════════ LO QUE CREAR HACÍA SIN DECIRLO (Publicador sin draft) ═══════════
+#
+# 2-nov-2026, Eduardo: los SKUs en draft entran directo al Publicador y la pestaña
+# Crear se apaga. Crear dejaba en Woo el precio de costos, el peso y las medidas y la
+# categoría curada de kubera; un draft trae lo que dejó Odoo. Aquí van el AVISO de
+# precio y la candidata curada; el candado de peso y medidas vive en el embudo del
+# alta (`publicar_ready._candado_alta_ml`) y los de Amazon en `_confirmar_amazon`.
+
+# El precio que sale contra el de costos: se avisa si la diferencia pasa de la MAYOR
+# de las dos tolerancias (2 % o $5, lo que sea más), para no gritar por redondeos.
+PRECIO_TOLERANCIA_PCT = 0.02
+PRECIO_TOLERANCIA_MXN = 5.0
+
+
+def aviso_precio_costos(precio: Any, de_costos: Any) -> str | None:
+    """«El precio $X no coincide con el de costos $Y», o None. Pura."""
+    try:
+        p, c = float(precio or 0), float(de_costos or 0)
+    except (TypeError, ValueError):
+        return None
+    if p <= 0 or c <= 0:
+        return None
+    if abs(p - c) <= max(c * PRECIO_TOLERANCIA_PCT, PRECIO_TOLERANCIA_MXN):
+        return None
+    # Sin nombrar a Crear (ya no está en la barra) ni dar por hecha la causa: el
+    # precio pudo cambiar en Costos después, aunque el producto haya pasado por ahí.
+    return (f"El precio regular ${p:,.2f} no coincide con el de Costos ${c:,.2f} "
+            f"({(p - c) / c:+.1%}). Los productos nacidos de Odoo traen su precio de "
+            "lista: corrígelo en Costos del Estudio antes de publicar.")
+
+
+def _precio_de_costos(sku: str) -> float | None:
+    """
+    SÍNCRONA (kubera). El precio regular de `costing.costos_finales` (canal
+    mercado_libre, `costing_read.finales`): `precio_base`, el mismo que Crear ponía
+    como `regular_price` en Woo. None si no hay o no se pudo leer. Nunca lanza.
+    """
+    try:
+        from services import costing_read
+        from services import supabase_db as sdb
+        if not sdb.disponible():
+            return None
+        v = _num((costing_read.finales(sku) or {}).get("precio_base"), 0.0)
+        return v or None
+    except Exception as exc:  # noqa: BLE001
+        log.warning("precio de costos (%s): %s", sku, exc)
+        return None
+
+
+async def _aviso_precio_costos(sku: str | None, precio: Any) -> str | None:
+    """El aviso de precio de la vista previa de un alta. Es AVISO, no candado. Nunca lanza."""
+    if not sku or _num(precio, 0.0) <= 0:
+        return None
+    return aviso_precio_costos(precio, await asyncio.to_thread(_precio_de_costos, str(sku)))
+
+
+def _categoria_curada_ml(sku: str | None) -> dict[str, str] | None:
+    """
+    SÍNCRONA (kubera). La categoría curada del SKU en `channel.product_category`
+    (`channel_read.categoria_curada`: por SKU exacto y, si no, por prefijo padre; el
+    `panel` primero). Es el lector que usaba Crear. None si no hay. Nunca lanza.
+    """
+    if not sku:
+        return None
+    try:
+        from services import channel_read
+        from services import supabase_db as sdb
+        if not sdb.disponible():
+            return None
+        return channel_read.categoria_curada(str(sku))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("categoría curada (%s): %s", sku, exc)
+        return None
+
+
+async def _curada_ml(sku: str | None) -> dict[str, Any] | None:
+    """La curada lista para la tarjeta (`ml_revision_categoria.candidata_curada`). Nunca lanza."""
+    from services import ml_revision_categoria
+    try:
+        cur = await asyncio.to_thread(_categoria_curada_ml, sku)
+        return await ml_revision_categoria.candidata_curada(cur)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("candidata curada (%s): %s", sku, exc)
+        return None
+
+
+async def _prod_alta(req: dict[str, Any]) -> dict[str, Any] | None:
+    """El `prod` de un alta de ML (`publicar_ready.construir_prod`), o None si no se pudo leer."""
+    from services import publicar_ready
+    sku, wc_id = req.get("sku"), req.get("wc_id")
+    if not (sku and wc_id and await asyncio.to_thread(wp_db_disponible)):
+        return None
+    try:
+        return await asyncio.to_thread(publicar_ready.construir_prod, str(sku),
+                                       int(wc_id), req.get("campos") or {})
+    except Exception as exc:  # noqa: BLE001
+        log.warning("alta ML (%s): no se pudo leer el producto: %s", sku, exc)
+        return None
+
+
+async def _aviso_precio_alta_ml(req: dict[str, Any], r_alta: dict[str, Any]) -> str | None:
+    """El aviso de precio contra costos de un ALTA de ML (el precio del payload; si no
+    hubo payload, el del producto). Nunca lanza."""
+    prod = r_alta.get("prod") or {}
+    precio = (r_alta.get("payload") or {}).get("price") or prod.get("price")
+    return await _aviso_precio_costos(req.get("sku"), precio)
+
+
+def _alta_ml_frenada(req: dict[str, Any], motivo: str) -> dict[str, Any]:
+    """
+    La vista previa de un alta de ML que NO va a salir (padre, peso y medidas, stock:
+    lo que `crear_ml` rechaza igual). `ok: False` con `motivo` es lo que el modal del
+    Estudio pinta como la caja del motivo, SIN el botón «Confirmar y publicar» ni la
+    tarjeta de categoría: antes salía `ok: True` con el motivo como un aviso más, junto
+    a «se CREARÁ una nueva publicación», y el botón quedaba habilitado.
+    """
+    return {"ok": False, "canal": "mercado_libre", "sku": req.get("sku"),
+            "modo": "crear", "motivo": motivo}
+
+
 # ═══════════════════════════ VISTA PREVIA ═══════════════════════════════════
 async def preview(req: dict[str, Any]) -> dict[str, Any]:
     canal = req.get("canal")
@@ -391,31 +511,31 @@ async def _revision_categoria_ml(req: dict[str, Any],
     Con `CATEGORIA_VEC_ENABLED` (27-oct-2026) se suma `vectores`: el título con la
     descripción y 2 fotos contra todas las categorías (`services/categoria_vectores.py`),
     en paralelo con el predictor. Apagada o si falla, la tarjeta es la de siempre.
+
+    `curada` (2-nov-2026, Publicador sin draft): la categoría curada de kubera como
+    CANDIDATA (`ml_revision_categoria.candidata_curada`), lo que Crear copiaba a la meta.
+    No cambia `actual` ni lo que se confirma: la elección del panel sigue mandando.
     """
-    from services import categoria_vectores, ml_revision_categoria, publicar_ready
+    from services import categoria_vectores, ml_revision_categoria
 
     payload = (r_crear or {}).get("payload") or {}
     prod = (r_crear or {}).get("prod")
     if prod is None:
-        sku, wc_id = req.get("sku"), req.get("wc_id")
-        if not (sku and wc_id and wp_db_disponible()):
-            return None
-        try:
-            prod = await asyncio.to_thread(publicar_ready.construir_prod, str(sku),
-                                           int(wc_id), req.get("campos") or {})
-        except Exception as exc:  # noqa: BLE001
-            log.warning("revisión de categoría (%s): no se pudo leer el producto: %s", sku, exc)
+        prod = await _prod_alta(req)
+        if prod is None:
             return None
     cid = str(payload.get("category_id") or "").strip()
     if not cid:
         cid = await asyncio.to_thread(ml_revision_categoria.categoria_de_alta, prod)
     titulo = payload.get("title") or prod.get("title") or ""
-    rev, vec = await asyncio.gather(
+    rev, vec, curada = await asyncio.gather(
         ml_revision_categoria.revisar(cid, titulo),
         categoria_vectores.revisar(req.get("sku"), req.get("wc_id"), cid, titulo,
                                    prod.get("description"),
-                                   _fotos(payload, prod, categoria_vectores.MAX_FOTOS)))
+                                   _fotos(payload, prod, categoria_vectores.MAX_FOTOS)),
+        _curada_ml(req.get("sku")))
     rev["vectores"] = vec
+    rev["curada"] = curada
     rev["origen"] = ml_revision_categoria.origen(prod, cid)
     rev["origen_texto"] = ml_revision_categoria.ORIGENES[rev["origen"]]
     rev["titulo"] = titulo
@@ -457,17 +577,24 @@ async def _preview_ml(req: dict[str, Any]) -> dict[str, Any]:
             avisos.append(f"{p['cuenta']}: su publicación ({p['item_id']}) fue "
                           f"eliminada y NO se re-creará — {MSG_PADRE}")
         muertos = []
+    # Dónde quedó el aviso «se CREARÁ» de cada cuenta a re-crear: si el alta se frena
+    # (peso y medidas, abajo) ESE aviso se reemplaza, no se le suma uno que lo contradiga.
+    recrear: list[tuple[int, dict[str, Any]]] = []
     for p in muertos:
+        recrear.append((len(avisos), p))
         avisos.append(
             f"{p['cuenta']}: la publicación anterior ({p['item_id']}) fue eliminada "
             "en Mercado Libre — se CREARÁ una nueva (pausada)."
         )
     r: dict[str, Any] | None = None
     if not pubs or not vivos:
+        # En modo crear el payload lo arma el pipeline de publicaciones_ready. Va ANTES
+        # del «se CREARÁ»: si el alta se frena, la vista previa dice eso y nada más.
+        r = await _payload_crear_ml(req)
+        if r and not r.get("ok") and r.get("frena"):
+            return _alta_ml_frenada(req, r.get("motivo") or "")
         if not pubs:
             avisos.append("No está publicado en ML: se CREARÁ una nueva publicación (pausada) en ambas cuentas.")
-        # En modo crear el payload lo arma el pipeline de publicaciones_ready.
-        r = await _payload_crear_ml(req)
         if r and r.get("ok"):
             payload = r["payload"]
             n_pics = len(payload.get("pictures") or [])
@@ -484,9 +611,48 @@ async def _preview_ml(req: dict[str, Any]) -> dict[str, Any]:
 
     # Habrá ALTA (en las dos cuentas, o re-crear donde la borraron): la categoría se
     # revisa y se confirma antes de enviar. Actualizar una viva no cambia su categoría.
+    # El `prod` se lee UNA vez y sirve también al aviso de precio contra costos y, si
+    # `preview_crear_ml` no corrió (re-crear solo donde la borraron, o no se pudo armar
+    # el payload), al candado de peso y medidas, que entonces se mide aquí.
     categoria = None
+    aviso_medidas: str | None = None
     if not vivos or muertos:
-        categoria = await _revision_categoria_ml(req, r if (r and r.get("ok")) else None)
+        r_alta = r if (r and r.get("ok")) else None
+        if r_alta is None:
+            prod_alta = await _prod_alta(req)
+            r_alta = {"payload": {}, "prod": prod_alta} if prod_alta is not None else None
+        if r_alta is not None and r is None:
+            from services import publicar_ready
+            falta = publicar_ready.faltan_medidas_ml(r_alta["prod"])
+            if falta and not vivos:
+                return _alta_ml_frenada(req, falta)
+            if falta:
+                # Se actualiza lo vivo; la cuenta borrada NO se re-crea: su aviso dice
+                # eso en lugar de «se CREARÁ». Sin alta no hay categoría que revisar
+                # (la tarjeta bloquearía la actualización) ni precio que comparar.
+                for i, p in recrear:
+                    avisos[i] = (f"{p['cuenta']}: la publicación anterior ({p['item_id']}) "
+                                 f"fue eliminada en Mercado Libre y NO se re-creará — {falta}")
+                r_alta = None
+        if r_alta is not None:
+            from services import publicar_ready
+            # MEDIDAS DE RELLENO (Eduardo, 2-nov-2026): 1 kg y 30×20×15 cm pasan el
+            # candado (son > 0 y cuadran) pero son lo que se inventaba cuando faltaban.
+            # AVISO, no freno: `ok` sigue en True y el botón de confirmar también. Va
+            # aquí, una sola vez, porque este `prod` es el de TODA alta —en las dos
+            # cuentas o re-crear donde la borraron—, corriera o no `preview_crear_ml`.
+            # En su PROPIO campo y no en `avisos`: la caja de avisos se pinta al fondo
+            # del modal (debajo del payload) y el botón de confirmar vive en el pie
+            # fijo, así que se confirmaba sin verlo; además `preview()` antepone
+            # después los avisos de fotos, título y padre. El Estudio pinta
+            # `aviso_medidas` arriba, junto a las cuentas: cambia lo que cobra
+            # Mercado Envíos.
+            if publicar_ready.medidas_de_relleno_ml(r_alta["prod"]):
+                aviso_medidas = publicar_ready.MSG_MEDIDAS_RELLENO_ML
+            categoria = await _revision_categoria_ml(req, r_alta)
+            aviso_precio = await _aviso_precio_alta_ml(req, r_alta)
+            if aviso_precio:
+                avisos.append(aviso_precio)
 
     return {
         "ok": True, "canal": "mercado_libre", "sku": req.get("sku"), "modo": modo,
@@ -496,6 +662,7 @@ async def _preview_ml(req: dict[str, Any]) -> dict[str, Any]:
         "operaciones": {"titulo": bool(title), "atributos": len(attrs), "descripcion": bool(desc)},
         "payload": payload,
         "avisos": avisos,
+        "aviso_medidas": aviso_medidas,
     }
 
 
@@ -573,6 +740,53 @@ def _pt_resuelto(sku: str | None, wc_id: int | None) -> tuple[str | None, str]:
     return None, "auto"
 
 
+# Candados del ALTA en Amazon (2-nov-2026, Publicador sin draft): un draft que no pasó
+# por Crear puede llegar sin precio y sin tipo elegido. El PUT de Listings crea (o
+# reemplaza entero) el listing, así que se frena antes de mandarlo.
+MSG_AMZ_SIN_PRECIO = (
+    "Sin precio regular (el listing saldría en $0): Amazon no se publica sin precio. "
+    "Captúralo en el Estudio o en Costos antes de publicar.")
+# Los textos citan el rótulo REAL del control del Estudio (`TipoAmazonPicker.tsx`:
+# «Tipo de producto (Amazon)») y no usan jerga (productType, histórico).
+MSG_AMZ_SIN_TIPO = (
+    "Amazon: este SKU no tiene tipo de producto. Nadie lo eligió en el panel, no se ha "
+    "publicado antes con uno y Amazon no propuso ninguno para el título (antes salía como "
+    "«HOME», que casi nunca es el correcto). Elígelo en el Estudio, en «Tipo de producto "
+    "(Amazon)», y vuelve a publicar.")
+# «Amazon no contestó» no es «Amazon no propuso ninguno» (`_proponer_product_types`):
+# aquí NO se manda a fijarlo a mano, porque lo elegido en el panel gana para siempre
+# (regla 2) y reintentar habría bastado.
+MSG_AMZ_SIN_RESPUESTA = (
+    "Amazon: no se pudo consultar qué tipo de producto le toca a este SKU (Amazon no "
+    "contestó o pidió esperar). No se publicó. Reintenta en unos minutos.")
+MSG_AMZ_TIPO_POR_DETECTAR = (
+    "Sin tipo de producto elegido en el panel ni publicado antes con uno: al publicar se "
+    "busca por el título y, si Amazon no propone ninguno, NO se publica. Elígelo en «Tipo "
+    "de producto (Amazon)» para no depender de esa búsqueda.")
+
+
+def _precio_amazon(attributes: dict[str, Any]) -> float:
+    """
+    El precio que de verdad viaja a Amazon: `purchasable_offer` (el que cobra) y, si
+    el payload no lo trae, `list_price`. 0.0 si no hay ninguno. Pura.
+    """
+    def _valor(v: Any) -> float:
+        try:
+            return max(0.0, float(v))
+        except (TypeError, ValueError):
+            return 0.0
+    try:
+        oferta = (attributes.get("purchasable_offer") or [None])[0]
+        if isinstance(oferta, dict):
+            precio = ((oferta.get("our_price") or [{}])[0] or {})
+            sched = ((precio.get("schedule") or [{}])[0] or {})
+            return _valor(sched.get("value_with_tax"))
+        lista = ((attributes.get("list_price") or [{}])[0] or {})
+        return _valor(lista.get("value_with_tax") or lista.get("value"))
+    except (AttributeError, IndexError, TypeError):
+        return 0.0
+
+
 async def buscar_product_types(q: str) -> list[dict[str, str]]:
     """Buscador de tipos de producto de Amazon (como el picker de categorías
     de ML): keywords → lista ordenada por relevancia."""
@@ -599,15 +813,15 @@ async def _preview_amazon(req: dict[str, Any]) -> dict[str, Any]:
     campos = req.get("campos") or {}
     sku = req.get("sku")
     wc_id = req.get("wc_id")
-    pt, pt_origen = _pt_resuelto(sku, wc_id)
+    pt, pt_origen = await asyncio.to_thread(_pt_resuelto, sku, wc_id)
     title = (campos.get("titulo") or "").strip()
     bullets = [b.strip() for b in (campos.get("bullets") or []) if b and b.strip()]
     desc = _plain(campos.get("descripcion"))
     avisos: list[str] = []
     if not title:
         avisos.append("Falta el título.")
-    if not campos.get("precio_regular"):
-        avisos.append("Sin precio: revisa el precio regular antes de publicar.")
+    if not pt:
+        avisos.append(MSG_AMZ_TIPO_POR_DETECTAR)
     if len(title) > AMZ_TITULO_MAX:
         avisos.append(f"El título tiene {len(title)} caracteres (Amazon máx {AMZ_TITULO_MAX}).")
 
@@ -615,6 +829,7 @@ async def _preview_amazon(req: dict[str, Any]) -> dict[str, Any]:
     # Definitions API de SP-API (preview rápido); trae precio (regular), atributos
     # e IMÁGENES tal como se enviarán al publicar.
     payload = None
+    precio: float | None = None   # el que de verdad viajaría (el del payload)
     try:
         # preparar_imagenes=False: la vista previa NO sube medios ni tarda; solo
         # mide y avisa. La optimización real ocurre al CONFIRMAR la publicación.
@@ -622,6 +837,7 @@ async def _preview_amazon(req: dict[str, Any]) -> dict[str, Any]:
             str(sku), wc_id, campos, settings.amazon_marketplace_id, pt, None,
             preparar_imagenes=False,
         )
+        precio = _precio_amazon(attributes)
         n_imgs = sum(1 for k in attributes if "_image_locator" in k)
         if n_imgs:
             avisos.append(f"{n_imgs} imagen(es) se enviarán a Amazon.")
@@ -663,6 +879,16 @@ async def _preview_amazon(req: dict[str, Any]) -> dict[str, Any]:
         payload = {"productType": pt or "(auto)", "requirements": "LISTING", "attributes": attributes}
     except Exception as exc:  # noqa: BLE001
         log.warning("preview amazon attrs (%s): %s", sku, exc)
+    # El precio que `_confirmar_amazon` revisa es el del payload; sin payload, el del
+    # formulario. En $0 no se publica; si no, se compara con el de costos (aviso).
+    if precio is None:
+        precio = _num(campos.get("precio_regular"), 0.0)
+    if precio <= 0:
+        avisos.append(MSG_AMZ_SIN_PRECIO)
+    else:
+        aviso_precio = await _aviso_precio_costos(sku, precio)
+        if aviso_precio:
+            avisos.append(aviso_precio)
 
     avisos.append("Publicar CREA el listing en Amazon. Si faltan atributos obligatorios de la categoría, Amazon lo rechazará y verás el motivo aquí y en amazon_backlog.")
     return {
@@ -1226,7 +1452,8 @@ def _amazon_attributes(sku: str, campos: dict[str, Any], mp: str) -> dict[str, A
     # puede llegar texto tecleado a mano en el panel.
     from services.amazon_contenido import cabe_en_bytes
     search_terms = cabe_en_bytes((campos.get("backend_search_terms") or "").strip())
-    price = _num(campos.get("precio_regular"), 1.0)
+    # Sin precio NO se inventa $1 (era el respaldo): sale 0 y `_confirmar_amazon` frena.
+    price = _num(campos.get("precio_regular"), 0.0)
     l_val = _num(campos.get("largo")); w_val = _num(campos.get("ancho")); h_val = _num(campos.get("alto"))
 
     def V(value: Any) -> list[dict]:
@@ -1276,8 +1503,13 @@ def _amazon_attributes(sku: str, campos: dict[str, Any], mp: str) -> dict[str, A
     }
 
 
-async def _detectar_product_type(token: str, nombre: str, mp: str) -> str:
-    """Busca el productType más relevante por keywords del título. Fallback HOME."""
+async def _proponer_product_types(token: str, nombre: str, mp: str) -> list[str] | None:
+    """
+    Los productType que Amazon propone para las keywords del título, el más relevante
+    primero. `[]` = Amazon contestó y no propuso ninguno; None = NO contestó (timeout,
+    429 de throttling, 5xx, 401…). Publicar necesita distinguirlos: lo primero es falta
+    de dato y lo segundo se arregla reintentando.
+    """
     kw = " ".join((nombre or "").split()[:3]) or "home"
     try:
         async with httpx.AsyncClient(base_url=settings.amazon_sp_api_endpoint, timeout=20.0) as cli:
@@ -1286,13 +1518,28 @@ async def _detectar_product_type(token: str, nombre: str, mp: str) -> str:
                 params={"keywords": kw[:50], "marketplaceIds": mp},
                 headers={"x-amz-access-token": token},
             )
-        if r.status_code == 200:
-            tipos = r.json().get("productTypes", [])
-            if tipos:
-                return tipos[0]["name"]
+        if r.status_code != 200:
+            log.warning("_proponer_product_types: HTTP %s", r.status_code)
+            return None
+        return [t["name"] for t in (r.json().get("productTypes") or []) if t.get("name")]
     except Exception as exc:  # noqa: BLE001
-        log.warning("_detectar_product_type: %s", exc)
-    return "HOME"
+        log.warning("_proponer_product_types: %s", exc)
+        return None
+
+
+async def _detectar_product_type(token: str, nombre: str, mp: str,
+                                 respaldo: str | None = "HOME") -> str | None:
+    """
+    Busca el productType más relevante por keywords del título.
+
+    Si Amazon no propone ninguno (o no contesta) devuelve `respaldo`: `HOME` para el
+    generador de contenido (`amazon_ia._detectar`, que así no queda a ciegas). PUBLICAR
+    no pasa por aquí (`_confirmar_amazon` llama a `_proponer_product_types`): `HOME` no
+    es una detección, es la falta de una, y publicar ahí es elegir un tipo que nadie
+    eligió.
+    """
+    tipos = await _proponer_product_types(token, nombre, mp)
+    return tipos[0] if tipos else respaldo
 
 
 # Valores seguros conocidos para atributos comunes (si el enum del esquema lo permite).
@@ -1500,11 +1747,23 @@ async def _confirmar_amazon(req: dict[str, Any]) -> dict[str, Any]:
 
     mp = settings.amazon_marketplace_id
     seller = settings.amazon_seller_id
-    pt, _ = _pt_resuelto(sku, wc_id)
-    pt = pt or await _detectar_product_type(token, campos.get("titulo") or "", mp)
+    # Regla 2: panel > histórico > detección por título. Solo se frena cuando NINGUNA
+    # da un tipo; el respaldo `HOME` del detector no cuenta como fuente. Y «Amazon no
+    # contestó» se dice como tal: no es falta de dato y no hay que fijarlo a mano.
+    pt, _ = await asyncio.to_thread(_pt_resuelto, sku, wc_id)
+    if not pt:
+        tipos = await _proponer_product_types(token, campos.get("titulo") or "", mp)
+        if tipos is None:
+            return {"ok": False, "canal": "amazon", "sku": sku, "motivo": MSG_AMZ_SIN_RESPUESTA}
+        if not tipos:
+            return {"ok": False, "canal": "amazon", "sku": sku, "motivo": MSG_AMZ_SIN_TIPO}
+        pt = tipos[0]
     schema = await _amazon_schema(token, pt, mp)
     props = (schema or {}).get("properties", {})
     attributes = await _amazon_attrs_final(str(sku), wc_id, campos, mp, pt, schema)
+    # El precio FINAL, el del payload: un draft de Odoo puede no traer ninguno.
+    if _precio_amazon(attributes) <= 0:
+        return {"ok": False, "canal": "amazon", "sku": sku, "motivo": MSG_AMZ_SIN_PRECIO}
     sku_enc = urllib.parse.quote(str(sku), safe="")
 
     body: dict[str, Any] = {}

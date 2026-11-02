@@ -17,6 +17,7 @@ Esquema WP relevante:
 from __future__ import annotations
 
 import logging
+import math
 import time
 from contextlib import contextmanager
 from typing import Any, Iterator
@@ -227,14 +228,41 @@ def indice_catalogo() -> list[dict[str, Any]]:
     """
     Catálogo de productos PADRE con cualquier estado útil (para la vista
     GENERAL y derivados). Excluye basura de WP (trash, auto-draft, inherit).
+
+    `stock` (2-nov-2026) es para el orden por stock del Publicador, que con los
+    drafts dentro es su orden por omisión: el del producto, o la SUMA de sus
+    variantes vivas si las tiene —un padre variable no gestiona stock propio;
+    la misma regla que `woocommerce.stock_de_padre`—. Va en ESTA consulta, que
+    se arma una vez por `_CAND_TTL` (15 min), y no en una por página: ordenar en
+    la página exigía COUNT + ORDER BY sobre todo el catálogo en cada clic.
+
+    Costo: la suma de las hijas es UN recorrido agrupado de las ~7.5k variantes
+    (su `_stock` por `_meta_sub`, el mismo patrón que `indice_plano`) que se une
+    por `post_parent`, más una subconsulta por producto para el `_stock` propio.
+    Del orden de lo que ya cuesta `indice_plano` en cada página del aplanado, y SIN
+    MEDIR todavía contra Hostinger (medirlo en el sandbox antes de producción).
+    Se paga al vencer el TTL (en segundo plano, stale-while-revalidate) y además en
+    cada `POST /api/sync/catalogo`, que el frontend manda al abrir la app
+    (`CatalogoSync`): ése reconstruye como mucho una vez por minuto
+    (`woocommerce._CAND_REFRESCO_MIN`). Si la consulta falla, el índice cae al
+    escaneo REST, donde un padre variable no trae stock y se va al final del orden.
     """
     P = _prefix()
     rows = _fetch_all(
         f"""SELECT p.ID AS wc_id, p.post_title AS nombre, p.post_status AS estado,
-                   sku.meta_value AS sku
+                   sku.meta_value AS sku,
+                   {_meta_sub('p.ID', '_stock')} AS stock_propio,
+                   hs.stock AS stock_hijas
             FROM {P}posts p
             LEFT JOIN {P}postmeta sku
                    ON sku.post_id = p.ID AND sku.meta_key = '_sku'
+            LEFT JOIN (SELECT v.post_parent AS padre,
+                              SUM(CAST(COALESCE({_meta_sub('v.ID', '_stock')}, 0)
+                                       AS SIGNED)) AS stock
+                         FROM {P}posts v
+                        WHERE v.post_type = 'product_variation'
+                          AND v.post_status <> 'trash'
+                        GROUP BY v.post_parent) hs ON hs.padre = p.ID
             WHERE p.post_type = 'product'
               AND p.post_status NOT IN ('trash', 'auto-draft', 'inherit')
             ORDER BY p.post_date DESC"""
@@ -245,6 +273,10 @@ def indice_catalogo() -> list[dict[str, Any]]:
             "sku": (r.get("sku") or f"WC-{r['wc_id']}").strip(),
             "nombre": r.get("nombre") or "",
             "estado": r.get("estado"),
+            # SUM de cero hijas no existe (LEFT JOIN → NULL): manda el propio.
+            "stock": (_a_entero(r.get("stock_hijas"))
+                      if r.get("stock_hijas") is not None
+                      else _a_entero(r.get("stock_propio"))),
         }
         for r in rows
     ]
@@ -611,11 +643,20 @@ def expandir_con_padres(terminos: list[str], *,
     return salida, mapa
 
 
+# Las metas que mira el semáforo del Publicador (`woocommerce.faltantes_para_publicar`):
+# la categoría ML de los DOS escritores (selector del panel y predictor de Crear,
+# la misma prioridad que `publicar_ready.construir_prod`) y peso + medidas.
+_METAS_PUBLICAR: tuple[str, ...] = (
+    "ml_categoria_id", "ml_category_id", "_weight", "_length", "_width", "_height",
+)
+
+
 def precios_y_costo_por_wc_id(items: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
     """
     Precio activo, precio regular, precio oferta y costo — leídos DIRECTO de
     MySQL (no REST), para no depender del caché/anti-bot del hosting justo
-    después de guardar. `items`: [{"wc_id": int, "tipo": str|None}, ...].
+    después de guardar. `items`: [{"wc_id": int, "tipo": str|None,
+    "padre": int|None}, ...] (`padre` solo en filas que son variante).
 
     Simples: se leen de su propio postmeta (_price/_regular_price/_sale_price/costo).
     Padres `variable`: este hosting NO persiste el rango regular/oferta en el
@@ -628,6 +669,14 @@ def precios_y_costo_por_wc_id(items: list[dict[str, Any]]) -> dict[int, dict[str
     donde las variantes NO son la misma pieza (tallas de colchón, capacidades)
     y su costo real difiere del padre; quien lo pinte decide qué hacer con las
     que no traen costo propio (hoy: heredan el del padre).
+
+    Y `publicar` = {meta: valor} con lo que mira el semáforo del Publicador
+    (`woocommerce.faltantes_para_publicar`): la categoría ML y las medidas. Viaja
+    en la MISMA consulta (las seis claves de `_METAS_PUBLICAR` en el mismo IN),
+    así que no cuesta un viaje más. De una VARIANTE (`padre` en el item) se piden
+    también las del padre, en ese mismo lote, y rellenan sus huecos como
+    `postmeta_con_herencia` al publicar: en las 36 variantes medidas el 9-sep la
+    categoría ML vivía SOLO en el padre (ver la nota de herencia, abajo).
     """
     if not items:
         return {}
@@ -641,21 +690,33 @@ def precios_y_costo_por_wc_id(items: list[dict[str, Any]]) -> dict[int, dict[str
 
     ids_todos = [it["wc_id"] for it in items if it.get("wc_id")]
     padres = [it["wc_id"] for it in items if it.get("tipo") == "variable" and it.get("wc_id")]
+    # Padre de cada variante del lote: sus metas de publicar rellenan las de ella.
+    padre_de_fila = {int(it["wc_id"]): int(it["padre"]) for it in items
+                     if it.get("wc_id") and it.get("padre")}
+    solo_padres = sorted(set(padre_de_fila.values()) - set(ids_todos))
+    solo_padres_set = set(solo_padres)
+    precios = ("_price", "_regular_price", "_sale_price", "costo")
+    claves = precios + _METAS_PUBLICAR
 
     salida: dict[int, dict[str, Any]] = {}
-    for i in range(0, len(ids_todos), 500):
-        chunk = ids_todos[i:i + 500]
+    metas_pub: dict[int, dict[str, str]] = {}
+    lote = ids_todos + solo_padres
+    for i in range(0, len(lote), 500):
+        chunk = lote[i:i + 500]
         ph = ",".join(["%s"] * len(chunk))
+        phk = ",".join(["%s"] * len(claves))
         rows = _fetch_all(
             f"""SELECT post_id, meta_key, meta_value FROM {P}postmeta
-                WHERE post_id IN ({ph})
-                  AND meta_key IN ('_price', '_regular_price', '_sale_price', 'costo')""",
-            tuple(chunk),
+                WHERE post_id IN ({ph}) AND meta_key IN ({phk})""",
+            tuple(chunk) + claves,
         )
         agg: dict[int, dict[str, Any]] = {}
         for r in rows:
             agg.setdefault(r["post_id"], {})[r["meta_key"]] = r["meta_value"]
         for wc_id, d in agg.items():
+            metas_pub[wc_id] = {k: d[k] for k in _METAS_PUBLICAR if k in d}
+            if wc_id in solo_padres_set:
+                continue          # solo se pidió para heredar; no es fila
             salida[wc_id] = {
                 "precio": _f(d.get("_price")),
                 "precio_base": _f(d.get("_regular_price")),
@@ -666,6 +727,17 @@ def precios_y_costo_por_wc_id(items: list[dict[str, Any]]) -> dict[int, dict[str
     for wc_id in ids_todos:
         salida.setdefault(wc_id, {"precio": None, "precio_base": None, "precio_oferta": None,
                                   "costo": None, "costo_variantes": {}})
+        propias = dict(metas_pub.get(wc_id, {}))
+        padre = padre_de_fila.get(wc_id)
+        if padre:
+            # Las reglas de `postmeta_con_herencia`: huecos clave por clave, y
+            # peso y medidas como paquete (`medidas_del_padre`).
+            del_padre = metas_pub.get(padre, {})
+            for k, v in del_padre.items():
+                if k not in _MEDIDAS and _es_hueco(k, propias.get(k)) and not _es_hueco(k, v):
+                    propias[k] = v
+            propias.update(medidas_del_padre(propias, del_padre))
+        salida[wc_id]["publicar"] = propias
 
     if padres:
         ph = ",".join(["%s"] * len(padres))
@@ -857,14 +929,19 @@ def metadata_producto(wc_id: int) -> dict[str, Any]:
     padre_id = padre_de(wc_id)
     if padre_id:
         mp = postmeta(padre_id, claves)
+        # Las reglas de `postmeta_con_herencia`: lo que el Estudio prellena tiene
+        # que ser lo que el alta va a leer (peso y medidas, como paquete).
         for k in claves:
-            if k in _NO_HEREDA:
+            if k in _NO_HEREDA or k in _MEDIDAS:
                 continue
-            if str(m.get(k) or "").strip():
+            if not _es_hueco(k, m.get(k)):
                 continue
-            if str(mp.get(k) or "").strip():
+            if not _es_hueco(k, mp.get(k)):
                 m[k] = mp[k]
                 heredado.append(k)
+        for k, v in medidas_del_padre(m, mp).items():
+            m[k] = v
+            heredado.append(k)
 
     def _f(k: str) -> float | None:
         v = m.get(k)
@@ -1340,6 +1417,10 @@ def categorias_en_uso(vista: str = "productos") -> list[dict[str, Any]]:
 
     `count` son productos (filas del listado anidado) asignados DIRECTO a la
     categoría, sin sumar sus subcategorías.
+
+    Lee el mismo `_VISTAS_SQL` que el listado, así que desde el 2-nov-2026 el
+    Publicador también ve las categorías que solo tienen drafts (los de Odoo
+    nacieron con la categoría de departamento por prefijo).
     """
     import html
     P = _prefix()
@@ -1601,8 +1682,10 @@ def maestro_por_sku(skus: list[str]) -> dict[str, dict[str, Any]]:
 # variación significa «esta combinación está habilitada», no «está viva en la
 # tienda» —una hija `publish` de un padre `draft` no se puede comprar—. Medido:
 # 4,522 de las 7,477 variantes están en `publish` colgando de un padre en
-# `draft`. Filtrar por el estado propio de la hija llenaría la pestaña
-# Productos de mercancía que nadie terminó de crear.
+# `draft`. Filtrar por el estado propio de la hija llenaba la pestaña
+# Productos de mercancía que nadie terminó de crear. (Desde el 2-nov-2026 esa
+# mercancía SÍ es del Publicador —el draft se salta—, pero entra por el estado
+# del padre como todo lo demás, y el semáforo dice qué le falta.)
 # ─────────────────────────────────────────────────────────────────────────────
 
 # LA MARCA DE VARIANTE PROCESADA (Brandon, 9-sep-2026).
@@ -1626,16 +1709,28 @@ META_PROCESADA = "_crear_procesada_at"
 
 # Estados que deja pasar cada vista. Espeja `woocommerce.VISTAS`; se repite aquí
 # para que el SQL no dependa de importar el módulo de arriba (ciclo de imports).
+# Se cambian JUNTAS: si el índice cuenta una fila que la red de seguridad de
+# `listar_productos` tira, el Publicador dice «87» y pinta cero.
+#
+# `productos` (el Publicador) suma draft + inprogress desde el 2-nov-2026
+# (Eduardo: el estado draft se salta y Crear se apaga). Con eso todas las
+# variantes de un padre en borrador entran, con marca o sin ella: la marca
+# `META_PROCESADA` deja de decidir qué ve el Publicador y solo sigue
+# decidiendo en Crear (ver `_estado_efectivo`).
 _VISTAS_SQL: dict[str, set[str] | None] = {
-    "productos": {"publish", "pending", "ready", "private"},
+    "productos": {"publish", "pending", "ready", "private", "draft", "inprogress"},
     "crear": {"draft", "inprogress"},
     "omnicanal": None,
 }
 
 # Estados del filtro explícito del panel. Espeja `woocommerce._ESTADOS_WC`.
+# «inactivo» todavía no cuenta los drafts: pasar este filtro a la presencia en
+# canales es el paso 4 (pendiente), aparte del Publicador. «borrador» es el filtro
+# «Solo borradores» del Publicador (2-nov-2026): la cola que daba Crear.
 _ESTADOS_PANEL: dict[str, set[str]] = {
     "publicado": {"publish"},
     "inactivo": {"pending", "inprogress", "ready", "private"},
+    "borrador": {"draft", "inprogress"},
 }
 
 
@@ -1669,6 +1764,11 @@ def _estado_efectivo(alias_padre: str, alias_hija: str) -> str:
     variante trabajada salga de Crear y se pueda publicar sin esperar a sus
     hermanas — la regla que pidió Brandon. Si el padre ya está en un estado de
     Productos, la marca no cambia nada.
+
+    Desde el 2-nov-2026 el Publicador también deja pasar draft/inprogress, así
+    que ahí las dos ramas del CASE entran igual: la marca solo decide en Crear
+    (que la sigue leyendo) y en el filtro «Inactivos» de Omnicanal. No se retira
+    todavía: `imagenes_variante` lee la misma meta para proteger fotos.
     """
     return (f"CASE WHEN {alias_padre}.post_status IN ('draft', 'inprogress') "
             f"      AND {_meta_sub(alias_hija + '.ID', META_PROCESADA)} IS NOT NULL "
@@ -1726,7 +1826,10 @@ def indice_plano(
 
     El filtro de estado se aplica AL PADRE cuando la fila es una variante (ver
     el bloque de arriba). Por eso el `JOIN` con `pa`: sin él, las 4,522 hijas
-    `publish` de padres en `draft` se colarían en Productos.
+    `publish` de padres en `draft` se colaban en Productos cuando el Publicador
+    no veía drafts, y hoy se colarían en «Publicados» de Omnicanal (`estados`).
+    Las cifras de la tabla son de antes del 2-nov-2026: con draft e inprogress
+    dentro, la fila `productos` se acerca a la de `omnicanal`.
 
     TRES MODOS PARA LA MISMA PREGUNTA, según quién resolvió la lista:
       · `ids`: la lista viene de `core.products` (una etapa del flujo). Filtra
@@ -2244,6 +2347,75 @@ _NO_HEREDA: frozenset[str] = frozenset({
     "_thumbnail_id",
 })
 
+# PESO Y MEDIDAS se heredan como PAQUETE, no clave por clave (Eduardo, 2-nov-2026:
+# «que el 0 herede del padre en medidas» y luego «herencia en bloque»).
+#
+# Medido ese día sobre los publicados: 282 de los 548 que el candado de medidas de
+# ML frenaba eran variantes con '0', '0.0' o '0.000' propio y el padre con el valor
+# real. Heredando clave por clave se destrababan 159, pero 150 de ellas tomaban SOLO
+# el peso del padre y lo juntaban con una caja propia distinta (ORG-0798-NEG-CUA:
+# su caja de 75.5×58.5×37 cm con los 0.3 kg de una pieza de 17.5×6.5×6.5): una
+# pareja peso/caja que no existe en ningún registro y con la que Mercado Envíos
+# cobraría. Por eso el padre solo aporta su paquete cuando es el MISMO paquete:
+#   1. la variante sin ninguna medida real (las cuatro vacías o en 0) → toma las
+#      reales del padre, juntas;
+#   2. la variante con su caja real y sin peso → toma el peso del padre SOLO si la
+#      caja del padre es la misma;
+#   3. cualquier otro caso → nada; lo que falte lo reporta el candado
+#      (`publicar_ready.faltan_medidas_ml`) para que alguien capture lo real.
+# Un 0 nunca es un peso ni una medida reales; en un precio o en el stock el cero SÍ
+# significa algo, por eso la regla es solo de estas cuatro claves.
+_MEDIDAS: tuple[str, ...] = ("_weight", "_length", "_width", "_height")
+_CAJA: tuple[str, ...] = ("_length", "_width", "_height")
+
+
+def _es_hueco(clave: str, valor: Any) -> bool:
+    """
+    ¿Le falta este dato a la variante? Vacío siempre; en una medida, además, todo
+    número que no sea real > 0 (0, '0.0', negativo, nan, inf). Un texto que no es
+    número NO es hueco: no se tapa, que el candado lo reporte. Pura.
+    """
+    texto = str(valor if valor is not None else "").strip()
+    if not texto:
+        return True
+    if clave in _MEDIDAS:
+        try:
+            f = float(texto)
+        except ValueError:
+            return False
+        return not (math.isfinite(f) and f > 0)
+    return False
+
+
+def medidas_del_padre(propias: dict[str, Any], del_padre: dict[str, Any]) -> dict[str, Any]:
+    """
+    Las medidas (`_weight`, `_length`, `_width`, `_height`) que la variante toma del
+    padre, como paquete: ver el bloque de arriba. Devuelve {clave: valor del padre}
+    solo con lo que se hereda (vacío si nada). Pura; la usan las tres herencias de
+    este módulo. Walmart NO: `publicar_walmart.fundir_padre` sigue heredando clave
+    por clave porque, sin candado que frene, lo que no hereda lo rellena con 0.3 kg
+    y 10 cm (v0.622.0 lo evitó a propósito para las variantes).
+    """
+    huecos = {k for k in _MEDIDAS if _es_hueco(k, propias.get(k))}
+    reales_padre = {k: del_padre[k] for k in _MEDIDAS if not _es_hueco(k, del_padre.get(k))}
+    if not huecos or not reales_padre:
+        return {}
+    if huecos == set(_MEDIDAS):
+        return reales_padre
+    if (huecos == {"_weight"} and set(reales_padre) == set(_MEDIDAS)
+            and _misma_caja(propias, reales_padre)):
+        return {"_weight": reales_padre["_weight"]}
+    return {}
+
+
+def _misma_caja(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """Las dos cajas miden lo mismo, en cualquier orden (al centésimo de cm). Pura."""
+    try:
+        return (sorted(round(float(a[k]), 2) for k in _CAJA)
+                == sorted(round(float(b[k]), 2) for k in _CAJA))
+    except (KeyError, TypeError, ValueError):
+        return False
+
 
 def postmeta_con_herencia(wc_id: int) -> tuple[dict[str, Any], set[str]]:
     """
@@ -2262,14 +2434,19 @@ def postmeta_con_herencia(wc_id: int) -> tuple[dict[str, Any], set[str]]:
         return propias, set()
 
     heredadas: set[str] = set()
-    for clave, valor in postmeta_todo(padre).items():
-        if clave in _NO_HEREDA:
+    del_padre = postmeta_todo(padre)
+    for clave, valor in del_padre.items():
+        if clave in _NO_HEREDA or clave in _MEDIDAS:
             continue
         # Solo rellena HUECOS: una meta propia con contenido siempre gana.
-        if str(propias.get(clave) or "").strip():
+        if not _es_hueco(clave, propias.get(clave)):
             continue
-        if not str(valor or "").strip():
+        if _es_hueco(clave, valor):
             continue
+        propias[clave] = valor
+        heredadas.add(clave)
+    # Peso y medidas, como paquete (`medidas_del_padre`).
+    for clave, valor in medidas_del_padre(propias, del_padre).items():
         propias[clave] = valor
         heredadas.add(clave)
     return propias, heredadas

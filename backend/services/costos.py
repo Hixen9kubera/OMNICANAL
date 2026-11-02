@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any
+from typing import Any, Iterable
 
 import requests
 
@@ -816,15 +816,45 @@ def asegurar_finales(sku: str, cat_id: str = "",
     return fila
 
 
+MEDIDAS_BASE = ("largo", "alto", "ancho", "peso")
+
+
+def _con_lo_guardado(sku: str, base: dict[str, Any],
+                     conservar: Iterable[str]) -> dict[str, Any]:
+    """
+    `base` con lo que costos_validados YA tiene en las medidas de `conservar`,
+    tal cual: un NULL sigue NULL (`costo_desde_validados` lo volvería 0.0). Es lo
+    que se guarda cuando esas medidas se usaron para calcular pero no son de este
+    SKU (ver `recalcular`).
+    """
+    claves = [k for k in MEDIDAS_BASE if k in set(conservar)]
+    if not claves:
+        return base
+    if costing_write.activo():
+        cv = costing_read.validados(sku)
+    else:
+        cv = db.fetch_one("SELECT * FROM costos_validados WHERE sku=%s", (sku,))
+    cv = cv or {}
+    return {**base, **{k: cv.get(k) for k in claves}}
+
+
 def recalcular(sku: str, overrides: dict[str, Any] | None = None,
                incluir_envio: bool = True, margen: float = MARGEN_DEFAULT,
-               cuenta: str = DEFAULT_ACCOUNT, auto_cbm: bool = False) -> dict[str, Any] | None:
+               cuenta: str = DEFAULT_ACCOUNT, auto_cbm: bool = False,
+               conservar: Iterable[str] = ()) -> dict[str, Any] | None:
     """
     Recálculo MANUAL: toma el costo/dims actuales, aplica overrides editables
     (costo_producto, costo_cbm, largo, alto, ancho, peso), recalcula el precio y
     PERSISTE en costos_validados + costos_finales, dejando log. Devuelve la fila
     guardada (costos_finales) o None. Si auto_cbm, el costo_cbm se deriva de las
     dims (× tarifa) salvo que venga explícito en overrides.
+
+    `conservar` son medidas (de `MEDIDAS_BASE`) con las que se CALCULA pero que
+    no se guardan: costos_validados se queda con lo que ya tenía en ellas. Es el
+    peso o la medida que el Estudio enseña DEL PADRE de una variante: el precio
+    tiene que salir con el paquete que se va a publicar, pero ese paquete no es
+    de la variante. La fila que se devuelve sí lleva lo calculado; quien la
+    sincroniza con WooCommerce debe saltarse esas mismas claves.
 
     Un identificador provisional lanza ``SkuProvisional`` de entrada, antes de
     leer costos o consultar la comisión a ML: no hay nada que calcular para algo
@@ -845,7 +875,7 @@ def recalcular(sku: str, overrides: dict[str, Any] | None = None,
         base, cat = _preparar_base(sku, overrides, auto_cbm)
         if base.get("costo_unitario", 0) <= 0:
             return None
-        _guardar_validados(sku, base)
+        _guardar_validados(sku, _con_lo_guardado(sku, base, conservar))
         _log_costo(sku, "manual", "recalculo_sin_precio",
                    {"overrides": overrides or {}, "base": base, "cat_id": cat})
         log.info("recalcular(%s): costo guardado sin precio (cat_id=%r)", sku, cat)
@@ -860,7 +890,7 @@ def recalcular(sku: str, overrides: dict[str, Any] | None = None,
                ("pct_comision", "costo_comision", "costo_fee_envio",
                 "precio_sugerido", "precio_base")}
 
-    _guardar_validados(sku, base)
+    _guardar_validados(sku, _con_lo_guardado(sku, base, conservar))
     fila = _guardar_finales(sku, base, pricing, cat)
     if calc.get("_bloqueado"):
         fila = {**fila, "costo_bloqueado": True}

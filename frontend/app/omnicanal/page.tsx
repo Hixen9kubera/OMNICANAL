@@ -248,6 +248,12 @@ export default function OmnicanalPage() {
   // Qué vista produjo un total. En General la cuenta siempre es null.
   const llaveVista = `${canal}|${esGeneral ? "" : cuenta ?? ""}|${criterio}`;
 
+  // DESDE EL 2-nov-2026 el Publicador (vista «productos») cuenta también los
+  // borradores, así que esta resta ya no son borradores: es lo que ninguna
+  // pestaña de trabajo lista (programados y demás estados raros de Woo), casi
+  // siempre 0. El texto dice «fuera del Publicador»; el nombre de la variable
+  // se quedó. Lo de abajo es la historia de por qué existe la resta.
+  //
   // «incluye N borradores» (Eduardo, 23-sep). La cifra grande de General SIN
   // filtros sale de la vista «omnicanal» de Woo —todos los estados— y la
   // pestaña General, de la vista «productos», sin borradores: 7,288 contra
@@ -271,7 +277,9 @@ export default function OmnicanalPage() {
     if (limpio?.llave !== llaveVista || limpio.total !== pag.total) return null;
     if (pag.total !== cat) return null;
     const n = cat - pub;
-    return n >= 0 ? n : null;
+    // `> 0` y no `>= 0`: con los borradores dentro del Publicador la resta da 0
+    // casi siempre, y «incluye 0 fuera del Publicador» en cada visita es ruido.
+    return n > 0 ? n : null;
   })();
 
   // ── Las DOS lecturas de `filtro_activas` ────────────────────────────
@@ -684,10 +692,9 @@ export default function OmnicanalPage() {
               {borradores !== null && (
                 <div
                   className="mt-0.5 text-xs font-semibold tabular-nums opacity-85"
-                  title="Borradores de Crear Productos: cuentan en esta cifra y en «Todo el catálogo», pero no en la pestaña General, que cuenta publicados, pendientes y listos."
+                  title="Productos en estados que el Publicador no lista (ni publicados, pendientes, listos ni borradores; p. ej. programados): cuentan en esta cifra y en «Todo el catálogo», pero no en la pestaña General."
                 >
-                  incluye {new Intl.NumberFormat("es-MX").format(borradores)}{" "}
-                  {borradores === 1 ? "borrador" : "borradores"}
+                  incluye {new Intl.NumberFormat("es-MX").format(borradores)} fuera del Publicador
                 </div>
               )}
             </div>

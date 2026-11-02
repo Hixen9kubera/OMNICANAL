@@ -1140,8 +1140,8 @@ function AtributosML({
         </div>
       ) : f.estado === "sin_categoria" || !d.categoria ? (
         <p className="mt-2 text-xs text-slate-500">
-          Sin categoría de ML no se sabe qué pide. Se asigna en Crear Productos o en
-          el Publicador (la del panel manda).
+          Sin categoría de ML no se sabe qué pide. Se asigna en el Estudio del
+          Publicador (la del panel manda).
         </p>
       ) : !campos.length ? (
         <p className="mt-2 text-xs text-slate-500">
