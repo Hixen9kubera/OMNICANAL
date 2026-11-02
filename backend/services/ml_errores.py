@@ -111,9 +111,13 @@ def _una(c: dict[str, Any], causas: list[dict[str, Any]], nombres: dict[str, str
 
     if codigo == "item.pictures.invalid_size":
         return {"codigo": codigo,
-                "porque": "Al menos una foto mide menos de 500 × 250 px, el mínimo de Mercado Libre.",
-                "solucion": "Reemplaza esa foto por una más grande en WooCommerce (o pásala por el editor "
-                            "de imágenes) y vuelve a publicar."}
+                "porque": "Al menos una foto queda en menos de 500 × 250 px, el mínimo de Mercado Libre. "
+                          "Ojo: Mercado Libre RECORTA el fondo blanco, así que cuenta lo que mide el "
+                          "producto dentro de la foto, no la imagen completa.",
+                "solucion": "El panel ya agranda el producto de las fotos chicas antes de subirlas "
+                            "(v0.712.0). Si aun así falla, la foto es demasiado pequeña o borrosa: "
+                            "reemplázala en WooCommerce (o pásala por el editor de imágenes) y vuelve "
+                            "a publicar."}
 
     if codigo in ("missing.fashion_grid.grid_id.values", "invalid.fashion_grid.grid_id.values"):
         return {"codigo": codigo,

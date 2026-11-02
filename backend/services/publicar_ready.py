@@ -14,6 +14,7 @@ salen de `vendor/ml_ready/`.
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
 import re
@@ -119,7 +120,11 @@ def _backlog_ml(backlog_key: str, entry: dict[str, Any]) -> None:
                     error,
                     entry.get("ml_status"),
                     entry.get("desc_status"),
-                    entry.get("pics_preuploaded") or 0,
+                    # El vendor no la anota cuando el alta FALLA y la columna quedaba en 0 aunque las
+                    # fotos sí se subieron (2-nov-2026): se cuenta del payload, que siempre viene.
+                    entry.get("pics_preuploaded")
+                    or len([p for p in (entry.get("payload") or {}).get("pictures") or []
+                            if isinstance(p, dict) and "id" in p]),
                     json.dumps(entry.get("payload"), ensure_ascii=False, default=str),
                     json.dumps(entry.get("ml_response"), ensure_ascii=False, default=str)[:65000],
                     datetime.now() if success else None,
@@ -298,6 +303,83 @@ def _instalar_sin_medidas_de_caja() -> None:
     from vendor.ml_ready import attribute_mapper as ml_mapper
     if ml_mapper._get_dimension_value is not _sin_medidas_de_caja:
         ml_mapper._get_dimension_value = _sin_medidas_de_caja
+
+
+# ── Mercado Libre RECORTA el fondo blanco: se agranda el PRODUCTO, no la imagen ──────
+#
+# `ml_api.preupload_picture` agranda toda foto con lado largo < 500 a 500 justos y rellena
+# con bandas BLANCAS hasta 250 de alto (`ml_api._ensure_min_size`). Medido el 2-nov-2026 en
+# un lote de 51: ML recorta el blanco al procesar la foto y guarda solo el contenido —subimos
+# 501×250 y ML guardó 246×159 (ORG-0722-NEG-M), 491×192 (TEC-1713-MUL), 356×205
+# (ACC-0547-NEG-GRI)—, así que la foto queda abajo del mínimo y el alta vuelve con
+# `item.pictures.invalid_size`. El mismo archivo, byte por byte, pasó en una cuenta y no en la
+# otra: no se puede contar con eso. Y el reintento del vendor reenvía la MISMA foto ya subida.
+#
+# Aquí: si el CONTENIDO mide menos de FOTO_ML_RIESGO por el lado largo, se recorta el blanco,
+# el contenido se agranda (Lanczos, como `imagenes_amazon`) hasta FOTO_ML_LADO px y se le deja
+# un margen blanco; después del recorte de ML sigue midiendo eso. Una foto cuyo contenido ya
+# mide FOTO_ML_RIESGO o más se manda tal cual (solo a JPEG), como antes: ya pasaba.
+FOTO_ML_RIESGO = 600      # contenido por debajo de esto se agranda (el mínimo de ML es 500)
+FOTO_ML_LADO = 1000       # a cuánto se agranda el lado largo del CONTENIDO
+FOTO_ML_CORTO = 60        # lado corto del contenido; ML pide 50
+_FOTO_ML_MARGEN = 0.04    # margen blanco alrededor, por lado
+_FOTO_ML_UMBRAL = 20      # qué tan lejos del blanco cuenta como contenido (0-255)
+
+
+def _foto_a_rgb(img):
+    from PIL import Image
+    if img.mode in ("RGBA", "LA", "P"):
+        img = img.convert("RGBA")
+        fondo = Image.new("RGB", img.size, (255, 255, 255))
+        fondo.paste(img, mask=img.split()[-1])
+        return fondo
+    return img.convert("RGB") if img.mode != "RGB" else img
+
+
+def _contenido(img):
+    """La caja del contenido: lo que no es blanco (ni casi blanco). None si la foto es toda blanca."""
+    from PIL import Image, ImageChops
+    dif = ImageChops.difference(img, Image.new("RGB", img.size, (255, 255, 255))).convert("L")
+    return dif.point(lambda v: 255 if v > _FOTO_ML_UMBRAL else 0).getbbox()
+
+
+def _foto_para_ml(image_bytes: bytes, min_long: int = 500, min_short: int = 250) -> bytes:
+    """Reemplazo de `ml_api._ensure_min_size` (misma firma): JPEG RGB cuyo CONTENIDO no queda
+    bajo el mínimo de ML después de que ML le recorta el fondo blanco."""
+    from PIL import Image
+    try:
+        img = _foto_a_rgb(Image.open(io.BytesIO(image_bytes)))
+        caja = _contenido(img)
+        recorte = img.crop(caja) if caja else img
+        w, h = recorte.size
+        if caja and max(w, h) >= FOTO_ML_RIESGO and min(w, h) >= FOTO_ML_CORTO:
+            final = img                              # ya alcanza: se manda como venía
+        else:
+            escala = max(FOTO_ML_LADO / max(w, h), FOTO_ML_CORTO / max(1, min(w, h)))
+            recorte = recorte.resize((max(1, round(w * escala)), max(1, round(h * escala))), Image.LANCZOS)
+            w, h = recorte.size
+            m = round(max(w, h) * _FOTO_ML_MARGEN)
+            final = Image.new("RGB", (max(w + 2 * m, min_long), max(h + 2 * m, min_short)), (255, 255, 255))
+            final.paste(recorte, ((final.width - w) // 2, (final.height - h) // 2))
+            log.info("foto para ML: %sx%s (contenido %sx%s) → %sx%s",
+                     img.width, img.height, caja[2] - caja[0] if caja else img.width,
+                     caja[3] - caja[1] if caja else img.height, final.width, final.height)
+        buf = io.BytesIO()
+        final.save(buf, format="JPEG", quality=92)
+        return buf.getvalue()
+    except Exception:  # noqa: BLE001 — una foto rara no frena el alta: el camino de siempre
+        log.exception("foto para ML: no se pudo preparar; se usa el escalado del vendor")
+        return _ensure_min_size_original(image_bytes, min_long, min_short)
+
+
+_ensure_min_size_original = None
+
+
+def _instalar_fotos_para_ml() -> None:
+    global _ensure_min_size_original
+    if ml_api._ensure_min_size is not _foto_para_ml:
+        _ensure_min_size_original = ml_api._ensure_min_size
+        ml_api._ensure_min_size = _foto_para_ml
 
 
 # ── Un atributo OPCIONAL con formato que ML no acepta no tumba el alta ─────────────
@@ -541,6 +623,7 @@ def configurar() -> None:
     publisher_core.configurar(save_backlog_fn=_backlog_ml)
     _instalar_anotador()
     _instalar_sin_medidas_de_caja()
+    _instalar_fotos_para_ml()
     _configurado = True
 
 

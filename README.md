@@ -1001,6 +1001,49 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.712.0 — Fotos para ML: se agranda el PRODUCTO, porque Mercado Libre recorta el fondo blanco
+
+Brandon (2-nov-2026): «revisa cómo está el publicador de Mercado Libre y cómo gestiona esos errores… hace
+redimensionado en las imágenes y vuelve a intentarlo». En un lote de 51, 19 rechazos fueron
+`item.pictures.invalid_size` (cause 3703) con fotos del packing list de 366×159.
+
+**Lo que hacía el pipeline** (`vendor/ml_ready`):
+
+1. `ml_api.preupload_picture` descarga la foto y `_ensure_min_size` la agranda a **500 justos** por el lado
+   largo y la rellena con **bandas blancas** hasta 250 de alto (366×159 → 501×250); la sube a `/pictures`.
+2. Si ML la rechaza por tamaño, `publisher_core` (línea 475) solo vuelve a subir las fotos que fueron como URL;
+   las que ya tienen `id` se reenvían iguales. Todas tenían `id`: **reenviaba el mismo payload**. En los logs del
+   2-nov sale 22 veces «re-subiendo con escalado» y ni una «Re-subida».
+3. Lo marca `NEEDS_MANUAL_CONFIG: IMAGES_TOO_SMALL` y el adaptador ya no reintenta (correcto: daría lo mismo).
+
+**Lo que hace ML, medido** bajando de su CDN las fotos que guardó: **recorta el fondo blanco**.
+
+| SKU | Subimos | Contenido real | ML guardó |
+|---|---|---|---|
+| ORG-0722-NEG-M | 501×250 | 223×144 | 246×159 |
+| TEC-1713-MUL | 501×250 | 445×174 | 491×192 |
+| ACC-0547-NEG-GRI | 501×250 | 323×187 | 356×205 |
+
+La foto queda bajo el mínimo. La aceptada y la rechazada eran **el mismo archivo** (mismo md5) en las dos
+cuentas: ML no valida igual siempre y no se puede contar con que pase. Las que sí pasaron quedaron publicadas
+con fotos de 246 px.
+
+**El arreglo** (adaptador; `vendor/` intacto): `publicar_ready.configurar()` reemplaza
+`ml_api._ensure_min_size` por `_foto_para_ml` (misma firma, mismo patrón que v0.711.0). Si el **contenido**
+—lo que no es blanco— mide menos de 600 px por el lado largo (o menos de 60 por el corto), se recorta el blanco,
+el contenido se agranda con Lanczos a **1000 px** (como `imagenes_amazon`) y se le deja un margen blanco de 4 %.
+Después del recorte de ML sigue en ~1000 px. Fotos cuyo contenido ya mide 600 o más se mandan como antes. Si
+algo falla con una foto rara, se usa el escalado de siempre (nunca frena el alta). Con las 7 fotos rechazadas
+del 2-nov: todas quedan en ~1000 px tras el recorte.
+
+Además:
+- `ml_backlog.pics_preuploaded` quedaba en **0 en los fallos** aunque las fotos sí se subieron (el vendor no lo
+  anota en ese camino); ahora se cuenta del payload.
+- El mensaje de `item.pictures.invalid_size` (`ml_errores`) explica que ML recorta el blanco y que cuenta el
+  tamaño del producto dentro de la foto.
+
+Pruebas: `tests/test_publicar_fotos_ml.py`. No se probó una alta real en ML con este cambio.
+
 ### v0.711.0 — Al publicar en ML, las medidas de la CAJA ya no se copian a los atributos del PRODUCTO
 
 Hallado el 2-nov-2026 en la vista previa de un lote de 51 publicaciones nuevas.
