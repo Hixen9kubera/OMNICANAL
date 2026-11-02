@@ -1001,6 +1001,35 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.711.0 — Al publicar en ML, las medidas de la CAJA ya no se copian a los atributos del PRODUCTO
+
+Hallado el 2-nov-2026 en la vista previa de un lote de 51 publicaciones nuevas.
+`vendor/ml_ready/attribute_mapper.build_secondary_attributes` llena **todo** atributo de la
+categoría cuyo id o nombre contenga length/width/height/weight (o largo/ancho/alto/peso) con
+`prod['length'/'width'/'height'/'weight']`, y esos cuatro son el **paquete**: los que manda el
+panel en `campos.peso/largo/ancho/alto` (o las metas de Woo, que tampoco son medidas reales —son el
+volumen reconstruido del CBM—). Lo que salía:
+
+| Producto | Atributo | Lo que se iba a publicar | De dónde salía |
+|---|---|---|---|
+| Barras para lagartijas | Peso máximo soportado | 460 kg | la caja pesa 0.46 kg |
+| Ménsulas para repisa | Peso máximo soportado | 800 g | la caja pesa 0.8 kg |
+| Rodilleras de voleibol | Grosor | 170 mm | el ancho de la caja |
+| Guantes de MMA | Largo de la mano / ancho de la palma | 25 / 15 cm | la caja |
+| Caminadoras (lote del mismo día) | Superficie para correr | 118 × 56 cm | la caja |
+
+**El arreglo vive en el adaptador** (`services/publicar_ready.py`, regla de la casa 1: `vendor/` no
+se toca): `configurar()` reemplaza `attribute_mapper._get_dimension_value` por una que no devuelve
+nada, igual que ya envolvía `ml_api.create_item` para anotar respuestas. El **paquete** no cambia:
+`publisher_core` arma `SELLER_PACKAGE_*` directo de esos cuatro campos, sin pasar por el mapper. Una
+medida del producto que se sepa va **explícita** en los atributos del panel; si la categoría la exige
+y no se sabe, ML lo dice al publicar en vez de recibir un dato falso.
+
+Pendiente fuera de este cambio: revisar las publicaciones ya creadas por el panel en categorías con
+atributos de medida (las del 28-oct y las del 2-nov) por si llevan alguno de estos valores.
+
+Pruebas: `tests/test_publicar_medidas_caja.py`.
+
 ### v0.710.1 (ajuste) — Hasta 24 corridas de Apify a la vez (eran 2)
 
 Brandon (2-nov-2026): «puedes mandarlos en lote, tengo 64 GB de RAM para su uso en Apify». El tope de corridas

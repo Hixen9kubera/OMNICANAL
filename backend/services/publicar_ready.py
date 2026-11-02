@@ -276,6 +276,30 @@ def _instalar_anotador() -> None:
         ml_api.create_item = _create_item_que_anota
 
 
+# ── Las medidas de la CAJA no son las del PRODUCTO ────────────────────────────────
+#
+# `attribute_mapper.build_secondary_attributes` llena CUALQUIER atributo de la categoría
+# cuyo id o nombre diga length/width/height/weight (o largo/ancho/alto/peso) con
+# `prod['length'/'width'/'height'/'weight']`. Esos cuatro son el PAQUETE: los manda el
+# panel en `campos.peso/largo/ancho/alto` (o las metas de Woo, que tampoco son medidas —
+# son el volumen reconstruido del CBM). Medido el 2-nov-2026 en la vista previa de un lote
+# de 51: barras para lagartijas con «Peso máximo soportado = 460 kg» (la caja pesa 0.46 kg),
+# rodilleras con «Grosor = 170 mm», ménsulas que «soportan 800 g», guantes con largo de
+# mano de 25 cm… y en las caminadoras la «superficie para correr» salía del tamaño de la caja.
+# El paquete sigue saliendo de esos cuatro campos en `publisher_core` (`SELLER_PACKAGE_*`,
+# que no pasa por aquí); lo que se apaga es copiarlos a los atributos del producto. Una
+# medida del producto que se sepa va EXPLÍCITA en los atributos del panel; si la categoría
+# la exige y no se sabe, ML lo dice al publicar en vez de recibir un dato falso.
+def _sin_medidas_de_caja(attr_id: str, attr_name: str, prod: dict) -> None:  # noqa: ARG001
+    return None
+
+
+def _instalar_sin_medidas_de_caja() -> None:
+    from vendor.ml_ready import attribute_mapper as ml_mapper
+    if ml_mapper._get_dimension_value is not _sin_medidas_de_caja:
+        ml_mapper._get_dimension_value = _sin_medidas_de_caja
+
+
 # ── Un atributo OPCIONAL con formato que ML no acepta no tumba el alta ─────────────
 #
 # TEC-1875-MUL (23-oct-2026): «El valor que ingresaste en "Grosor del trazo" es
@@ -516,6 +540,7 @@ def configurar() -> None:
     # solo no se persiste de vuelta en WC.
     publisher_core.configurar(save_backlog_fn=_backlog_ml)
     _instalar_anotador()
+    _instalar_sin_medidas_de_caja()
     _configurado = True
 
 
