@@ -316,6 +316,155 @@ class ReintentoDeUnaPendiente(unittest.TestCase):    # acta 2.11, B0.6
         self.liberar.assert_called_once()
 
 
+class SenalesReales(unittest.TestCase):              # verificación del 3-nov: N1, N3 y N7(b)
+    """Lo que el `guardar` real devuelve en cada caso, armado con `orders_write.senal` (el simulacro de `Flujo`
+    devolvía nueva=True con `mysql_respaldo`, cosa que `guardar` nunca hace, y por eso no vio N1)."""
+
+    COMPLETA = fila(estado="processing", wc=None)
+    CON_PEDIDO = fila(estado="processing", wc=777)
+
+    setUp = Flujo.setUp
+
+    def correr_real(self, salidas, kubera_primero=True, orden=None):
+        it = iter(salidas)
+
+        def registrar(order_id, orden, estado, wc, *a):
+            self.registros.append((estado, wc))
+            return next(it)
+        pedidos_ml._registrar_venta.side_effect = registrar
+        with mock.patch.object(settings, "pedidos_kubera_primero", kubera_primero), \
+             mock.patch.object(settings, "fanout_fuente", "kubera"), \
+             mock.patch.object(pedidos_ml.httpx, "AsyncClient", Woo(201, self.llamadas)):
+            return asyncio.run(pedidos_ml._sincronizar_serializado("2000000001", None, False,
+                                                                    dict(orden or ORDEN)))
+
+    def sin_senal(self):
+        motivos = [c.kwargs.get("motivo", "") for c in self.encolar.call_args_list]
+        return (any("(sin señal)" in m for m in motivos),
+                "fanout_sin_senal" in [c.args[0] for c in self.aviso.call_args_list])
+
+    def test_n1_el_pre_registro_cae_a_mysql_y_el_worker_lo_aplica(self):
+        cayo = {**orders_write.senal(None, None, ENC), "escrito_en": "mysql_respaldo"}
+        despues = orders_write.senal(self.COMPLETA, self.CON_PEDIDO, ENC)     # el worker ya la aplicó
+        self.assertFalse(despues["nueva_en_kubera"] or despues["vendible_cambia"])
+        r = self.correr_real([cayo, despues])
+        self.assertTrue(r["ok"])
+        self.assertEqual(self.sin_senal(), (True, True))
+        self.assertIn(["ACC-0001-AZL"], [c.args[0] for c in self.encolar.call_args_list])
+
+    def test_n3_la_senal_no_se_armo(self):
+        rota = {**orders_write.senal(None, None, ENC), "error_senal": "KeyError: 'lineas'"}
+        self.correr_real([rota], kubera_primero=False)
+        self.assertEqual(self.sin_senal(), (True, True))
+        self.assertIn("error al armar la señal", self.aviso.call_args.args[1])
+
+    def test_n7b_fanout_kubera_sin_kubera_primero_venta_nueva_avisa_una_vez(self):
+        nueva = orders_write.senal(None, self.CON_PEDIDO, ENC)
+        self.assertTrue(nueva["nueva_en_kubera"])
+        self.correr_real([nueva], kubera_primero=False)
+        self.assertEqual(self.sin_senal(), (False, False))
+        self.assertEqual([c.args[0] for c in self.encolar.call_args_list], [["ACC-0001-AZL"]])
+        self.assertEqual(self.registros, [("processing", 777)])          # sin pre-registro
+
+    def test_n7b_un_aviso_repetido_que_no_cambia_nada_no_encola_ni_avisa(self):
+        self.previo.return_value = 777
+        igual = orders_write.senal(self.CON_PEDIDO, self.CON_PEDIDO, ENC)
+        self.correr_real([igual], kubera_primero=False)
+        self.assertEqual(self.sin_senal(), (False, False))
+        self.encolar.assert_not_called()
+
+    def test_full_sin_senal_avisa_sin_decir_que_encolo(self):          # N6
+        cayo = {**orders_write.senal(None, None, ENC), "escrito_en": "mysql_respaldo"}
+        with mock.patch.object(pedidos_ml, "_compensar_stock_protegido",
+                               mock.AsyncMock(return_value={"compensado": 0})):
+            self.correr_real([cayo], kubera_primero=False, orden={**ORDEN, "es_full": True})
+        self.assertEqual(self.sin_senal(), (False, True))
+        self.assertIn("es FULL", self.aviso.call_args.args[1])
+
+
+class EspejoAplicadoAvisa(unittest.TestCase):         # verificación del 3-nov: N4
+    """El worker del espejo aplica una venta que cayó a MySQL: vuelve a encolar sus SKU no FULL, ya con la
+    venta en el libro (el encolado de `pedidos_ml` pudo leer el libro antes de que el worker aplicara)."""
+
+    PAYLOAD = {**ENC, "skus": ["ACC-0001-AZL"], "es_fulfillment": False, "estado_wc": "processing"}
+
+    def test_encola_si_lee_el_libro(self):
+        from services import kubera_mirror
+        with mock.patch.object(stock_libro, "lee_libro", return_value=True), \
+             mock.patch.object(fanout_stock, "encolar_varios") as enc:
+            kubera_mirror._avisar_espejo_aplicado(dict(self.PAYLOAD))
+        self.assertEqual(enc.call_args.args[0], ["ACC-0001-AZL"])
+        self.assertIn("(espejo aplicó)", enc.call_args.kwargs["motivo"])
+
+    def test_full_o_fuente_woo_no_encola(self):
+        from services import kubera_mirror
+        for lee, full in ((True, True), (False, False)):
+            with mock.patch.object(stock_libro, "lee_libro", return_value=lee), \
+                 mock.patch.object(fanout_stock, "encolar_varios") as enc:
+                kubera_mirror._avisar_espejo_aplicado({**self.PAYLOAD, "es_fulfillment": full})
+            enc.assert_not_called()
+
+    def test_el_worker_avisa_despues_de_aplicar_channel_orders(self):
+        from services import kubera_mirror
+
+        class Cur:
+            def execute(self, *a):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        class Conn:
+            def cursor(self):
+                return Cur()
+
+            def commit(self):
+                pass
+
+            def rollback(self):
+                pass
+
+            def close(self):
+                pass
+        orden_llamadas = []
+        with mock.patch.object(kubera_mirror, "_get_pool", return_value=mock.Mock(connection=Conn)), \
+             mock.patch.dict(kubera_mirror._UPSERTS,
+                             {"channel.orders": lambda cur, p: orden_llamadas.append("upsert")}), \
+             mock.patch.object(kubera_mirror, "_registrar"), \
+             mock.patch.object(kubera_mirror, "_avisar_espejo_aplicado",
+                               side_effect=lambda p: orden_llamadas.append("aviso")):
+            kubera_mirror._trabajar("o.py", "f", "pedidos_ml", "channel.orders", "UPSERT",
+                                    dict(self.PAYLOAD), "x")
+        self.assertEqual(orden_llamadas, ["upsert", "aviso"])
+
+    def test_si_el_worker_falla_no_avisa(self):
+        from services import kubera_mirror
+
+        def falla(cur, p):
+            raise RuntimeError("kubera caída")
+
+        class Conn:
+            def cursor(self):
+                return mock.MagicMock()
+
+            def rollback(self):
+                pass
+
+            def close(self):
+                pass
+        with mock.patch.object(kubera_mirror, "_get_pool", return_value=mock.Mock(connection=Conn)), \
+             mock.patch.dict(kubera_mirror._UPSERTS, {"channel.orders": falla}), \
+             mock.patch.object(kubera_mirror, "_registrar"), \
+             mock.patch.object(kubera_mirror, "_persistir_error"), \
+             mock.patch.object(kubera_mirror, "_avisar_espejo_aplicado") as aviso:
+            kubera_mirror._trabajar("o.py", "f", "pedidos_ml", "channel.orders", "UPSERT",
+                                    dict(self.PAYLOAD), "x")
+        aviso.assert_not_called()
+
+
 class LiberarSoloEsqueletos(unittest.TestCase):                      # segunda revisión, #8
     def test_el_delete_exige_esqueleto(self):
         with mock.patch.object(orders_write, "activo", return_value=True), \

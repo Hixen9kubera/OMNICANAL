@@ -427,12 +427,33 @@ def _trabajar(origen_py: str, funcion: str, tabla_mysql: str, tabla_kubera: str,
             _intento()
         _registrar(origen_py, funcion, tabla_mysql, tabla_kubera, operacion,
                    clave, ok=True, ms=(time.perf_counter() - t0) * 1000)
+        if tabla_kubera == "channel.orders":
+            _avisar_espejo_aplicado(payload)
     except Exception as exc:  # noqa: BLE001
         ms = (time.perf_counter() - t0) * 1000
         _registrar(origen_py, funcion, tabla_mysql, tabla_kubera, operacion,
                    clave, ok=False, ms=ms, exc=exc)
         _persistir_error(origen_py, funcion, tabla_mysql, tabla_kubera,
                          operacion, clave, exc, payload)
+
+
+def _avisar_espejo_aplicado(p: dict[str, Any]) -> None:
+    """El worker acaba de aplicar una venta que cayó a MySQL (2.11, N4 de la verificación del 3-nov).
+
+    `pedidos_ml` ya encoló sus SKU al caer («sin señal»), pero el fan-out lee el libro tras su espera
+    (`DEBOUNCE_S`): si el worker aplica DESPUÉS, ese reparto salió con el número viejo y nadie volvía a
+    encolar (la red, `stock_watch` en modo libro, está apagada). Aquí, ya con la venta en kubera, se encolan
+    otra vez sus SKU si no es FULL. Solo con FANOUT_FUENTE=kubera; con `woo` no hace nada. Nunca lanza."""
+    try:
+        from services import fanout_stock, stock_libro
+        if not stock_libro.lee_libro() or p.get("es_fulfillment"):
+            return
+        skus = [str(s) for s in (p.get("skus") or []) if s]
+        if skus:
+            fanout_stock.encolar_varios(
+                skus, motivo=f"venta {p.get('cuenta')} {p.get('external_order_id')} (espejo aplicó)")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("espejo kubera: no se avisó al fan-out de %s: %s", p.get("external_order_id"), exc)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -557,6 +557,31 @@ def _registrar_venta(order_id: str, orden: dict, estado_wc: str, wc_id: int | No
     return None
 
 
+def _sin_senal(*senales: dict | None) -> bool:
+    """¿La pasada se quedó sin señal para el fan-out? (2.11: #2 de la segunda revisión; N1 y N3 de la
+    verificación del 3-nov.) Sí cuando NINGÚN registro dio `nueva_en_kubera`/`vendible_cambia` desde kubera
+    Y alguno falló: no hubo registro, cayó a MySQL (`mysql_respaldo`: lo aplica el worker del espejo, sin
+    señal) o la señal no se armó (`error_senal`).
+
+    N1: con kubera primero, el PRE-registro cae a MySQL y el worker lo aplica en milisegundos; el registro
+    de después escribe en kubera sobre una fila ya completa y da nueva=False. Antes bastaba que alguno
+    hubiera escrito en kubera para callarse, y esa venta nunca le llegaba al fan-out. Un aviso repetido
+    que no cambia nada (todo en kubera, sin fallas) NO es «sin señal»."""
+    regs = [s for s in senales if s is not None]
+    dio = any(s.get("escrito_en") == "kubera" and not s.get("error_senal")
+              and (s.get("nueva_en_kubera") or s.get("vendible_cambia")) for s in regs)
+    fallo = not regs or any(s.get("escrito_en") != "kubera" or s.get("error_senal") for s in regs)
+    return fallo and not dio
+
+
+def _motivo_sin_senal(*senales: dict | None) -> str:
+    regs = [s for s in senales if s is not None]
+    if not regs:
+        return "sin registro"
+    return ", ".join("error al armar la señal" if s.get("error_senal") else str(s.get("escrito_en"))
+                     for s in regs)
+
+
 def _avisar_fanout(senal: dict | None, order_id: str) -> None:
     """FANOUT_FUENTE=kubera (contrato v2 con INVENTARIO FANOUT, 28-oct): la venta —o su
     cancelación— movió el libro, así que se encolan sus SKUs NO FULL, con el motivo de
@@ -926,26 +951,24 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
         if stock_libro.lee_libro():
             # FANOUT_FUENTE=kubera: SOLO desde la señal de kubera (2.11, INVENTARIO FANOUT).
             _avisar_fanout(senal, str(order_id))
-            en_kubera = any(x and x.get("escrito_en") == "kubera" for x in (senal, senal_previa))
-            if not en_kubera:
-                # La venta no llegó a kubera por esta vía (cayó a MySQL o el registro lanzó), ni
-                # por el pre-registro de kubera primero (segunda revisión, #6: si ese sí escribió,
-                # la venta ya está en el libro y ya avisó).
-                #
-                # Segunda revisión, #2: al caer a MySQL el evento viaja por `espejar` y su worker
-                # (`_trabajar`) suele aplicarlo en milisegundos, SIN foto ni señal; nunca llega a
-                # la cola del respaldo, así que el reproceso (2.15) no lo ve. Se encolan aquí sus
-                # SKU no FULL: el fan-out lee el libro tras su espera y, si el worker ya la aplicó,
-                # reparte el número bueno; si no, el reproceso los vuelve a encolar con su señal.
-                # Encolar de más no daña: recalcula el mismo número.
+            if _sin_senal(senal, senal_previa):
+                # Ningún registro de esta pasada dio señal desde kubera y alguno falló (ver
+                # `_sin_senal`). Segunda revisión, #2: al caer a MySQL el evento viaja por `espejar`
+                # y su worker (`_trabajar`) lo aplica SIN foto ni señal; nunca llega a la cola del
+                # respaldo, así que el reproceso (2.15) no lo ve. Se encolan aquí sus SKU no FULL, y
+                # el worker los vuelve a encolar cuando aplica (`kubera_mirror._avisar_espejo_aplicado`,
+                # N4 de la verificación del 3-nov). Encolar de más no daña: recalcula el mismo número.
                 if descuenta:
                     fanout_stock.encolar_varios([s for s in skus if s],
                                                 motivo=f"venta {orden['cuenta']} {order_id} (sin señal)")
                 await asyncio.to_thread(
                     alertas.avisar, "fanout_sin_senal",
                     f"*Venta {orden['cuenta']} {order_id} sin señal de kubera* "
-                    f"({(senal or {}).get('escrito_en') or 'sin registro'}): se encolaron sus SKU para "
-                    f"el fan-out; el libro la resta cuando el espejo o el reproceso la apliquen.")
+                    f"({_motivo_sin_senal(senal, senal_previa)}): "
+                    + ("se encolaron sus SKU no FULL para el fan-out; el libro la resta cuando el espejo "
+                       "o el reproceso la apliquen." if descuenta else
+                       "es FULL, no hay nada que repartir; el libro la registra cuando el espejo o el "
+                       "reproceso la apliquen."))
         elif descuenta and accion == "creado":
             fanout_stock.encolar_varios([s for s in skus if s],
                                         motivo=f"venta {orden['cuenta']} {order_id}")

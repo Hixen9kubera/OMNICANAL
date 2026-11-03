@@ -1001,6 +1001,46 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.716.0 — Pedidos, etapa B de 2.11 (kubera primero): el código, INERTE con las banderas de hoy
+
+Es el código de la etapa B del acta 2.11 (`_paso_prod_pedidos_2_11`), con las dos revisiones independientes de
+MAESTRO y la verificación del 3-nov aplicadas. **Con `PEDIDOS_KUBERA_PRIMERO` y `FANOUT_FUENTE` sin poner (como en
+producción) el registro de ventas, el reclamo, Woo y el fan-out quedan como en v0.714.0.** Encender B es otra acta.
+
+**Lo que SÍ cambia con las banderas de hoy (medido en producción, solo lectura):**
+- `orders_write.estados_wc` y la marca de agua de Amazon (`ultimo_actualizado`) no cuentan las filas sin pedido
+  (`wc_order_id` NULL). Hay 0 filas con `wc_order_id` NULL y estado con valor, así que el dedupe de los sondeos
+  no cambia. La marca puede ir unos segundos atrás mientras dura un reclamo: re-mira de más, nunca de menos.
+- `orders_write.liberar` solo borra un ESQUELETO (`skus is null`): una venta completa sin pedido nunca se borra,
+  aunque `reclamar(estricto=False)` haya dado True con kubera lanzando.
+- El sondeo de ML (encendido en solo registro) cuenta aparte `por_pack` y `vieja`, y los dos llegan a Slack con
+  las demás diferencias. `vieja` solo tapa lo que crearía (falta, sin pedido): una cancelación atrasada de más de
+  7 días se cuenta como reparable, porque es un PUT de estado.
+
+**Lo que queda listo para B (`PEDIDOS_KUBERA_PRIMERO=true`):**
+- La venta NUEVA se pre-registra COMPLETA en kubera antes de Woo, con su estado de ML (una venta que llega ya
+  cancelada no se resta). Una venta que ya tiene pedido no se pre-registra. Si Woo falla, no se suelta el reclamo:
+  queda «Woo pendiente» y la completa el reintento del aviso de ML (encendido en producción desde el 24–26-sep),
+  que entra por la rama del reclamo huérfano (adopta o crea, sin `liberar`).
+- Un esqueleto de más de 24 h que se completa no es `nueva_en_kubera`, pero sí `vendible_cambia` si tiene líneas
+  no FULL y no está cancelado.
+
+**Lo que queda listo para T0 (`FANOUT_FUENTE=kubera`):**
+- La señal «venta nueva en kubera» encola el fan-out (contrato v2 con INVENTARIO FANOUT).
+- **Sin señal (`pedidos_ml._sin_senal`):** si ningún registro de la pasada dio señal desde kubera y alguno falló
+  (cayó a MySQL, o la señal no se armó), se encolan los SKU no FULL («(sin señal)») y se avisa
+  `fanout_sin_senal`. Cubre también el pre-registro que cae a MySQL y lo aplica el worker del espejo (N1) y la
+  señal que no se arma (N3). Un aviso repetido que no cambia nada no avisa.
+- **La red del worker (N4):** cuando el worker del espejo (`kubera_mirror._trabajar`) aplica un `channel.orders`
+  que cayó a MySQL, vuelve a encolar sus SKU no FULL ya con la venta en el libro («(espejo aplicó)»). Antes, si el
+  worker aplicaba después de que el fan-out leyera el libro, nadie volvía a encolar.
+
+**Pruebas:** `test_kubera_primero_etapa_b` (las señales reales de `orders_write.senal` para N1 y N3, el reintento
+de una venta «Woo pendiente», la ráfaga en dos procesos, `FANOUT_FUENTE=kubera` sin kubera primero, la red del
+worker), `test_pedidos_ml_sondeo` (vieja contra atrasada, por_pack y viejas en Slack). Mutantes de N1/N3, N4, #2,
+#6 y de la guarda del reclamo caen. `backend/scripts/probar_kubera_primero_sandbox.py` (K1–K10) contra el
+Postgres del sandbox, con ROLLBACK.
+
 ### v0.715.0 (ajuste) — `campos.imagenes` llega al publicador
 
 `publicar_ready._imagenes_para` usa la lista de fotos de `campos` si viene («esa MANDA», desde sep-2026), pero
@@ -1489,8 +1529,8 @@ con el código real y ROLLBACK: `scripts/probar_kubera_primero_sandbox.py`, 9/9.
 - El sondeo de Amazon avisa si llega al tope de páginas y lee kubera en hilo (`_desde`, `estados_wc`).
 - El vigilante avisa si no puede leer kubera.
 **Lo que bloqueaba la etapa B (kubera primero), revisión #1, #2, #3 y #8:**
-- El registro previo a Woo es solo para una venta NUEVA y deja `estado_wc` en NULL: el libro igual la resta
-  (`coalesce(estado_wc, '')`), y si Woo falla el dedupe de los sondeos no la da por «sin cambio». Una venta que
+- El registro previo a Woo es solo para una venta NUEVA. (Esta versión lo dejaba con `estado_wc` en NULL;
+  desde v0.715.0 lleva el estado de ML: ver ahí.) Una venta que
   ya tiene pedido no se pre-registra: un PUT fallido deja el estado anterior en kubera y el reintento lo ve.
   `orders_write.estados_wc` y la marca de agua de Amazon (`ultimo_actualizado`) no cuentan las filas sin pedido.
 - Un esqueleto de más de 24 h que se completa no es `nueva_en_kubera` (el planeador no crea OV de ventas viejas),
