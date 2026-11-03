@@ -548,7 +548,7 @@ class EtlCoreOdooRetirado(unittest.TestCase):
             ("from migration.id_map", []),
             ("from channel.listings", []),
             ("from ops.migration_issues", []),
-            # 3.2: sin la columna estado_ciclo el ETL no archiva (este arnés no prueba eso).
+            # 3.2: sin la columna archivado_at el ETL no archiva (este arnés no prueba eso).
             ("from information_schema.columns", [(False,)]),
         ], escrito)
         conexiones = iter([_PgConn(fuentes_kubera), _PgConn(destino)])
@@ -601,7 +601,7 @@ class EtlCoreNoLoRevive(unittest.TestCase):
             ("from channel.listings", [("0031-0001",), ("0032-0002",), ("MX-7661",)]),
             # Ya anotado otro día: no se repite.
             ("from ops.migration_issues", [("0031-0001", "provisional")]),
-            # 3.2: sin la columna estado_ciclo el ETL no archiva (este arnés no prueba eso).
+            # 3.2: sin la columna archivado_at el ETL no archiva (este arnés no prueba eso).
             ("from information_schema.columns", [(False,)]),
         ], escrito)
         conexiones = iter([_PgConn(fuentes_kubera), _PgConn(destino)])

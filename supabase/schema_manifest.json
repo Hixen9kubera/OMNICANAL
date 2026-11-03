@@ -974,15 +974,34 @@
      "almacen_por:text:null",
      "almacen_en:timestamp with time zone:null",
      "estado_ciclo:text:notnull",
-     "procesada_at:timestamp with time zone:null"
+     "procesada_at:timestamp with time zone:null",
+     "archivado_at:timestamp with time zone:null",
+     "archivado_por:text:null",
+     "archivado_motivo:text:null",
+     "archivado_sku_destino:USER-DEFINED:null"
     ],
     "constraints": {
-     "CHECK": 4,
-     "FOREIGN KEY": 1,
+     "CHECK": 5,
+     "FOREIGN KEY": 2,
      "PRIMARY KEY": 1,
      "UNIQUE": 1
     },
     "rls": true
+   },
+   "products_ciclo_v": {
+    "columnas": [
+     "sku:USER-DEFINED:null",
+     "estado_ciclo:text:null",
+     "procesada_at:timestamp with time zone:null",
+     "archivado_at:timestamp with time zone:null",
+     "archivado_por:text:null",
+     "archivado_motivo:text:null",
+     "archivado_sku_destino:USER-DEFINED:null",
+     "publicado:boolean:null",
+     "situacion:text:null"
+    ],
+    "constraints": {},
+    "rls": false
    },
    "usuarios": {
     "columnas": [
@@ -2222,7 +2241,7 @@
  "resumen": {
   "almacen": 35,
   "channel": 10,
-  "core": 5,
+  "core": 6,
   "costing": 8,
   "enrich": 14,
   "migration": 4,

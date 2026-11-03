@@ -232,6 +232,12 @@ export interface ListarParams {
   /** Solo productos con existencias en el almacén DROP OFF de Odoo (id 142). */
   dropOff?: boolean;
   /**
+   * La BAJA del catálogo (`core.products.archivado_at`, 0080). Sin valor, el
+   * Publicador oculta lo archivado; `vivos` = solo lo archivado que sigue
+   * publicado en algún canal (hay que bajarlo o desarchivarlo); `todos` = sin filtro.
+   */
+  archivados?: "vivos" | "todos";
+  /**
    * Etapa del flujo del SKU (opción B de /omnicanal). Se suma con AND a todo
    * lo demás y convierte la petición en LISTA DEL SISTEMA: el canal filtra por
    * SKU exacto y cualquier falla de lectura responde 503, nunca una lista a
@@ -267,6 +273,7 @@ export function listarProductos(
   if (p.skus) q.set("skus", p.skus);
   if (p.revisado) q.set("revisado", "true");
   if (p.dropOff) q.set("drop_off", "true");
+  if (p.archivados) q.set("archivados", p.archivados);
   if (p.etapa) q.set("etapa", p.etapa);
   // `!== undefined`, no `if (p.aplanar)`: aquí `false` es una respuesta ("quiero
   // el anidado"), no la ausencia de una. Omitirlo deja mandar al flag de Railway.

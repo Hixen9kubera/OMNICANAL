@@ -22,9 +22,12 @@ Notas de traducción (MySQL productos → core.products):
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from services import supabase_db as sdb
+
+log = logging.getLogger(__name__)
 
 # Mismo contrato que _ORDEN_SQL de woocommerce.py; solo lo traducible.
 ORDEN = {"reciente": "updated_at desc"}
@@ -99,3 +102,38 @@ def nombres_y_wc(skus: list[str]) -> dict[str, dict[str, Any]]:
             salida[idx.get(r["sku"].lower(), r["sku"])] = {
                 "nombre": r.get("name") or "", "wc_id": r.get("wc_id")}
     return salida
+
+
+# ── LA BAJA DEL CATÁLOGO (0080, PLAN MAESTRO 3.2, diseño de Eduardo del 2-nov) ──
+# «Archivado» (`archivado_at`) es una decisión: el SKU ya no se trabaja ni se vende.
+# «Publicado» se calcula (`core.sku_publicado`). El Publicador oculta lo archivado por
+# omisión y deja ver aparte lo archivado que sigue vivo en un canal (la situación
+# «incoherente» de `core.products_ciclo_v`).
+
+def archivados_de(skus: list[str]) -> set[str] | None:
+    """Los SKUs de `skus` dados de baja, en MAYÚSCULAS (citext). ``None`` = no se pudo
+    saber (la 0080 todavía no está aplicada, o kubera no contestó): el llamador NO oculta
+    nada. Es solo para no estorbar en la cola; ningún flujo decide con esto."""
+    salida: set[str] = set()
+    limpios = [str(s).strip() for s in skus if str(s or "").strip()]
+    try:
+        for i in range(0, len(limpios), 800):
+            for r in sdb.fetch_all(
+                """select upper(sku::text) as sku from core.products
+                    where archivado_at is not null and sku = any(%s::citext[])""",
+                    (limpios[i:i + 800],)):
+                salida.add(r["sku"])
+    except Exception as exc:  # noqa: BLE001
+        log.warning("no se pudo leer la baja del catálogo (no se oculta nada): %s", exc)
+        return None
+    return salida
+
+
+def archivados_vivos() -> list[str]:
+    """Los SKUs archivados que siguen publicados (activa o pausada, por familia): lo que
+    hay que bajar del canal o desarchivar. LANZA si no puede leer: el filtro da 503,
+    nunca una lista vacía que parezca «no hay ninguno»."""
+    return [r["sku"] for r in sdb.fetch_all(
+        """select upper(sku::text) as sku from core.products_ciclo_v
+            where archivado_at is not null and situacion = 'incoherente'
+            order by 1""")]

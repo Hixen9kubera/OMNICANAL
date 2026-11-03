@@ -72,10 +72,12 @@ CAMPOS_SEAM = ("name", "wc_id", "status")
 # siguiera escribiendo has_variations=false, revertiría el relleno de la 0080 esa misma noche.
 # Entran a CAMPOS (se actualizan) y NO a CAMPOS_SEAM: no rompen la racha de seam_gap.
 #
-# ARCHIVADO: lo que Woo ya no tiene (no está entre sus productos y variaciones vivos) pasa
-# a `estado_ciclo='archivado'` (columna de la 0080; sin ella, este paso se salta). Nunca
-# saca a nadie de archivado. Dos frenos: si Woo trajo menos del 90 % de los wc_id del padrón
-# (lectura incompleta), o si saldrían más de ARCHIVAR_MAX de golpe, NO archiva y lo reporta.
+# ARCHIVADO: lo que Woo ya no tiene (no está entre sus productos y variaciones vivos) queda
+# dado de baja en `archivado_at` (por 'etl', motivo 'ya_no_en_woo'; columnas de la 0080 con el
+# diseño del 2-nov: la baja ya no vive en `estado_ciclo`; sin ellas, este paso se salta). Nunca
+# saca a nadie de archivado: eso lo decide una persona. Dos frenos: si Woo trajo menos del
+# 90 % de los wc_id del padrón (lectura incompleta), o si saldrían más de ARCHIVAR_MAX de
+# golpe, NO archiva y lo reporta.
 ARCHIVAR_MAX = 200
 ARCHIVAR_MIN_LECTURA = 0.9
 
@@ -99,7 +101,7 @@ def derivar_familia(registros) -> dict:
 
 def a_archivar(vivos_core, woo_vivos) -> tuple[list, str | None]:
     """(skus a archivar, motivo por el que NO se archiva o None). `vivos_core` = [(sku, wc_id)]
-    del padrón con wc_id y estado_ciclo distinto de archivado; `woo_vivos` = wc_id que Woo tiene."""
+    del padrón con wc_id y sin archivar (`archivado_at` nulo); `woo_vivos` = wc_id que Woo tiene."""
     if not vivos_core:
         return [], None
     if len(woo_vivos) < ARCHIVAR_MIN_LECTURA * len(vivos_core):
@@ -496,13 +498,13 @@ def main() -> None:
 
     # ARCHIVADO (3.2): solo si la 0080 ya creó la columna.
     pcur.execute("""select exists (select 1 from information_schema.columns
-                    where table_schema = 'core' and table_name = 'products' and column_name = 'estado_ciclo')""")
+                    where table_schema = 'core' and table_name = 'products' and column_name = 'archivado_at')""")
     if pcur.fetchone()[0]:
         pcur.execute("select sku::text, wc_id from core.products "
-                     "where wc_id is not null and estado_ciclo <> 'archivado'")
+                     "where wc_id is not null and archivado_at is null")
         archivar, archivar_omitido = a_archivar(pcur.fetchall(), woo_vivos)
     else:
-        archivar, archivar_omitido = [], "sin la columna estado_ciclo (0080 no aplicada)"
+        archivar, archivar_omitido = [], "sin la columna archivado_at (0080 no aplicada)"
 
     # ── DIFF incremental contra core.products ────────────────────────────────
     union = list(por_clave.values())
@@ -621,8 +623,9 @@ def main() -> None:
                    excluded.status, excluded.has_variations, excluded.source, excluded.parent_sku)
         """, filas, page_size=BATCH)
     if archivar:
-        pcur.execute("update core.products set estado_ciclo = 'archivado' "
-                     "where sku = any(%s) and estado_ciclo <> 'archivado'", (archivar,))
+        pcur.execute("update core.products set archivado_at = now(), archivado_por = 'etl', "
+                     "archivado_motivo = 'ya_no_en_woo' where sku = any(%s) and archivado_at is null",
+                     (archivar,))
     if aliases_nuevos:
         psycopg2.extras.execute_values(pcur, """
             insert into migration.id_map (sku_original, sku, tabla_origen)

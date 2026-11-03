@@ -254,6 +254,8 @@ export interface RespuestaProductos extends RespuestaProductosBase {
   filtro_etapa?: FiltroEtapa | null;
   /** `revisado=` cortó en 2,000 SKUs (costing_read.skus_revisados). */
   revisado_truncado?: boolean;
+  /** SKUs dados de baja que el Publicador quitó de ESTA página (el total no los descuenta). */
+  archivados_ocultos?: number;
 }
 
 export interface SubCuentaInfo {

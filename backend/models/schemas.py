@@ -304,6 +304,9 @@ class RespuestaProductos(BaseModel):
     # por lo tanto la lista puede estar incompleta. Un filtro que devuelve de
     # menos sin decirlo es peor que no tenerlo.
     revisado_truncado: bool = False
+    # Cuántos SKUs dados de baja (core.products.archivado_at) se quitaron de ESTA página
+    # del Publicador. El total de la paginación no los descuenta (3.2).
+    archivados_ocultos: int = 0
     # En qué estado está la foto del flujo para ESTA petición. Con "apagado" o
     # "calentando" ningún ítem trae `flujo` y la pantalla se pinta como antes.
     flujo_estado: str = "apagado"       # apagado | calentando | vieja | listo

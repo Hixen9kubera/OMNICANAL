@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Search, RotateCw, ImageIcon, Wand2, ChevronRight, Pencil, Layers, Loader2, Warehouse, Split, PowerOff, ArrowDownUp, FilePen } from "lucide-react";
+import { Search, RotateCw, ImageIcon, Wand2, ChevronRight, Pencil, Layers, Loader2, Warehouse, Split, PowerOff, ArrowDownUp, FilePen, Archive } from "lucide-react";
 
 import AppNavbar from "@/components/AppNavbar";
 import Pagination from "@/components/Pagination";
@@ -284,6 +284,11 @@ export default function ProductosPage() {
   // es del SKU, no de la publicación, así que la pregunta vale en las dos
   // pantallas. Lo resuelve el backend con UNA consulta a Odoo, cacheada.
   const [dropOff, setDropOff] = useState(false);
+  // LA BAJA DEL CATÁLOGO (0080, diseño de Eduardo del 2-nov). Por omisión el
+  // backend quita de la página lo archivado; este chip muestra SOLO lo archivado
+  // que sigue publicado en algún canal: lo que hay que bajar o desarchivar.
+  const [archivadosVivos, setArchivadosVivos] = useState(false);
+  const [archivadosOcultos, setArchivadosOcultos] = useState(0);
   // Categoría de WooCommerce (id). El mismo filtro que Omnicanal, y como allá
   // se acumula con la búsqueda, "Filtrar SKUs" y DROP OFF: el backend lo
   // resuelve en la misma consulta, así que el total y las páginas son del filtro.
@@ -399,6 +404,7 @@ export default function ProductosPage() {
         canal: "general", page, perPage: PER_PAGE,
         search: busqueda || undefined, skus: skusFiltro || undefined,
         dropOff: dropOff || undefined,
+        archivados: archivadosVivos ? "vivos" : undefined,
         categoria,
         estados: soloBorradores ? ["borrador"] : undefined,
         // El Publicador: lo publicado, pendiente o listo Y los borradores
@@ -415,10 +421,11 @@ export default function ProductosPage() {
       .then((r) => {
         setProductos(r.items);
         setPag(r.paginacion);
+        setArchivadosOcultos(r.archivados_ocultos ?? 0);
         // Sin búsqueda/filtro y 0 resultados → probablemente el índice de
         // WooCommerce todavía se está construyendo (arranque en frío). Reintenta
         // en vez de mostrar "no encontrados".
-        if (!busqueda && !skusFiltro && !categoria && !soloBorradores && r.paginacion.total === 0 && reintentos.current < 45) {
+        if (!busqueda && !skusFiltro && !categoria && !soloBorradores && !archivadosVivos && r.paginacion.total === 0 && reintentos.current < 45) {
           reintentos.current += 1;
           setPreparando(true);
           setTimeout(() => cargar(), 1000);
@@ -443,7 +450,7 @@ export default function ProductosPage() {
       })
       .finally(() => setCargando(false));
     return () => ctrl.abort();
-  }, [page, busqueda, skusFiltro, dropOff, categoria, modo, orden, soloBorradores]);
+  }, [page, busqueda, skusFiltro, dropOff, archivadosVivos, categoria, modo, orden, soloBorradores]);
 
   useEffect(() => cargar(), [cargar]);
 
@@ -630,6 +637,28 @@ export default function ProductosPage() {
             <FilePen size={15} className="shrink-0" />
             Solo borradores
           </button>
+          {/* ARCHIVADOS VIVOS — dados de baja en kubera y todavía publicados
+              (activa o pausada). Sin el chip, lo archivado no aparece aquí. */}
+          <button
+            onClick={() => { setArchivadosVivos(!archivadosVivos); setPage(1); }}
+            title={archivadosVivos
+              ? "Mostrando SOLO lo archivado que sigue publicado en algún canal: hay que bajarlo del canal o desarchivarlo."
+              : "Lo archivado no aparece en el Publicador. Este filtro muestra lo archivado que todavía está publicado (activa o pausada)."}
+            className={[
+              "inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium",
+              archivadosVivos
+                ? "border-rose-300 bg-rose-50 text-rose-700"
+                : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
+            ].join(" ")}
+          >
+            <Archive size={15} className="shrink-0" />
+            Archivados vivos
+          </button>
+          {archivadosOcultos > 0 && !archivadosVivos && (
+            <span className="text-xs text-slate-500" title="Dados de baja en kubera (archivado). El total de la paginación todavía los cuenta.">
+              {archivadosOcultos} archivado{archivadosOcultos === 1 ? "" : "s"} oculto{archivadosOcultos === 1 ? "" : "s"} en esta página
+            </span>
+          )}
           <button
             onClick={cargar}
             title="Recargar"

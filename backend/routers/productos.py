@@ -29,7 +29,7 @@ from models.schemas import (
     Producto,
     RespuestaProductos,
 )
-from services import (amazon, channel_read, costing_read, ejemplos, inventario,
+from services import (amazon, channel_read, core_read, costing_read, ejemplos, inventario,
                       meli, modo_publicacion, odoo, presencia, publicar, studio,
                       woocommerce, wp_db)
 from services import inventario_flujo as invf
@@ -329,9 +329,12 @@ async def listar_productos(
     drop_off: bool = Query(False, description="Solo productos con existencias en el almacén DROP OFF de Odoo (id 142). Todos los canales"),
     etapa: str | None = Query(None, max_length=40, description="Etapa del flujo del SKU: recibido | bodega_3de4 | en_full | en_drop. Se suma con AND a todo lo demás; la lista la resuelve el sistema, así que cualquier falla da 503 y nunca una lista incompleta"),
     aplanar: bool | None = Query(None, description="Cada variante como fila propia y el padre fuera (7,288 filas → 13,261). Sin valor, manda LISTADO_APLANADO de Railway"),
+    archivados: str | None = Query(None, description="La BAJA del catálogo (core.products.archivado_at, 0080). Sin valor: el Publicador (General, vista productos) la oculta · vivos = solo los archivados que siguen publicados en algún canal (todos los canales) · todos = sin filtro"),
 ):
     if not es_canal_valido(canal):
         raise HTTPException(404, f"Canal desconocido: {canal}")
+    if archivados not in (None, "vivos", "todos"):
+        raise HTTPException(422, "archivados: vivos | todos (sin valor, el Publicador oculta los archivados)")
 
     estados_lista = [e.strip() for e in estados.split(",")] if estados else None
     # `.strip()` en el VALOR, no solo en la condición. Antes se filtraban los
@@ -412,6 +415,7 @@ async def listar_productos(
             skus_exactos = True
 
     revisado_truncado = False
+    archivados_ocultos = 0
     if revisado:
         try:
             marcados = await asyncio.to_thread(costing_read.skus_revisados)
@@ -428,6 +432,27 @@ async def listar_productos(
             vacio_previo = True
         else:
             skus_lista = marcados
+
+    # ARCHIVADOS VIVOS (3.2, diseño de Eduardo del 2-nov): dados de baja y todavía
+    # publicados (activa o pausada) en algún canal — lo que hay que bajar del canal o
+    # desarchivar. Mismo molde que DROP OFF: se resuelve ANTES de listar (el total sale
+    # del subconjunto) y una falla da 503, nunca una lista vacía que parezca «ninguno».
+    if archivados == "vivos":
+        try:
+            vivos = await asyncio.to_thread(core_read.archivados_vivos)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("filtro de archivados vivos no disponible: %s", exc)
+            raise HTTPException(
+                503, "No se pudo leer la baja del catálogo en kubera. Quita el "
+                     "filtro para seguir viendo el catálogo.")
+        if skus_lista:
+            pedidos = {t.strip().lower() for t in skus_lista}
+            vivos = [s for s in vivos if s.lower() in pedidos]
+        if not vivos:
+            vacio_previo = True
+        else:
+            skus_lista = vivos
+            skus_exactos = True
 
     et = await _resolver_etapa(canal=canal, etapa=etapa, revisado=revisado,
                                vista=vista, skus_lista=skus_lista,
@@ -458,6 +483,23 @@ async def listar_productos(
         except wp_db.FiltroExactoNoAplicable as exc:
             log.warning("General no pudo aplicar el filtro exacto: %s", exc)
             _sin_filtro("WordPress no respondió con el filtro exacto.", etapa)
+        # LO ARCHIVADO NO ESTORBA EN LA COLA (3.2): el Publicador lo oculta por omisión.
+        # Se quita de la PÁGINA ya traída (el total de Woo no lo descuenta) y se dice
+        # cuántos en `archivados_ocultos`. Hoy son casi cero: la papelera de Woo no se
+        # lista y lo que Woo ya no tiene no llega aquí; crece cuando una persona archive.
+        # Si kubera no contesta (o la 0080 no está), no se oculta nada.
+        if archivados is None and vista == "productos":
+            baja = await asyncio.to_thread(core_read.archivados_de, [
+                *(i["sku"] for i in items_raw),
+                *(v["sku"] for i in items_raw for v in (i.get("variantes") or []))])
+            if baja:
+                n_antes = len(items_raw) + sum(len(i.get("variantes") or []) for i in items_raw)
+                items_raw = [i for i in items_raw if str(i["sku"]).upper() not in baja]
+                for i in items_raw:
+                    if i.get("variantes"):
+                        i["variantes"] = [v for v in i["variantes"] if str(v["sku"]).upper() not in baja]
+                archivados_ocultos = n_antes - len(items_raw) - sum(
+                    len(i.get("variantes") or []) for i in items_raw)
         # Enriquecer con presencia en marketplaces (puntos de colores).
         # Un solo lote: los SKUs de los padres MÁS los de sus variantes, para que
         # cada variante muestre en qué canales está publicada.
@@ -854,6 +896,7 @@ async def listar_productos(
     return RespuestaProductos(canal=canal, items=items, paginacion=paginacion,
                               filtro_activas=filtro_activas,
                               revisado_truncado=revisado_truncado,
+                              archivados_ocultos=archivados_ocultos,
                               flujo_estado=fp.estado,
                               flujo_generado=fp.generado,
                               filtro_etapa=et.filtro_etapa)
