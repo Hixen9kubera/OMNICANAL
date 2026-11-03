@@ -103,9 +103,13 @@ def _avisar_respaldo(alertas) -> dict[str, Any] | None:
     if resp is not None:
         alertas.avisar_estado(
             _TIPO_RESPALDO, "pendientes" if resp["n"] else "ok",
-            f"*{resp['ventas']} venta(s) en el respaldo de MySQL* ({resp['n']} evento(s), el más viejo de "
-            f"{resp['desde']:%d-%b %H:%M} UTC): kubera no las tiene y el libro no las resta. "
-            f"Reprocesar en /migracion → Errores o con el job PEDIDOS_RESPALDO_REPROCESO."
+            # V3 (verificación de 6b0350bf): el evento pendiente NO dice que a kubera le falte la venta; casi
+            # siempre la tiene (el 271 del 18-sep está completo y se cerrará «superado»). Y /migracion → Errores
+            # se retiró en v0.308.0.
+            f"*{resp['ventas']} venta(s) con eventos pendientes en el respaldo de MySQL* ({resp['n']} evento(s), "
+            f"el más viejo de {resp['desde']:%d-%b %H:%M} UTC): puede que kubera no tenga su último estado. "
+            f"Los aplica el job PEDIDOS_RESPALDO_REPROCESO, que no pisa lo más nuevo; no se reprocesan a mano "
+            f"(acta 2.15)."
             if resp["n"] else "",
             texto_ok="*Respaldo de pedidos* vacío: kubera tiene todas las ventas.")
     return resp
