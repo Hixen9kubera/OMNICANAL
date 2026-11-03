@@ -155,9 +155,12 @@ class CoreRead(unittest.TestCase):
         self.assertEqual(len(r), 500)
         self.assertIn("S1X", r)
 
-    def test_archivados_de_sin_columna_da_none(self):
-        with mock.patch.object(core_read.sdb, "fetch_all", side_effect=RuntimeError("column archivado_at does not exist")):
+    def test_archivados_de_sin_columna_da_none_y_avisa_una_vez(self):
+        with mock.patch.object(core_read.sdb, "fetch_all", side_effect=RuntimeError("column archivado_at does not exist")),                 mock.patch.object(core_read, "_baja_avisada", False),                 mock.patch.object(core_read, "log") as lg:
             self.assertIsNone(core_read.archivados_de(["A"]))
+            self.assertIsNone(core_read.archivados_de(["B"]))
+        self.assertEqual(lg.warning.call_count, 1)
+        self.assertEqual(lg.debug.call_count, 1)
 
     def test_archivados_vivos_lee_la_vista_y_lanza(self):
         with mock.patch.object(core_read.sdb, "fetch_all", return_value=[{"sku": "A"}]) as m:

@@ -110,6 +110,9 @@ def nombres_y_wc(skus: list[str]) -> dict[str, dict[str, Any]]:
 # omisión y deja ver aparte lo archivado que sigue vivo en un canal (la situación
 # «incoherente» de `core.products_ciclo_v`).
 
+_baja_avisada = False
+
+
 def archivados_de(skus: list[str]) -> set[str] | None:
     """Los SKUs de `skus` dados de baja, en MAYÚSCULAS (citext). ``None`` = no se pudo
     saber (la 0080 todavía no está aplicada, o kubera no contestó): el llamador NO oculta
@@ -124,7 +127,12 @@ def archivados_de(skus: list[str]) -> set[str] | None:
                     (limpios[i:i + 800],)):
                 salida.add(r["sku"])
     except Exception as exc:  # noqa: BLE001
-        log.warning("no se pudo leer la baja del catálogo (no se oculta nada): %s", exc)
+        # Entre el push del código y la 0080 esto falla en CADA listado: un aviso por
+        # proceso basta (el resto a debug), para no llenar el log del Publicador.
+        global _baja_avisada
+        (log.debug if _baja_avisada else log.warning)(
+            "no se pudo leer la baja del catálogo (no se oculta nada): %s", exc)
+        _baja_avisada = True
         return None
     return salida
 
