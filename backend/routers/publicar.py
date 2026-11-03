@@ -78,6 +78,10 @@ class CamposPublicar(BaseModel):
     largo: float | None = None
     ancho: float | None = None
     alto: float | None = None
+    # URLs de foto que van al canal EN VEZ de la galería de Woo (`publicar_ready._imagenes_para`: «si campos trae
+    # una lista propia, esa MANDA»). El adaptador ya la leía desde sep-2026, pero sin declararla aquí pydantic la
+    # tiraba en silencio. Sirve para publicar con una foto mejor sin cambiar la galería del producto en Woo.
+    imagenes: list[str] = Field(default_factory=list, max_length=12)
 
 
 class PublicarRequest(BaseModel):

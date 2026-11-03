@@ -1001,6 +1001,16 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.715.0 (ajuste) — `campos.imagenes` llega al publicador
+
+`publicar_ready._imagenes_para` usa la lista de fotos de `campos` si viene («esa MANDA», desde sep-2026), pero
+`CamposPublicar` (`routers/publicar.py`) no declaraba el campo y pydantic lo tiraba en silencio: nunca llegaba.
+Ahora `imagenes: list[str]` (máx. 12) viaja en `preview`/`confirmar`. Sirve para publicar con una foto mejor sin
+cambiar la galería de un producto que ya existe en Woo (3-nov-2026: las tapas de gasolina TEC-1406 de Aveo tienen
+una foto de 54×65 px y la de Vento, del mismo producto, mide 670×536). Sin lista, igual que antes: la galería de Woo.
+
+Pruebas: `tests/test_publicar_imagenes_propias.py`.
+
 ### v0.714.0 — Publicar en Mercado Libre la cuenta que FALTA (`crear_faltantes`)
 
 Lote del 2-nov-2026: 12 SKUs quedaron publicados en UNA sola cuenta (ML rechazó la foto o pidió GTIN solo en la
