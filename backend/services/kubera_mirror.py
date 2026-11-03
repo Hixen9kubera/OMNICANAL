@@ -959,14 +959,9 @@ def _persistir_error(origen_py: str, funcion: str, tabla_mysql: str,
         pass
 
 
-class VigenciaAmbigua(RuntimeError):
-    """El worker no puede decidir si el encabezado es más nuevo que kubera (ver `_vigencia`): el evento va
-    a la cola del respaldo y ahí lo decide una persona."""
-
-
 def _ts_del_evento(payload: dict[str, Any], ts_log: Any) -> datetime | None:
     """La hora del EVENTO (2.15, segunda revisión #3b): `evento_at` del payload, que pone
-    `orders_write.guardar` al caer a MySQL. Sin ella (eventos encolados antes de v0.717.0), el `ts` de
+    `orders_write.guardar` al caer a MySQL. Sin ella (eventos encolados antes de v0.722.0), el `ts` de
     espejo_kubera_log: la hora en que FALLÓ el worker (UTC_TIMESTAMP, ingenuo en UTC), igual o posterior."""
     crudo = payload.get("evento_at") if isinstance(payload, dict) else None
     if crudo:

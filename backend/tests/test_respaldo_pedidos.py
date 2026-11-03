@@ -322,6 +322,22 @@ class WorkerAplicaEnOrden(unittest.TestCase):           # W1 de la verificación
         self.foto.assert_not_called()
         self.up_orders.assert_called_once()
 
+    def test_las_lineas_crean_la_venta_antes_de_e1_y_e2_y_la_cancelacion_entra(self):   # X5: el caso de W1
+        # El evento de LÍNEAS llega primero y crea la fila padre (`insert … on conflict do nothing`, con
+        # actualizado_at = now()); después llegan E1 y E2. Con el candado del worker, E1 y E2 salían «superado».
+        def _up_lineas(cur, p):
+            self.fila = {**self.fila, "estado_wc": p.get("estado_wc"), "creada_por": "lineas"}
+        up_lineas = mock.Mock(side_effect=_up_lineas)
+        with mock.patch.dict(kubera_mirror._UPSERTS, {"channel.order_items": up_lineas}):
+            kubera_mirror._trabajar("o.py", "f", "pedidos_ml_items", "channel.order_items", "UPSERT",
+                                    {**ENC, "lineas": [{"linea": 1, "sku": "ACC-0001-AZL", "cantidad": 1}]}, "701-1")
+            self.trabajar(evento_at=self.E1)
+            self.trabajar(estado_wc="cancelled", evento_at=self.E2)
+        up_lineas.assert_called_once()
+        self.assertEqual(self.up_orders.call_count, 2)
+        self.assertEqual(self.fila["estado_wc"], "cancelled")
+        self.persistir.assert_not_called()
+
     def test_el_worker_no_guarda_memoria_ni_candado(self):
         import inspect
         src = inspect.getsource(kubera_mirror._trabajar)

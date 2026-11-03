@@ -391,8 +391,9 @@ def guardar(origen_py: str, funcion: str, encabezado: dict[str, Any],
                     "aguanta y el evento viaja por el espejo: %s", clave, exc)
         escribir_mysql()  # si esto también truena, el error sube al llamador
         # `evento_at` (2.15, segunda revisión #3b): la hora del EVENTO, para el candado de vigencia del
-        # worker y del reproceso. El `ts` de espejo_kubera_log es cuando FALLÓ el worker, que puede ser
-        # después; contra él, una escritura de kubera entre los dos momentos parecía más vieja que el evento.
+        # REPROCESO. El worker del espejo no la mira: aplica en orden (W1 de la verificación de 8181cf88). El
+        # `ts` de espejo_kubera_log es cuando FALLÓ el worker, que puede ser después; contra él, una escritura
+        # de kubera entre los dos momentos parecía más vieja que el evento.
         kubera_mirror.espejar(origen_py, f"{funcion} (corte→espejo)", "pedidos_ml",
                               "channel.orders", "UPSERT",
                               {**encabezado, "evento_at": datetime.now(timezone.utc).isoformat()},

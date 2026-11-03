@@ -1027,7 +1027,7 @@ estado de hace 40 días.
       (supautils), pero eso apaga todos los triggers de la transacción: queda para otra decisión (V4);
   - **la señal de cada venta** (foto antes del primer evento y después del último) va al mismo enganche del fan-out
     que `sincronizar`; con `FANOUT_FUENTE=woo` no hace nada.
-- **El worker del espejo (`_trabajar`) NO lleva candado: aplica en orden (FIFO por clave), igual que v0.716.0**
+- **El worker del espejo (`_trabajar`) NO lleva candado: aplica en orden (FIFO por clave), igual que hoy en producción**
   (W1 de la verificación de `8181cf88`). Un candado contra `actualizado_at` en el worker no tiene arreglo local: esa
   columna la mueven el propio worker, el evento de LÍNEAS (que crea la fila padre si la venta no existe y va por la
   otra cola), `orders_touch`, las marcas y el reproceso. Las dos versiones que se probaron (#3c y su arreglo V1)
@@ -1046,10 +1046,11 @@ estado de hace 40 días.
   salidas que se estudian: la hora del último evento aplicado en una columna propia (tomaría la 0081), o la misma
   afinidad para encabezado y líneas. Con el job apagado y «nadie llama a reprocesar», no corre.
 
-**Pruebas:** `test_respaldo_pedidos` (25: dos y más encabezados por venta, kubera primero, ambiguo, `evento_at`, el
-worker que aplica en orden y sin mirar la foto, el lote que no se corta, el candado; mutantes de #1, #3a y #3b caen),
+**Pruebas:** `test_respaldo_pedidos` (26: dos y más encabezados por venta, kubera primero, ambiguo, `evento_at`, el
+worker que aplica en orden y sin mirar la foto (también con las líneas creando la venta antes, W1), el lote que no se corta, el candado; mutantes de #1, #3a y #3b caen),
 `test_pedidos_vigilante` (+6). Sandbox con el código real y ROLLBACK (R7: dos encabezados con el `orders_touch` real;
-R8: `marcar_compensado` real; R9: el worker con E1 y E2 de la misma venta y el trigger real, los dos en orden): 11/11.
+R8: `marcar_compensado` real; R9: el worker con E1 y E2 de la misma venta y el trigger real, los dos en orden; R10: las
+LÍNEAS crean la venta antes que E1 y E2, el caso de W1, y la cancelación entra): 12/12.
 Acta: `_paso_prod_respaldo_2_15`.
 
 ### v0.721.0 — «Actualizar en ML» manda TODO (fotos y categoría incluidas), parte por parte y en las dos cuentas a la vez
