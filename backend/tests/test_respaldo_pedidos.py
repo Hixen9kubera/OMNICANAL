@@ -94,7 +94,7 @@ class Vigencia(unittest.TestCase):                  # segunda revisión, #3
 class Cursor:
     def __init__(self):
         self.sql = []
-        self.fila = None                 # lo que contesta `fetchone` (el actualizado_at que dejó el worker)
+        self.fila = None                 # lo que contesta `fetchone`
 
     def execute(self, sql, params=None):
         self.sql.append(sql)
@@ -277,107 +277,57 @@ class Reproceso(unittest.TestCase):
         self.assertEqual(fa.call_args.args[1], (500,))
 
 
-class WorkerConVigencia(unittest.TestCase):          # segunda revisión, #3c
-    def setUp(self) -> None:
-        self.addCleanup(mock.patch.stopall)
-        mock.patch.object(kubera_mirror, "_get_pool", return_value=mock.Mock(connection=Conn)).start()
-        self.up_orders = mock.Mock()
-        mock.patch.dict(kubera_mirror._UPSERTS, {"channel.orders": self.up_orders}).start()
-        mock.patch.object(kubera_mirror, "_registrar").start()
-        self.persistir = mock.patch.object(kubera_mirror, "_persistir_error").start()
-        self.aviso = mock.patch.object(kubera_mirror, "_avisar_espejo_aplicado").start()
+class WorkerAplicaEnOrden(unittest.TestCase):           # W1 de la verificación de 8181cf88
+    """El worker del espejo NO lleva candado de vigencia: aplica en orden (FIFO por clave), como d6f4642d.
 
-    def trabajar(self, payload, antes):
-        with mock.patch.object(orders_write, "_foto", return_value=antes):
-            kubera_mirror._trabajar("o.py", "f", "pedidos_ml", "channel.orders", "UPSERT", payload, "701-1")
-
-    def test_no_pisa_lo_mas_nuevo(self):
-        self.trabajar({**ENC, "evento_at": "2026-10-28T17:00:00+00:00"}, foto(act=AHORA))
-        self.up_orders.assert_not_called()
-        self.aviso.assert_not_called()
-        self.persistir.assert_not_called()
-
-    def test_lo_ambiguo_va_a_la_cola_del_respaldo(self):
-        self.trabajar({**ENC, "estado_wc": "cancelled", "evento_at": "2026-10-28T17:00:00+00:00"},
-                      foto(act=AHORA, compensado=AHORA))
-        self.up_orders.assert_not_called()
-        self.assertIsInstance(self.persistir.call_args.args[6], kubera_mirror.VigenciaAmbigua)
-
-    def test_mas_nuevo_que_kubera_se_aplica_y_avisa(self):
-        self.trabajar({**ENC, "evento_at": "2026-10-28T19:00:00+00:00"}, foto(act=AHORA))
-        self.up_orders.assert_called_once()
-        self.aviso.assert_called_once()
-
-    def test_sin_evento_at_como_siempre(self):
-        with mock.patch.object(orders_write, "_foto") as f:
-            kubera_mirror._trabajar("o.py", "f", "pedidos_ml", "channel.orders", "UPSERT", dict(ENC), "701-1")
-        f.assert_not_called()
-        self.up_orders.assert_called_once()
-
-
-class WorkerDosEventosDeLaMismaVenta(unittest.TestCase):   # V1 de la verificación de 6b0350bf
-    """E1 (processing) y E2 (cancelled) de la MISMA venta cayeron a MySQL un segundo aparte; el worker los aplica
-    en orden minutos después. Con el `orders_touch` real, la escritura de E1 deja `actualizado_at` = la hora de la
-    escritura, POSTERIOR al `evento_at` de E2. La fila de la base se simula: guarda lo que escribe el upsert."""
+    Un candado contra `actualizado_at` en el worker no tiene arreglo local: esa columna la mueven el propio worker,
+    el evento de líneas (que crea la fila padre si no existe), `orders_touch`, las marcas y el reproceso (V1, W1). El
+    candado vive solo en el reproceso, detrás del job apagado. La fila de la base se simula: guarda lo que escribe."""
 
     E1 = "2026-10-28T17:00:00+00:00"
     E2 = "2026-10-28T17:00:01+00:00"
 
     def setUp(self) -> None:
         self.addCleanup(mock.patch.stopall)
-        mock.patch.object(kubera_mirror, "_ESCRITO_POR_WORKER", kubera_mirror.OrderedDict()).start()
-        self.conn = Conn()
-        mock.patch.object(kubera_mirror, "_get_pool", return_value=mock.Mock(connection=lambda: self.conn)).start()
-        self.fila = foto(act=datetime(2026, 10, 28, 16, 0, tzinfo=timezone.utc))
-        self.reloj = [datetime(2026, 10, 28, 17, 5, tzinfo=timezone.utc)]
+        mock.patch.object(kubera_mirror, "_get_pool", return_value=mock.Mock(connection=Conn)).start()
+        self.fila = {"estado_wc": "processing"}
 
-        def _upsert(cur, p):                       # orders_touch: actualizado_at = now() de la escritura
-            self.reloj[0] += timedelta(seconds=1)
-            self.fila = {**self.fila, "estado_wc": p.get("estado_wc"), "actualizado_at": self.reloj[0]}
-            self.conn.cur.fila = (self.reloj[0],)
+        def _upsert(cur, p):
+            self.fila = {**self.fila, "estado_wc": p.get("estado_wc")}
         self.up_orders = mock.Mock(side_effect=_upsert)
         mock.patch.dict(kubera_mirror._UPSERTS, {"channel.orders": self.up_orders}).start()
         mock.patch.object(kubera_mirror, "_registrar").start()
         self.persistir = mock.patch.object(kubera_mirror, "_persistir_error").start()
-        mock.patch.object(kubera_mirror, "_avisar_espejo_aplicado").start()
-        mock.patch.object(orders_write, "_foto", side_effect=lambda cur, p, tomar=False: dict(self.fila)).start()
+        self.aviso = mock.patch.object(kubera_mirror, "_avisar_espejo_aplicado").start()
+        self.foto = mock.patch.object(orders_write, "_foto").start()
 
     def trabajar(self, **cambios):
         kubera_mirror._trabajar("o.py", "f", "pedidos_ml", "channel.orders", "UPSERT", {**ENC, **cambios}, "701-1")
 
-    def test_e1_y_luego_e2_la_cancelacion_entra(self):
+    def test_con_evento_at_aplica_sin_mirar_la_foto_y_avisa(self):
         self.trabajar(evento_at=self.E1)
-        self.trabajar(estado_wc="cancelled", evento_at=self.E2)
-        self.assertEqual(self.up_orders.call_count, 2)
-        self.assertEqual(self.fila["estado_wc"], "cancelled")
+        self.foto.assert_not_called()
+        self.up_orders.assert_called_once()
+        self.aviso.assert_called_once()
         self.persistir.assert_not_called()
 
-    def test_si_alguien_mas_escribio_despues_si_esta_superado(self):
+    def test_e1_y_luego_e2_de_la_misma_venta_entran_los_dos_en_orden(self):
         self.trabajar(evento_at=self.E1)
-        # una escritura directa (kubera ya volvió) después de la del worker: es más nueva que E2
-        self.fila = {**self.fila, "estado_wc": "completed",
-                     "actualizado_at": self.reloj[0] + timedelta(seconds=30)}
         self.trabajar(estado_wc="cancelled", evento_at=self.E2)
-        self.assertEqual(self.up_orders.call_count, 1)
-        self.assertEqual(self.fila["estado_wc"], "completed")
-
-    def test_un_evento_mas_viejo_que_el_escrito_sigue_superado(self):
-        self.trabajar(estado_wc="cancelled", evento_at=self.E2)
-        self.trabajar(evento_at=self.E1)              # llega después pero es anterior: no descancela
-        self.assertEqual(self.up_orders.call_count, 1)
+        self.assertEqual([c.args[1]["estado_wc"] for c in self.up_orders.call_args_list], ["processing", "cancelled"])
         self.assertEqual(self.fila["estado_wc"], "cancelled")
 
-    def test_otra_venta_no_se_confunde(self):
-        self.trabajar(evento_at=self.E1)
-        llave = kubera_mirror._llave_venta({**ENC, "external_order_id": "701-2"})
-        self.assertNotIn(llave, kubera_mirror._ESCRITO_POR_WORKER)
-        self.assertIn(kubera_mirror._llave_venta(ENC), kubera_mirror._ESCRITO_POR_WORKER)
+    def test_sin_evento_at_como_siempre(self):
+        self.trabajar()
+        self.foto.assert_not_called()
+        self.up_orders.assert_called_once()
 
-    def test_la_memoria_tiene_tope(self):
-        with mock.patch.object(kubera_mirror, "_ESCRITO_MAX", 3):
-            for i in range(5):
-                kubera_mirror._anotar_escrito({**ENC, "external_order_id": f"X-{i}"}, self.reloj[0], self.reloj[0])
-        self.assertEqual([k[2] for k in kubera_mirror._ESCRITO_POR_WORKER], ["X-2", "X-3", "X-4"])
+    def test_el_worker_no_guarda_memoria_ni_candado(self):
+        import inspect
+        src = inspect.getsource(kubera_mirror._trabajar)
+        self.assertNotIn("_vigencia", src)
+        self.assertNotIn("_foto", src)
+        self.assertFalse(hasattr(kubera_mirror, "_ESCRITO_POR_WORKER"))
 
 
 class GuardarLlevaLaHoraDelEvento(unittest.TestCase):  # segunda revisión, #3b

@@ -156,6 +156,20 @@ class TextoDelRespaldo(unittest.TestCase):              # V3 de la verificación
         self.assertIn("puede que kubera no tenga su último estado", texto)
         self.assertIn("PEDIDOS_RESPALDO_REPROCESO", texto)
 
+    def test_dice_si_el_job_esta_apagado(self):                         # W5 de la verificación de 8181cf88
+        from datetime import datetime, timezone
+        resp = {"n": 1, "ventas": 1, "desde": datetime(2026, 9, 18, 3, 0, tzinfo=timezone.utc)}
+        textos = {}
+        for encendido in (False, True):
+            aviso = mock.Mock()
+            with mock.patch.object(pedidos_vigilante, "respaldo", return_value=resp), \
+                    mock.patch.object(settings, "pedidos_respaldo_reproceso_enabled", encendido):
+                pedidos_vigilante._avisar_respaldo(aviso)
+            textos[encendido] = aviso.avisar_estado.call_args.args[2]
+        self.assertIn("está apagado: nadie los aplica todavía", textos[False])
+        self.assertIn("Los aplica el job", textos[True])
+        self.assertTrue(all("No se reprocesan a mano" in x for x in textos.values()))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -36,7 +36,7 @@ import logging
 import queue
 import threading
 import time
-from collections import OrderedDict, deque
+from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -384,7 +384,6 @@ def espejar(origen_py: str, funcion: str, tabla_mysql: str, tabla_kubera: str,
 def _trabajar(origen_py: str, funcion: str, tabla_mysql: str, tabla_kubera: str,
               operacion: str, payload: dict[str, Any], clave: str | None) -> None:
     t0 = time.perf_counter()
-    saltado = {"superado": False}
 
     def _intento() -> None:
         conn = _get_pool().connection()
@@ -399,31 +398,8 @@ def _trabajar(origen_py: str, funcion: str, tabla_mysql: str, tabla_kubera: str,
                 # PRODUCTO. Cadena vacía queda como NULO (`nullif`, 0029).
                 cur.execute("select set_config('app.usuario', %s, true)",
                             (actor.actual(),))
-                saltado["superado"] = False
-                con_vigencia = tabla_kubera == "channel.orders" and bool(payload.get("evento_at"))
-                escrito = None
-                if con_vigencia:
-                    # 2.15, segunda revisión #3c: el worker aplica el encabezado que cayó a MySQL, a veces
-                    # minutos después (con kubera volviendo de una caída). Si kubera ya tiene algo más
-                    # nuevo de esa venta, no se pisa. Lo ambiguo va a la cola del respaldo.
-                    # V1 (verificación de 6b0350bf): lo que escribió ESTE worker con un evento anterior de
-                    # la misma venta no cuenta como «más nuevo» (`_foto_para_vigencia`).
-                    from services import orders_write
-                    ts_evento = _ts_del_evento(payload, None)
-                    vig = _vigencia(_foto_para_vigencia(orders_write._foto(cur, payload, tomar=True), payload),
-                                    ts_evento, payload)
-                    if vig == "ambiguo":
-                        raise VigenciaAmbigua(
-                            f"{payload.get('external_order_id')}: lo último en kubera es una marca de "
-                            "compensación posterior al evento y el estado difiere")
-                    saltado["superado"] = vig == "superado"
-                if not saltado["superado"]:
-                    upsert(cur, payload)
-                    if con_vigencia:
-                        escrito = _actualizado_de(cur, payload)
+                upsert(cur, payload)
             conn.commit()
-            if escrito is not None:
-                _anotar_escrito(payload, escrito, ts_evento)
         except Exception:
             try:
                 conn.rollback()
@@ -459,11 +435,7 @@ def _trabajar(origen_py: str, funcion: str, tabla_mysql: str, tabla_kubera: str,
         _registrar(origen_py, funcion, tabla_mysql, tabla_kubera, operacion,
                    clave, ok=True, ms=(time.perf_counter() - t0) * 1000)
         if tabla_kubera == "channel.orders":
-            if saltado["superado"]:
-                log.info("espejo kubera: %s superado (kubera ya tenía algo más nuevo); no se aplicó",
-                         clave)
-            else:
-                _avisar_espejo_aplicado(payload)
+            _avisar_espejo_aplicado(payload)
     except Exception as exc:  # noqa: BLE001
         ms = (time.perf_counter() - t0) * 1000
         _registrar(origen_py, funcion, tabla_mysql, tabla_kubera, operacion,
@@ -979,7 +951,9 @@ def _persistir_error(origen_py: str, funcion: str, tabla_mysql: str,
             "espejo",
             f"*Error del espejo kubera*: `{origen_py}` → `{tabla_kubera}` "
             f"({type(exc).__name__}: {str(exc)[:140]}). "
-            f"Ver /migracion → Errores; re-aplicar con `/errores/reprocesar`.",
+            # W6 (verificación de 8181cf88): /migracion → Errores se retiró en v0.308.0 y reprocesar a mano
+            # está prohibido hasta que 2.15 quede completa (acta 2.15).
+            f"Queda en espejo_kubera_log; no se reprocesa a mano (acta 2.15).",
         )
     except Exception:  # noqa: BLE001
         pass
@@ -1036,56 +1010,6 @@ def _vigencia(antes: dict[str, Any] | None, ts_evento: datetime | None,
                       or antes.get("wc_order_id") == payload.get("wc_order_id")))
         return "aplicar" if mismo else "ambiguo"
     return "superado"
-
-
-# V1 de la verificación de MAESTRO sobre 6b0350bf. El worker aplica en orden (FIFO por clave) los
-# encabezados que cayeron a MySQL. Al aplicar E1, `orders_touch` pone `actualizado_at = now()`, que es
-# POSTERIOR al `evento_at` de E2 (la cancelación de la misma venta que cayó un segundo después): contra la
-# foto del momento, E2 se veía «superado» y la cancelación se perdía en silencio. Aquí se recuerda, por
-# venta, el `actualizado_at` que dejó la última escritura de este worker y la hora del evento que escribió.
-# Mientras la fila conserve ESE `actualizado_at` (nadie más escribió después), la marca que cuenta es la
-# hora del evento. Vive en memoria, igual que la cola del worker: un reinicio pierde las dos a la vez.
-_ESCRITO_POR_WORKER: "OrderedDict[tuple[str, str, str], tuple[datetime, datetime]]" = OrderedDict()
-_ESCRITO_MAX = 5000
-_escrito_lock = threading.Lock()
-
-
-def _llave_venta(p: dict[str, Any]) -> tuple[str, str, str]:
-    return (str(p.get("canal") or ""), str(p.get("cuenta") or ""), str(p.get("external_order_id") or ""))
-
-
-def _foto_para_vigencia(foto: dict[str, Any] | None, payload: dict[str, Any]) -> dict[str, Any] | None:
-    """La foto que mira `_vigencia` en el worker: si lo último en kubera lo escribió este worker con un
-    evento anterior de la misma venta, `actualizado_at` pasa a ser la hora de ESE evento (V1)."""
-    if not foto or not foto.get("actualizado_at"):
-        return foto
-    with _escrito_lock:
-        previo = _ESCRITO_POR_WORKER.get(_llave_venta(payload))
-    if previo and foto["actualizado_at"] == previo[0]:
-        return {**foto, "actualizado_at": previo[1]}
-    return foto
-
-
-def _actualizado_de(cur, payload: dict[str, Any]) -> datetime | None:
-    """El `actualizado_at` que acaba de dejar la escritura del worker, en su misma transacción."""
-    canal, cuenta, oid = _llave_venta(payload)
-    cur.execute("select actualizado_at from channel.orders "
-                "where canal = %s and cuenta = %s and external_order_id = %s", (canal, cuenta, oid))
-    fila = cur.fetchone()
-    if not fila:
-        return None
-    return fila["actualizado_at"] if isinstance(fila, dict) else fila[0]
-
-
-def _anotar_escrito(payload: dict[str, Any], escrito: datetime, ts_evento: datetime | None) -> None:
-    if ts_evento is None:
-        return
-    with _escrito_lock:
-        llave = _llave_venta(payload)
-        _ESCRITO_POR_WORKER[llave] = (escrito, ts_evento)
-        _ESCRITO_POR_WORKER.move_to_end(llave)
-        while len(_ESCRITO_POR_WORKER) > _ESCRITO_MAX:
-            _ESCRITO_POR_WORKER.popitem(last=False)
 
 
 def _superado(antes: dict[str, Any] | None, ts_evento: Any) -> bool:

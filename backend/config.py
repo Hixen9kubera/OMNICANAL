@@ -273,7 +273,8 @@ class Settings(BaseSettings):
     # min re-aplica en kubera los eventos de pedidos (channel.orders/order_items) que
     # cayeron a MySQL + espejo_kubera_log, con el candado de vigencia (un encabezado más
     # viejo que lo que kubera tiene completo se cierra «superado») y la señal al fan-out.
-    # Hasta hoy solo existía el botón de /migracion. Nace APAGADO.
+    # Hasta hoy solo existía el reproceso a mano (POST /api/migracion/errores/reprocesar; la
+    # página se retiró en v0.308.0). Nace APAGADO y NO se enciende hasta resolver V2 (acta 2.15).
     pedidos_respaldo_reproceso_enabled: bool = False
     pedidos_respaldo_reproceso_min: int = 5
     pedidos_respaldo_reproceso_lote: int = 50

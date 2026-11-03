@@ -108,8 +108,11 @@ def _avisar_respaldo(alertas) -> dict[str, Any] | None:
             # se retiró en v0.308.0.
             f"*{resp['ventas']} venta(s) con eventos pendientes en el respaldo de MySQL* ({resp['n']} evento(s), "
             f"el más viejo de {resp['desde']:%d-%b %H:%M} UTC): puede que kubera no tenga su último estado. "
-            f"Los aplica el job PEDIDOS_RESPALDO_REPROCESO, que no pisa lo más nuevo; no se reprocesan a mano "
-            f"(acta 2.15)."
+            # W5 (verificación de 8181cf88): decir lo que pasa HOY con el job.
+            + ("Los aplica el job PEDIDOS_RESPALDO_REPROCESO, que no pisa lo más nuevo."
+               if settings.pedidos_respaldo_reproceso_enabled else
+               "El job PEDIDOS_RESPALDO_REPROCESO está apagado: nadie los aplica todavía.")
+            + " No se reprocesan a mano (acta 2.15)."
             if resp["n"] else "",
             texto_ok="*Respaldo de pedidos* vacío: kubera tiene todas las ventas.")
     return resp
