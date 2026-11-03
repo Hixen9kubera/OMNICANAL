@@ -127,7 +127,8 @@ def archivados_de(skus: list[str]) -> set[str] | None:
                     where archivado_at is not null and sku = any(%s::citext[])""",
                     (limpios[i:i + 800],)):
                 salida.add(r["sku"])
-        _baja_avisada = False        # P4: tras una lectura buena, la siguiente caída vuelve a avisar
+        if limpios:                  # P4: tras una lectura buena, la siguiente caída vuelve a avisar
+            _baja_avisada = False    # (Y5: una lista vacía no leyó nada)
     except Exception as exc:  # noqa: BLE001
         # Entre el push del código y la 0080 esto falla en CADA listado: un aviso por
         # proceso basta (el resto a debug), para no llenar el log del Publicador.

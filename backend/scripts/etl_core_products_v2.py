@@ -670,6 +670,7 @@ def main() -> None:
                                     "provisionales_omitidos": len(provisionales),
                                     "aliases_nuevos": len(aliases_nuevos),
                                     "familia": familia,
+                                    "updates_por_campo": reporte["updates_por_campo"],
                                     "archivados": len(archivar),
                                     "archivar_omitido": archivar_omitido}, default=str),
                   json.dumps({}), resultado))

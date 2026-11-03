@@ -325,6 +325,9 @@ export default function ProductosPage() {
   // no haya productos — reintentamos en silencio en vez de mostrar vacío.
   const [preparando, setPreparando] = useState(false);
   const reintentos = useRef(0);
+  // El reintento pendiente (arranque en frío): se cancela al cambiar cualquier filtro,
+  // para que uno viejo no vuelva a pintar el catálogo normal bajo «Archivados vivos» (Y2).
+  const reintentoPendiente = useRef<ReturnType<typeof setTimeout> | null>(null);
   // true hasta que la PRIMERA carga de esta página termine (con o sin filtro).
   // Evita que se vea "No se encontraron productos" en el instante antes de que
   // llegue la respuesta real, incluso si por alguna razón cargando ya es false.
@@ -400,6 +403,10 @@ export default function ProductosPage() {
 
   const cargar = useCallback(() => {
     const ctrl = new AbortController();
+    if (reintentoPendiente.current) {
+      clearTimeout(reintentoPendiente.current);
+      reintentoPendiente.current = null;
+    }
     // Aún no se sabe el modo o el orden (se leen de localStorage al montar).
     if (modo === null || orden === null) return () => ctrl.abort();
     setCargando(true);
@@ -433,7 +440,7 @@ export default function ProductosPage() {
         if (!busqueda && !skusFiltro && !categoria && !soloBorradores && !archivadosVivos && r.paginacion.total === 0 && reintentos.current < 45) {
           reintentos.current += 1;
           setPreparando(true);
-          setTimeout(() => cargar(), 1000);
+          reintentoPendiente.current = setTimeout(() => cargar(), 1000);
           return;
         }
         reintentos.current = 0;
@@ -460,7 +467,7 @@ export default function ProductosPage() {
         if (reintentos.current < 45) {
           reintentos.current += 1;
           setPreparando(true);
-          setTimeout(() => cargar(), 1000);
+          reintentoPendiente.current = setTimeout(() => cargar(), 1000);
         } else {
           primeraCarga.current = false;
         }
@@ -470,6 +477,9 @@ export default function ProductosPage() {
   }, [page, busqueda, skusFiltro, dropOff, archivadosVivos, categoria, modo, orden, soloBorradores]);
 
   useEffect(() => cargar(), [cargar]);
+  useEffect(() => () => {
+    if (reintentoPendiente.current) clearTimeout(reintentoPendiente.current);
+  }, []);
 
   function cambiarModo(nuevo: ModoLista) {
     if (nuevo === modo) return;

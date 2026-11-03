@@ -482,7 +482,14 @@ async def listar_productos(
             # archivó solo (`papelera_woo`, `ya_no_en_woo`): pedírselo daba «no se encontraron»
             # con archivados vivos. Aquí: nombre y wc_id del padrón, búsqueda por SKU o nombre y
             # orden por SKU. Categoría y estado de Woo no aplican a una baja. Son pocos.
-            fichas = await asyncio.to_thread(core_read.fichas_de, vivos_lista)
+            try:
+                fichas = await asyncio.to_thread(core_read.fichas_de, vivos_lista)
+            except Exception as exc:  # noqa: BLE001
+                # Y1 (verificación de d45b794e): un 500 sale sin CORS y la pantalla lo leía como red caída.
+                log.warning("fichas de archivados vivos no disponibles: %s", exc)
+                raise HTTPException(
+                    503, "No se pudo leer la baja del catálogo en kubera. Quita el "
+                         "filtro para seguir viendo el catálogo.")
             if search and search.strip():
                 t = search.strip().lower()
                 fichas = [f for f in fichas if t in f["sku"].lower() or t in (f["nombre"] or "").lower()]

@@ -215,6 +215,9 @@ class EtlArchivaEnLaBaja(unittest.TestCase):
         self.assertIn("set archivado_at = now(), archivado_por = 'etl', ", src)
         self.assertIn("archivado_motivo = 'ya_no_en_woo' where sku = any(%s) and archivado_at is null", src)
         self.assertNotIn("estado_ciclo = 'archivado'", src)
+        # Y8: el acta del ETL (migration.reconciliation_runs) guarda updates_por_campo, que pide el paso 1
+        i = src.index("insert into migration.reconciliation_runs")
+        self.assertIn('"updates_por_campo": reporte["updates_por_campo"]', src[i:i + 2000])
         self.assertNotIn("estado_ciclo <> 'archivado'", src)
 
 

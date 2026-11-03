@@ -139,6 +139,13 @@ class ArchivadosVivos(_Base):
         self.assertEqual((j["paginacion"]["total"], j["paginacion"]["total_pages"]), (2, 2))
         self.assertEqual([i["sku"] for i in j["items"]], ["BAJA-0003"])
 
+    def test_si_las_fichas_fallan_da_503_y_no_500(self):            # Y1
+        with mock.patch.object(core_read, "archivados_vivos", return_value=["BAJA-0003"]), \
+                mock.patch.object(core_read, "fichas_de", side_effect=RuntimeError("kubera se cayó")):
+            r = self._get(archivados="vivos")
+        self.assertEqual(r.status_code, 503)
+        self.assertIn("baja del catálogo", r.json()["detail"])
+
     def test_no_se_combina_con_etapa(self):
         self.assertEqual(self._get(archivados="vivos", etapa="en_full").status_code, 422)
 
@@ -191,6 +198,15 @@ class CoreRead(unittest.TestCase):
             with mock.patch.object(core_read.sdb, "fetch_all", side_effect=RuntimeError("y")):
                 core_read.archivados_de(["A"])
         self.assertEqual(lg.warning.call_count, 2)
+
+    def test_una_lista_vacia_no_rearma_el_aviso(self):              # Y5
+        with mock.patch.object(core_read, "_baja_avisada", False), mock.patch.object(core_read, "log") as lg:
+            with mock.patch.object(core_read.sdb, "fetch_all", side_effect=RuntimeError("x")):
+                core_read.archivados_de(["A"])
+            core_read.archivados_de([])                       # no lee nada: no es una lectura buena
+            with mock.patch.object(core_read.sdb, "fetch_all", side_effect=RuntimeError("y")):
+                core_read.archivados_de(["A"])
+        self.assertEqual(lg.warning.call_count, 1)
 
     def test_fichas_de_en_mayusculas_y_por_sku(self):
         with mock.patch.object(core_read.sdb, "fetch_all", return_value=[

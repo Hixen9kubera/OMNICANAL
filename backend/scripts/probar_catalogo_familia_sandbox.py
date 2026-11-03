@@ -141,8 +141,11 @@ try:
     cn.rollback()
     try:
         c.execute("set local role service_role")
-        c.execute("select count(*) from core.products_ciclo_v where archivado_at is not null")
-        check("C9 service_role lee la vista (ejecuta las funciones)", True)
+        c.execute("select sku, publicado, situacion from core.products_ciclo_v order by sku limit 20")
+        filas = c.fetchall()
+        check("C9 service_role lee la vista (ejecuta las funciones)",
+              len(filas) == 20 and all(f[2] in ("normal", "incoherente", "pendiente", "baja_limpia") for f in filas),
+              f"{len(filas)} filas con situacion")
     except psycopg2.Error as exc:
         check("C9 service_role lee la vista (ejecuta las funciones)", False, f"{type(exc).__name__}: {exc}".strip())
     cn.rollback()
