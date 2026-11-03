@@ -4,7 +4,9 @@ publicar.py — Paso 4: actualizar/publicar en el canal seleccionado.
   • preview(req)   → arma y DEVUELVE lo que se enviaría. NO escribe nada.
   • confirmar(req) → ejecuta el cambio EN VIVO y lo registra en la bitácora.
 
-Mercado Libre → PUT /items/{id} (título+atributos) + PUT /items/{id}/description.
+Mercado Libre → publicación viva: un PUT /items/{id} por parte (título, categoría+atributos,
+                fotos) + PUT /items/{id}/description, en las dos cuentas a la vez
+                (`_update_ml_una`). Sin publicación: alta por el pipeline (`publicar_ready`).
                 Registro en ml_backlog. Token de ml_tokens.
 Amazon        → PATCH /listings/2021-08-01/items/{seller}/{sku}
                 (item_name, bullet_point, product_description). Registro en
@@ -23,7 +25,7 @@ from typing import Any
 import httpx
 
 from config import settings
-from services import db, meli, ml_atributos, sin_tildes
+from services import db, meli, ml_atributos, ml_errores, sin_tildes
 
 log = logging.getLogger("omnicanal.publicar")
 
@@ -40,6 +42,87 @@ def _plain(texto: str | None) -> str:
     t = re.sub(r"<[^>]+>", "", t)
     t = re.sub(r"\n{3,}", "\n\n", t)
     return t.strip()
+
+
+# ── Lo que «Actualizar» manda a una publicación VIVA de ML ───────────────────
+# Cada parte va en su PROPIO PUT (`_update_ml_una`) y el panel puede apagar las que no quiera
+# (`partes`). La categoría no está aquí: se mueve solo con la confirmación de la tarjeta.
+PARTES_ML = ("titulo", "descripcion", "atributos", "fotos")
+_ETIQUETA_PARTE = {"titulo": "Título", "descripcion": "Descripción", "atributos": "Atributos",
+                   "fotos": "Fotos", "categoria": "Categoría"}
+_ID_ATRIBUTO_ML = re.compile(r"[A-Z0-9_]+")
+_FAMILY_NAME = "ML no deja cambiar el título de esta publicación (tiene family_name: es de catálogo)"
+
+
+def _valor_ml(valor: Any) -> str:
+    """
+    El valor de un atributo como texto plano para `value_name`.
+
+    Una lista —o su repr de Python, que es como la dejan la IA y `channel_content`— salía tal cual:
+    `"['Blanco']"`, o `"['Hombre'"` cuando alguien ya la había partido por comas. ML la rechaza con
+    `invalid.item.attribute.values` y con ella el PUT entero de esa cuenta: 39 actualizaciones
+    fallidas en `ml_backlog` del 30-jul al 27-oct (ACC-0129-BLN: GENDER, MAIN_COLOR, FINISH…). ML
+    parte `value_name` por comas en los multivaluados, así que la lista sale como «Blanco, Negro».
+    """
+    if isinstance(valor, (list, tuple)):
+        partes = [str(v) for v in valor]
+    else:
+        texto = str(valor or "").strip()
+        if not texto.startswith("["):
+            return texto
+        partes = texto.strip("[]").split(",")
+    return ", ".join(p for p in (str(x).strip().strip("'\"").strip() for x in partes) if p)
+
+
+def _norma(texto: Any) -> str:
+    """Para comparar títulos: sin mayúsculas ni espacios de más."""
+    return " ".join(str(texto or "").split()).casefold()
+
+
+def _attrs_ml(campos: dict[str, Any]) -> list[dict[str, str]]:
+    """
+    Los atributos del formulario como los recibe `PUT /items`: solo IDs de ML (el formulario viene
+    sembrado con los de Woo —«Peso», «Color»— que ML ignora), sin repetir, y sin los datos FISCALES
+    (`ml_atributos.FISCALES`, Brandon 28-oct): si no van en el PUT, ML deja lo que ya tenía.
+    """
+    attrs: list[dict[str, str]] = []
+    for a in campos.get("atributos") or []:
+        aid = str(a.get("nombre") or "").strip()
+        valor = _valor_ml(a.get("valor"))
+        if (valor and _ID_ATRIBUTO_ML.fullmatch(aid) and aid not in {x["id"] for x in attrs}
+                and not ml_atributos.es_fiscal(aid) and not ml_atributos.es_fiscal(a.get("campo"))):
+            attrs.append({"id": aid, "value_name": valor})
+    return attrs
+
+
+async def _destino_ml(req: dict[str, Any], con_fotos: bool) -> tuple[list[str], str]:
+    """
+    (fotos, categoría del panel) contra las que se actualiza una publicación viva. Nunca lanza.
+
+    Fotos: las mismas que llevaría un alta (`publicar_ready._imagenes_para`: lo guardado para el
+    canal manda; si no, la galería de Woo de la variante), hasta las 10 del vendor.
+    Categoría: SOLO la elección humana (`ml_categoria_id`, la del selector del Estudio; una variante
+    la hereda del padre). La del predictor de Crear no basta para mover una publicación que ya vende.
+    """
+    from services import publicar_ready, wp_db
+    from vendor.ml_ready.publisher_core import MAX_IMAGENES
+
+    wc_id = req.get("wc_id")
+    if not wc_id:
+        return [], ""
+
+    def _leer() -> tuple[list[str], str]:
+        meta, _ = wp_db.postmeta_con_herencia(int(wc_id))
+        fotos = publicar_ready._imagenes_para(int(wc_id), req.get("campos") or {}) if con_fotos else []
+        return list(fotos)[:MAX_IMAGENES], str(meta.get("ml_categoria_id") or "").strip()
+
+    try:
+        if not await asyncio.to_thread(wp_db.disponible):
+            return [], ""
+        return await asyncio.to_thread(_leer)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("destino ML (%s): %s", req.get("sku"), exc)
+        return [], ""
 
 
 # ── Estado de publicación EN VIVO (consulta las APIs, no la DB) ──────────────
@@ -427,12 +510,10 @@ async def preview(req: dict[str, Any]) -> dict[str, Any]:
         r["publicar_apagado"] = pausa["estado"] == "apagado"
     if isinstance(r, dict) and r.get("ok"):
         avisos = r.setdefault("avisos", [])
-        # ML en modo actualizar NO toca las fotos (`_update_ml_una` solo manda
-        # título, atributos y descripción): el aviso de fotos mentiría.
-        if not (canal == "mercado_libre" and r.get("modo") == "actualizar"):
-            aviso = await _aviso_imagenes(req)
-            if aviso:
-                avisos.insert(0, aviso)
+        # Desde v0.721 actualizar en ML también reemplaza las fotos: el aviso aplica igual.
+        aviso = await _aviso_imagenes(req)
+        if aviso:
+            avisos.insert(0, aviso)
         # El título heredado SÍ viaja también al actualizar (`_update_ml_una`
         # manda `title`), así que este aviso no depende del modo.
         aviso_titulo = _aviso_titulo(req, r.get("modo"))
@@ -548,14 +629,7 @@ async def _revision_categoria_ml(req: dict[str, Any],
 async def _preview_ml(req: dict[str, Any]) -> dict[str, Any]:
     campos = req.get("campos") or {}
     title = sin_tildes.quitar((campos.get("titulo") or "").strip())  # lo que se enviará (`_confirmar_ml`)
-    # Los datos FISCALES no se tocan (`ml_atributos.FISCALES`, Brandon 28-oct): si no van en el PUT, ML deja en la
-    # publicación lo que ya tenía.
-    attrs = [
-        {"id": a["nombre"], "value_name": str(a["valor"]).strip()}
-        for a in (campos.get("atributos") or [])
-        if a.get("nombre") and str(a.get("valor") or "").strip()
-        and not ml_atributos.es_fiscal(a["nombre"]) and not ml_atributos.es_fiscal(a.get("campo"))
-    ]
+    attrs = _attrs_ml(campos)
     desc = _plain(campos.get("descripcion"))
     pubs = _ml_publicaciones(req.get("sku"))
     # Verificación EN VIVO contra ML: filas con item borrado pasan a "crear".
@@ -683,12 +757,45 @@ async def _preview_ml(req: dict[str, Any]) -> dict[str, Any]:
             if aviso_precio:
                 avisos.append(aviso_precio)
 
+    # ACTUALIZAR lo vivo: las fotos que se reemplazarán, lo que ML no deja cambiar en cada cuenta y,
+    # si la categoría del panel no es la de ML, la tarjeta para moverla. Esa tarjeta NO frena el botón
+    # (`categoria_opcional`): sin confirmarla se actualiza todo lo demás y la categoría se queda.
+    fotos: list[str] = []
+    categoria_opcional = False
+    if vivos:
+        fotos, cat_panel = await _destino_ml(req, True)
+        otra_cat: list[str] = []
+        for p in vivos:
+            item = estados.get(p["cuenta"], {}).get("item") or {}
+            if title and _norma(title) != _norma(item.get("title")):
+                if item.get("family_name"):
+                    avisos.append(f"{p['cuenta']}: {_FAMILY_NAME}; se actualiza lo demás.")
+                elif item.get("sold_quantity"):
+                    avisos.append(f"{p['cuenta']}: tiene {item['sold_quantity']} venta(s) y ML no permite cambiar "
+                                  "el título de una publicación con ventas; si lo conserva, se actualiza lo demás.")
+            if cat_panel and item.get("category_id") and item["category_id"] != cat_panel:
+                otra_cat.append(f"{p['cuenta']} {item['category_id']}")
+        if otra_cat and categoria is None:
+            prod = await _prod_alta(req)
+            if prod is not None:
+                categoria = await _revision_categoria_ml(req, {"payload": {"category_id": cat_panel}, "prod": prod})
+                categoria_opcional = True
+        # Con una cuenta a re-crear, la tarjeta es la del ALTA: si es la misma categoría, confirmarla también
+        # mueve la viva (`_confirmar_ml` compara con `categoria_confirmada`), y se dice.
+        if otra_cat and ((categoria or {}).get("actual") or {}).get("category_id") == cat_panel:
+            avisos.append(f"Categoría: en ML está en otra ({', '.join(otra_cat)}) que la del panel ({cat_panel}). "
+                          + ("Marca «Revisé la categoría» para MOVERLA al actualizar; si no, se queda como está."
+                             if categoria_opcional else "Al confirmar la categoría también se MOVERÁ la publicación viva."))
+
     return {
         "ok": True, "canal": "mercado_libre", "sku": req.get("sku"), "modo": modo,
         "cuentas": cuentas, "publicaciones": pubs, "categoria": categoria,
+        "categoria_opcional": categoria_opcional,
         "titulo": title or None, "descripcion": desc or None,
         "cambios": [{"etiqueta": a["id"], "valor": a["value_name"]} for a in attrs],
-        "operaciones": {"titulo": bool(title), "atributos": len(attrs), "descripcion": bool(desc)},
+        "operaciones": {"titulo": bool(title), "atributos": len(attrs), "descripcion": bool(desc),
+                        "fotos": len(fotos)},
+        "fotos": fotos,
         "payload": payload,
         "avisos": avisos,
         "aviso_medidas": aviso_medidas,
@@ -1228,13 +1335,16 @@ async def _estados_items_ml(pubs: list[dict[str, Any]]) -> dict[str, dict[str, A
 
     Ante duda (sin token, timeout, 5xx de ML) se asume VIVO — mejor fallar un
     update que crear un duplicado por un error transitorio.
+
+    `item` (v0.721): lo que `_update_ml_una` necesita de la publicación tal como
+    está —título, categoría, ventas, family_name— para saber qué ya no cambia.
     """
     estados: dict[str, dict[str, Any]] = {}
     async with httpx.AsyncClient(timeout=10.0) as cli:
         for p in pubs:
             cuenta, item_id = p["cuenta"], p["item_id"]
-            vivo, status = True, None
-            token = meli._access_token(cuenta)
+            vivo, status, item = True, None, {}
+            token = await meli.access_token_async(cuenta)
             if token:
                 try:
                     r = await cli.get(f"{_ML}/items/{item_id}",
@@ -1244,70 +1354,170 @@ async def _estados_items_ml(pubs: list[dict[str, Any]]) -> dict[str, dict[str, A
                         status = d.get("status")
                         subs = d.get("sub_status") or []
                         vivo = status != "closed" and "deleted" not in subs
+                        item = {k: d.get(k) for k in ("title", "category_id", "sold_quantity", "family_name")}
                     elif r.status_code == 404:
                         vivo, status = False, "not_found"
                 except Exception as exc:  # noqa: BLE001
                     log.warning("estado item %s (%s): %s", item_id, cuenta, exc)
-            estados[cuenta] = {"vivo": vivo, "status": status}
+            estados[cuenta] = {"vivo": vivo, "status": status, "item": item}
     return estados
 
 
-async def _update_ml_una(cuenta: str, item_id: str, title: str, attrs: list[dict],
-                         desc: str) -> dict[str, Any]:
-    """Actualiza UNA publicación de ML (una cuenta). Devuelve el resultado."""
-    token = meli._access_token(cuenta)
+def _atributos_rechazados(resp: Any) -> list[str]:
+    """Los IDs que ML rechazó por su VALOR: «Attribute [MAIN_COLOR] is not valid…» → ['MAIN_COLOR']."""
+    causas = resp.get("cause") if isinstance(resp, dict) else None
+    if not isinstance(causas, list):
+        return []
+    return [m.group(1) for c in causas
+            if isinstance(c, dict) and c.get("code") == "invalid.item.attribute.values"
+            for m in [re.search(r"Attribute \[(\w+)\]", c.get("message") or "")] if m]
+
+
+def _subir_fotos_ml(urls: list[str], token: str) -> list[str]:
+    """
+    SÍNCRONA (baja de chunche.shop y `POST /pictures`). Los picture_id de ML en orden; las que no se
+    pudieron subir no vienen. Es el pre-subido del ALTA —JPEG, y el producto agrandado si ML lo
+    dejaría bajo 500 px (`publicar_ready._foto_para_ml`)—. Nunca `source`: una URL que ML no logra
+    bajar PAUSA la publicación viva («picture downloading pending»).
+    """
+    from services import publicar_ready
+    from vendor.ml_ready import ml_api
+
+    publicar_ready.configurar()
+    return [pid for pid in (ml_api.preupload_picture(u, token) for u in urls) if pid]
+
+
+async def _update_ml_una(cuenta: str, item_id: str, cambios: dict[str, Any],
+                         item: dict[str, Any] | None = None) -> dict[str, Any]:
+    """
+    Actualiza UNA publicación viva de ML (una cuenta). Cada parte va en su PROPIO envío.
+
+    POR QUÉ POR PARTES. ML valida cada PUT entero: hasta v0.720 título y atributos viajaban juntos
+    y la descripción solo salía si ese PUT entraba, así que UN atributo con un valor que ML no
+    acepta tiraba también el título y la descripción de la cuenta. Ahora entra lo que ML acepta, y
+    lo que rechaza queda con su porqué en `partes`, `error` y `explicacion` (y en `ml_backlog`).
+
+    `cambios`: title, category_id, attributes, pictures (URLs), description; vacío = no se toca.
+    `item`: la publicación como está en ML (`_estados_items_ml`).
+
+    Cada parte termina en `ok`, `sin_cambio`, `omitido` (una regla de ML, con su porqué: no es un
+    error que corregir) o `error`. La cuenta es `ok` si ninguna parte quedó en `error`.
+    """
+    item = item or {}
+    token = await meli.access_token_async(cuenta)
     if not token:
-        return {"cuenta": cuenta, "item_id": item_id, "ok": False,
-                "error": f"Sin token para {cuenta}", "ml_status": None, "desc_status": None}
+        return {"cuenta": cuenta, "item_id": item_id, "ok": False, "error": f"Sin token para {cuenta}",
+                "ml_status": None, "desc_status": None, "modo": "actualizar", "partes": [],
+                "_response": {}}
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    payload_item: dict[str, Any] = {}
-    if title:
-        payload_item["title"] = title
-    if attrs:
-        payload_item["attributes"] = attrs
+    partes: list[dict[str, Any]] = []
+    respuestas: list[dict[str, Any]] = []
+    explicacion: list[dict[str, Any]] = []
 
-    ml_status = desc_status = None
-    ml_response: dict[str, Any] = {}
-    error: str | None = None
+    def anota(parte: str, estado: str, detalle: str | None = None, resp: Any = None) -> None:
+        partes.append({"parte": parte, "estado": estado, "detalle": detalle})
+        for e in ml_errores.explicar(resp) if estado == "error" else []:
+            if e not in explicacion:
+                explicacion.append(e)
+
     async with httpx.AsyncClient(timeout=30.0) as cli:
-        if payload_item:
-            r = await cli.put(f"{_ML}/items/{item_id}", json=payload_item, headers=headers)
-            ml_status = r.status_code
+        async def enviar(cuerpo: dict[str, Any], ruta: str = "", metodo: str = "PUT") -> tuple[bool, Any]:
             try:
-                ml_response = r.json()
-            except Exception:  # noqa: BLE001
-                ml_response = {"text": r.text[:500]}
-            # Auto-sanación: ML prohíbe modificar el title de un ítem con
-            # family_name (cause 374). Reintentar SIN title, conservando los
-            # attributes; si el title era lo único, se omite el PUT y se pasa
-            # directo a la descripción (no hay nada más que actualizar en el ítem).
-            if r.status_code == 400 and "title" in payload_item and _es_error_family_name(ml_response):
-                payload_item.pop("title", None)
-                if payload_item:
-                    r = await cli.put(f"{_ML}/items/{item_id}", json=payload_item, headers=headers)
-                    ml_status = r.status_code
-                    try:
-                        ml_response = r.json()
-                    except Exception:  # noqa: BLE001
-                        ml_response = {"text": r.text[:500]}
-                else:
-                    ml_status = None  # solo iba el title: nada que actualizar, sigue la descripción
-                    ml_response = {"skipped": "title omitido (family_name); solo se actualiza la descripción"}
-            if ml_status is not None and ml_status not in (200, 201):
-                error = _error_ml(ml_response) or f"HTTP {ml_status}"
-        if desc and not error:
-            rd = await cli.put(f"{_ML}/items/{item_id}/description", json={"plain_text": desc}, headers=headers)
-            desc_status = rd.status_code
-            if rd.status_code == 404:
-                rd = await cli.post(f"{_ML}/items/{item_id}/description", json={"plain_text": desc}, headers=headers)
-                desc_status = rd.status_code
-            if desc_status not in (200, 201):
-                error = error or f"Descripción: HTTP {desc_status}"
+                r = await cli.request(metodo, f"{_ML}/items/{item_id}{ruta}", json=cuerpo, headers=headers)
+                status = r.status_code
+                try:
+                    resp = r.json()
+                except Exception:  # noqa: BLE001
+                    resp = {"text": r.text[:500]}
+                if not isinstance(resp, dict):
+                    resp = {"respuesta": resp}
+            except Exception as exc:  # noqa: BLE001 — la red de UNA parte no tumba las demás
+                status, resp = None, {"error": f"{type(exc).__name__}: {exc}"[:300]}
+            respuestas.append({"envio": ruta or ",".join(cuerpo), "status": status, "respuesta": resp})
+            return status in (200, 201), resp
 
-    success = (ml_status in (200, 201) or ml_status is None) and error is None
-    return {"cuenta": cuenta, "item_id": item_id, "ok": bool(success), "error": error,
-            "ml_status": ml_status, "desc_status": desc_status, "modo": "actualizar",
-            "_response": ml_response}
+        title = cambios.get("title") or ""
+        if title:
+            if _norma(title) == _norma(item.get("title")):
+                anota("titulo", "sin_cambio")
+            elif item.get("family_name"):
+                anota("titulo", "omitido", _FAMILY_NAME)
+            else:
+                ok, resp = await enviar({"title": title})
+                if ok and _norma(resp.get("title")) in ("", _norma(title)):
+                    anota("titulo", "ok")
+                elif ok:
+                    # ML contesta 200 y conserva el título: pasa con las publicaciones con ventas.
+                    anota("titulo", "omitido", f"ML conservó el título anterior («{resp.get('title')}»)"
+                          + (f"; tiene {item['sold_quantity']} venta(s)" if item.get("sold_quantity") else ""))
+                elif _es_error_family_name(resp):
+                    anota("titulo", "omitido", _FAMILY_NAME)
+                else:
+                    anota("titulo", "error", _error_ml(resp), resp)
+
+        attrs = list(cambios.get("attributes") or [])
+        cat = cambios.get("category_id") or ""
+        if cat and cat != item.get("category_id"):
+            # La categoría viaja CON los atributos: los de la categoría nueva son los que la validan.
+            ok, resp = await enviar({"category_id": cat, **({"attributes": attrs} if attrs else {})})
+            if ok:
+                quedo = resp.get("category_id") or cat
+                anota("categoria", "ok" if quedo == cat else "omitido",
+                      f"{item.get('category_id') or '?'} → {cat}" if quedo == cat
+                      else f"ML aceptó el envío pero la dejó en {quedo}")
+                if attrs:
+                    anota("atributos", "ok", str(len(attrs)))
+                    attrs = []
+            else:
+                anota("categoria", "error", _error_ml(resp), resp)
+        if attrs:
+            ok, resp = await enviar({"attributes": attrs})
+            malos = [] if ok else _atributos_rechazados(resp)
+            resto = [a for a in attrs if a["id"] not in malos]
+            if malos and resto:
+                # Lo que ML sí acepta entra; los rechazados quedan anotados para corregirlos.
+                ok_resto, resp_resto = await enviar({"attributes": resto})
+                anota("atributos", "error",
+                      f"ML rechazó {', '.join(malos)}"
+                      + (f"; los otros {len(resto)} sí se actualizaron" if ok_resto else f"; {_error_ml(resp_resto)}"),
+                      resp)
+            elif ok:
+                anota("atributos", "ok", str(len(attrs)))
+            else:
+                anota("atributos", "error", _error_ml(resp), resp)
+
+        fotos = list(cambios.get("pictures") or [])
+        if fotos:
+            ids = await asyncio.to_thread(_subir_fotos_ml, fotos, token)
+            if len(ids) < len(fotos):
+                # Mandar solo las que subieron BORRARÍA las demás de la publicación.
+                anota("fotos", "error", f"{len(fotos) - len(ids)} de {len(fotos)} foto(s) no se pudieron "
+                                        "subir a ML; la publicación conserva las que tenía")
+            else:
+                ok, resp = await enviar({"pictures": [{"id": i} for i in ids]})
+                if ok:
+                    anota("fotos", "ok", str(len(ids)))
+                else:
+                    anota("fotos", "error", _error_ml(resp), resp)
+
+        desc = cambios.get("description") or ""
+        if desc:
+            ok, resp = await enviar({"plain_text": desc}, "/description")
+            if not ok and respuestas[-1]["status"] == 404:
+                ok, resp = await enviar({"plain_text": desc}, "/description", "POST")
+            if ok:
+                anota("descripcion", "ok")
+            else:
+                anota("descripcion", "error", _error_ml(resp) or f"HTTP {respuestas[-1]['status']}", resp)
+
+    errores = [f"{_ETIQUETA_PARTE[p['parte']]}: {p['detalle'] or 'rechazado'}"
+               for p in partes if p["estado"] == "error"]
+    st_item = next((x["status"] for x in reversed(respuestas) if x["envio"] != "/description"), None)
+    st_desc = next((x["status"] for x in reversed(respuestas) if x["envio"] == "/description"), None)
+    return {"cuenta": cuenta, "item_id": item_id, "ok": not errores,
+            "error": " · ".join(errores)[:900] or None, "explicacion": explicacion,
+            "ml_status": st_item, "desc_status": st_desc, "modo": "actualizar", "partes": partes,
+            "_response": respuestas}
 
 
 async def _crear_ml(sku: str, wc_id, campos: dict,
@@ -1364,14 +1574,7 @@ async def _confirmar_ml(req: dict[str, Any]) -> dict[str, Any]:
     # Sin acentos y con la ñ (`sin_tildes`): el PUT de una publicación viva y su bitácora. El
     # alta lo resuelve el envoltorio de `publicar_ready` sobre lo que arma el vendor.
     title = sin_tildes.quitar((campos.get("titulo") or "").strip())
-    # Los datos FISCALES no se tocan (`ml_atributos.FISCALES`, Brandon 28-oct): si no van en el PUT, ML deja en la
-    # publicación lo que ya tenía.
-    attrs = [
-        {"id": a["nombre"], "value_name": str(a["valor"]).strip()}
-        for a in (campos.get("atributos") or [])
-        if a.get("nombre") and str(a.get("valor") or "").strip()
-        and not ml_atributos.es_fiscal(a["nombre"]) and not ml_atributos.es_fiscal(a.get("campo"))
-    ]
+    attrs = _attrs_ml(campos)
     desc = _plain(campos.get("descripcion"))
     if not title and not attrs and not desc:
         return {"ok": False, "motivo": "No había nada que enviar."}
@@ -1426,20 +1629,38 @@ async def _confirmar_ml(req: dict[str, Any]) -> dict[str, Any]:
                           f"eliminada y NO se re-creó — {MSG_PADRE}")
         muertos = []
 
+    # Lo que el panel dejó marcado (`partes`; sin lista = todo) y la categoría SOLO si la persona la
+    # confirmó en la tarjeta de la vista previa (`categoria_opcional`).
+    sel = set(req.get("partes") or PARTES_ML)
+    fotos, cat_panel = await _destino_ml(req, "fotos" in sel)
+    cambios = {
+        "title": title if "titulo" in sel else "",
+        "category_id": cat_panel if cat_panel and cat_panel == confirmada else "",
+        "attributes": attrs if "atributos" in sel else [],
+        "pictures": fotos,
+        "description": desc if "descripcion" in sel else "",
+    }
+    a_crear = [p["cuenta"] for p in muertos] + faltantes
+    if not any(cambios.values()) and not a_crear:
+        return {"ok": False, "motivo": "No había nada que enviar: marca al menos una parte para actualizar."}
+
+    # Las cuentas en PARALELO e independientes: lo que falle en una no frena a la otra.
+    filas = await asyncio.gather(*(
+        _update_ml_una(p["cuenta"], p["item_id"], cambios, estados.get(p["cuenta"], {}).get("item"))
+        for p in vivos)) if any(cambios.values()) else []
     resultados: list[dict[str, Any]] = []
-    for p in vivos:
-        res = await _update_ml_una(p["cuenta"], p["item_id"], title, attrs, desc)
+    for p, res in zip(vivos, filas):
         if es_padre:
             res["aviso"] = MSG_PADRE_UPDATE
-        _guardar_backlog_ml(
+        await asyncio.to_thread(
+            _guardar_backlog_ml,
             p["cuenta"], sku, wc_id, p["item_id"], res["ok"], res["error"],
             res["ml_status"], res["desc_status"],
-            {"title": title, "attributes": attrs, "description": desc},
+            {**{k: v for k, v in cambios.items() if v}, "partes": res.get("partes")},
             res.pop("_response", {}),
         )
         resultados.append(res)
 
-    a_crear = [p["cuenta"] for p in muertos] + faltantes
     if a_crear:
         r_crear = await _crear_ml(sku, wc_id, campos,
                                   cuentas=a_crear,

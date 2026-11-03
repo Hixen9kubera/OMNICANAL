@@ -782,6 +782,9 @@ export interface PublicarReq {
   /** Por qué se publica en la categoría elegida aunque la revisión por texto y
    *  foto salió en ROJO (`categoria_vectores.py`; obligatorio con el candado). */
   categoria_motivo?: string | null;
+  /** ML con publicación viva: las partes a actualizar (titulo, descripcion, atributos, fotos).
+   *  Sin lista, todas. La categoría se mueve con `categoria_confirmada`. */
+  partes?: string[];
 }
 
 /** Una categoría de ML tal como la enseña la revisión previa al alta. */
@@ -882,6 +885,10 @@ export interface PublicarPreview {
   aviso_medidas?: string | null;
   // ML con ALTA (crear, o re-crear donde la borraron): la categoría a revisar.
   categoria?: RevisionCategoriaML | null;
+  // ML actualizando lo vivo: la tarjeta es para MOVER la categoría y no frena el botón.
+  categoria_opcional?: boolean;
+  // ML actualizando lo vivo: las fotos que reemplazarán las de la publicación.
+  fotos?: string[];
 }
 
 /** Una causa del rechazo de ML, en palabras (`backend/services/ml_errores.py`). */
@@ -907,6 +914,8 @@ export interface PublicarResultadoCuenta {
   // Por fila: "crear" cuando la publicación anterior fue eliminada en ML y se
   // re-creó solo en esa cuenta (el modo global puede ser "actualizar").
   modo?: string;
+  // Actualizar: cada parte con su resultado (`ok`, `sin_cambio`, `omitido` = regla de ML, `error`).
+  partes?: { parte: string; estado: string; detalle?: string | null }[];
 }
 
 export interface PublicarResultado {

@@ -292,6 +292,19 @@ function revisionCatML(p: PublicarPreview | null | undefined): RevisionCatML | n
     : null;
 }
 
+/** Lo que «Actualizar en ML» manda a una publicación viva, cada parte en su propio envío
+ *  (`publicar.PARTES_ML`). La categoría no va aquí: se mueve con la tarjeta de categoría. */
+const PARTES_ML: [string, string][] = [
+  ["titulo", "Título"], ["descripcion", "Descripción"], ["atributos", "Atributos"], ["fotos", "Fotos"],
+];
+const ETIQUETA_PARTE: Record<string, string> = { ...Object.fromEntries(PARTES_ML), categoria: "Categoría" };
+const ESTADO_PARTE: Record<string, { texto: string; clase: string }> = {
+  ok: { texto: "actualizado", clase: "bg-emerald-100 text-emerald-800" },
+  sin_cambio: { texto: "sin cambio", clase: "bg-slate-100 text-slate-500" },
+  omitido: { texto: "no se cambió", clase: "bg-amber-100 text-amber-800" },
+  error: { texto: "error", clase: "bg-red-100 text-red-700" },
+};
+
 export default function ProductStudio({
   sku: skuRaiz, producto, canales, estudioConfig, varianteInicial, onClose, onGuardado,
 }: Props) {
@@ -622,6 +635,8 @@ export default function ProductStudio({
   const [cambiandoCatPub, setCambiandoCatPub] = useState(false);
   const [errorCatPub, setErrorCatPub] = useState<string | null>(null);
   const [catCambiadaPub, setCatCambiadaPub] = useState(false);
+  // ML · actualizar: las partes que la persona apagó en la vista previa (`partes` del confirmar).
+  const [partesOff, setPartesOff] = useState<Set<string>>(new Set());
 
   // ── Bloque COSTOS (dims de pieza → CBM → costo → precios) ───────────
   // costo_producto se ingresa en USD (Alibaba/Odoo) y se convierte a MXN con el
@@ -1504,6 +1519,7 @@ export default function ProductStudio({
     setMotivoCat("");
     setErrorCatPub(null);
     setCatCambiadaPub(false);
+    setPartesOff(new Set());
     try {
       setPreviewPub(await publicarPreview(reqPublicar()));
     } catch {
@@ -1557,6 +1573,10 @@ export default function ProductStudio({
           ? revisionCatML(previewPub)?.actual?.category_id ?? null
           : null,
         categoria_motivo: revisionCatML(previewPub) && motivoCat.trim() ? motivoCat.trim() : null,
+        // ML con publicación viva: solo lo que quedó marcado (sin lista el backend manda todo).
+        partes: esML && previewPub?.modo === "actualizar"
+          ? PARTES_ML.map(([k]) => k).filter((k) => !partesOff.has(k))
+          : undefined,
       });
       setResultadoPub(r);
       if (r.ok && canal === "amazon") setAmazonPublicadoOk(true);
@@ -3571,6 +3591,42 @@ export default function ProductStudio({
                     </div>
                   )}
 
+                  {/* ML con publicación viva: qué se manda. Cada parte va en su propio envío
+                      (lo que ML rechace no frena lo demás); se apaga lo que no se quiere tocar. */}
+                  {esML && previewPub.modo === "actualizar" && (
+                    <div>
+                      <div className="mb-1 text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">Qué se actualiza</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {PARTES_ML.filter(([k]) => previewPub.operaciones?.[k]).map(([k, label]) => {
+                          const n = previewPub.operaciones?.[k];
+                          return (
+                            <label key={k} className="flex cursor-pointer items-center gap-1.5 rounded-lg border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-600">
+                              <input
+                                type="checkbox"
+                                checked={!partesOff.has(k)}
+                                disabled={publicando || !!resultadoPub?.ok}
+                                onChange={() => setPartesOff((s) => {
+                                  const o = new Set(s);
+                                  if (o.has(k)) o.delete(k); else o.add(k);
+                                  return o;
+                                })}
+                              />
+                              {label}{typeof n === "number" ? ` (${n})` : ""}
+                            </label>
+                          );
+                        })}
+                      </div>
+                      {!!previewPub.fotos?.length && !partesOff.has("fotos") && (
+                        <div className="mt-2 flex gap-1 overflow-x-auto">
+                          {previewPub.fotos.map((u) => (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img key={u} src={u} alt="" className="h-12 w-12 shrink-0 rounded border border-slate-200 object-cover" />
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {/* Peso y medidas de RELLENO (`aviso_medidas`): aviso, no freno. Arriba
                       y no en la caja de avisos, que queda al fondo del cuerpo (debajo del
                       payload) mientras el botón de confirmar está en el pie fijo: así se
@@ -3737,6 +3793,17 @@ export default function ProductStudio({
                                   </>
                                 )
                                 : "actualizado"}
+                            {/* Por parte: qué entró, qué ML no deja cambiar y qué falló (queda en ml_backlog). */}
+                            {!!r.partes?.length && (
+                              <div className="mt-1 flex flex-wrap gap-1">
+                                {r.partes.map((p, j) => (
+                                  <span key={j} className={["rounded px-1.5 py-0.5 text-[10.5px] font-semibold", (ESTADO_PARTE[p.estado] ?? ESTADO_PARTE.error).clase].join(" ")}>
+                                    {ETIQUETA_PARTE[p.parte] ?? p.parte}: {(ESTADO_PARTE[p.estado] ?? { texto: p.estado }).texto}
+                                    {p.detalle && p.estado !== "ok" && p.estado !== "sin_cambio" ? ` — ${p.detalle}` : ""}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
                             {r.aviso && <div className="mt-0.5 text-xs">{r.aviso}</div>}
                           </div>
                         </div>
@@ -3766,13 +3833,16 @@ export default function ProductStudio({
               ) : (
                 <>
                   <button onClick={cerrarPreview} className="rounded-lg px-4 py-2 text-sm font-semibold text-slate-500 hover:bg-slate-100">Cancelar</button>
-                  {previewPub.ok && revisionCatML(previewPub) && !catRevisada && (
+                  {/* `categoria_opcional`: la tarjeta es para MOVER una publicación viva de categoría;
+                      sin marcarla se actualiza lo demás y la categoría se queda. */}
+                  {previewPub.ok && revisionCatML(previewPub) && !catRevisada && !previewPub.categoria_opcional && (
                     <span className="text-[11px] text-slate-400">Marca «Revisé la categoría» para continuar</span>
                   )}
                   {previewPub.ok && (
                     <button
                       onClick={confirmarPublicar}
-                      disabled={publicando || cambiandoCatPub || (!!revisionCatML(previewPub) && !catRevisada)}
+                      disabled={publicando || cambiandoCatPub
+                        || (!!revisionCatML(previewPub) && !catRevisada && !previewPub.categoria_opcional)}
                       className="flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-bold text-white shadow-sm disabled:opacity-60"
                       style={{ background: `linear-gradient(120deg, ${tema.color}, ${tema.acento})`, color: tema.texto }}
                     >

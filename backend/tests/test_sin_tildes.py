@@ -111,7 +111,7 @@ class LoQueSaleAML(unittest.TestCase):
                 mock.patch.object(publicar, "_guardar_backlog_ml") as backlog, \
                 mock.patch.object(publicar, "_update_ml_una", una):
             asyncio.run(publicar._confirmar_ml(req))  # noqa: SLF001
-        self.assertEqual(una.call_args.args[2], "Caminadora Electrica Niño")
+        self.assertEqual(una.call_args.args[2]["title"], "Caminadora Electrica Niño")  # `cambios` (v0.721)
         self.assertEqual(backlog.call_args.args[8]["title"], "Caminadora Electrica Niño")
 
 

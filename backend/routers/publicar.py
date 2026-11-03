@@ -106,6 +106,9 @@ class PublicarRequest(BaseModel):
     # Mercado Libre: si el SKU está publicado en UNA cuenta y la otra nunca lo tuvo, también se
     # CREA ahí (pausado). Explícito a propósito: actualizar una publicación no abre otra cuenta sola.
     crear_faltantes: bool = False
+    # Mercado Libre, publicación viva: qué partes se actualizan (`publicar.PARTES_ML`: titulo,
+    # descripcion, atributos, fotos). Sin lista = todas. La categoría va por `categoria_confirmada`.
+    partes: list[str] | None = None
 
     def a_dict(self) -> dict[str, Any]:
         d = self.model_dump()

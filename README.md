@@ -1001,6 +1001,55 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.721.0 — «Actualizar en ML» manda TODO (fotos y categoría incluidas), parte por parte y en las dos cuentas a la vez
+
+**Por qué (3-nov-2026, Brandon).** Con el SKU ya publicado, el botón «Actualizar en Mercado Libre · ambas cuentas» solo
+mandaba título, atributos y descripción. Las **fotos** y la **categoría** nunca viajaban. Además iba todo en un solo
+`PUT /items` y la descripción solo salía si ese PUT entraba. Así, **un atributo con un valor que ML no acepta tiraba la
+actualización entera de esa cuenta**.
+
+Medido en `ml_backlog` (solo SELECT): 597 actualizaciones desde el Estudio, 199 fallidas. Las causas fueron tres:
+- 101 por «cannot modify the title… family_name» (23 al 30-jul). Ya las cubría el reintento sin título.
+- 44 por el PolicyAgent (sep). Se resolvió con la app arteria.
+- **39 por valores tipo lista**, del 30-jul al 27-oct y todavía vivas: `"['Blanco']"`, o `"['Hombre'"` cuando la lista ya
+  venía partida por comas. ACC-0129-BLN mandaba GENDER, MAIN_COLOR, FINISH y RELEASE_SEASON así.
+
+**Qué cambia (`services/publicar.py`, solo el adaptador; `vendor/` no se toca).**
+- **Cada parte en su propio envío** (`_update_ml_una`): título → categoría + atributos → fotos → descripción. Lo que ML
+  acepta entra; lo que rechaza queda con su porqué. Cada parte termina en `ok`, `sin_cambio`, `omitido` o `error`.
+  `omitido` es una regla de ML, no un error para corregir.
+- **Las dos cuentas en paralelo e independientes.** Si una falla, la otra se actualiza igual. Cada cuenta deja su fila en
+  `ml_backlog`, con el error por parte en `error` y las respuestas de ML en `ml_response`. También queda en
+  `ops.process_log` (Monitoreo). Ahí está la bitácora para corregir después.
+- **Fotos**: son las mismas que llevaría un alta (`publicar_ready._imagenes_para`, hasta 10). Usan el pre-subido del alta,
+  JPEG y agrandado (`_foto_para_ml`), y después se reemplazan por `picture_id`. **Nunca por `source`**: si ML no logra
+  bajar una URL, PAUSA la publicación («picture downloading pending»). Si una sola foto no sube, no se manda el PUT de
+  fotos, porque borraría las demás.
+- **Categoría**: solo la elección humana (`ml_categoria_id`, el selector del Estudio) y solo si es distinta de la que
+  tiene la publicación. La vista previa enseña la tarjeta de revisión (`categoria_opcional`), que **no frena el botón**:
+  marcar «Revisé la categoría» la mueve, y sin marcarla se actualiza lo demás. La categoría viaja con los atributos. Si
+  ML la rechaza, se enseña su respuesta y los atributos se mandan solos.
+- **Título**: si es igual al que ya está, no se manda. Con `family_name` (catálogo) no se intenta. Si ML contesta 200 y
+  **conserva** el título (la doc de ML: «con ventas no puedes cambiar el título»), queda `omitido` con el número de ventas.
+- **Atributos**: `_valor_ml` convierte la lista (o su repr) en «Blanco, Negro»; ML parte `value_name` por comas. Solo
+  viajan IDs de ML, porque el formulario trae «Peso» o «Color» de Woo y ML los ignora. Si ML rechaza un valor
+  (`invalid.item.attribute.values`), se reintenta sin ese atributo y queda anotado cuál fue.
+- `partes` (nuevo, opcional) en `/api/publicar/confirmar`: `titulo`, `descripcion`, `atributos`, `fotos`. Sin la lista
+  van todas.
+
+**El formato del botón (Estudio).** La vista previa de ML en modo actualizar trae `operaciones.fotos`, `fotos` (URLs) y
+`categoria_opcional`. El modal enseña:
+- «Qué se actualiza», con una casilla por parte y las miniaturas de las fotos.
+- La tarjeta de categoría, solo cuando difiere.
+- El resultado por cuenta y por parte: «Fotos: actualizado», «Título: no se cambió — tiene 4 venta(s)»,
+  «Atributos: error — ML rechazó MAIN_COLOR; los otros 12 sí se actualizaron».
+
+**Lo que NO toca.** Precio y stock siguen con sus propios flujos (Pricing y el fan-out). ML además ignora un `price` en
+el PUT si la publicación tiene automatización de precios.
+
+**Verificado.** 16 pruebas nuevas en `tests/test_publicar_actualizar_ml.py` (ML simulado con `httpx.MockTransport`).
+Las 384 de los publicadores siguen verdes y `tsc --noEmit` del frontend está limpio. Sin prueba en vivo contra ML.
+
 ### v0.720.0 — Mercado Libre: el TÍTULO va sin acentos (la ñ se queda)
 
 **Qué pidió Brandon (3-nov-2026).** Que el título de Mercado Libre salga sin acentos desde que se genera: la misma
