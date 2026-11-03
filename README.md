@@ -1001,6 +1001,61 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.723.0 — Catálogo en kubera: la FAMILIA, la PREPARACIÓN y la BAJA del SKU; «publicado» se calcula (PLAN MAESTRO 3.2). El código va antes que su migración (0080)
+
+**Qué pasaba.** Para que un SKU nazca y viva en kubera sin Woo faltaban dos cosas que solo existían en Woo:
+- la familia (padre → variantes), que solo vivía en `wc_parent_id`. `parent_sku` y `has_variations` existían desde la
+  0001, pero estaban vacíos (0 de 16,171) y el ETL de las 06:15 ponía `has_variations=false` cada noche;
+- la baja, que solo vivía en el `post_status` de Woo.
+
+**El diseño de Eduardo (2-nov):** «publicado» y «archivado» son dos preguntas, y ninguna cabe en `estado_ciclo`:
+- **publicado se CALCULA** desde `channel.listings`, y nadie lo escribe: la publicación existe, activa o pausada;
+- **archivado es una BAJA** con fecha, quién y motivo, que decide una persona (mientras exista Woo, también la
+  papelera de Woo y lo que Woo ya no tiene);
+- `estado_ciclo` es solo la preparación: draft | procesado | listo.
+
+**Lo que trae esta versión (código; la migración 0080 va después, con su acta `_paso_prod_catalogo_3_2`):**
+- **El ETL de las 06:15** (`scripts/etl_core_products_v2.py`):
+  - deriva la familia de `wc_parent_id` en cada corrida (`derivar_familia`). Entra a CAMPOS y no a CAMPOS_SEAM: no
+    rompe la racha de `seam_gap`. Los padres se escriben antes que las variantes (FK de `parent_sku`);
+  - archiva en `archivado_*` (por `etl`, motivo `ya_no_en_woo`) lo que Woo ya no tiene, con dos frenos de todo o
+    nada: si la lectura de Woo es menor al 90 % del padrón, o si saldrían más de 200 de golpe, no archiva ninguno y lo
+    dice en `archivar_omitido`. Sin la columna `archivado_at` (antes de la 0080), se salta el paso y lo dice;
+  - su acta (`migration.reconciliation_runs`) guarda `familia`, `updates_por_campo`, `archivados` y
+    `archivar_omitido`.
+  - **Ojo, la primera noche:** llena la familia con `trg_touch_products` encendido, así que unas 8,980 filas de
+    `core.products` quedan con `updated_at` de esa hora.
+- **El Publicador** (General, vista productos):
+  - oculta lo archivado de la página por omisión (padres y variantes) y lo cuenta en `archivados_ocultos`. El total
+    de la paginación no lo descuenta. Si kubera no contesta (o la 0080 no está), no oculta nada y avisa una vez por
+    proceso (`core_read.archivados_de`);
+  - el chip **«Archivados vivos»** (`archivados=vivos`) muestra lo dado de baja que sigue publicado
+    (`core_read.archivados_vivos`, la vista `core.products_ciclo_v`). En General se pinta desde kubera
+    (`core_read.fichas_de`), porque Woo no lista la papelera ni lo que ya borró. Si no se puede leer, el servidor da
+    503 y la pantalla muestra el error con la lista vacía, sin reintentar. No se combina con `etapa`;
+  - **antes de la 0080, el chip dice «No se pudo leer lo archivado»**: es lo esperado.
+- **La migración 0080** (`supabase/migrations/0080_core_products_familia_ciclo.sql`). Viaja en este commit pero
+  **NO se aplica con el push**: la aplica `aplicar_0080.py` del acta, en hora quieta y después de la primera noche del
+  ETL. Trae:
+  - las columnas `estado_ciclo`, `procesada_at`, `archivado_at`, `archivado_por`, `archivado_motivo` y
+    `archivado_sku_destino` (FK; solo si es recodificado y nunca el mismo SKU), con CHECK de coherencia e índice
+    parcial;
+  - tres funciones, el ÚNICO lugar de cada regla: `core.publicacion_abierta(canal, status, situacion, listing_id)`
+    (ML = la regla de Catálogo v0.708.0; Amazon BUYABLE/DISCOVERABLE/PUBLISHED sin DELETED/INVALID; TikTok ACTIVATE y
+    las apagadas; Temu 2/8, 3/1, 3/3, 2/4, 3/2; Walmart solo PUBLISHED), `core.sku_publicado(sku, por_familia)` y
+    `core.estado_ciclo_inicial(status)`;
+  - la vista `core.products_ciclo_v` (security_invoker), con `publicado` y la situación normal | incoherente |
+    pendiente | baja_limpia;
+  - el relleno, sin mover `updated_at`; el trigger `products_archivar` (trash/deleted → archivado por `woo`; nunca
+    desarchiva); el candado de la casa, con `grant execute` a `service_role`; y su reversa al pie, que deja una fila
+    «revertida».
+  - **Abierto para Eduardo:** si «publicado» cuenta por familia (hoy, por omisión, sí; MAESTRO recomienda directo).
+
+**Pruebas:** `test_catalogo_familia` (la migración, la regla de `publicacion_abierta` comparada entera, ML = Catálogo,
+grants, el ETL, el manifiesto) y `test_publicador_archivados` (19). En el sandbox, la 0080 rehecha y reaplicada con
+`aplicar_0080.py` (es re-ejecutable), idéntica al plan; `scripts/probar_catalogo_familia_sandbox.py` 18/18, con C8 (29
+casos contra la función real) y C9 (service_role lee la vista). Acta: `_paso_prod_catalogo_3_2`.
+
 ### v0.722.0 — La venta que cae al respaldo de MySQL vuelve sola a kubera sin pisar lo más nuevo (PLAN MAESTRO 2.15, riesgo 21). El job NACE APAGADO
 
 **Qué pasaba.** Si `orders_write.guardar` no puede escribir en kubera, la venta va a MySQL y su evento espera en
