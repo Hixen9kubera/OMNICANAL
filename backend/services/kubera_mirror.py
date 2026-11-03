@@ -49,6 +49,11 @@ log = logging.getLogger("omnicanal.kubera_mirror")
 # Lo que `reprocesar_errores` le agrega a `error_texto` al CERRAR sin aplicar un
 # evento de identificador provisional. Buscable con LIKE '%descartado:%'.
 _NOTA_DESCARTE_PROVISIONAL = " · descartado: identificador provisional (no se aplicó)"
+# Y lo que le agrega al cerrar sin aplicar el ENCABEZADO de una venta que kubera ya tiene
+# completo y más nuevo (2.15): reaplicarlo regresaría el estado a uno viejo.
+_NOTA_SUPERADO = " · superado: kubera ya tenía una escritura posterior de esta venta (no se aplicó)"
+# Las tablas de pedidos: su reproceso pasa por el candado de vigencia y avisa al fan-out.
+TABLAS_PEDIDO = ("channel.orders", "channel.order_items")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CENSO escritor → tablas (entregable 1 de la misión; alimenta /migracion)
@@ -950,8 +955,56 @@ def _persistir_error(origen_py: str, funcion: str, tabla_mysql: str,
         pass
 
 
-def reprocesar_errores(max_items: int = 500) -> dict[str, Any]:
+def _superado(antes: dict[str, Any] | None, ts_evento: Any) -> bool:
+    """¿El encabezado encolado es más VIEJO que lo que kubera ya tiene completo? (2.15)
+
+    Una venta cae al respaldo; después otro aviso de la misma venta (p. ej. su
+    cancelación) sí entra directo a kubera. Reaplicar el evento viejo pisaría
+    `estado_canal`/`estado_wc` con el estado de antes: la descancelaría. Un esqueleto
+    (solo el reclamo) o una fila que no existe NO están superados: el evento los llena.
+    `ts_evento` es el `ts` de espejo_kubera_log (UTC_TIMESTAMP, ingenuo en UTC)."""
+    if not antes or antes.get("esqueleto") or not ts_evento or not antes.get("actualizado_at"):
+        return False
+    ts = ts_evento if ts_evento.tzinfo else ts_evento.replace(tzinfo=timezone.utc)
+    return antes["actualizado_at"] >= ts
+
+
+def _avisar_ventas(primeras: dict[tuple, tuple[dict | None, dict]]) -> int:
+    """Tras el reproceso, la señal de cada venta tocada (foto antes del primer evento,
+    foto después del último) al MISMO enganche del fan-out que usa `sincronizar`
+    (2.15). Con FANOUT_FUENTE=woo el enganche no hace nada. Nunca lanza."""
+    if not primeras:
+        return 0
+    from services import orders_write, pedidos_ml
+    avisadas = 0
+    try:
+        conn = _get_pool().connection()
+        try:
+            with conn.cursor() as cur:
+                for (_, _, oid), (antes, payload) in primeras.items():
+                    senal = orders_write.senal(antes, orders_write._foto(cur, payload), payload)
+                    if senal["nueva_en_kubera"] or senal["vendible_cambia"]:
+                        pedidos_ml._avisar_fanout(senal, oid)
+                        avisadas += 1
+            conn.rollback()
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("reproceso de pedidos: no se pudo avisar al fan-out: %s", exc)
+    return avisadas
+
+
+def reprocesar_errores(max_items: int = 500,
+                       tablas: tuple[str, ...] | None = None) -> dict[str, Any]:
     """Re-aplica los errores pendientes (resuelto=0) desde su payload_json.
+
+    `tablas` limita el reproceso a esos destinos (el job de pedidos, 2.15, pasa
+    TABLAS_PEDIDO). Los eventos de PEDIDOS, vengan del job o del botón:
+      · el encabezado NO se aplica si kubera ya tiene la venta completa y más nueva
+        (`_superado`): se cierra con `_NOTA_SUPERADO`;
+      · al terminar, cada venta tocada manda su señal al enganche del fan-out
+        (`_avisar_ventas`): el libro la resta y, con FANOUT_FUENTE=kubera, los canales
+        se enteran sin esperar la pasada de stock_watch.
 
     Secuencial y con una conexión del pool a la vez: cero presión extra sobre
     kubera. Es seguro re-aplicar: los upserts destino son idempotentes y los
@@ -973,13 +1026,15 @@ def reprocesar_errores(max_items: int = 500) -> dict[str, Any]:
     if not _asegurar_tabla_log():
         return {"ok": False, "motivo": "Sin tabla espejo_kubera_log."}
     from services import db
+    filtro = (" AND tabla_destino IN (" + ",".join(["%s"] * len(tablas)) + ")") if tablas else ""
     filas = db.fetch_all(
-        """SELECT id, tabla_destino, payload_json FROM espejo_kubera_log
-           WHERE resuelto = 0 AND payload_json IS NOT NULL
+        f"""SELECT id, ts, tabla_destino, payload_json FROM espejo_kubera_log
+           WHERE resuelto = 0 AND payload_json IS NOT NULL{filtro}
            ORDER BY id LIMIT %s""",
-        (int(max_items),),
+        (*(tablas or ()), int(max_items)),
     )
-    aplicados = ilegibles = fallidos = 0
+    aplicados = ilegibles = fallidos = superados = 0
+    primeras: dict[tuple, tuple[dict | None, dict]] = {}   # venta → (foto antes, payload)
     detalle_fallos: list[str] = []
     provisionales: list[str] = []
     for f in filas:
@@ -1002,10 +1057,27 @@ def reprocesar_errores(max_items: int = 500) -> dict[str, Any]:
                     # que no hizo. Del autor original no hay registro, y "no se
                     # sabe" es la respuesta honesta.
                     cur.execute("select set_config('app.usuario', '', true)")
-                    upsert(cur, payload)
+                    superado = False
+                    if f["tabla_destino"] in TABLAS_PEDIDO:
+                        from services import orders_write
+                        antes = orders_write._foto(cur, payload, tomar=True)
+                        llave = (payload.get("canal"), payload.get("cuenta"),
+                                 str(payload.get("external_order_id") or ""))
+                        primeras.setdefault(llave, (antes, payload))
+                        superado = (f["tabla_destino"] == "channel.orders"
+                                    and _superado(antes, f.get("ts")))
+                    if not superado:
+                        upsert(cur, payload)
                 conn.commit()
             finally:
                 conn.close()
+            if superado:
+                db.execute(
+                    "UPDATE espejo_kubera_log SET resuelto=1, resuelto_ts=UTC_TIMESTAMP(), "
+                    "error_texto=CONCAT(COALESCE(error_texto, ''), %s) WHERE id=%s",
+                    (_NOTA_SUPERADO, f["id"]))
+                superados += 1
+                continue
             db.execute(
                 "UPDATE espejo_kubera_log SET resuelto=1, resuelto_ts=UTC_TIMESTAMP() WHERE id=%s",
                 (f["id"],),
@@ -1033,8 +1105,10 @@ def reprocesar_errores(max_items: int = 500) -> dict[str, Any]:
             if len(detalle_fallos) < 5:
                 detalle_fallos.append(
                     f"id {f['id']}: {type(exc).__name__}: {str(exc)[:120]}")
+    fanout_avisados = _avisar_ventas(primeras)
     return {"ok": True, "pendientes_leidos": len(filas), "aplicados": aplicados,
             "ilegibles": ilegibles, "fallidos": fallidos,
+            "superados": superados, "ventas_avisadas_al_fanout": fanout_avisados,
             "detalle_fallos": detalle_fallos,
             "descartados_provisionales": len(provisionales),
             "skus_provisionales": provisionales[:50]}

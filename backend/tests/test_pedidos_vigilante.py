@@ -38,6 +38,7 @@ class Base(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
         self.aviso = mock.patch.object(alertas, "avisar_estado", return_value=True).start()
+        self.respaldo = mock.patch.object(pedidos_vigilante, "respaldo", return_value=None).start()
         self.addCleanup(mock.patch.stopall)
 
 
@@ -78,6 +79,33 @@ class Revisar(Base):
         e = pedidos_vigilante.estado()
         self.assertTrue(e["habilitado"])
         self.assertEqual(e["estado"], "ok")
+
+
+class Respaldo(Base):
+    """2.15: las ventas que cayeron a MySQL se avisan aparte, por cambio de estado."""
+
+    def avisos(self):
+        return {c.args[0]: c.args[1] for c in self.aviso.call_args_list}
+
+    def test_con_ventas_en_el_respaldo_avisa(self):
+        self.respaldo.return_value = {"n": 2, "ventas": 1, "desde": datetime(2026, 10, 28, 9, 0)}
+        with mock.patch.object(sdb, "fetch_all", return_value=[]):
+            r = pedidos_vigilante.revisar()
+        self.assertEqual(self.avisos()["pedidos_en_respaldo"], "pendientes")
+        self.assertIn("1 venta(s) en el respaldo", [c.args[2] for c in self.aviso.call_args_list
+                                                    if c.args[0] == "pedidos_en_respaldo"][0])
+        self.assertEqual(r["respaldo"]["n"], 2)
+
+    def test_respaldo_vacio_es_ok(self):
+        self.respaldo.return_value = {"n": 0, "ventas": 0, "desde": None}
+        with mock.patch.object(sdb, "fetch_all", return_value=[]):
+            pedidos_vigilante.revisar()
+        self.assertEqual(self.avisos()["pedidos_en_respaldo"], "ok")
+
+    def test_sin_mysql_no_se_avisa_del_respaldo(self):
+        with mock.patch.object(sdb, "fetch_all", return_value=[]):
+            pedidos_vigilante.revisar()
+        self.assertNotIn("pedidos_en_respaldo", self.avisos())
 
 
 class ElSql(unittest.TestCase):

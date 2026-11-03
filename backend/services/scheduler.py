@@ -434,6 +434,23 @@ def iniciar() -> None:
                            max_instances=1, coalesce=True)
         log.info("Vigilante de ventas reclamadas sin pedido cada %s min (umbral %s min).",
                  settings.pedidos_vigilante_min, settings.pedidos_vigilante_umbral_min)
+    # REPROCESO DEL RESPALDO DE PEDIDOS (PLAN MAESTRO 2.15): la venta que cayó a MySQL
+    # vuelve a kubera sola, con el candado de vigencia y la señal al fan-out.
+    if getattr(settings, "pedidos_respaldo_reproceso_enabled", False):
+        from services import kubera_mirror
+
+        async def _respaldo_pedidos() -> None:
+            r = await asyncio.to_thread(       # regla 11: kubera y MySQL bloquean
+                kubera_mirror.reprocesar_errores, settings.pedidos_respaldo_reproceso_lote,
+                kubera_mirror.TABLAS_PEDIDO)
+            if r.get("pendientes_leidos"):
+                log.info("Respaldo de pedidos: %s", r)
+
+        _scheduler.add_job(_respaldo_pedidos, "interval", minutes=settings.pedidos_respaldo_reproceso_min,
+                           id="pedidos_respaldo",
+                           next_run_time=datetime.now() + timedelta(minutes=2),
+                           max_instances=1, coalesce=True)
+        log.info("Reproceso del respaldo de pedidos cada %s min.", settings.pedidos_respaldo_reproceso_min)
     # SONDEO DE VENTAS DE ML (PLAN MAESTRO 2.11/F2.3): ventana fija de 24 h contra
     # channel.orders. Nace en solo registro.
     if getattr(settings, "pedidos_ml_sondeo_enabled", False):

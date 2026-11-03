@@ -1001,6 +1001,27 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.722.0 — La venta que cae al respaldo de MySQL vuelve sola a kubera sin pisar lo más nuevo (PLAN MAESTRO 2.15, riesgo 21). El job NACE APAGADO
+
+**Qué pasaba.** Si `orders_write.guardar` no puede escribir en kubera, la venta va a MySQL y su evento espera en
+`espejo_kubera_log` hasta que alguien apriete «reprocesar» en /migracion; mientras tanto el libro no la resta. Y el
+botón reaplicaba el encabezado tal cual: medido el 28-oct, el único evento de pedidos en la cola
+(AMAZON:701-9587087-1774608, del 18-sep) es de una venta que kubera ya tiene completa, y reprocesarlo le devolvía el
+estado de hace 40 días.
+
+**Qué cambia:**
+- `kubera_mirror.reprocesar_errores(max_items, tablas=None)`. Para los eventos de pedidos, del job o del botón:
+  - **candado de vigencia**: el encabezado no se aplica si kubera ya tiene la venta completa con
+    `actualizado_at` ≥ el `ts` del evento; se cierra con la nota «superado: … no se aplicó». Un esqueleto o una venta
+    que no existe sí se llenan; las líneas siempre;
+  - **la señal de cada venta** (foto antes del primer evento y después del último) va al mismo enganche del fan-out
+    que `sincronizar`; con `FANOUT_FUENTE=woo` no hace nada.
+- Job `PEDIDOS_RESPALDO_REPROCESO_ENABLED` (apagado; cada 5 min, lote 50): reprocesa solo pedidos.
+- El vigilante de pedidos cuenta los eventos pendientes del respaldo y avisa aparte («pedidos_en_respaldo»).
+
+**Pruebas:** `test_respaldo_pedidos` (8), `test_pedidos_vigilante` (+3). Sandbox con el código real y ROLLBACK: 6/6.
+Acta: `_paso_prod_respaldo_2_15`.
+
 ### v0.721.0 — «Actualizar en ML» manda TODO (fotos y categoría incluidas), parte por parte y en las dos cuentas a la vez
 
 **Por qué (3-nov-2026, Brandon).** Con el SKU ya publicado, el botón «Actualizar en Mercado Libre · ambas cuentas» solo

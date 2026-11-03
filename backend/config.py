@@ -269,6 +269,14 @@ class Settings(BaseSettings):
     pedidos_vigilante_min: int = 5
     pedidos_vigilante_umbral_min: int = 10
     pedidos_vigilante_excluir: str = ""
+    # REPROCESO AUTOMÁTICO DEL RESPALDO DE PEDIDOS (PLAN MAESTRO 2.15, riesgo 21): cada N
+    # min re-aplica en kubera los eventos de pedidos (channel.orders/order_items) que
+    # cayeron a MySQL + espejo_kubera_log, con el candado de vigencia (un encabezado más
+    # viejo que lo que kubera tiene completo se cierra «superado») y la señal al fan-out.
+    # Hasta hoy solo existía el botón de /migracion. Nace APAGADO.
+    pedidos_respaldo_reproceso_enabled: bool = False
+    pedidos_respaldo_reproceso_min: int = 5
+    pedidos_respaldo_reproceso_lote: int = 50
     # SONDEO DE VENTAS DE ML (services/pedidos_ml_sondeo.py, PLAN MAESTRO 2.11/F2.3):
     # ML solo entraba por webhook. Cada N min pregunta /orders/search por cuenta con
     # ventana FIJA de HORAS hacia atrás (order.date_last_updated) y compara contra

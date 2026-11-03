@@ -20,6 +20,11 @@ QUÉ HACE (con PEDIDOS_VIGILANTE_ENABLED)
     la recuperación y un recordatorio al día), con el número y las primeras llaves.
   · PEDIDOS_VIGILANTE_EXCLUIR: llaves `canal:cuenta:orden` conocidas que no se
     cuentan (hoy, el reclamo huérfano de Temu de septiembre).
+  · VENTAS EN EL RESPALDO (2.15, riesgo 21): si `orders_write.guardar` no pudo escribir
+    en kubera, la venta fue a MySQL y su evento espera en `espejo_kubera_log` hasta que
+    el reproceso la aplique; mientras tanto el libro NO la resta. Se cuentan esos
+    eventos pendientes (encabezado y líneas) y se avisa aparte (`pedidos_en_respaldo`),
+    también solo al cambiar de estado. Si MySQL no contesta, no se avisa nada de esto.
 
 Solo lee y avisa: no crea, no suelta ni reintenta nada. ⚠️ `revisar` y `pendientes`
 BLOQUEAN (leen kubera): van en hilo (regla 11).
@@ -36,6 +41,7 @@ from services import supabase_db as sdb
 log = logging.getLogger("omnicanal.pedidos_vigilante")
 
 _TIPO = "pedidos_sin_completar"
+_TIPO_RESPALDO = "pedidos_en_respaldo"
 _MUESTRA = 10
 _ultimo: dict[str, Any] = {"estado": "sin_ejecutar"}
 
@@ -63,6 +69,24 @@ def pendientes(umbral_min: int | None = None) -> list[dict[str, Any]]:
     vieja primero."""
     umbral = int(umbral_min if umbral_min is not None else settings.pedidos_vigilante_umbral_min)
     return sdb.fetch_all(_SQL, {"umbral": umbral, "excluir": _excluir()})
+
+
+def respaldo() -> dict[str, Any] | None:
+    """⚠️ BLOQUEA (lee MySQL). Eventos de pedidos que esperan en `espejo_kubera_log`: cuántos,
+    de cuántas ventas y desde cuándo. None si MySQL no está o no contesta."""
+    if not settings.mysql_enabled:
+        return None
+    try:
+        from services import db
+        from services.kubera_mirror import TABLAS_PEDIDO
+        f = db.fetch_one(
+            "SELECT COUNT(*) n, COUNT(DISTINCT clave) ventas, MIN(ts) desde FROM espejo_kubera_log "
+            "WHERE resuelto = 0 AND tabla_destino IN (%s, %s)", TABLAS_PEDIDO)
+        return {"n": int((f or {}).get("n") or 0), "ventas": int((f or {}).get("ventas") or 0),
+                "desde": (f or {}).get("desde")}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("pedidos_vigilante: no se pudo leer el respaldo (%s)", exc)
+        return None
 
 
 def _texto(filas: list[dict[str, Any]], umbral: int) -> str:
@@ -99,7 +123,18 @@ def revisar() -> dict[str, Any]:
     alertas.avisar_estado(
         _TIPO, estado, _texto(filas, umbral) if filas else "",
         texto_ok=f"*Ventas reclamadas:* ninguna sin pedido hace más de {umbral} min.")
+    resp = respaldo()
+    if resp is not None:
+        alertas.avisar_estado(
+            _TIPO_RESPALDO, "pendientes" if resp["n"] else "ok",
+            f"*{resp['ventas']} venta(s) en el respaldo de MySQL* ({resp['n']} evento(s), el más viejo de "
+            f"{resp['desde']:%d-%b %H:%M} UTC): kubera no las tiene y el libro no las resta. "
+            f"Reprocesar en /migracion → Errores o con el job PEDIDOS_RESPALDO_REPROCESO."
+            if resp["n"] else "",
+            texto_ok="*Respaldo de pedidos* vacío: kubera tiene todas las ventas.")
     _ultimo = {"estado": estado, "n": len(filas), "umbral_min": umbral,
+               "respaldo": ({**resp, "desde": resp["desde"].isoformat() if resp.get("desde") else None}
+                            if resp else None),
                "muestra": [{k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in f.items()}
                            for f in filas[:_MUESTRA]],
                "excluidas": _excluir(),

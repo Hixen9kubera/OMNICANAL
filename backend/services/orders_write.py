@@ -281,7 +281,7 @@ def liberar(canal: str, cuenta: str, external_order_id: str) -> None:
 # La venta tal como está en kubera, dentro de la transacción del registro. Con
 # `for no key update` la fila queda tomada hasta el COMMIT: la foto de antes es la de verdad.
 _SQL_FOTO = """
-select o.skus is null as esqueleto, o.estado_wc, o.wc_order_id,
+select o.skus is null as esqueleto, o.estado_wc, o.wc_order_id, o.actualizado_at,
        coalesce(o.registrado_at, o.creado_at) as registrado,
        coalesce((select json_agg(json_build_object('sku', i.sku::text, 'cantidad', i.cantidad,
                                                    'es_fulfillment', i.es_fulfillment) order by i.linea)
