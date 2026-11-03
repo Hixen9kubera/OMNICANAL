@@ -1001,6 +1001,27 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.718.0 — Guías de tallas de PLAYERA DEPORTIVA (Mujer y Hombre) registradas en las dos cuentas
+
+**Qué pidió Brandon (3-nov-2026).** Dio el OK para crear en ML las guías de ropa que no existían y publicar.
+Se crearon solo las que necesitaba el lote Deportes, con la tabla estándar por género del 9-oct
+(`scripts/crear_guias_ropa_ml.py`, tallas XS–5XL). Las corrió `Documents\omnicanal_guias_tallas_ml\crear_guias_playeras.py`.
+
+| Cuenta | `SPORT_T_SHIRTS:Mujer` | `SPORT_T_SHIRTS:Hombre` |
+|---|---|---|
+| BEKURA | 12111803 | 12111597 |
+| SANCORFASHION | 12111805 | 12111819 |
+
+Quedan registradas en `backend/vendor/ml_ready/size_chart_mapping.py`, la excepción sancionada de la regla 1: ese
+archivo es CONFIG.
+
+**Verificado (sin crear nada).** La vista previa de ROP-0455-NEG-XXL, ROP-0569-BLN-L y ROP-0273-GRI-BLN-NEG-XL pasó
+por `POST /items/validate` en las dos cuentas, sin causas de error. «XXL» resolvió al renglón «2XL», con marca
+Ferrahome.
+
+**Lo que se aprendió del barrido.** `SOCKS` (calcetas) y `BODY_SHAPERS` (fajas) NO están entre los 59 dominios que
+exigen guía: se publican sin ella. El 2-nov se habían apartado por «falta guía» sin probarlo.
+
 ### v0.717.0 — Mercado Libre: la guía de tallas viaja como ML la exige (el fix del 9-oct, integrado y desplegado) y se reutilizan las guías que YA existen
 
 **Qué pidió Brandon (3-nov-2026).** «Reutiliza las guías de tallas que ya existen en ML para las dos cuentas.»

@@ -20,6 +20,9 @@ CHARTS_BY_ACCOUNT = {
         'LOAFERS_AND_OXFORDS:Hombre':  '5601950',
         # Brasieres ya creado en BEKURA
         'BRAS:Mujer':                  '5269931',
+        # Playera deportiva: tabla estándar por género (scripts/crear_guias_ropa_ml.py), creadas el 3-nov-2026
+        'SPORT_T_SHIRTS:Mujer':        '12111803',
+        'SPORT_T_SHIRTS:Hombre':       '12111597',
     },
     'SANCORFASHION': {
         'SANDALS_AND_CLOGS:Hombre':    '6009679',
@@ -31,6 +34,9 @@ CHARTS_BY_ACCOUNT = {
         'LOAFERS_AND_OXFORDS:Hombre':  '5601954',
         'SAFETY_FOOTWEAR:Hombre':      '4859025',
         'BRAS:Mujer':                  '4922945',
+        # Playera deportiva: tabla estándar por género (scripts/crear_guias_ropa_ml.py), creadas el 3-nov-2026
+        'SPORT_T_SHIRTS:Mujer':        '12111805',
+        'SPORT_T_SHIRTS:Hombre':       '12111819',
     },
 }
 
