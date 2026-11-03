@@ -1025,15 +1025,25 @@ producción) el registro de ventas, el reclamo, Woo y el fan-out quedan como en 
 - Un esqueleto de más de 24 h que se completa no es `nueva_en_kubera`, pero sí `vendible_cambia` si tiene líneas
   no FULL y no está cancelado.
 
-**Lo que queda listo para T0 (`FANOUT_FUENTE=kubera`):**
+**Lo que se prepara para T0 (`FANOUT_FUENTE=kubera`). NO está listo:** la verificación de MAESTRO sobre
+`1ffa748e` (`_paso_prod_pedidos_2_11/VERIFICACION_MAESTRO_1ffa748e.md`) dejó abiertos R1, R2 y R3, abajo. Son
+condición de T0, no de este push: con `FANOUT_FUENTE` sin poner, nada de esta sección corre.
 - La señal «venta nueva en kubera» encola el fan-out (contrato v2 con INVENTARIO FANOUT).
 - **Sin señal (`pedidos_ml._sin_senal`):** si ningún registro de la pasada dio señal desde kubera y alguno falló
   (cayó a MySQL, o la señal no se armó), se encolan los SKU no FULL («(sin señal)») y se avisa
   `fanout_sin_senal`. Cubre también el pre-registro que cae a MySQL y lo aplica el worker del espejo (N1) y la
   señal que no se arma (N3). Un aviso repetido que no cambia nada no avisa.
-- **La red del worker (N4):** cuando el worker del espejo (`kubera_mirror._trabajar`) aplica un `channel.orders`
-  que cayó a MySQL, vuelve a encolar sus SKU no FULL ya con la venta en el libro («(espejo aplicó)»). Antes, si el
-  worker aplicaba después de que el fan-out leyera el libro, nadie volvía a encolar.
+- **La red del worker (N4), puesta pero ABIERTA:** cuando el worker del espejo (`kubera_mirror._trabajar`) aplica
+  un `channel.orders` que cayó a MySQL, vuelve a encolar sus SKU no FULL («(espejo aplicó)»). Antes, si el worker
+  aplicaba después de que el fan-out leyera el libro, nadie volvía a encolar. **No garantiza que la venta ya esté
+  en el libro (R1):** dispara con el ENCABEZADO, el libro resta por las LÍNEAS (`channel.order_items`), y las dos
+  viajan como eventos aparte que `espejar` reparte por `hash((tabla_mysql, clave)) % 2`: en ~30 % de las claves
+  caen en workers distintos. Si el de las líneas se atrasa más que la espera del fan-out, el reparto sale sin la
+  venta y nadie vuelve a encolar.
+- **«(sin señal)» encola antes de que la venta esté en el libro (R2):** si nada llegó a kubera, ese reparto le SUBE
+  una pieza al canal que vendió (p. ej. de 4 a 5) hasta el reparto siguiente. Encolar de más NO es inocuo aquí.
+- **El reproceso de /migracion (R3):** hasta que 2.15 entre a main con su job, aplica lo que cayó a MySQL sin señal
+  ni candado de vigencia.
 
 **Pruebas:** `test_kubera_primero_etapa_b` (las señales reales de `orders_write.senal` para N1 y N3, el reintento
 de una venta «Woo pendiente», la ráfaga en dos procesos, `FANOUT_FUENTE=kubera` sin kubera primero, la red del
@@ -1535,8 +1545,9 @@ con el código real y ROLLBACK: `scripts/probar_kubera_primero_sandbox.py`, 9/9.
   `orders_write.estados_wc` y la marca de agua de Amazon (`ultimo_actualizado`) no cuentan las filas sin pedido.
 - Un esqueleto de más de 24 h que se completa no es `nueva_en_kubera` (el planeador no crea OV de ventas viejas),
   pero sí `vendible_cambia` si tiene líneas no FULL y no está cancelado (el fan-out se entera).
-- Con `FANOUT_FUENTE=kubera`, una venta sin señal de kubera (cayó a MySQL o sin registro) avisa `fanout_sin_senal`;
-  la regresa el reproceso del respaldo (2.15) con su señal.
+- Con `FANOUT_FUENTE=kubera`, una venta sin señal de kubera (cayó a MySQL o sin registro) avisa `fanout_sin_senal`.
+  La regresaría con su señal el reproceso del respaldo de 2.15, que NO va en este push: hasta que 2.15 entre a main
+  con su job, el reproceso de /migracion la aplica sin señal ni vigencia (R3 de la verificación de `1ffa748e`).
 - El sondeo de ML no repara lo que kubera tiene con el número del PACK (`por_pack`) ni lo creado hace más de
   `PEDIDOS_ML_SONDEO_MAX_DIAS` (7, `vieja`): los cuenta para que los vea una persona.
 - El ensayo del sandbox (`scripts/probar_kubera_primero_sandbox.py`) suma K7 (esqueleto viejo) y K8 (dedupe y marca

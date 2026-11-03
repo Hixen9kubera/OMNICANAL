@@ -957,7 +957,9 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
                 # y su worker (`_trabajar`) lo aplica SIN foto ni señal; nunca llega a la cola del
                 # respaldo, así que el reproceso (2.15) no lo ve. Se encolan aquí sus SKU no FULL, y
                 # el worker los vuelve a encolar cuando aplica (`kubera_mirror._avisar_espejo_aplicado`,
-                # N4 de la verificación del 3-nov). Encolar de más no daña: recalcula el mismo número.
+                # N4 de la verificación del 3-nov). OJO, abierto para T0 (verificación de 1ffa748e): este
+                # encolado NO es inocuo. Si la venta aún no está en el libro, el reparto le sube una pieza al
+                # canal que vendió (R2); y la red de N4 dispara con el encabezado, no con las líneas (R1).
                 if descuenta:
                     fanout_stock.encolar_varios([s for s in skus if s],
                                                 motivo=f"venta {orden['cuenta']} {order_id} (sin señal)")

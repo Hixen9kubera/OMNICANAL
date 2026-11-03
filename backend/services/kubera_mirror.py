@@ -442,8 +442,12 @@ def _avisar_espejo_aplicado(p: dict[str, Any]) -> None:
 
     `pedidos_ml` ya encoló sus SKU al caer («sin señal»), pero el fan-out lee el libro tras su espera
     (`DEBOUNCE_S`): si el worker aplica DESPUÉS, ese reparto salió con el número viejo y nadie volvía a
-    encolar (la red, `stock_watch` en modo libro, está apagada). Aquí, ya con la venta en kubera, se encolan
-    otra vez sus SKU si no es FULL. Solo con FANOUT_FUENTE=kubera; con `woo` no hace nada. Nunca lanza."""
+    encolar (la red, `stock_watch` en modo libro, está apagada). Aquí, con el ENCABEZADO ya en kubera, se
+    encolan otra vez sus SKU si no es FULL. Solo con FANOUT_FUENTE=kubera; con `woo` no hace nada. Nunca lanza.
+
+    Abierto para T0 (R1 de la verificación de 1ffa748e): el libro resta por las LÍNEAS, que llegan como otro
+    evento y pueden ir en el otro worker (`espejar` reparte por `hash((tabla_mysql, clave))`). Este aviso no
+    garantiza que la venta ya cuente en el libro."""
     try:
         from services import fanout_stock, stock_libro
         if not stock_libro.lee_libro() or p.get("es_fulfillment"):
