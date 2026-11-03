@@ -21,6 +21,7 @@ import logging
 import re
 import threading
 import time
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -405,6 +406,81 @@ def _instalar_fotos_para_ml() -> None:
         ml_api._ensure_min_size = _foto_para_ml
 
 
+# ── La MARCA es la declarada, no la primera de la lista de ML ────────────────────────
+#
+# `attribute_mapper.build_attributes` trata la marca como lista cerrada: si la categoría
+# trae marcas sugeridas y la del producto («Ferrahome») no está entre ellas, como BRAND es
+# obligatoria manda la PRIMERA de la lista. BRAND es `value_type: string` (acepta texto
+# libre), así que ML la aceptaba. Medido el 3-nov-2026 en `ml_backlog`: 1,015 altas desde
+# marzo salieron con la marca de otra empresa (Alfa Romeo, AKG, Black+Decker, Panasonic…);
+# en Tiendas de Campaña habría salido «12 Survivors». Aquí, después de que el vendor arma
+# el envío, BRAND vuelve a ser la marca DECLARADA (`ml_guia_tallas.marca_de`: la del
+# producto o Ferrahome) como `value_name`. Si el vendor ya mandó justo esa marca (texto o
+# un valor de la lista que se llama igual), no se toca. El vendor no se toca (regla 1).
+
+def _plano_marca(texto: Any) -> str:
+    t = unicodedata.normalize("NFKD", str(texto or "").lower())
+    return " ".join("".join(c for c in t if not unicodedata.combining(c)).split())
+
+
+def _nombre_de_valor(attr: dict[str, Any], categoria: str) -> str:
+    """El texto de un atributo del payload: su `value_name`, o el nombre de su `value_id`
+    en la caché de atributos de la categoría que el vendor ya bajó (sin red)."""
+    if attr.get("value_name"):
+        return str(attr["value_name"])
+    vid = str(attr.get("value_id") or "")
+    try:
+        for a in getattr(publisher_core, "_attr_cache", {}).get(categoria) or []:
+            if isinstance(a, dict) and a.get("id") == attr.get("id"):
+                return next((str(v.get("name") or "") for v in a.get("values") or []
+                             if str(v.get("id")) == vid), "")
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
+
+
+def _con_marca_declarada(payload: Any, prod: dict[str, Any]) -> Any:
+    """BRAND = la marca declarada del producto. Pura sobre el payload (lo cambia en sitio)."""
+    attrs = payload.get("attributes") if isinstance(payload, dict) else None
+    if not isinstance(attrs, list):
+        return payload
+    marca = ml_guia_tallas.marca_de(prod)
+    i = next((k for k, a in enumerate(attrs) if isinstance(a, dict) and a.get("id") == "BRAND"), None)
+    if i is not None and _plano_marca(_nombre_de_valor(attrs[i], str(payload.get("category_id") or ""))) \
+            == _plano_marca(marca):
+        return payload
+    nueva = {"id": "BRAND", "value_name": marca}
+    if i is None:
+        attrs.insert(0, nueva)
+    else:
+        if attrs[i].get("value_id"):
+            log.info("marca ML %s: el vendor mandaba %s de la lista; sale «%s»", prod.get("sku"),
+                     attrs[i].get("value_id"), marca)
+        attrs[i] = nueva
+    return payload
+
+
+_build_payload_vendor = None
+
+
+def _build_payload_con_marca(prod: dict, token: str, dry_run: bool = False, cuenta: str = '') -> dict | None:
+    payload = _build_payload_vendor(prod, token, dry_run=dry_run, cuenta=cuenta)
+    try:
+        return _con_marca_declarada(payload, prod) if payload else payload
+    except Exception:  # noqa: BLE001 — la marca nunca tumba un alta: sale lo del vendor
+        log.exception("marca ML %s: no se pudo poner la declarada", prod.get("sku"))
+        return payload
+
+
+def _instalar_marca_declarada() -> None:
+    """`publisher_core.build_payload` (la que usan `publish_product` y la vista previa) con la
+    marca declarada. Idempotente."""
+    global _build_payload_vendor
+    if publisher_core.build_payload is not _build_payload_con_marca:
+        _build_payload_vendor = publisher_core.build_payload
+        publisher_core.build_payload = _build_payload_con_marca
+
+
 # ── Un atributo OPCIONAL con formato que ML no acepta no tumba el alta ─────────────
 #
 # TEC-1875-MUL (23-oct-2026): «El valor que ingresaste en "Grosor del trazo" es
@@ -647,6 +723,7 @@ def configurar() -> None:
     _instalar_anotador()
     _instalar_sin_medidas_de_caja()
     _instalar_fotos_para_ml()
+    _instalar_marca_declarada()
     _configurado = True
 
 

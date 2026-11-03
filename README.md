@@ -1001,6 +1001,33 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.719.0 — Mercado Libre: la MARCA es la declarada, no la primera de la lista de la categoría
+
+**Por qué (3-nov-2026).** Cuando la categoría trae marcas sugeridas y «Ferrahome» no está entre ellas,
+`attribute_mapper.build_attributes` (vendor) trata BRAND como lista cerrada. Como es obligatoria, manda la **primera** de
+la lista. BRAND es `value_type: string`, así que ML la aceptaba sin quejarse.
+
+Medido en `ml_backlog` (solo SELECT): de 6,843 altas exitosas desde marzo, **1,015 salieron con la marca de otra
+empresa**, de 560 SKUs. Las más repetidas fueron Alfa Romeo (78), AKG (53), Black+Decker (51), Allen & Heath (45),
+Panasonic (40) y Abercrombie & Fitch (38); también hay Armani, Bosch, Apple, Audi y Huawei. Lo destapó ORG-0941-AZL: en
+Tiendas de Campaña habría salido «12 Survivors».
+
+**Qué cambia.** `publicar_ready._instalar_marca_declarada` envuelve `publisher_core.build_payload`, que usan tanto
+`publish_product` como la vista previa. Después de que el vendor arma el envío, BRAND vuelve a ser la marca declarada
+(`ml_guia_tallas.marca_de`: la del producto, o Ferrahome) como `value_name`.
+- Si el vendor ya mandó justo esa marca, no se toca. Eso incluye un `value_id` de la lista que se llama igual, que se
+  resuelve con la caché de atributos que el vendor ya bajó, sin red.
+- Si arreglar la marca revienta, sale lo del vendor y queda el traceback en el log.
+- Es un fix, sin variable (regla 15). `backend/vendor/` no se toca (regla 1).
+- En moda ya lo hacía la guardia de la guía de tallas (v0.717.0); ahora vale para toda alta.
+
+**Verificado (sin crear nada).** La vista previa de ORG-0941-AZL pasó por `POST /items/validate` en las dos cuentas, con
+BRAND «Ferrahome» y sin causas de error. Pruebas en `tests/test_publicar_marca_declarada.py` (9).
+`tests/test_ml_guia_tallas.py` ahora devuelve `build_payload` a como estaba tras cada prueba.
+
+**Lo que NO hace.** No corrige las 1,015 publicaciones que ya existen: eso es escritura masiva en ML y pide el dale de
+Brandon. La lista está en `Documents\omnicanal_marca_ajena_ml\marcas_por_id_nombres.csv`.
+
 ### v0.718.0 — Guías de tallas de PLAYERA DEPORTIVA (Mujer y Hombre) registradas en las dos cuentas
 
 **Qué pidió Brandon (3-nov-2026).** Dio el OK para crear en ML las guías de ropa que no existían y publicar.

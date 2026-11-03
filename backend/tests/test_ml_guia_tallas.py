@@ -262,6 +262,7 @@ class Base(unittest.TestCase):
         self.addCleanup(setattr, ml_api, "_ensure_min_size", ml_api._ensure_min_size)  # noqa: SLF001
         self.addCleanup(setattr, ml_mapper, "_get_dimension_value",
                         ml_mapper._get_dimension_value)                     # noqa: SLF001
+        self.addCleanup(setattr, publisher_core, "build_payload", publisher_core.build_payload)  # v0.719.0
         self.posts: list[tuple[str, dict]] = []
         self.respuestas: list[tuple[dict, int]] = []
         self.resueltas: list[tuple[str, bool]] = []
