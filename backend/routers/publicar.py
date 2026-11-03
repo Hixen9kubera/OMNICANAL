@@ -9,6 +9,7 @@ publicar.py — Paso 4: actualizar la publicación en el canal seleccionado.
 """
 from __future__ import annotations
 
+import logging
 import time
 
 from typing import Any
@@ -19,6 +20,10 @@ from pydantic import BaseModel, Field, model_validator
 from services import bitacora, publicar
 
 router = APIRouter(prefix="/api/publicar", tags=["publicar"])
+
+# `_anotar_seguro` llama `log.exception` desde su `except` y el módulo no lo definía:
+# si la bitácora fallaba, el NameError acababa en un 500 con el producto YA publicado.
+log = logging.getLogger("omnicanal.routers.publicar")
 
 
 class AtributoIn(BaseModel):

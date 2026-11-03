@@ -1001,6 +1001,334 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.717.0 — Mercado Libre: la guía de tallas viaja como ML la exige (el fix del 9-oct, integrado y desplegado) y se reutilizan las guías que YA existen
+
+**Qué pidió Brandon (3-nov-2026).** «Reutiliza las guías de tallas que ya existen en ML para las dos cuentas.»
+Autorizó leer los tokens de ML (solo lectura, sin renovar) y traer a `main` el fix de guía de tallas. Ese fix se
+armó el 9-oct como v0.632.0 en la rama `ml-guia-tallas` (commit `a1027e3`, validado 48/48 contra ML) y **nunca se
+subió**. Sin él, el publicador no sabe mandar una guía como ML la exige: los 6 tenis CALZ-0122 del lote Deportes
+volvían con `missing.fashion_grid.grid_id.values`. Además el vendor mandaba la talla «36» como «10», el primer valor
+de la lista.
+
+**Qué guías existen hoy en ML.** Barrido de solo lectura del 3-nov: `POST /catalog/charts/search` por los 59
+dominios activos × 7 géneros × 2 cuentas, con el filtro de marca Ferrahome que ML exige. Resultados en
+`Documents\omnicanal_guias_tallas_ml\guias_existentes.json`.
+- **Calzado y brasieres: sí hay.** Son 7 propias en BEKURA y 20 en SANCORFASHION. Las que `size_chart_mapping.py`
+  ya registra son las que usa el fix. Ejemplo: tenis Mujer BEKURA 5602224 y SANCORFASHION 4821199, EU 36–41.
+  Quedan sin registrar 4539046 y 4836419 (tenis Mujer, SANCORFASHION), 4550104 y 4827387 (tenis Hombre,
+  SANCORFASHION), 5270111 (brasieres, BEKURA) y 4922843 y 4923007 (brasieres, SANCORFASHION). Son alternativas de
+  claves que ya tienen guía, así que no hacen falta.
+- **Ropa y calcetines: no hay ninguna** en ninguna cuenta, ni propia ni estándar de ML. Aplica a playeras,
+  chalecos, fajas y calcetas. Las estándar de ML solo existen para tenis, botas, zapatos y botines de fútbol. Para
+  ropa no hay nada que reutilizar: `scripts/crear_guias_ropa_ml.py` sigue siendo el camino, y crear guías en ML
+  pide el dale de Brandon.
+
+**Lo que cambió al integrarlo con lo que `main` aprendió desde el 9-oct.** El diseño es el de la v0.632.0 (abajo,
+intacto). Conflictos resueltos en `publicar_ready.py`, `publicar.py`, `main.py`, CLAUDE.md y README:
+- **Respuestas de ML anotadas.** `_publicar_con_guia` anota cada respuesta de ML, igual que `_publicar_anotando`
+  (v0.682.0). La cadena es guardia de la guía → anotador → vendor: la explicación del rechazo ve todas las
+  respuestas, también en moda.
+- **Reintentos.** Un rechazo de guía no se repite (es determinista). Un 400 con causas de validación tampoco se
+  repite (v0.682.0). Un opcional mal formado se quita y va una vez más (v0.684.0).
+- **Mensaje del error.** En un alta con guía, o ante un rechazo `*.fashion_grid.*`, va la etiqueta de la guía:
+  qué renglón, guía o dominio faltó. En cualquier otro caso va el porqué y la solución de `ml_errores`. La bitácora
+  `ml_backlog` sigue la misma regla.
+- **Vista previa.** Mantiene los candados de main: padre, medidas, stock con `frena` y la categoría confirmada.
+  Suma las líneas de la guía por cuenta, y la caja sin «Confirmar» cuando ninguna cuenta puede salir.
+- **Cuenta viva y otra por crear.** Aplica tanto a una cuenta eliminada como a `crear_faltantes` (v0.714.0). La
+  guía de la cuenta que se va a crear se resuelve solo si el candado de medidas la deja pasar y el dominio exige
+  guía.
+- **Pruebas.** `tests/test_ml_guia_tallas.py` (218) se ajustó a ese comportamiento de main y ya no contamina las
+  pruebas del vendor: devuelve `_ensure_min_size` y `_get_dimension_value` a como estaban.
+
+**Verificado (3-nov, sin crear nada).**
+- Con el código de esta versión, la vista previa de CALZ-0176-BLN/AZL-37 y -40 en las dos cuentas pasó por
+  `POST /items/validate`, sin una sola causa de error.
+- Esos payloads llevaron marca **Ferrahome**, `SIZE` «24 MX» y «27 MX», y renglones 5602224:2 / 4821199:2 y
+  5602224:5 / 4821199:5.
+- Suite completa: ver el commit.
+
+**Lo que esto NO destraba todavía: CALZ-0122.**
+- En WooCommerce sus 10 variantes solo fijan el eje genérico «Variante» («CAF-NEG-36»). No tienen «Color» ni
+  «Talla».
+- El fix, a propósito, no adivina talla ni color del SKU ni del formulario del Estudio, y contesta qué falta.
+- Se destraba agregando «Color» y «Talla» como atributos de variación en el padre (10527) y fijándolos en cada
+  variante. Es un cambio a un producto existente de Woo y espera el OK de Brandon.
+
+**La marca ajena, fuera de moda, sigue.** Fuera de los dominios con guía, el vendor sigue mandando como BRAND la
+primera de la lista sugerida cuando «Ferrahome» no está en ella. Hay 1,015 altas así desde marzo; ver la memoria
+`ml-marca-ajena-del-vendor`. Este fix lo corrige solo en moda.
+
+#### El fix tal como se diseñó el 9-oct (era la v0.632.0; ese número lo tomó `almacen.historial_movimientos`)
+
+**Por qué.** En ropa y calzado ML exige guía de tallas y el botón Publicar fallaba SIEMPRE: 998 intentos (135 SKUs) y
+0 éxitos desde abril-2026, con el mismo letrero —`NEEDS_MANUAL_CONFIG: GRID_REQUERIDO (configurar guía de tallas en
+ML)`— aunque la guía existiera y estuviera registrada. Las 159 publicaciones de moda que están vivas las hizo una persona
+en el panel de ML; ninguna salió del publicador.
+
+**La trampa, medida el 7-oct-2026** con `POST /items/validate` (no crea nada; token de SANCORFASHION, réplica de una
+publicación viva de tenis, una mutación a la vez):
+
+- `SIZE_GRID_ID` va como **value_name**. Como value_id ML contesta `invalid.fashion_grid.grid_id.values` — y así lo
+  manda `vendor/ml_ready/publisher_core.py:307`.
+- `SIZE_GRID_ROW_ID` es **obligatorio** (`"<guía>:<renglón>"`); sin él, `missing.fashion_grid.grid_row_id.values`. El
+  vendor no lo manda nunca: 0 de 998.
+- `SIZE` tiene que ser **el texto del renglón** («24 MX», no «24»): si no, `invalid.fashion_grid.size.values`. El vendor
+  manda el value_id de la lista genérica de la categoría.
+- `GENDER` tiene que ser el de la guía y la guía, de esa cuenta.
+- `/items/validate` contesta HTTP 400 aunque solo haya warnings: lo que decide son las causas `type == "error"`.
+
+**Y lo que el propio fallo estaba tapando.** Arreglar solo la guía habría PUBLICADO datos que no son del producto. Sin
+género el mapper manda «Mujer» (el primer valor de la lista; 723 de 970 intentos); la marca sale como la primera de la
+lista de la categoría (Asics en tenis, 136 de 136); el color se elige por subcadena o por «el primero» —«Negro / Rosa»
+salía «Rosa», «Café» salía «Coral claro», y la meta `ml_attr_COLOR` heredada del padre le ganaba al eje de la variante:
+**50 de las 50 altas que se destrababan el primer día** llevaban un color que no era el suyo, y un tenis negro y uno
+blanco salían idénticos—; la «Talla» de la ficha del padre se le pasaba a la variante que no fija ese eje (la 42 salía
+como 40); y cuando ML rechaza la guía o el título, el vendor QUITA `SIZE_GRID_ID` o `GENDER` y reintenta — por eso el
+backlog decía «falta la guía» donde en realidad «la guía se mandó mal». Dos refutadores independientes revisaron el
+primer diseño y levantaron 14 objeciones (una bloqueante: el color); esta versión es ese diseño con las 14 cerradas,
+y con lo que encontró después la revisión de la implementación (otra bloqueante, también del color: ver «El
+formulario del Estudio no manda»).
+
+**Qué cambia.**
+
+- **`services/ml_guia_tallas.py` (nuevo).** `resolver(prod, cuenta, token)` decide por cuenta y ANTES de llamar al
+  vendor: `no_aplica` (el dominio no exige guía), `ok`, `bloqueado` (falta algo: no se publica y se dice qué) o
+  `desconocido` (no se pudo leer la categoría: el alta sigue como siempre).
+  - **Talla**: el atributo «Talla» con una opción y, en una variante, SOLO si es un eje que ELLA fija. Si la única
+    Talla que hay es la de la ficha del padre → `talla_no_fijada` («la variante debe fijar un EJE de talla»). Nunca el
+    SKU, ni el eje «variante», ni `ml_attr_size`.
+  - **El formulario del Estudio no manda.** Vuelve SEMBRADO con los atributos de WooCommerce (tocado o no; en una
+    variante, con la PRIMERA opción de la lista del padre) y «Mejorar con IA» reemplaza todas sus filas: desde el
+    backend no se distingue lo que tecleó una persona de lo que puso la IA. Y no tiene cómo agregar una fila: si
+    Woo no trae «Género», esa fila solo aparece tras «Mejorar con IA». La revisión lo destapó: a la variante «Negro /
+    Rosa» sin título propio el panel le recomienda ese botón; si la IA deja «Negro» en su formulario y en el de
+    «Negro / Morado», con el formulario por encima del eje las dos salían «Negro», misma guía, renglón y talla: dos
+    publicaciones idénticas (con ese supuesto, 23 parejas = 46 de las 48 altas del primer día). Por eso el formulario
+    **no decide el color** y, en el género, va **después** de WooCommerce. Lo que diga y no se use no bloquea: se
+    dice en la vista previa.
+  - **Color**: SOLO la estructura de WooCommerce — en una variante, el eje «Color» que ella MISMA fija; en un producto
+    simple, el atributo «Color» con una opción. El formulario, una meta `ml_attr_*` heredada o la lista del padre NO
+    deciden → `color_no_fijado`, que dice dónde se fija (en WooCommerce). Si el formulario o la meta dicen otro
+    color, la línea lo dice: «El formulario del Estudio dice «Negro»; la variante es «Negro / Rosa»: se publica
+    «Negro / Rosa»».
+    Viaja por empate EXACTO con la lista de la categoría (con su id) o como texto literal por value_name («Negro /
+    Rosa», «Café»: ML acepta color libre, 41 de 159 vivas lo llevan). Nunca subcadena, nunca «el primero».
+    `MAIN_COLOR`, que el vendor manda desde una meta del padre (985 de 1,001 intentos) y no es obligatorio en ninguna
+    de las 53 categorías de moda leídas, se iguala si empata exacto con su lista y, si no, se quita.
+  - **Género: basta lo que propone la IA** (decisión de Brandon, 9-oct). Decide la PRIMERA fuente que da UN género
+    válido: (1) atributo «Género» de Woo con una opción > (2) formulario del Estudio > (3) meta `ml_attr_GENDER` (la
+    escribe la IA de Crear). Una fuente con varios géneros (el atributo de Woo con dos opciones) o con uno que no es
+    de ML («Unisex», «Dama») no decide ni bloquea: se pasa a la siguiente y se dice. Solo se bloquea cuando NINGUNA
+    da un género válido (`falta el GÉNERO` / `no es un género de Mercado Libre`) o cuando la categoría no lo admite
+    (413 SKUs están en «Calzado para Bebés», que solo admite «Bebés»). Rótulos con la verdad: «atributo Género de
+    WooCommerce» / «formulario del Estudio; puede venir de «Mejorar con IA»: revísalo» / «lo propuso la IA al crear
+    el producto: revísalo». El **título nunca bloquea**: si nombra otro género, la línea de la vista previa lo dice
+    («…; el título dice «hombre»») y nada más. Todo bloqueo de género dice cómo salir: dejar en WooCommerce el
+    atributo «Género» con UNA sola opción.
+  - **Guía**: SOLO la registrada en `vendor/ml_ready/size_chart_mapping.py` para (cuenta, dominio, género); se lee de ML
+    (`GET /catalog/charts/{id}`, caché de 10 min) y se comprueba que sea SPECIFIC, activa, de ese dominio y género.
+    Antes de bloquear por el contenido de una guía que estaba en caché, se relee una vez.
+  - **Renglón**: el ÚNICO que empata por texto, por letra (L ≡ G, XXL ≡ 2XL; `0XL`/`1XL` ya no se equiparan) o por la
+    columna EU. Dos renglones —o un número que está a la vez en la columna EU y en la MX de la misma guía— = no se
+    elige (la persona elige uno de ESOS escribiéndolo en la Talla del Estudio). Un renglón cuyo largo de pie y su
+    talla MX difieren en más de 2 cm no se usa (caso real: `4859025:6`, «28 MX» con 38 cm).
+  - `aplicar()` pisa `BRAND`, `GENDER`, `SIZE`, `COLOR`, `SIZE_GRID_ID` y `SIZE_GRID_ROW_ID` en el payload del vendor,
+    y ajusta `MAIN_COLOR`. Nada más.
+  - `etiqueta_error()` arma el mensaje de un rechazo con las causas `type == "error"`: el warning de envío ya no tapa
+    al error de la guía (fila 4524 de `ml_backlog`) ni el del código de barras a la guía (88 filas).
+- **`services/publicar_ready.py`.** `crear_ml` resuelve por cuenta antes del vendor: la cuenta bloqueada no gasta ni un
+  pre-upload ni un POST. La vista previa aplica la resolución sobre el payload del dry-run. En el alta con guía,
+  una **guardia sobre `ml_api.create_item`** (se reemplaza el nombre en memoria, solo al primer alta con guía; el
+  archivo del vendor no se toca: regla 1) repone los atributos en cada POST de la cadena de reintentos y no repite el
+  envío que ML ya rechazó con 400: los reintentos del vendor que quitan `GENDER` o `SIZE_GRID_ID` ya no llegan a ML.
+  Un 400 con causa de error en un alta con guía ya no se reintenta tres veces; un payload que no cuadra con la guía
+  resuelta no se reintenta (y «sin family_name», una sola vez). `ml_backlog` guarda el mismo mensaje que ve el modal.
+  Clasificar un rechazo o armar su etiqueta nunca rompe un alta: si esas funciones lanzan, se sigue con los
+  reintentos y la etiqueta del vendor (antes reventaba `crear_ml` con la primera cuenta ya creada).
+  - **Candado de pausa** (solo altas con guía): si una termina creada y SIN pausar, en ese clic no se crea en la otra
+    cuenta y las siguientes altas de moda se frenan en el pre-vuelo («se creó en Mercado Libre y NO quedó pausado:
+    MLM… en CUENTA (su estado en Mercado Libre es «active»)…»). Es un CONJUNTO (dos personas publicando a la vez
+    pueden dejar dos: pausar la última no suelta a la primera); cada publicación se suelta cuando su estado, releído
+    en el pre-vuelo (una lectura, en hilo), es cualquiera que NO sea `active`; sin lectura se queda (falla cerrado);
+    el mensaje dice el estado real. Si la verificación de pausa revienta (`pause_item` solo atrapa Timeout), cuenta
+    como NO pausada: pone el candado y el aviso en vez de reventar el alta. Se vacía al reiniciar el backend. La
+    vista previa también lo dice.
+  - **Si el vendor revienta DESPUÉS de crear, el alta con guía no se reintenta.** La primera pausa la hace el propio
+    `publish_product` (publisher_core.py:679) y va ANTES de esa verificación: con un ConnectionError ahí la excepción
+    caía en el bucle de reintentos de `crear_ml`, que hacía OTRO `POST /items`. Medido el 9-oct con la red caída:
+    3 publicaciones de la misma talla, activas, con 0 filas en `ml_backlog` y sin candado; si la red se caía una sola
+    vez, 2, la primera huérfana. Ahora `_publicar_con_guia` no deja salir esa excepción cuando la guardia ya anotó un
+    201: termina lo que al vendor le faltó (un intento más de descripción y su fila de `ml_backlog` / `ml_progress`)
+    y devuelve su resultado de éxito, así que la pausa se verifica como siempre: 1 solo POST en los dos casos. El
+    defecto es previo (igual en v0.625.0, en todas las categorías) y en moda era inalcanzable porque moda no creaba
+    nada; fuera de moda NO se tocó (ver «Pendiente»).
+  - **Alta parcial**: si lo único que no salió son cuentas frenadas antes de llamar a ML y al menos una se creó, el
+    resultado es `ok: True` + `parcial` + aviso. Con `ok: False` el modal dejaba «Confirmar» vivo y el segundo clic
+    era un UPDATE sin compuertas de la publicación recién creada; y la bitácora de persona lo contaba como «fallido».
+  - `construir_prod` AGREGA cuatro llaves —`padre_wc_id`, `padre_sku` (el SKU del padre: lo miran las familias en
+    revisión), `ejes_propios` (los `attribute_*` que la variación tiene con valor) y `atributos_panel` (lo que mandó
+    el formulario del Estudio)—. La comparten Temu, TikTok, Amazon y el semáforo: el resto del dict es idéntico (hay
+    prueba contra lo que devolvía en v0.623.0). Cuesta una lectura más (`padre_de`) y, en una variación, otra (el
+    `_sku` del padre).
+- **`services/publicar.py`.** La vista previa enseña una línea por cuenta (guía, renglón, talla → texto, género y de
+  dónde salió, marca, o por qué esa cuenta no saldrá), la línea del color («Color: saldrá como «X»… El formulario
+  del Estudio dice «Z»… El publicador habría mandado «Y»») y el payload de la primera cuenta que sí se puede
+  publicar (antes siempre BEKURA). Avisa, sin bloquear, cuando el título ya trae talla o color y cuando nombra un
+  tipo de calzado que no es el de la categoría (78 SKUs que el título llama «sandalia» —o «zandalia»— o «zapato de
+  seguridad» están en tenis; el aviso es por palabras y salta también en otros 27 que no son ese caso). Si ninguna
+  cuenta puede salir, dice por qué —incluida la cuenta que no se pudo revisar por falta de token— y NO ofrece
+  Confirmar. Con una cuenta viva y otra eliminada, también resuelve la guía de la que se va a re-crear — solo en
+  moda: antes pregunta lo barato (¿el dominio de la categoría exige guía?: una lectura de metas, en un hilo; el
+  dominio se recuerda) y fuera de moda no arma ningún payload.
+- **Sin variables: es un fix, sin interruptor** (Brandon, 9-oct: «cada FIX… debe ser únicamente un fix»). No hay
+  bandera que lo encienda o lo apague ni variable que lo ajuste; `backend/config.py` no cambia. Lo que lo deja
+  inerte es que el dominio de la categoría no exija guía. **La reversa es revertir el commit.**
+  - **Familias en revisión, a mano**: una constante, `FAMILIAS_EN_REVISION` en `services/ml_guia_tallas.py`, con seis
+    familias de calzado que NO se publican desde el panel — `CALZ-0134`, `CALZ-0129`, `CALZ-0127` (en sus vivas la
+    persona eligió, de forma sistemática, otro renglón que el de la guía) y `CALZ-0089`, `CALZ-0090`, `CALZ-0200`
+    (traen tabla de tallas propia que puede contradecir la guía). Frena al SKU que es la familia o empieza por
+    `<familia>-`, y a la variante cuyo padre lo es; contesta `la familia … está EN REVISIÓN` sin leer la guía ni
+    enviar nada. Se publica a mano en Mercado Libre, o se quita de la constante cuando se corrija.
+  - **Tenis de Hombre ya no se frenan**: se usa la guía registrada (BEKURA 5601948, SANCORFASHION 4538718); la talla
+    que esa guía no tenga queda bloqueada con su motivo. Tampoco las cinco familias de ropa con tabla propia.
+
+- **Guías de ROPA: tabla estándar por género** (`backend/scripts/crear_guias_ropa_ml.py`, nuevo). En ropa ML solo acepta
+  guías propias de la cuenta y no había ni una: por eso toda la ropa rebota. Decisión de Brandon (9-oct): **una tabla
+  de medidas estándar por género —Hombre, Mujer, Niño—**, la misma para todos los dominios, no una por producto. El
+  script crea una guía por cuenta y por clave `DOMINIO:Género` (42 claves con productos esperando → 84 guías): tallas
+  XS–5XL en adulto (el unisex usa la de Hombre) y la estatura, 90–160 cm, en infantil; le pide a ML la ficha del
+  dominio y manda solo las medidas que admite (pecho o busto, cintura, cadera; estatura en infantil). Ensayo por
+  omisión; `--aplicar` las crea; reutiliza la que ya exista con el mismo nombre. **Falta correrlo y registrar los ids**
+  en `size_chart_mapping.py` (el script imprime las líneas): hasta entonces la ropa sigue contestando «no hay guía
+  registrada». No cubre tallas numéricas de ropa (30, 32…), rangos ni «Unitalla».
+
+- **`routers/publicar.py`** (colateral): se define `log`; `_anotar_seguro` lo usaba sin que existiera y un fallo de la
+  bitácora acababa en 500 con el producto ya publicado.
+- **`tests/test_regla_11_productos.py`** (colateral, una línea): `wp_db.norma_titulo` entra a la lista de lo que sí
+  puede llamarse síncrono. Es texto puro (regex), y v0.623.0 la llamó en una corrutina: la suite quedó en rojo por
+  esa única prueba (`2026 tests, failures=1`). No se tocó el router.
+- **`docs/ML_GUIA_TALLAS.md`**: de dónde sale cada dato, mensajes, la tabla EU → MX de cada guía registrada, las
+  familias en revisión, el candado de pausa, cómo registrar una guía y las decisiones pendientes.
+
+**Lo que NO cambia.** `backend/vendor/` en disco (ni `size_chart_mapping.py`). `backend/config.py`. Un dominio que no
+exige guía sale byte a byte igual, con los mensajes y reintentos de siempre: con la guardia sin instalar y con la
+guardia YA instalada, que es como vive producción desde la primera alta de moda (las dos con prueba, en el alta y en
+la vista previa). Una sola excepción, a propósito: si ML contesta con un error DE GUÍA (`…fashion_grid…`) en un dominio
+que el panel no tiene en `DOMINIOS_CON_GUIA`, o cuya categoría no se pudo leer, ese rechazo no se reintenta (antes
+tres intentos) y el modal dice qué hacer en vez de `HTTP 400: Validation error` / `GRID_REQUERIDO`; el envío es el
+de siempre. Y un costo: antes del vendor se lee la categoría (una lectura por categoría, que se recuerda); con
+Mercado Libre CAÍDO eso es esperar más para fallar igual — medido con `/categories` sin contestar, la vista previa
+de un producto que no es de moda hace 5 lecturas en vez de 1 y su alta 5 en vez de 3, en un hilo (manual, sección
+11). La actualización de publicaciones vivas. `family_name` y las `variations`. El frontend.
+
+**Lo que destraba hoy, y lo que no** (el resolvedor real sobre los 2,789 SKUs de moda sin publicar del sondeo, por
+cuenta): resuelven **19 en BEKURA y 29 en SANCORFASHION — 48 altas, 29 SKUs, dos familias de CALZADO** (`CALZ-0176`
+y `CALZ-0193`), las 48 con su color compuesto literal y ninguna idéntica a una hermana. **Ropa sigue sin publicarse
+mientras no haya guías de ropa registradas** (con el `size_chart_mapping.py` de hoy no hay ni una). El resto ahora
+dice por qué: 2,281 no tienen género; 432 / 420 ya solo esperan una guía registrada —382 de ropa (23 claves
+dominio × género: 169 de Mujer, 161 de Hombre y 52 «Sin género») y 50 / 38 de calzado—; 34 son de las familias
+en revisión (a los 34 les falta además el género: hoy no frenan ningún SKU resoluble);
+15 tienen género pero la variante no fija su color o su talla; 2 traen una talla que su guía no tiene; y 2 caen en
+el renglón imposible de la guía de calzado de seguridad (por eso son 29 y no 31). Otros 6 están en un dominio que
+no exige guía y se publican como siempre. **Quitar el título como freno y soltar tenis de Hombre no destraba hoy ni
+una alta más** (medido corriendo lado a lado el resolvedor de antes y el de ahora): los 26 SKUs que frenaba el título
+caen ahora en su siguiente falta —25 son ropa «Sin género» sin guía (14 playeras, 10 pijamas y un pantalón), uno no
+fija color ni talla—, y ningún tenis pendiente trae «Hombre». Lo que cambia es lo que pasará cuando haya guía para ellos:
+ya no los frena el título. Y con el
+formulario del Estudio lleno —el primer color del compuesto en la fila Color y el género en la fila Género, que es
+lo que se supuso que dejaría «Mejorar con IA»— siguen siendo las mismas 48, cada una con su color compuesto y
+ninguna idéntica a una hermana (con el formulario por encima del eje habrían sido 23 parejas idénticas); las 48
+líneas «Color:» dicen que el formulario trae otro color.
+
+**Pruebas.** Sin red ni base. 218 nuevas en `tests/test_ml_guia_tallas.py`, contra el `build_payload` y el
+`publish_product` REALES del vendor (solo se sustituyen las llamadas HTTP). Fijan con prueba, entre otras: un alta y
+una vista previa sin guía = las del vendor byte a byte, sin instalar la guardia y con la guardia ya instalada; nunca
+sale con talla, género o color que no vengan de una fuente del producto; el título no bloquea el género y una fuente
+que no decide tampoco; las seis familias en revisión no mandan ni un POST (por su SKU, por el de su padre, y sin
+frenar al falso amigo `CALZ-01290`); el formulario del Estudio no decide el color y dos hermanas con el mismo color
+en el formulario no salen iguales; si ML o la red fallan al leer la guía, no se publica (ni la vista previa ofrece
+Confirmar, ni se usa una copia vencida de la caché); si el vendor revienta después de crear, no sale un segundo
+`POST /items`; cada guía se lee con el
+token de su cuenta; `resolver`, el candado y la pregunta barata del dominio corren en un hilo (regla 11, con hilos y
+con una revisión estática del AST); `construir_prod` solo agrega llaves; nadie muta `ml_attrs` / `wc_attrs` / `meta`.
+Contraprueba ANTES de simplificar, en tres tandas: las 67 versiones ingenuas de quien implementó; 147 de un revisor
+aparte, de las que **44 pasaban en verde** las 161 pruebas de entonces (la vista previa con el payload de BEKURA
+cuando la que sale es la otra cuenta, la guía leída sin el token de su cuenta, la media talla truncada, la marca de
+la casa en vez de la declarada…) y por eso se sumaron las pruebas que las tumban; y 54 más tras la corrección. Esas
+tandas no se repitieron al quitar las variables (9-oct); se quitaron las 28 pruebas de lo que ya no existe (la
+bandera, las reglas configurables, el título como freno) y, sobre lo que cambió —familias, género, `padre_sku`—, se
+probaron 34 versiones ingenuas más (el prefijo por texto, no mirar al padre, el título que vuelve a bloquear, «la
+primera opción» de WooCommerce, tenis de Hombre todavía frenados…): ninguna pasa en verde.
+Un revisor aparte probó después otras 80 sobre lo mismo y **13 pasaban en verde** (el título usado como cuarta
+fuente del género cuando no hay ninguna, tenis de Hombre frenados solo en SANCORFASHION, la categoría ilegible
+tratada como alta con guía, un rechazo de guía sin guía resuelta reintentado tres veces, la vista previa que ofrece
+Confirmar con la guía ilegible, la copia vencida de la caché usada cuando ML no contesta, el padre de una familia
+en revisión solo por igualdad, un producto simple de esas familias que sí salía…): el código hacía lo correcto y
+faltaba la prueba. Se sumaron las 14 que las tumban y se repitieron las 13: todas mueren. Y 5 pruebas más por el
+alta que el vendor deja a medias después de crear, con 11 versiones ingenuas de ese rescate (sin él, rescatar sin
+un 201, sin la fila de `ml_backlog`, también fuera de moda…) y 3 de la palabra del título en la vista previa
+(«niña», no «nina»): ninguna pasa.
+El backend completo, sobre v0.631.0: 2,642 pruebas en verde (110 omitidas). **Verificado contra la API
+real de Mercado Libre el 9-oct-2026, con el código final (ya sin variables) y sin crear nada**: la vista previa real de las 34 variantes de
+`CALZ-0176` y `CALZ-0193` en las dos cuentas, enviada tal cual a `POST /items/validate` (valida, no crea). Las 48 que
+resuelven salieron VÁLIDAS —19 en BEKURA y 29 en SANCORFASHION, lo mismo que predijo la simulación—: cero causas
+`fashion_grid`, con `SIZE` y `BRAND` solo por value_name, `COLOR` compuesto como texto libre («Negro / Rosa») y sin
+`MAIN_COLOR`. Las otras 20 quedaron bloqueadas con su motivo (talla 35/43 sin renglón, BEKURA sin guía de calzado de
+seguridad, el renglón `4859025:6`). Esas dos familias no traen medidas de paquete: ML las exige y el reintento de
+siempre del publicador (1 kg, 30×20×15 cm) las completa. Siete productos que NO son de moda, en las dos cuentas (14
+vistas previas), dieron un payload idéntico al que arma el pipeline vendorizado por sí solo. `ROP-0647-BEI-S` (el del reporte) ahora contesta «no hay guía registrada
+para BEKURA · PAJAMAS · Mujer».
+
+**NO verificado.** Un alta real: lo de arriba es `/items/validate`, que valida pero no crea, y por eso la primera alta
+de cada cuenta va acompañada. Un tenis de Hombre con la guía registrada:
+ningún pendiente del sondeo cae hoy ahí. Las guías de ropa: el script las arma sin red para las 42 claves, pero
+ninguna se ha creado todavía en Mercado Libre. El
+título propio de cada variante (v0.623.0) no está en los datos del sondeo: lo que el título dice del género se midió
+con el título del padre. Qué deja «Mejorar con IA» en el formulario del Estudio (no se llamó a la IA: para el color
+el código ya no depende de eso; para el género SÍ — lo que la IA proponga decide la guía). Qué contesta ML al leer
+una guía con el token de la otra cuenta.
+
+**Al desplegar.** Sin variables que definir ni que tocar, y sin migraciones. Qué se ENCIENDE (regla 3): en moda, los SKUs con género,
+color, talla y guía empiezan a crearse en Mercado Libre (uno por clic, tras su vista previa, pausados); el resto
+recibe su motivo en vez de `GRID_REQUERIDO`, sin gastar llamadas. **Antes del push:** el commit tiene que traer los
+TRES archivos nuevos (`services/ml_guia_tallas.py`, `tests/test_ml_guia_tallas.py`, `docs/ML_GUIA_TALLAS.md`);
+`publicar_ready.py` importa ese módulo y `publicar.py` carga a `publicar_ready` de forma perezosa, así que sin él el
+backend ARRANCA, el healthcheck queda verde y la primera vista previa o Publicar de CUALQUIER canal contesta 500 — y
+ahí la reversa es subir el archivo o revertir el commit.
+Verificar en este orden: (1) `GET /` → 0.632.0 (no prueba nada por sí solo); (2) vista previa de un producto que
+NO sea de moda: idéntica a la de ayer — este paso es el que delata un módulo faltante; (3) vista previa de
+`CALZ-0176-NEG/ROS-37`
+(no escribe nada): BEKURA guía 5602224 renglón `5602224:2` «24 MX», SANCORFASHION guía 4821199 renglón `4821199:2`
+«24 MX», y «Color: saldrá como «Negro / Rosa»» — si dice HTTP 403/404 al leer la guía, es el permiso del token:
+la moda no se publica (nada más se afecta) y, si no se resuelve, se revierte el commit; (4) vista previa de un SKU
+de ropa sin guía registrada: «no hay guía registrada…» sin botón Confirmar; (5) logs:
+`guia_tallas` (una línea por cuenta), ningún `EVENT LOOP ATASCADO`; (6) primera alta real **de cada cuenta**,
+acompañada y de UNA sola publicación (un SKU de `CALZ-0193` solo resuelve en SANCORFASHION; la guía 5602224 de
+BEKURA no la usa ninguna publicación viva: sus altas son su estreno): abrirla en ML y revisar guía, talla, género,
+marca, **color** y el **título** (el único título de `CALZ-0176` en el sondeo dice «tenis blancos…» y 10 de sus 21
+SKUs son negros); si la fila dice «creada pero NO pausada», pausarla a mano (el candado frena las siguientes
+mientras siga activa). Reversa: revertir el commit (no hay variable que lo apague).
+
+**Pendiente** (decisiones de negocio y trabajo que no es código de este cambio): el género de 2,315 SKUs que no lo
+traen en ninguna fuente (basta que la IA lo proponga, o el atributo «Género» de WooCommerce con una opción); crear
+las guías de ropa (44 claves dominio × género); decidir, familia por familia, las seis `CALZ-…` en revisión y
+quitarlas de `FAMILIAS_EN_REVISION`; corregir en ML el
+renglón `4859025:6` y las seis guías de Hombre que repiten EU 38/40/42/44/45; completar la columna EU de la
+4827537; decidir qué hacer con la guía 4539046 (la usan 16 publicaciones vivas de SANCORFASHION y no está
+registrada: sus hermanas pendientes saldrían con la 4821199, misma talla y otra guía); recategorizar los 413 SKUs de
+«Calzado para Bebés» y los 78 que el título llama de otro tipo de calzado; hacer de «Talla» y «Color» ejes de
+variación en las 612 variantes pendientes (751 contando las ya publicadas) cuyo único eje es «variante» («NEG-40»); que el panel pueda completar la cuenta que
+quedó sin publicar; `family_name` igual entre hermanas; que el Estudio mande qué fila de atributos tecleó una
+persona (hoy no se distingue de la siembra ni de «Mejorar con IA», y por eso el formulario no decide el color ni
+manda en el género); y un defecto previo de `wp_db._atributos_de_variacion`, común a todos los canales: en ejes de
+taxonomía (`pa_color`) entrega el identificador del término («negro-amarillo») en vez de su etiqueta (hoy lo usa 1
+variante de moda; la vista previa enseña el color que saldría, y ya no se puede corregir desde el Estudio). Y otro
+defecto previo, este del alta y de TODAS las categorías: fuera de moda, si la red se cae en la pausa que el
+publicador hace justo después de crear, `crear_ml` reintenta y cada intento crea otra publicación (medido: 3 con la
+red caída, 2 si se cae una sola vez; la primera queda sin pausar y sin bitácora). En las altas con guía ya no pasa;
+fuera de moda no se tocó porque ahí este fix no cambia nada: arreglarlo para todo es una decisión aparte.
+
 ### v0.716.0 — Pedidos, etapa B de 2.11 (kubera primero): el código, INERTE con las banderas de hoy
 
 Es el código de la etapa B del acta 2.11 (`_paso_prod_pedidos_2_11`), con las dos revisiones independientes de

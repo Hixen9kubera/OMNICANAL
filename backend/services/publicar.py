@@ -461,7 +461,8 @@ async def _preview_canal(canal: str | None, req: dict[str, Any]) -> dict[str, An
             "motivo": "Canal no soportado todavía (ML, Amazon, TikTok, Temu y Walmart)."}
 
 
-async def _payload_crear_ml(req: dict[str, Any]) -> dict[str, Any] | None:
+async def _payload_crear_ml(req: dict[str, Any],
+                            cuentas: list[str] | None = None) -> dict[str, Any] | None:
     """Payload real de `publisher_core.build_payload` (dry-run) para la vista previa."""
     from services import publicar_ready, studio, wp_db
 
@@ -472,7 +473,8 @@ async def _payload_crear_ml(req: dict[str, Any]) -> dict[str, Any] | None:
         return None
     try:
         return await publicar_ready.preview_crear_ml(
-            str(sku), int(wc_id), req.get("campos") or {}, "BEKURA"
+            str(sku), int(wc_id), req.get("campos") or {}, "BEKURA",
+            cuentas or ["BEKURA", "SANCORFASHION"],
         )
     except Exception as exc:  # noqa: BLE001
         log.warning("preview_crear_ml(%s) falló: %s", sku, exc)
@@ -596,9 +598,15 @@ async def _preview_ml(req: dict[str, Any]) -> dict[str, Any]:
     if not pubs or not vivos:
         # En modo crear el payload lo arma el pipeline de publicaciones_ready. Va ANTES
         # del «se CREARÁ»: si el alta se frena, la vista previa dice eso y nada más.
-        r = await _payload_crear_ml(req)
+        r = await _payload_crear_ml(req, [p["cuenta"] for p in muertos] or None)
         if r and not r.get("ok") and r.get("frena"):
             return _alta_ml_frenada(req, r.get("motivo") or "")
+        if r and r.get("bloqueo_guia"):
+            # Guía de tallas (v0.717.0): se SABE que ninguna cuenta puede salir. Caja
+            # única con el motivo y SIN botón Confirmar (el modal, con `ok: False`,
+            # solo pinta `motivo`).
+            return {"ok": False, "canal": "mercado_libre", "sku": req.get("sku"),
+                    "modo": modo, "motivo": r["motivo"]}
         if not pubs:
             avisos.append("No está publicado en ML: se CREARÁ una nueva publicación (pausada) en ambas cuentas.")
         if r and r.get("ok"):
@@ -608,8 +616,11 @@ async def _preview_ml(req: dict[str, Any]) -> dict[str, Any]:
             # Lo que se ajustó en los atributos para que ML no lo rechace (Género que
             # pide el título, medidas en 0…): `publicar_ready._atributos_ml_para_alta`.
             avisos.extend(r.get("avisos") or [])
-        elif r and r.get("motivo"):
-            avisos.append(r["motivo"])
+        elif r:
+            if r.get("motivo"):
+                avisos.append(r["motivo"])
+            # Guía de tallas (v0.717.0): por qué esa cuenta NO se va a publicar.
+            avisos.extend(r.get("avisos") or [])
     elif len(pubs) == 1 and not faltantes:
         avisos.append(f"Solo está publicado en {cuentas[0]} (la otra cuenta no lo tiene aún; para crearla, "
                       "confirma con «crear_faltantes»).")
@@ -645,6 +656,15 @@ async def _preview_ml(req: dict[str, Any]) -> dict[str, Any]:
                 r_alta = None
         if r_alta is not None:
             from services import publicar_ready
+            if vivos and await publicar_ready.alta_exige_guia(req.get("wc_id")):
+                # UNA CUENTA VIVA Y OTRA A CREAR (eliminada, o `crear_faltantes`) que SÍ se
+                # va a crear (pasó el candado de medidas): `_confirmar_ml` actualiza la viva
+                # y CREA la otra, y esa alta pasa por el pre-vuelo de la guía de tallas
+                # (v0.717.0). Aquí se resuelve la guía de la(s) que se crearán SOLO para
+                # sumar sus líneas: el modo y el payload de la vista previa no cambian. Solo
+                # si el dominio de la categoría EXIGE guía (una lectura de metas, en un hilo).
+                r_altas = await _payload_crear_ml(req, [p["cuenta"] for p in muertos] + faltantes)
+                avisos.extend((r_altas or {}).get("avisos") or [])
             # MEDIDAS DE RELLENO (Eduardo, 2-nov-2026): 1 kg y 30×20×15 cm pasan el
             # candado (son > 0 y cuadran) pero son lo que se inventaba cuando faltaban.
             # AVISO, no freno: `ok` sigue en True y el botón de confirmar también. Va

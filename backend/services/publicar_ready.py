@@ -14,6 +14,7 @@ salen de `vendor/ml_ready/`.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import io
 import json
 import logging
@@ -26,7 +27,8 @@ from typing import Any
 
 import requests
 
-from services import categoria_vectores, db, meli, ml_atributos, ml_errores, ml_revision_categoria, wp_db
+from services import (categoria_vectores, db, meli, ml_atributos, ml_errores, ml_guia_tallas,
+                      ml_revision_categoria, wp_db)
 from vendor.amazon_ready import attribute_mapper as amz_mapper
 from vendor.ml_ready import ml_api, publisher_core
 
@@ -118,6 +120,10 @@ def _backlog_ml(backlog_key: str, entry: dict[str, Any]) -> None:
         if explicacion:
             error = f"{error} · {ml_errores.mensaje(explicacion)}"
     cuenta = entry.get("cuenta") or ""
+    # Guía de tallas (v0.717.0): en un alta CON guía la bitácora guarda el mismo
+    # mensaje que ve el modal (solo causas type == "error"), no la etiqueta del
+    # vendor. Fuera de ese caso `error_txt` es lo de siempre.
+    error_txt = _error_de_bitacora(resultado, cuenta) if _CTX_ALTA.get() is not None else error
     sku = backlog_key.split(":", 1)[-1] if ":" in backlog_key else backlog_key
     item_id = entry.get("ml_item_id")
     wc_id = entry.get("wc_id")
@@ -134,7 +140,7 @@ def _backlog_ml(backlog_key: str, entry: dict[str, Any]) -> None:
                     f"studio:{cuenta}:{sku}", cuenta, sku, wc_id, item_id,
                     entry.get("ml_url"),
                     1 if success else 0,
-                    error,
+                    error_txt,
                     entry.get("ml_status"),
                     entry.get("desc_status"),
                     # El vendor no la anota cuando el alta FALLA y la columna quedaba en 0 aunque las
@@ -157,7 +163,7 @@ def _backlog_ml(backlog_key: str, entry: dict[str, Any]) -> None:
             {"canal": "mercado_libre", "cuenta": cuenta, "sku": sku,
              "submission_id": item_id, "operacion": "alta",
              "status": entry.get("ml_status"), "success": success,
-             "error_resumen": error,
+             "error_resumen": error_txt,
              "detail_ref": f"mysql:ml_backlog:{backlog_id}" if backlog_id else None,
              "submitted_at": datetime.now(),
              "published_at": datetime.now() if success else None},
@@ -644,6 +650,349 @@ def configurar() -> None:
     _configurado = True
 
 
+# ── Guía de tallas de ML (v0.717.0) ──────────────────────────────────────────
+#
+# QUIÉN DECIDE Y QUIÉN APLICA. `ml_guia_tallas.resolver` decide POR CUENTA y antes
+# de llamar al vendor (pre-vuelo en `crear_ml` / `preview_crear_ml`). La vista
+# previa aplica la resolución sobre el payload que devolvió `build_payload`
+# (mismo patrón que `atributos_amazon`: el adaptador pisa la salida del mapper).
+#
+# En el ALTA eso no alcanza: `publish_product` arma el payload y lo reenvía hasta
+# catorce veces por su cadena de reintentos, y dos de ellos QUITAN justo lo que la
+# guía necesita (`GENDER`, publisher_core.py:495-504; `SIZE_GRID_ID`, 507-516).
+# El único punto por el que pasa TODO `POST /items` es `ml_api.create_item`: ahí
+# se pone la guardia. El archivo del vendor NO se toca (regla 1): se reemplaza un
+# nombre en el módulo ya cargado, de forma PEREZOSA (solo al primer alta con guía
+# resuelta) y sin contexto de guía la guardia ES el `create_item` del vendor.
+#
+# La guardia hace dos cosas: (1) deja BRAND, GENDER, SIZE, COLOR, SIZE_GRID_ID y
+# SIZE_GRID_ROW_ID como se resolvieron —en el primer envío y en cada reintento—,
+# y MAIN_COLOR igual al color del producto o fuera del payload;
+# (2) si al reponerlos el envío es IDÉNTICO al que ML ya rechazó con 400, no lo
+# repite: le devuelve al vendor la misma respuesta. Los reintentos legítimos (GTIN,
+# dimensiones, imágenes, sale_terms) cambian el payload y sí salen; tras un 401 o
+# un 5xx el mismo payload también sale.
+
+_CTX_ALTA: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "ml_guia_tallas_alta", default=None)
+_create_item_vendor = None
+_guardia_lock = threading.Lock()
+
+
+def _create_item_con_guia(payload: dict[str, Any], token: str) -> tuple[dict, int]:
+    ctx = _CTX_ALTA.get()
+    if ctx is None:                      # todo lo que no es un alta con guía: el vendor
+        return _create_item_vendor(payload, token)
+    ml_guia_tallas.aplicar(payload, ctx["guia"], ctx["cuenta"])
+    huella = ml_guia_tallas.huella(payload)
+    ultimo = ctx["ultimo"]
+    if ultimo is not None and ultimo[0] == huella and ultimo[2] == 400:
+        log.info("publish %s/%s: un reintento del vendor quitó un atributo de la guía; al "
+                 "reponerlo el envío es el que ML ya rechazó — no se repite",
+                 ctx["cuenta"], ctx["sku"])
+        return ultimo[1], ultimo[2]
+    respuesta, status = _create_item_vendor(payload, token)
+    ctx["ultimo"] = (huella, respuesta, status)
+    ctx["payload"] = payload             # lo que de verdad salió (ver `_terminar_alta_creada`)
+    return respuesta, status
+
+
+def _instalar_guardia() -> None:
+    """Pone la guardia en `ml_api.create_item`. Idempotente."""
+    global _create_item_vendor
+    with _guardia_lock:
+        if ml_api.create_item is _create_item_con_guia:
+            return
+        _create_item_vendor = ml_api.create_item
+        ml_api.create_item = _create_item_con_guia
+        log.info("guía de tallas ML: guardia de create_item instalada (primer alta con guía)")
+
+
+def _desinstalar_guardia() -> None:
+    """Devuelve `ml_api.create_item` al del vendor (pruebas)."""
+    global _create_item_vendor
+    with _guardia_lock:
+        if ml_api.create_item is _create_item_con_guia and _create_item_vendor is not None:
+            ml_api.create_item = _create_item_vendor
+        _create_item_vendor = None
+
+
+def _publicar_con_guia(prod: dict[str, Any], token: str, cuenta: str,
+                       guia: dict[str, Any]) -> dict[str, Any]:
+    """`publish_product` para un alta con la guía YA resuelta. Corre DENTRO del hilo de
+    `asyncio.to_thread`: fija el contexto que leen la guardia y `_backlog_ml`, y lo quita
+    al terminar pase lo que pase.
+
+    Si el vendor LANZA cuando Mercado Libre ya creó la publicación (la guardia anotó un
+    201 con su id), la excepción NO sale de aquí: ver `_terminar_alta_creada`."""
+    _instalar_guardia()
+    ctx: dict[str, Any] = {"guia": guia, "cuenta": cuenta, "sku": prod.get("sku"),
+                           "ultimo": None, "payload": None}
+    marca = _CTX_ALTA.set(ctx)
+    # Igual que `_publicar_anotando`: cada respuesta de ML del intento queda anotada
+    # (la guardia llama al anotador, que llama al vendor).
+    _registro_ml.respuestas = []
+    anotadas: list[dict[str, Any]] = []
+    try:
+        r = publisher_core.publish_product(prod, token, False, cuenta)
+    except Exception as exc:  # noqa: BLE001
+        ultimo = ctx["ultimo"]
+        respuesta = ultimo[1] if ultimo is not None and ultimo[2] == 201 else None
+        item_id = str(respuesta.get("id") or "") if isinstance(respuesta, dict) else ""
+        if not item_id:
+            raise                        # no se creó nada: lo de siempre (reintenta `crear_ml`)
+        return _terminar_alta_creada(prod, token, cuenta, item_id, respuesta,
+                                     ctx["payload"], exc)
+    finally:
+        anotadas, _registro_ml.respuestas = _registro_ml.respuestas or [], None
+        _CTX_ALTA.reset(marca)
+    if isinstance(r, dict):
+        r["_respuestas_ml"] = anotadas
+    return r
+
+
+def _terminar_alta_creada(prod: dict[str, Any], token: str, cuenta: str, item_id: str,
+                          respuesta: dict[str, Any], payload: dict[str, Any] | None,
+                          exc: Exception) -> dict[str, Any]:
+    """
+    El vendor lanzó DESPUÉS de que Mercado Libre creó la publicación: su pausa
+    (publisher_core.py:679; `ml_api.pause_item` solo atrapa Timeout) o la subida de la
+    descripción se quedaron sin red. Si esa excepción llegara a `crear_ml`, su bucle de
+    reintentos haría OTRO `POST /items`: hasta tres publicaciones de la misma talla,
+    activas, sin bitácora y sin candado de pausa (medido el 9-oct-2026).
+
+    Aquí se termina lo que al vendor le faltó —la descripción (un intento) y su fila de
+    `ml_backlog` / `ml_progress`, para que el panel sepa que la publicación existe— y se
+    devuelve su mismo resultado de éxito. La pausa NO se da por hecha: `crear_ml` la
+    verifica un paso después (`asegurar_pausado`) y, si no queda, pone el candado.
+    Solo altas con guía: fuera de moda el vendor corre sin este envoltorio, como siempre.
+    """
+    sku = prod.get("sku")
+    log.error("publish %s/%s: Mercado Libre YA creó %s y el publicador lanzó después "
+              "(%s: %s) — no se reintenta el alta (crearía otra publicación)",
+              cuenta, sku, item_id, type(exc).__name__, exc, exc_info=exc)
+    desc_status: int | None = None
+    aviso = ""
+    if prod.get("description"):
+        try:
+            desc_status = ml_api.update_description(item_id, prod["description"], token)
+        except Exception as e:  # noqa: BLE001 — la publicación existe: esto no la deshace
+            log.warning("publish %s/%s: tampoco se pudo subir la descripción de %s: %s",
+                        cuenta, sku, item_id, e)
+        if desc_status not in (200, 201):
+            aviso = (f"El publicador se interrumpió después de crearla ({type(exc).__name__}) "
+                     f"y no se pudo subir su descripción: revísala en Mercado Libre ({item_id}).")
+    cuando = datetime.now().isoformat()
+    ml_url = f"https://articulo.mercadolibre.com.mx/{item_id.replace('MLM', 'MLM-')}"
+    resultado: dict[str, Any] = {
+        "success": True, "sku": sku, "wc_id": prod.get("wc_id"), "ml_item_id": item_id,
+        "ml_url": ml_url, "ml_status": 201, "desc_status": desc_status, "published_at": cuando}
+    if aviso:
+        resultado["aviso"] = aviso
+    # La misma fila que escribe el vendor al terminar bien (publisher_core.py:709-724).
+    # `save_backlog` no lanza: si la bitácora falla, lo deja en el log.
+    publisher_core.save_backlog(f"{cuenta}:{sku}" if cuenta else str(sku), {
+        "timestamp": cuando, "cuenta": cuenta, "wc_id": prod.get("wc_id"),
+        "title": prod.get("title"), "price": prod.get("price"),
+        "category_id": prod.get("ml_category_id"), "payload": payload,
+        "ml_response": respuesta, "ml_status": 201,
+        "pics_preuploaded": len([p for p in (payload or {}).get("pictures") or []
+                                 if isinstance(p, dict) and "id" in p]),
+        "desc_status": desc_status, "ml_item_id": item_id, "ml_url": ml_url,
+        "result": resultado})
+    return resultado
+
+
+def _error_de_bitacora(resultado: dict[str, Any], cuenta: str) -> Any:
+    """El `error` que `_backlog_ml` guarda. Sin alta con guía en curso: el del vendor."""
+    error = resultado.get("error")
+    ctx = _CTX_ALTA.get()
+    if ctx is None or not error or resultado.get("success"):
+        return error
+    try:
+        return ml_guia_tallas.etiqueta_error(resultado, ctx["guia"], cuenta) or error
+    except Exception:  # noqa: BLE001 — la bitácora nunca rompe el alta
+        return error
+
+
+def _sin_romper(fn: Any, omision: Any, *args: Any) -> Any:
+    """`fn(*args)`, o `omision` si lanza. Las etiquetas y la bitácora NUNCA rompen un alta:
+    dentro de `crear_ml` una excepción aquí llegaría con la primera cuenta ya creada en
+    Mercado Libre, y el modal diría «Error de conexión». Ante una excepción se sigue con
+    lo de siempre (reintentos y etiqueta del vendor) y queda el traceback en el log."""
+    try:
+        return fn(*args)
+    except Exception:  # noqa: BLE001
+        log.exception("guía de tallas ML: %s reventó — se sigue con lo de siempre",
+                      getattr(fn, "__name__", "una función del módulo"))
+        return omision
+
+
+# ── Candado de pausa: SOLO altas con guía ────────────────────────────────────
+#
+# `POST /items` ignora `status: paused` (ver "Garantía de que la publicación quede
+# PAUSADA", abajo): lo único que pausa es el PUT posterior, y si ese PUT falla la
+# publicación queda ACTIVA. Hasta hoy eso no podía pasar en moda porque moda no
+# creaba nada. Ahora sí crea —con stock real y una publicación por talla—, así que
+# si una alta CON GUÍA termina creada y sin pausar:
+#   (a) dentro del mismo `crear_ml` NO se sigue con la siguiente cuenta, y
+#   (b) las siguientes altas con guía se bloquean en el pre-vuelo
+# mientras quede ALGUNA de esas publicaciones sin soltar. Es un CONJUNTO, no una
+# casilla: dos personas publicando a la vez pueden dejar dos, y pausar la última no
+# debe soltar a la primera. Cada una se suelta cuando su estado, releído en el
+# pre-vuelo (una lectura por publicación, en hilo), es cualquiera que NO sea
+# `active` —pausada, cerrada, en revisión, inactiva: ya no está vendiendo sin que
+# nadie la vea—. Sin lectura (sin token, red, excepción) se queda: falla cerrado.
+# También se vacía al reiniciar el proceso. Nada de esto corre fuera de moda: un
+# alta sin guía ni mira ni pone este candado.
+
+_MODA_ACTIVA: dict[str, dict[str, Any]] = {}     # item_id → {item_id, cuenta, sku, estado}
+_moda_lock = threading.Lock()
+
+
+def _poner_candado_moda(item_id: str, cuenta: str, sku: Any,
+                        estado: str | None = None) -> str:
+    """Registra una publicación de moda que se creó y NO quedó pausada (`estado`: el
+    último que se le leyó; None = no se pudo leer). Devuelve el motivo que frena."""
+    with _moda_lock:
+        _MODA_ACTIVA[str(item_id)] = {"item_id": str(item_id), "cuenta": cuenta,
+                                      "sku": str(sku or ""), "estado": estado}
+        pendientes = [dict(p) for p in _MODA_ACTIVA.values()]
+    log.error("guía de tallas ML: %s (%s / %s) se creó y NO quedó pausada (estado=%r) — no "
+              "se crean más publicaciones de moda hasta revisarla", item_id, cuenta, sku, estado)
+    return ml_guia_tallas.motivo_moda_activa(pendientes)
+
+
+def _soltar_candado_moda() -> None:
+    """Vacía el candado (pruebas). En producción cada publicación se suelta sola en
+    `_candado_moda`, o todas al reiniciar el proceso."""
+    with _moda_lock:
+        _MODA_ACTIVA.clear()
+
+
+async def _candado_moda() -> str | None:
+    """
+    None si no hay candado —o si TODAS las publicaciones que lo pusieron ya dejaron de
+    estar `active` (y entonces las suelta)—; si no, el motivo por el que no se crea, con
+    el estado real de las que siguen. Solo se llama en un alta con guía. Si no se puede
+    leer el estado de una (sin token, red, excepción), ESA se queda: falla cerrado.
+    Regla 11: el token por el lector asíncrono y la lectura a ML en un hilo.
+    """
+    with _moda_lock:
+        pendientes = [dict(p) for p in _MODA_ACTIVA.values()]
+    if not pendientes:
+        return None
+    siguen: list[dict[str, Any]] = []
+    for p in pendientes:
+        status: str | None = None
+        try:
+            token = await meli.access_token_async(p["cuenta"])
+            if token:
+                status, _ = await asyncio.to_thread(_estado_item, p["item_id"], token)
+        except Exception as exc:  # noqa: BLE001 — sin lectura, el candado se queda
+            log.warning("candado de moda: no se pudo leer %s: %s", p["item_id"], exc)
+        if status and status != "active":
+            with _moda_lock:
+                _MODA_ACTIVA.pop(p["item_id"], None)
+            log.info("guía de tallas ML: %s ya está %s — se suelta su candado de moda",
+                     p["item_id"], status)
+            continue
+        # Sigue activa, o no se pudo leer: se dice lo que de verdad se sabe AHORA.
+        p["estado"] = status
+        with _moda_lock:
+            if p["item_id"] in _MODA_ACTIVA:
+                _MODA_ACTIVA[p["item_id"]]["estado"] = status
+        siguen.append(p)
+    return ml_guia_tallas.motivo_moda_activa(siguen) if siguen else None
+
+
+async def _guias_para_preview(prod: dict[str, Any], cuenta: str,
+                              cuentas_alta: list[str] | None) -> dict[str, Any]:
+    """
+    Resuelve la guía en cada cuenta donde se va a crear. Devuelve:
+        {"moda": False}                         el dominio no exige guía (o no se supo,
+                                                o no hay tokens): la vista previa de hoy
+        {"moda": True, "bloqueo": motivo, ...}  ninguna cuenta puede salir
+        {"moda": True, "cuenta", "guia", "avisos"}  la cuenta cuyo payload se enseña
+    """
+    candidatas = list(dict.fromkeys(cuentas_alta or [cuenta]))
+    guias: dict[str, dict[str, Any]] = {}
+    sin_token: list[str] = []
+    for c in candidatas:
+        token = await meli.access_token_async(c)          # regla 11: nunca la base en el loop
+        if not token:
+            sin_token.append(c)
+            continue
+        guias[c] = await asyncio.to_thread(ml_guia_tallas.resolver, prod, c, token)
+    # Una cuenta sin token no bloquea por sí sola: si ninguna se pudo resolver, es la
+    # vista previa de siempre (que dirá "Sin token…").
+    if not any(g["estado"] in ("ok", "bloqueado") for g in guias.values()):
+        return {"moda": False}
+    avisos = [ml_guia_tallas.aviso(guias[c]) for c in candidatas
+              if c in guias and ml_guia_tallas.aviso(guias[c])]
+    avisos += [ml_guia_tallas.MSG_AVISO_SIN_TOKEN.format(cuenta=c) for c in sin_token]
+    listas = [c for c in candidatas if c in guias and guias[c]["estado"] == "ok"]
+    bloqueadas = [guias[c] for c in candidatas if c in guias and guias[c]["estado"] == "bloqueado"]
+    libres = [c for c in candidatas if c in guias and guias[c]["estado"] != "bloqueado"]
+    if not libres:
+        # Con `ok: False` el modal solo pinta `motivo`: la cuenta que no se revisó por
+        # falta de token va DENTRO del motivo (en `avisos` nadie la vería).
+        return {"moda": True, "avisos": avisos,
+                "bloqueo": ml_guia_tallas.motivo_conjunto(bloqueadas, sin_token)}
+    if listas:
+        # Lo que se ve es lo que sale: si el pre-vuelo del alta va a frenar por el
+        # candado de pausa, la vista previa lo dice y no ofrece "Confirmar".
+        candado = await _candado_moda()
+        if candado:
+            return {"moda": True, "avisos": [*avisos, candado],
+                    "bloqueo": f"{ml_guia_tallas.MSG_NO_SE_PUEDE} {candado}"}
+    elegida = (listas or libres)[0]
+    if listas and bloqueadas:
+        avisos.append(ml_guia_tallas.MSG_PARCIAL.format(listas=" y ".join(listas)))
+    if guias[elegida]["estado"] == "ok" and len(candidatas) > 1:
+        avisos.append(ml_guia_tallas.MSG_PAYLOAD_DE.format(cuenta=elegida))
+    return {"moda": True, "cuenta": elegida, "guia": guias[elegida], "avisos": avisos}
+
+
+def _dominio_exige_guia(wc_id: int) -> bool | None:
+    """¿La categoría de ML de este producto está en un dominio que exige guía? None si no
+    se supo. SÍNCRONA (lee metas de WordPress y, la primera vez por categoría, la categoría
+    de ML por su ruta pública): va en un hilo.
+
+    Usa la MISMA categoría que `construir_prod` —la del panel (`ml_categoria_id`) manda
+    sobre la del predictor (`ml_category_id`), y sin ninguna, el mapeo de la categoría de
+    WooCommerce— con UNA lectura de metas: no arma el `prod`, no pide tokens y no llama
+    al vendor."""
+    meta, _ = wp_db.postmeta_con_herencia(int(wc_id))
+    cat_id = (str(meta.get("ml_categoria_id") or "").strip()
+              or str(meta.get("ml_category_id") or "").strip())
+    return ml_guia_tallas.dominio_exige_guia(
+        {"ml_category_id": cat_id,
+         "wc_categories": [] if cat_id else wp_db.categorias_wc(int(wc_id))})
+
+
+async def alta_exige_guia(wc_id: Any) -> bool:
+    """
+    ¿Vale la pena resolver la guía de tallas para la vista previa de este producto?
+
+    La usa `publicar._preview_ml` cuando hay una cuenta viva y otra eliminada: resolver
+    la guía de la que se va a re-crear cuesta `construir_prod` + el dry-run del vendor, y
+    fuera de moda no agrega ni una línea. Aquí se pregunta primero lo barato (el dominio
+    de la categoría, que se recuerda). False = el dominio no exige guía, o no se supo (y
+    entonces el resolvedor tampoco diría nada). Si no hay `wc_id`, o la pregunta barata
+    revienta, True: que decida el camino completo, como antes.
+    """
+    try:
+        wc = int(wc_id)
+    except (TypeError, ValueError):
+        return True
+    try:
+        return bool(await asyncio.to_thread(_dominio_exige_guia, wc))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("alta_exige_guia(%s): %s — se resuelve por el camino completo", wc_id, exc)
+        return True
+
+
 # ── Garantía de que la publicación quede PAUSADA ─────────────────────────────
 #
 # `POST /items` IGNORA el `status: paused` del payload: Mercado Libre crea el
@@ -808,6 +1157,22 @@ def construir_prod(sku: str, wc_id: int, campos: dict[str, Any]) -> dict[str, An
     # en las 36 que midió. Qué se hereda y qué no: `wp_db._NO_HEREDA`.
     meta, _heredadas = wp_db.postmeta_con_herencia(wc_id)
     atributos = wp_db.atributos_wc(wc_id)
+    # GUÍA DE TALLAS DE ML (v0.717.0) — de quién es cada atributo. `atributos` de una
+    # variación trae, para el eje que ella NO fija, las opciones del PADRE
+    # (`wp_db._atributos_de_variacion`): un padre con «Talla = 40» de un solo valor
+    # se lo pasa a todas sus hijas, y la 42 se publicaba como 40. Lo que sí es de
+    # ESTA variación son sus metas `attribute_<eje>` con valor (las heredadas del
+    # padre no cuentan). Van en llaves NUEVAS al final del dict —`padre_wc_id`,
+    # `padre_sku`, `ejes_propios`, `atributos_panel`—: `construir_prod` lo comparten
+    # Temu, TikTok, Amazon y el semáforo, y para ellos el resto del dict es idéntico.
+    padre_wc_id = wp_db.padre_de(wc_id)
+    # El SKU del padre: `ml_guia_tallas.FAMILIAS_EN_REVISION` frena a la familia entera.
+    padre_sku = (str(wp_db.postmeta(padre_wc_id, ["_sku"]).get("_sku") or "").strip()
+                 if padre_wc_id else "")
+    ejes_propios = {k[len("attribute_"):].lower(): str(v).strip()
+                    for k, v in meta.items()
+                    if k.startswith("attribute_") and k not in _heredadas
+                    and str(v or "").strip()}
 
     titulo = (campos.get("titulo") or "").strip() or (post.get("post_title") or "")
 
@@ -877,12 +1242,19 @@ def construir_prod(sku: str, wc_id: int, campos: dict[str, Any]) -> dict[str, An
     wc_attrs = {a["name"].lower(): a["options"][0] for a in atributos
                 if a.get("options") and not ml_atributos.es_fiscal(a["name"])}
     # Lo que el usuario editó en el Studio tiene prioridad.
+    # `atributos_panel` guarda SOLO lo que mandó el formulario del Estudio, aparte:
+    # en `wc_attrs` ya no se distingue de lo que vino de WooCommerce, y la guía de
+    # tallas necesita saberlo. OJO: el formulario vuelve SEMBRADO con los atributos
+    # de Woo y «Mejorar con IA» lo reemplaza entero: que algo venga aquí NO prueba
+    # que una persona lo tecleó (ver `ml_guia_tallas._del_formulario`).
+    atributos_panel: dict[str, str] = {}
     for a in (campos.get("atributos") or []):
         nombre, valor = a.get("nombre"), str(a.get("valor") or "").strip()
         if ml_atributos.es_fiscal(nombre) or ml_atributos.es_fiscal(a.get("campo")):
             continue
         if nombre and valor:
             wc_attrs[nombre.lower()] = valor
+            atributos_panel[nombre.lower()] = valor
 
     # Categoría ML: hay DOS escritores con llaves distintas. `ml_categoria_id`
     # la guarda el selector del PANEL (elección humana); `ml_category_id` la
@@ -940,6 +1312,11 @@ def construir_prod(sku: str, wc_id: int, campos: dict[str, Any]) -> dict[str, An
         "dimensions":       {"length": _dim("largo", "_length"),
                              "width":  _dim("ancho", "_width"),
                              "height": _dim("alto", "_height")},
+        # Guía de tallas de ML (v0.717.0): SOLO se agregan; nadie más las lee.
+        "padre_wc_id":      padre_wc_id,        # None si no es una variación
+        "padre_sku":        padre_sku,          # "" si no es una variación
+        "ejes_propios":     ejes_propios,       # {eje: valor} que ESTA variación fija
+        "atributos_panel":  atributos_panel,    # {nombre: valor} del formulario del Estudio
     }
 
 
@@ -1070,12 +1447,19 @@ async def _candado_alta_ml(wc_id: int, prod: dict[str, Any] | None = None) -> st
 # ── Mercado Libre: preview (dry-run) y creación real ─────────────────────────
 
 async def preview_crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
-                           cuenta: str) -> dict[str, Any]:
+                           cuenta: str,
+                           cuentas_alta: list[str] | None = None) -> dict[str, Any]:
     """
     Payload exacto que se enviaría a `POST /items`, sin llamar a ML para crear.
 
     `dry_run=True` evita el pre-upload de imágenes (que sí hace la publicación
     real), así la vista previa es rápida.
+
+    `cuentas_alta` (v0.717.0): las cuentas donde el alta va a CREAR. En un dominio
+    que exige guía de tallas se resuelve la guía en todas (una línea de `avisos`
+    por cuenta) y el payload es el de la primera que sí sale; si ninguna puede
+    salir devuelve `ok: False` + `bloqueo_guia`. En un dominio sin guía se ignora:
+    es la vista previa de siempre.
     """
     configurar()
     prod = await asyncio.to_thread(construir_prod, sku, wc_id, campos)
@@ -1088,6 +1472,19 @@ async def preview_crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
         return {"ok": False, "motivo": motivo, "frena": True}
     if _stock_real(prod) < 1:
         return {"ok": False, "motivo": _motivo_sin_stock(prod), "frena": True}
+
+    guia: dict[str, Any] | None = None
+    avisos: list[str] = []
+    pre = await _guias_para_preview(prod, cuenta, cuentas_alta)
+    if pre["moda"]:
+        if pre.get("bloqueo"):
+            # Se SABE que ninguna cuenta puede salir. Va como HTTP 200 con ok False
+            # (el modal quita "Confirmar"), nunca como HTTPException: el modal no
+            # lee el detail y lo pintaría como "No se pudo generar la vista previa".
+            return {"ok": False, "bloqueo_guia": True, "motivo": pre["bloqueo"],
+                    "avisos": pre["avisos"]}
+        cuenta, guia, avisos = pre["cuenta"], pre["guia"], pre["avisos"]
+
     token = meli._access_token(cuenta)
     if not token:
         return {"ok": False, "motivo": f"Sin token de Mercado Libre para {cuenta}."}
@@ -1097,6 +1494,20 @@ async def preview_crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
     payload = await asyncio.to_thread(
         publisher_core.build_payload, prod, token, True, cuenta
     )
+    if payload is not None and guia is not None and guia["estado"] == "ok":
+        # Lo que el vendor habría mandado, ANTES de aplicar: solo para poder decir
+        # «el publicador habría mandado «Rosa»» en la línea del color.
+        del_vendor = {"attributes": [dict(a) for a in (payload.get("attributes") or [])
+                                     if isinstance(a, dict)]}
+        try:
+            ml_guia_tallas.aplicar(payload, guia, cuenta)
+        except ml_guia_tallas.GuiaTallasError as exc:
+            return {"ok": False, "motivo": str(exc), "avisos": avisos}
+        for linea in (ml_guia_tallas.aviso_de_color(guia, del_vendor),
+                      guia.get("aviso_tipo"),
+                      ml_guia_tallas.aviso_de_titulo(payload, guia)):
+            if linea:
+                avisos.append(linea)
     if payload is None:
         faltantes = []
         if not prod["ml_category_id"]:
@@ -1108,7 +1519,7 @@ async def preview_crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
         return {"ok": False, "motivo": "Faltan datos: " + ", ".join(faltantes)}
 
     return {"ok": True, "cuenta": cuenta, "payload": payload, "prod": prod,
-            "avisos": avisos_atributos}
+            "avisos": avisos_atributos + avisos}
 
 
 async def crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
@@ -1178,12 +1589,44 @@ async def crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
         log.info("alta ML %s — atributos ajustados: %s", sku, " | ".join(avisos_atributos))
 
     resultados: list[dict[str, Any]] = []
+    # Cuentas que NO se crearon por algo que se supo ANTES de llamar a ML (la guía de
+    # tallas o el candado de pausa): no gastaron ni un pre-upload ni un POST. Fuera de
+    # moda esta lista se queda vacía.
+    frenadas: list[str] = []
+    # Candado de pausa: None = no se ha revisado en esta llamada; "" = libre.
+    candado: str | None = None
     for cuenta in objetivo:
         token = meli._access_token(cuenta)
         if not token:
             resultados.append({"cuenta": cuenta, "item_id": "", "ok": False,
                                "error": f"Sin token para {cuenta}", "ml_status": None})
             continue
+        # GUÍA DE TALLAS (v0.717.0). Se resuelve POR CUENTA —cada una tiene su guía
+        # y su texto de talla— y ANTES de llamar al vendor: si falta el género, la
+        # guía o el renglón, esta cuenta no gasta ni un pre-upload ni un POST, y el
+        # renglón rojo del modal dice exactamente qué falta. En un hilo: lee de ML.
+        # Fuera de los dominios que exigen guía `guia` no es "ok" ni "bloqueado" y
+        # todo lo de abajo corre igual que siempre.
+        guia = await asyncio.to_thread(ml_guia_tallas.resolver, prod, cuenta, token)
+        if guia["estado"] == "bloqueado":
+            resultados.append({"cuenta": cuenta, "item_id": "", "ok": False,
+                               "error": guia["motivo"], "ml_status": None,
+                               "url": None, "intentos": 0})
+            frenadas.append(cuenta)
+            continue
+        con_guia = guia["estado"] == "ok"
+        if con_guia:
+            # CANDADO DE PAUSA (ver `_candado_moda`): si la última alta de moda quedó
+            # ACTIVA, no se crea otra hasta que esté pausada. Se revisa UNA vez por
+            # llamada, y solo cuando de verdad se va a crear con guía.
+            if candado is None:
+                candado = await _candado_moda() or ""
+            if candado:
+                resultados.append({"cuenta": cuenta, "item_id": "", "ok": False,
+                                   "error": candado, "ml_status": None,
+                                   "url": None, "intentos": 0})
+                frenadas.append(cuenta)
+                continue
         # Reintentos: hasta MAX_INTENTOS_ML por cuenta. Es RARO que una cuenta
         # publique y la otra no (SANCORFASHION fallaba donde BEKURA lograba); un
         # fallo transitorio (timeout, 5xx, token en transición) se supera al
@@ -1195,16 +1638,42 @@ async def crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
         quitados: list[str] = []
         for intento in range(1, MAX_INTENTOS_ML + 1):
             intentos = intento
+            sin_remedio = False
             try:
-                r = await asyncio.to_thread(_publicar_anotando, dict(prod), token, cuenta)
+                if con_guia:
+                    r = await asyncio.to_thread(
+                        _publicar_con_guia, dict(prod), token, cuenta, guia
+                    )
+                else:
+                    r = await asyncio.to_thread(_publicar_anotando, dict(prod), token, cuenta)
+            except ml_guia_tallas.GuiaTallasError as exc:
+                # El payload no cuadró con la guía resuelta: no se envió nada. Que la
+                # guía sea de otra cuenta o de otra categoría es DETERMINISTA (otro
+                # intento repite 10 pre-uploads para fallar igual): no se reintenta.
+                # Que el vendor no haya podido leer la categoría (sin family_name)
+                # puede ser pasajero: se reintenta UNA sola vez.
+                r = {"success": False, "error": str(exc)}
+                sin_remedio = exc.codigo != "sin_family" or intento >= 2
             except Exception as exc:  # noqa: BLE001
                 log.exception("publish_product reventó (%s / %s, intento %d)", cuenta, sku, intento)
                 r = {"success": False, "error": f"{type(exc).__name__}: {exc}"}
             if r.get("success"):
                 break
+            if sin_remedio:
+                log.info("publish %s/%s: el payload no cuadra con la guía (%s) — no se "
+                         "reintenta más", cuenta, sku, r.get("error"))
+                break
             if r.get("gtin_error") or r.get("needs_manual_config"):
                 log.info("publish %s/%s: error determinista (%s) — no se reintenta",
                          cuenta, sku, r.get("error"))
+                break
+            if (_sin_romper(ml_guia_tallas.es_rechazo_de_guia, False, r)
+                    or (con_guia and _sin_romper(ml_guia_tallas.es_rechazo_definitivo, False, r))):
+                # Un rechazo de la guía (los `*.fashion_grid.*` que el vendor no conoce)
+                # y, en un alta con guía, cualquier 400 con causa de tipo error, son
+                # igual de deterministas: otro intento repite 10 pre-uploads y el POST.
+                log.info("publish %s/%s: rechazo determinista de ML — no se reintenta",
+                         cuenta, sku)
                 break
             # Un 400 con causas de ML es VALIDACIÓN: el mismo payload da el mismo
             # rechazo. TEC-1439-BLN (22-oct) gastó seis intentos en «POWER 0 W».
@@ -1235,7 +1704,16 @@ async def crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
         # El porqué y la solución (Brandon, 22-oct-2026: «veo únicamente los 400»).
         explicacion = [] if r.get("success") else _explicar_rechazo(
             r.get("_respuestas_ml") or [], r.get("ml_response"), categoria)
-        if explicacion:
+        # En un alta CON guía (v0.717.0), y en un rechazo de guía (`*.fashion_grid.*`) aunque
+        # no se haya resuelto una, manda la etiqueta de la guía: solo las causas type ==
+        # "error" de ML y qué renglón, guía o dominio faltó. Si armarla revienta, se queda
+        # la explicación de siempre: nunca rompe el alta.
+        etiqueta_guia = (_sin_romper(ml_guia_tallas.etiqueta_error, None, r, guia, cuenta)
+                         if r.get("error") and (con_guia or _sin_romper(
+                             ml_guia_tallas.es_rechazo_de_guia, False, r)) else None)
+        if etiqueta_guia:
+            r["error"] = _traducir_error_ml(etiqueta_guia, prod, r.get("ml_response"))
+        elif explicacion:
             r["error"] = ml_errores.mensaje(explicacion)
         elif r.get("error"):
             r["error"] = _traducir_error_ml(r["error"], prod, r.get("ml_response"))
@@ -1253,7 +1731,20 @@ async def crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
         # Toda alta debe quedar PAUSADA. ML ignora el `status` del POST, así que
         # se verifica y reintenta, y se avisa si no se logró.
         if fila["ok"] and item_id:
-            pausa = await asyncio.to_thread(asegurar_pausado, item_id, token)
+            try:
+                pausa = await asyncio.to_thread(asegurar_pausado, item_id, token)
+            except Exception as exc:  # noqa: BLE001
+                if not con_guia:
+                    raise              # fuera de moda: lo de siempre
+                # `ml_api.pause_item` solo atrapa Timeout: un ConnectionError a media
+                # verificación reventaba `crear_ml` con la publicación YA creada, y el
+                # candado se quedaba sin poner (la siguiente alta de moda salía con una
+                # publicación quizá activa). No se sabe cómo quedó: cuenta como NO
+                # pausada — pone el candado y el aviso— y el alta termina de contarse.
+                log.exception("asegurar_pausado reventó (%s / %s / %s): se trata como NO "
+                              "pausada", cuenta, sku, item_id)
+                pausa = {"pausado": False, "status": None, "sub_status": [],
+                         "intentos": 0, "http_pausa": type(exc).__name__}
             fila["pausado"] = pausa["pausado"]
             fila["estado_ml"] = pausa["status"]
             if not pausa["pausado"]:
@@ -1262,6 +1753,15 @@ async def crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
                     f"La publicación se creó pero quedó {pausa['status'] or 'en estado desconocido'}: "
                     f"páusala a mano en Mercado Libre ({item_id})."
                 )
+                if con_guia:
+                    # Una publicación de moda sin pausar y sin revisar: no se crea ni
+                    # una más —tampoco en la cuenta que sigue en esta misma llamada—
+                    # hasta que deje de estar activa.
+                    candado = _poner_candado_moda(item_id, cuenta, sku, pausa["status"])
+        if r.get("aviso"):
+            # Solo lo pone `_terminar_alta_creada` (el vendor lanzó con la publicación ya
+            # creada y la descripción no subió): se dice junto al aviso de la pausa.
+            fila["aviso"] = " ".join(a for a in (fila.get("aviso"), r["aviso"]) if a)
         if quitados and fila["ok"]:
             nombres = _nombres_atributos(categoria)
             sin = ("Se publicó sin " + ", ".join(f"«{nombres.get(i, i)}»" for i in quitados)
@@ -1271,13 +1771,31 @@ async def crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
 
         resultados.append(fila)
 
-    return {
+    salida: dict[str, Any] = {
         "ok": all(r["ok"] for r in resultados),
         "canal": "mercado_libre",
         "modo": "crear",
         "resultados": resultados,
         "registrado_en": "ml_backlog",
     }
+    # ALTA PARCIAL. Si lo ÚNICO que no salió son cuentas frenadas antes de llamar a ML
+    # (cero intentos; la vista previa ya las anunció como «NO se publicará») y al menos
+    # una cuenta SÍ se creó, el alta se logró: `ok: True` + `parcial`. Con `ok: False`
+    # el modal dejaba «Confirmar» activo, y el segundo clic ya no era un alta sino un
+    # UPDATE de la publicación recién creada, sin ninguna de estas compuertas (o un
+    # duplicado, si su acta aún no llegaba a `channel.listings`); y la bitácora de
+    # persona contaba como «fallido» un alta que sí creó una publicación.
+    creadas = [r["cuenta"] for r in resultados if r["ok"]]
+    if frenadas and creadas and all(r["ok"] or r["cuenta"] in frenadas for r in resultados):
+        aviso = ml_guia_tallas.MSG_PARCIAL_HECHA.format(
+            listas=" y ".join(creadas), faltaron=" y ".join(frenadas))
+        salida["ok"] = True
+        salida["parcial"] = True
+        salida["avisos"] = [aviso]
+        for r in resultados:
+            if r["cuenta"] in frenadas:
+                r["aviso"] = aviso      # el modal pinta `aviso` bajo el renglón de la cuenta
+    return salida
 
 
 # ── Amazon: atributos con su mapper ──────────────────────────────────────────

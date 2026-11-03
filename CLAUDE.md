@@ -159,6 +159,20 @@ BEKURA="Kubera" y SANCORFASHION="San Corpe")**, **Amazon** (San Corpe) y, vía
     ⚠️ **`conocimientoGeneral/` NO debe aparecer en `main`.** Si lo ves aquí,
     algo se mezcló: deshazlo antes de seguir.
 
+15. **UN FIX NO LLEVA VARIABLE DE ACTIVACIÓN.** Regla de Brandon (9-oct-2026). Un
+    arreglo es solo un arreglo: se sube y ya. Nada de `ALGO_ENABLED`, ni «nace
+    apagado» o «nace encendido», ni variables para frenar o liberar casos; la
+    reversa de un fix es revertir el commit. Las banderas en Railway se reservan
+    para **una función nueva o un sistema nuevo y complejo** (un flujo que antes no
+    existía: pedidos, fan-out, órdenes de venta…), que es a lo que se refiere el
+    «apagado de emergencia» de la tabla de variables. La prueba: ¿esto hace algo que
+    el panel no hacía, o hace BIEN algo que ya debía hacer? Lo segundo es un fix.
+    Si un fix necesita frenar casos puntuales, va una constante en el código con su
+    porqué (ejemplo: `FAMILIAS_EN_REVISION` en `services/ml_guia_tallas.py`), no una
+    variable. Costó un retrabajo: el fix de guía de tallas de ML se armó con tres
+    variables y hubo que quitarlas — «al final tendremos lleno de puras variables
+    innecesarias».
+
 ## Mapa rápido de piezas propias
 
 | Pieza | Archivo | Qué hace |
@@ -173,6 +187,7 @@ BEKURA="Kubera" y SANCORFASHION="San Corpe")**, **Amazon** (San Corpe) y, vía
 | Editor imágenes IA | `backend/services/imagenes_editor.py` | Flags fondo/traducir/logos/modelo; un solo PUT a la galería. Con `OPENROUTER_API_KEY` (v0.668.0): fondo → FLUX Klein ($0.009), lo demás → Seedream ($0.018), sube a Gemini 3 Pro si falla; 401/402 o sin clave → Gemini directo |
 | Atributos ML (IA) | `backend/services/ml_atributos.py` | Prompt canónico + DeepSeek; guarda metas `ml_attr_<ID>` (lo que lee el publisher) |
 | Tipo Amazon (picker) | `backend/routers/publicar.py` + `frontend/components/TipoAmazonPicker.tsx` | Ver/buscar/guardar product type; prioridad panel |
+| Guía de tallas ML | `backend/services/ml_guia_tallas.py` (+ pre-vuelo, guardia de `create_item` y candado de pausa en `publicar_ready.py`) + `docs/ML_GUIA_TALLAS.md` + `scripts/crear_guias_ropa_ml.py` | Es un FIX, sin variables. Por cuenta: género (atributo «Género» de Woo con una opción > formulario del Estudio > meta de la IA; el título solo informa) → guía REGISTRADA en `size_chart_mapping.py` → renglón único; talla y color SOLO de la estructura de Woo (el eje que la variante fija; en un simple, el atributo de una opción); ajusta BRAND/GENDER/SIZE/COLOR/SIZE_GRID_ID/SIZE_GRID_ROW_ID; si falta algo NO publica y dice qué. Fuera de los 59 dominios con guía no interviene. Seis familias de calzado van a mano (`FAMILIAS_EN_REVISION`, constante). Las guías de ROPA se crean con la tabla estándar por género del script. `construir_prod` solo AGREGA llaves (la comparten Temu, TikTok, Amazon y el semáforo: no cambiar el resto del dict) |
 | ~~Sync Odoo→Woo~~ | ~~`backend/services/sync_woo.py`~~ (`POST /api/sync/woo` responde 410) | RETIRADO en v0.694.0 (copiaba el stock absoluto de Odoo a Woo) |
 | Fan-out stock DROP | `backend/services/fanout_stock.py` + `routers/fanout.py` + `docs/AUDITORIA_FANOUT.md` | Woo→canales por evento (cola+debounce). ARQUITECTURA 18-ago: ML/Amazon/Walmart = fulfillment (Amazon FUERA de FANOUT_CANALES); TikTok/Temu(/SHEIN) = DROP-only. TikTok con auto-refresh 105002 (v0.207); Temu espera sondeo de `stock.edit` (`FANOUT_TEMU` off). Alineación inicial: `POST /api/fanout/alinear` |
 | Órdenes de venta propias | `backend/services/ordenes_venta.py` + `ov_auto.py` + `ov_bus.py` + `routers/ordenes_venta.py` + `frontend/app/inventario/ordenes/` + `docs/ORDENES_VENTA.md` | OV-00001… en kubera contra el esquema de Eduardo (`0064` + `0065`: `ventas.ov_*`, `almacen.almacenes`, `almacen.stock_almacen`, `almacen.stock_mov`; **aplicadas en producción el 6-oct-2026 17:40 UTC** con el acta `_paso_prod_ov_0064_0065`, vacías y con TEX3 apagada). La pestaña Operaciones › Bodegas (`services/fanout_bodegas.py`, v0.620.0) muestra ese inventario contra Odoo por bodega y contra Woo, sólo lectura. Borrador → confirmada (aparta TODO O NADA, bodega por renglón) → DELIVERED por renglón (parcial). Una confirmada se puede EDITAR (0071: puerta `app.ov_edicion` en las guardias; re-aparta por la diferencia, todo o nada; deja `editada` en la bitácora) y la cancela cualquiera que escribe; entregada y cancelada siguen inmutables. El barrido (3 min) aplica la cancelación del canal y, si ya iba en camino, le pregunta a Bodega «¿salió?». ÚNICO escritor de `ventas.ov_*`; no escribe en Odoo/Woo/marketplaces. El contrato es `docs/MIGRACION_0064_0065_GUIA_AGENTE.md`. Chat por long-poll; traza en Web Worker. Claude manda `X-Origen: claude` |
@@ -494,10 +509,21 @@ kubera.
 
 1. **403 de WooCommerce** en el listado de productos del panel (intermitente,
    WAF/CDN de Hostinger) — rompe la vista Productos a veces. Pendiente viejo.
-2. **Guías de tallas ML**: 108 SKUs "Ready" bloqueados; faltan guías para ~25
-   dominios de ROPA en ambas cuentas (solo hay calzado+bras). Al crearlas:
-   registrar chart_ids en `size_chart_mapping.py` y relanzar. BRAS con guía
-   fallan por falta de atributo GENDER en el producto.
+2. **Guías de tallas ML** (ver `docs/ML_GUIA_TALLAS.md`): el publicador ya manda la
+   guía como ML la exige (`SIZE_GRID_ID` por value_name + `SIZE_GRID_ROW_ID` + `SIZE`
+   idéntico al renglón) y, si falta algo, NO publica y dice qué. Registrar el chart_id
+   en `size_chart_mapping.py` sigue siendo necesario pero YA NO BASTA: el producto
+   necesita género (basta el que propone la IA), la VARIANTE tiene que fijar sus ejes
+   «Talla» y «Color» (los de la ficha del padre no cuentan) y la guía un renglón
+   coherente para esa talla. Hoy destraba 29 SKUs (2 familias de calzado).
+   **ROPA**: no había ni una guía; se crean con la tabla estándar por género
+   (`python -m scripts.crear_guias_ropa_ml --aplicar`) y hay que registrar sus ids en
+   `size_chart_mapping.py` — mientras no se haga, la ropa sigue bloqueada. Pendiente
+   de datos: ~2,300 SKUs de moda sin género; 413 en «Calzado para Bebés» con tallas de
+   adulto; seis guías de Hombre repiten EU 38/40/42/44/45 en dos renglones; el renglón
+   `4859025:6` trae 38 cm de pie. Si una alta de moda queda sin pausar, el candado de
+   pausa frena las siguientes mientras siga `active`: buscar `NO quedó pausada` en los
+   logs y pausarla en ML.
 3. **ME1 inactivo** (11 SKUs), **imágenes chicas** (5 + 82 con alerta),
    **GTIN real** (2, BEKURA).
 4. **TikTok**: re-autorizar conexión en M2E (Brandon).
