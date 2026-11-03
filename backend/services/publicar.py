@@ -23,7 +23,7 @@ from typing import Any
 import httpx
 
 from config import settings
-from services import db, meli, ml_atributos
+from services import db, meli, ml_atributos, sin_tildes
 
 log = logging.getLogger("omnicanal.publicar")
 
@@ -547,7 +547,7 @@ async def _revision_categoria_ml(req: dict[str, Any],
 
 async def _preview_ml(req: dict[str, Any]) -> dict[str, Any]:
     campos = req.get("campos") or {}
-    title = (campos.get("titulo") or "").strip()
+    title = sin_tildes.quitar((campos.get("titulo") or "").strip())  # lo que se enviará (`_confirmar_ml`)
     # Los datos FISCALES no se tocan (`ml_atributos.FISCALES`, Brandon 28-oct): si no van en el PUT, ML deja en la
     # publicación lo que ya tenía.
     attrs = [
@@ -1361,7 +1361,9 @@ async def _confirmar_ml(req: dict[str, Any]) -> dict[str, Any]:
     sku = req.get("sku")
     wc_id = req.get("wc_id")
     campos = req.get("campos") or {}
-    title = (campos.get("titulo") or "").strip()
+    # Sin acentos y con la ñ (`sin_tildes`): el PUT de una publicación viva y su bitácora. El
+    # alta lo resuelve el envoltorio de `publicar_ready` sobre lo que arma el vendor.
+    title = sin_tildes.quitar((campos.get("titulo") or "").strip())
     # Los datos FISCALES no se tocan (`ml_atributos.FISCALES`, Brandon 28-oct): si no van en el PUT, ML deja en la
     # publicación lo que ya tenía.
     attrs = [

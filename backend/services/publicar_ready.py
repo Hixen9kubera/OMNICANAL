@@ -29,7 +29,7 @@ from typing import Any
 import requests
 
 from services import (categoria_vectores, db, meli, ml_atributos, ml_errores, ml_guia_tallas,
-                      ml_revision_categoria, wp_db)
+                      ml_revision_categoria, sin_tildes, wp_db)
 from vendor.amazon_ready import attribute_mapper as amz_mapper
 from vendor.ml_ready import ml_api, publisher_core
 
@@ -460,21 +460,38 @@ def _con_marca_declarada(payload: Any, prod: dict[str, Any]) -> Any:
     return payload
 
 
+def _titulo_sin_tildes(payload: Any) -> Any:
+    """`title` y `family_name` del envío sin acentos, con la ñ intacta (`sin_tildes`, Brandon
+    3-nov-2026). Va aquí, sobre lo que SALE, porque el título puede venir de la IA, de Crear o
+    escrito a mano en el Estudio. En sitio."""
+    if isinstance(payload, dict):
+        for llave in ("title", "family_name"):
+            if isinstance(payload.get(llave), str):
+                payload[llave] = sin_tildes.quitar(payload[llave])
+    return payload
+
+
 _build_payload_vendor = None
 
 
 def _build_payload_con_marca(prod: dict, token: str, dry_run: bool = False, cuenta: str = '') -> dict | None:
     payload = _build_payload_vendor(prod, token, dry_run=dry_run, cuenta=cuenta)
+    if not payload:
+        return payload
     try:
-        return _con_marca_declarada(payload, prod) if payload else payload
+        _con_marca_declarada(payload, prod)
     except Exception:  # noqa: BLE001 — la marca nunca tumba un alta: sale lo del vendor
         log.exception("marca ML %s: no se pudo poner la declarada", prod.get("sku"))
-        return payload
+    try:
+        _titulo_sin_tildes(payload)
+    except Exception:  # noqa: BLE001 — el título tampoco
+        log.exception("título ML %s: no se pudieron quitar los acentos", prod.get("sku"))
+    return payload
 
 
 def _instalar_marca_declarada() -> None:
     """`publisher_core.build_payload` (la que usan `publish_product` y la vista previa) con la
-    marca declarada. Idempotente."""
+    marca declarada y el título sin acentos. Idempotente."""
     global _build_payload_vendor
     if publisher_core.build_payload is not _build_payload_con_marca:
         _build_payload_vendor = publisher_core.build_payload

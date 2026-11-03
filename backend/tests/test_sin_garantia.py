@@ -84,10 +84,11 @@ class Estudio(unittest.TestCase):
         self.assertEqual(r["texto"], "Práctico y ligero.\n- Material PP")
 
     def test_otro_boton_no_se_toca(self):
+        # Sin tilde: el título de ML ya sale sin acentos (`sin_tildes`); aquí solo cuenta la garantía.
         with mock.patch.object(ia_generadores, "_completar",
-                               return_value={"ok": True, "texto": "Guantes con garantía"}):
+                               return_value={"ok": True, "texto": "Guantes con garantia"}):
             r = ia_generadores.generar("mercado_libre", "titulo", {"nombre": "x"})
-        self.assertEqual(r["texto"], "Guantes con garantía")
+        self.assertEqual(r["texto"], "Guantes con garantia")
 
 
 class CanalesConValidador(unittest.TestCase):

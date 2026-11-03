@@ -1001,6 +1001,41 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.720.0 — Mercado Libre: el TÍTULO va sin acentos (la ñ se queda)
+
+**Qué pidió Brandon (3-nov-2026).** Que el título de Mercado Libre salga sin acentos desde que se genera: la misma
+redacción, solo sin tildes. Decidió el alcance:
+- **Solo Mercado Libre.** El nombre en Woo (chunche.shop), Temu, TikTok y Walmart conservan su ortografía.
+- **La ñ se queda.** «Niño», «baño» y «año» siguen bien escritos.
+
+Amazon ya iba sin acentos desde julio con su propia regla, que además cambia ñ→n; esa no se toca.
+
+**Qué cambia.** El prompt lo pide y el código lo garantiza, como `sin_garantia`. Todo vive en el módulo nuevo
+`services/sin_tildes.py`: `REGLA` para los prompts y `quitar` para el texto. `quitar` descompone en NFD, no en NFKD,
+así que «½», «m²» y «30°» no se tocan.
+- **Estudio.** `REGLA` va en los tres prompts que escriben el título de ML: el botón «Título», «Mejorar con IA» con foto
+  y «Mejorar con IA» sin foto. Lo que devuelve la IA pasa por `quitar` antes de medir qué términos cubre y de guardarse
+  en `enrich.channel_content`.
+- **Alta en ML.** El envoltorio de `publisher_core.build_payload` en `publicar_ready` (el de la marca declarada, v0.719.0)
+  quita los acentos de `title` y `family_name` del envío, venga de donde venga el título: la IA, Crear o escrito a mano.
+  Si falla, sale lo del vendor y queda el traceback en el log.
+- **Actualizar una publicación viva.** `publicar._confirmar_ml` y su vista previa mandan el título sin acentos, y la
+  bitácora `ml_backlog` registra lo que se envió.
+- El prompt de Crear no cambia: Crear escribe el nombre de Woo, que conserva sus acentos.
+- Es un fix, sin variable (regla 15). `backend/vendor/` no se toca (regla 1).
+
+**Lo que NO alcanza (medido el 3-nov en las 207 publicaciones del lote Deportes, todas en pausa y sin ventas).**
+- **ML no deja cambiar el título de una publicación que ya existe.** Las 207 usan `family_name`, como toda alta nueva.
+  Al probar en MLM6513617252, ML rechazó las dos rutas con 400 y cause 374: `title` («You cannot modify the title if the
+  item has a family_name») y `family_name` («The field family name is invalid»). `PUT /user-products/{id}` da 404.
+  101 de los 207 títulos llevan acento.
+- **ML agrega al título valores de su propia lista de atributos.** El título visible es `family_name` más esos valores,
+  y en 22 de esos 101 el acento lo pone ML, no nuestro texto: «… Negro Con Café», «… Único», «Marrón Claro». Eso no lo
+  controla el envío.
+
+**Pruebas.** `tests/test_sin_tildes.py` (15). En `tests/test_sin_garantia.py`, el título de ejemplo del botón «Título»
+de ML ya va sin tilde.
+
 ### v0.719.0 — Mercado Libre: la MARCA es la declarada, no la primera de la lista de la categoría
 
 **Por qué (3-nov-2026).** Cuando la categoría trae marcas sugeridas y «Ferrahome» no está entre ellas,

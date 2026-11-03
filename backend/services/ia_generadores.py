@@ -23,7 +23,7 @@ from typing import Any
 import httpx
 
 from config import settings
-from services import sin_garantia
+from services import sin_garantia, sin_tildes
 
 log = logging.getLogger("omnicanal.ia")
 
@@ -196,8 +196,8 @@ _AMZ_IMAGENES = (
 _ML_TITULO = (
     "Eres experto en publicaciones de Mercado Libre México. Genera un TÍTULO de "
     "máximo 60 caracteres, con las palabras clave más buscadas al inicio, sin "
-    "signos promocionales ni datos de contacto. Devuelve solo el título y, debajo, "
-    "«(N caracteres)»."
+    "signos promocionales ni datos de contacto. " + sin_tildes.REGLA + " Devuelve solo el "
+    "título y, debajo, «(N caracteres)»."
 )
 _ML_FICHA = (
     "Eres experto en Mercado Libre México. Genera la FICHA TÉCNICA (atributos) del "
@@ -305,7 +305,8 @@ _MEJORAR: dict[str, dict[str, Any]] = {
             '"atributos": [{"nombre": "..", "valor": ".."}]}\n'
             "En atributos incluye los NECESARIOS de la categoría (marca, modelo, color, "
             "material, tamaño…) y los secundarios que ayuden a la ficha. No inventes datos "
-            "que no se puedan inferir del producto. " + sin_garantia.REGLA + _NO_CONTRADECIR
+            "que no se puedan inferir del producto. " + sin_garantia.REGLA + " " + sin_tildes.REGLA
+            + _NO_CONTRADECIR
         ),
     },
     # AMAZON no está en este diccionario a propósito: `mejorar()` desvía el canal
@@ -394,7 +395,8 @@ _ML_CON_FOTO = (
     "NO INVENTES. Afirma solo lo que se ve en la foto o lo que dicen los datos. Watts, voltaje, número "
     "de piezas, medidas, capacidad, material y certificaciones: si no están en una de las dos fuentes, no "
     "se mencionan. Si dudas de un dato, déjalo fuera y anótalo en \"dudas\".\n\n"
-    "TÍTULO: máximo 60 caracteres, español de México. Empieza por el tipo de producto con las palabras "
+    "TÍTULO: máximo 60 caracteres, español de México. " + sin_tildes.REGLA + " Empieza por el tipo de "
+    "producto con las palabras "
     "con que la gente lo busca; luego lo que lo distingue (función principal, medida o cantidad si se "
     "conoce, color si se ve). Sin marcas ni modelos, sin signos promocionales y sin palabras en "
     "mayúsculas sostenidas.\n"
@@ -823,6 +825,10 @@ async def mejorar(canal: str, producto: dict[str, Any], *,
     # llega a la descripción (`sin_garantia`, 28-oct-2026).
     if isinstance(data.get("descripcion"), str):
         data["descripcion"] = sin_garantia.quitar(data["descripcion"])
+    # ML: el título va SIN acentos y la ñ se queda (`sin_tildes`, 3-nov-2026). El prompt
+    # lo pide; aquí se garantiza, antes de medir qué términos cubre y de guardarlo.
+    if canal == "mercado_libre" and isinstance(data.get("titulo"), str):
+        data["titulo"] = sin_tildes.quitar(data["titulo"])
 
     # ML: qué términos más buscados cubre DE VERDAD el título (la IA lo presume
     # mal: ver `competencia_captura.sugerir_titulo`) y si se pasó de 60.
@@ -1014,6 +1020,8 @@ def generar(canal: str, generador_id: str, producto: dict[str, Any]) -> dict[str
     res = _completar(g["system"], user, max_tokens=g.get("max_tokens", 900))
     if generador_id == "descripcion" and res.get("ok"):
         res["texto"] = sin_garantia.quitar(res.get("texto") or "")  # ver `sin_garantia`
+    if canal == "mercado_libre" and generador_id == "titulo" and res.get("ok"):
+        res["texto"] = sin_tildes.quitar(res.get("texto") or "")  # ver `sin_tildes`
     res.update({"canal": canal, "generador": generador_id, "label": g["label"],
                 "tipo": g.get("tipo", "texto")})
     return res
