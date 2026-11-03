@@ -52,6 +52,8 @@ _NOTA_DESCARTE_PROVISIONAL = " · descartado: identificador provisional (no se a
 # Y lo que le agrega al cerrar sin aplicar el ENCABEZADO de una venta que kubera ya tiene
 # completo y más nuevo (2.15): reaplicarlo regresaría el estado a uno viejo.
 _NOTA_SUPERADO = " · superado: kubera ya tenía una escritura posterior de esta venta (no se aplicó)"
+_NOTA_AMBIGUO = (" · ambiguo: lo último en kubera es una marca de compensación posterior y el estado difiere;"
+                 " lo decide una persona (no se aplicó)")
 # Las tablas de pedidos: su reproceso pasa por el candado de vigencia y avisa al fan-out.
 TABLAS_PEDIDO = ("channel.orders", "channel.order_items")
 
@@ -382,6 +384,7 @@ def espejar(origen_py: str, funcion: str, tabla_mysql: str, tabla_kubera: str,
 def _trabajar(origen_py: str, funcion: str, tabla_mysql: str, tabla_kubera: str,
               operacion: str, payload: dict[str, Any], clave: str | None) -> None:
     t0 = time.perf_counter()
+    saltado = {"superado": False}
 
     def _intento() -> None:
         conn = _get_pool().connection()
@@ -396,7 +399,21 @@ def _trabajar(origen_py: str, funcion: str, tabla_mysql: str, tabla_kubera: str,
                 # PRODUCTO. Cadena vacía queda como NULO (`nullif`, 0029).
                 cur.execute("select set_config('app.usuario', %s, true)",
                             (actor.actual(),))
-                upsert(cur, payload)
+                saltado["superado"] = False
+                if tabla_kubera == "channel.orders" and payload.get("evento_at"):
+                    # 2.15, segunda revisión #3c: el worker aplica el encabezado que cayó a MySQL, a veces
+                    # minutos después (con kubera volviendo de una caída). Si kubera ya tiene algo más
+                    # nuevo de esa venta, no se pisa. Lo ambiguo va a la cola del respaldo.
+                    from services import orders_write
+                    vig = _vigencia(orders_write._foto(cur, payload, tomar=True),
+                                    _ts_del_evento(payload, None), payload)
+                    if vig == "ambiguo":
+                        raise VigenciaAmbigua(
+                            f"{payload.get('external_order_id')}: lo último en kubera es una marca de "
+                            "compensación posterior al evento y el estado difiere")
+                    saltado["superado"] = vig == "superado"
+                if not saltado["superado"]:
+                    upsert(cur, payload)
             conn.commit()
         except Exception:
             try:
@@ -433,7 +450,11 @@ def _trabajar(origen_py: str, funcion: str, tabla_mysql: str, tabla_kubera: str,
         _registrar(origen_py, funcion, tabla_mysql, tabla_kubera, operacion,
                    clave, ok=True, ms=(time.perf_counter() - t0) * 1000)
         if tabla_kubera == "channel.orders":
-            _avisar_espejo_aplicado(payload)
+            if saltado["superado"]:
+                log.info("espejo kubera: %s superado (kubera ya tenía algo más nuevo); no se aplicó",
+                         clave)
+            else:
+                _avisar_espejo_aplicado(payload)
     except Exception as exc:  # noqa: BLE001
         ms = (time.perf_counter() - t0) * 1000
         _registrar(origen_py, funcion, tabla_mysql, tabla_kubera, operacion,
@@ -955,18 +976,58 @@ def _persistir_error(origen_py: str, funcion: str, tabla_mysql: str,
         pass
 
 
-def _superado(antes: dict[str, Any] | None, ts_evento: Any) -> bool:
-    """¿El encabezado encolado es más VIEJO que lo que kubera ya tiene completo? (2.15)
+class VigenciaAmbigua(RuntimeError):
+    """El worker no puede decidir si el encabezado es más nuevo que kubera (ver `_vigencia`): el evento va
+    a la cola del respaldo y ahí lo decide una persona."""
 
-    Una venta cae al respaldo; después otro aviso de la misma venta (p. ej. su
-    cancelación) sí entra directo a kubera. Reaplicar el evento viejo pisaría
-    `estado_canal`/`estado_wc` con el estado de antes: la descancelaría. Un esqueleto
-    (solo el reclamo) o una fila que no existe NO están superados: el evento los llena.
-    `ts_evento` es el `ts` de espejo_kubera_log (UTC_TIMESTAMP, ingenuo en UTC)."""
+
+def _ts_del_evento(payload: dict[str, Any], ts_log: Any) -> datetime | None:
+    """La hora del EVENTO (2.15, segunda revisión #3b): `evento_at` del payload, que pone
+    `orders_write.guardar` al caer a MySQL. Sin ella (eventos encolados antes de v0.716.0), el `ts` de
+    espejo_kubera_log: la hora en que FALLÓ el worker (UTC_TIMESTAMP, ingenuo en UTC), igual o posterior."""
+    crudo = payload.get("evento_at") if isinstance(payload, dict) else None
+    if crudo:
+        try:
+            t = datetime.fromisoformat(str(crudo))
+            return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    if ts_log:
+        return ts_log if ts_log.tzinfo else ts_log.replace(tzinfo=timezone.utc)
+    return None
+
+
+def _vigencia(antes: dict[str, Any] | None, ts_evento: datetime | None,
+              payload: dict[str, Any]) -> str:
+    """¿Se aplica un encabezado encolado? 'aplicar' | 'superado' | 'ambiguo' (2.15).
+
+    'superado': kubera ya tiene la venta completa con una escritura MÁS NUEVA que el evento (p. ej. su
+    cancelación entró directo después). Reaplicarlo pisaría `estado_canal`/`estado_wc` con el estado de
+    antes: la descancelaría. Un esqueleto (solo el reclamo) o una fila que no existe se llenan.
+
+    'ambiguo' (segunda revisión, #3a): la última escritura de kubera fue una MARCA de compensación
+    (`candados_read.marcar_compensado`/`marcar_revertido`; el trigger `orders_touch` le pone a
+    `actualizado_at` el mismo now() que a la marca), posterior al evento. Esa marca no dice cuándo se
+    escribió la VENTA: puede ser justo la del evento que cayó a MySQL (la marca se sella segundos
+    después del registro, en la misma `sincronizar`). Si el estado y el pedido del evento son los que ya
+    tiene kubera, aplicarlo no cambia nada y se aplica; si no, no se decide solo. El rol de la base no
+    puede saltarse el trigger (`session_replication_role`, medido el 3-nov)."""
     if not antes or antes.get("esqueleto") or not ts_evento or not antes.get("actualizado_at"):
-        return False
-    ts = ts_evento if ts_evento.tzinfo else ts_evento.replace(tzinfo=timezone.utc)
-    return antes["actualizado_at"] >= ts
+        return "aplicar"
+    marca = antes["actualizado_at"]
+    if marca < ts_evento:
+        return "aplicar"
+    if marca in (antes.get("stock_compensado_at"), antes.get("stock_revertido_at")):
+        mismo = (antes.get("estado_wc") == payload.get("estado_wc")
+                 and (payload.get("wc_order_id") is None
+                      or antes.get("wc_order_id") == payload.get("wc_order_id")))
+        return "aplicar" if mismo else "ambiguo"
+    return "superado"
+
+
+def _superado(antes: dict[str, Any] | None, ts_evento: Any) -> bool:
+    """Compatibilidad: ¿`_vigencia` diría 'superado' sin mirar el payload?"""
+    return _vigencia(antes, _ts_del_evento({}, ts_evento), {}) == "superado"
 
 
 def _avisar_ventas(primeras: dict[tuple, tuple[dict | None, dict]]) -> int:
@@ -982,7 +1043,16 @@ def _avisar_ventas(primeras: dict[tuple, tuple[dict | None, dict]]) -> int:
         try:
             with conn.cursor() as cur:
                 for (_, _, oid), (antes, payload) in primeras.items():
-                    senal = orders_write.senal(antes, orders_write._foto(cur, payload), payload)
+                    # Una venta cuya foto falla no corta el lote (segunda revisión, #9): su savepoint
+                    # deja la transacción usable para las demás.
+                    cur.execute("savepoint venta")
+                    try:
+                        senal = orders_write.senal(antes, orders_write._foto(cur, payload), payload)
+                        cur.execute("release savepoint venta")
+                    except Exception as exc:  # noqa: BLE001
+                        cur.execute("rollback to savepoint venta")
+                        log.warning("reproceso de pedidos: la señal de %s no se armó: %s", oid, exc)
+                        continue
                     if senal["nueva_en_kubera"] or senal["vendible_cambia"]:
                         pedidos_ml._avisar_fanout(senal, oid)
                         avisadas += 1
@@ -994,14 +1064,34 @@ def _avisar_ventas(primeras: dict[tuple, tuple[dict | None, dict]]) -> int:
     return avisadas
 
 
+_reproceso_lock = threading.Lock()
+
+
 def reprocesar_errores(max_items: int = 500,
                        tablas: tuple[str, ...] | None = None) -> dict[str, Any]:
+    """Re-aplica los errores pendientes (ver `_reprocesar_errores`), UNO a la vez por proceso.
+
+    El botón de /migracion y el job de pedidos (2.15) corren en el mismo proceso: con dos a la vez, los dos
+    tomaban las mismas filas (segunda revisión, #9). El segundo se va sin hacer nada. Entre contenedores
+    (el relevo de un deploy) no hay candado: los upserts son idempotentes, y lo peor es que la segunda
+    corrida cierre «superado» un evento que la primera ya aplicó."""
+    if not _reproceso_lock.acquire(blocking=False):
+        return {"ok": False, "motivo": "otro reproceso en curso en este proceso (el botón o el job)"}
+    try:
+        return _reprocesar_errores(max_items, tablas)
+    finally:
+        _reproceso_lock.release()
+
+
+def _reprocesar_errores(max_items: int, tablas: tuple[str, ...] | None) -> dict[str, Any]:
     """Re-aplica los errores pendientes (resuelto=0) desde su payload_json.
 
     `tablas` limita el reproceso a esos destinos (el job de pedidos, 2.15, pasa
     TABLAS_PEDIDO). Los eventos de PEDIDOS, vengan del job o del botón:
       · el encabezado NO se aplica si kubera ya tiene la venta completa y más nueva
-        (`_superado`): se cierra con `_NOTA_SUPERADO`;
+        (`_vigencia`, medida contra la venta como estaba ANTES del primer evento de esa venta en la
+        corrida): se cierra con `_NOTA_SUPERADO`. Si es 'ambiguo', se queda pendiente con
+        `_NOTA_AMBIGUO` (una sola vez) para que lo vea una persona;
       · al terminar, cada venta tocada manda su señal al enganche del fan-out
         (`_avisar_ventas`): el libro la resta y, con FANOUT_FUENTE=kubera, los canales
         se enteran sin esperar la pasada de stock_watch.
@@ -1033,7 +1123,7 @@ def reprocesar_errores(max_items: int = 500,
            ORDER BY id LIMIT %s""",
         (*(tablas or ()), int(max_items)),
     )
-    aplicados = ilegibles = fallidos = superados = 0
+    aplicados = ilegibles = fallidos = superados = ambiguos = 0
     primeras: dict[tuple, tuple[dict | None, dict]] = {}   # venta → (foto antes, payload)
     detalle_fallos: list[str] = []
     provisionales: list[str] = []
@@ -1057,20 +1147,34 @@ def reprocesar_errores(max_items: int = 500,
                     # que no hizo. Del autor original no hay registro, y "no se
                     # sabe" es la respuesta honesta.
                     cur.execute("select set_config('app.usuario', '', true)")
-                    superado = False
+                    vig = "aplicar"
                     if f["tabla_destino"] in TABLAS_PEDIDO:
                         from services import orders_write
                         antes = orders_write._foto(cur, payload, tomar=True)
                         llave = (payload.get("canal"), payload.get("cuenta"),
                                  str(payload.get("external_order_id") or ""))
-                        primeras.setdefault(llave, (antes, payload))
-                        superado = (f["tabla_destino"] == "channel.orders"
-                                    and _superado(antes, f.get("ts")))
-                    if not superado:
+                        # Segunda revisión de MAESTRO, #1: la vigencia se mide contra la venta como
+                        # estaba ANTES del PRIMER evento de esa venta en esta corrida. Cada evento va en su
+                        # transacción y `orders_touch` sube `actualizado_at`: contra la foto del momento, el
+                        # segundo encabezado de la MISMA venta se veía «superado» por lo que escribió el
+                        # primero, y solo entraba el más viejo (una cancelación encolada se perdía; con
+                        # kubera primero, el registro con pedido se cerraba).
+                        antes0 = primeras.setdefault(llave, (antes, payload))[0]
+                        if f["tabla_destino"] == "channel.orders":
+                            vig = _vigencia(antes0, _ts_del_evento(payload, f.get("ts")), payload)
+                    if vig == "aplicar":
                         upsert(cur, payload)
                 conn.commit()
             finally:
                 conn.close()
+            if vig == "ambiguo":
+                db.execute(
+                    "UPDATE espejo_kubera_log SET error_texto=CONCAT(COALESCE(error_texto, ''), %s) "
+                    "WHERE id=%s AND COALESCE(error_texto, '') NOT LIKE %s",
+                    (_NOTA_AMBIGUO, f["id"], "%" + _NOTA_AMBIGUO.strip(" ·") + "%"))
+                ambiguos += 1
+                continue
+            superado = vig == "superado"
             if superado:
                 db.execute(
                     "UPDATE espejo_kubera_log SET resuelto=1, resuelto_ts=UTC_TIMESTAMP(), "
@@ -1108,7 +1212,8 @@ def reprocesar_errores(max_items: int = 500,
     fanout_avisados = _avisar_ventas(primeras)
     return {"ok": True, "pendientes_leidos": len(filas), "aplicados": aplicados,
             "ilegibles": ilegibles, "fallidos": fallidos,
-            "superados": superados, "ventas_avisadas_al_fanout": fanout_avisados,
+            "superados": superados, "ambiguos": ambiguos,
+            "ventas_avisadas_al_fanout": fanout_avisados,
             "detalle_fallos": detalle_fallos,
             "descartados_provisionales": len(provisionales),
             "skus_provisionales": provisionales[:50]}

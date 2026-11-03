@@ -97,6 +97,26 @@ def _texto(filas: list[dict[str, Any]], umbral: int) -> str:
             f"Revisar Woo y los logs de `pedidos_ml`; el siguiente aviso o el sondeo las adopta o las crea.")
 
 
+def _avisar_respaldo(alertas) -> dict[str, Any] | None:
+    """Cuenta el respaldo de MySQL y avisa al cambiar de estado. None si no se pudo leer."""
+    resp = respaldo()
+    if resp is not None:
+        alertas.avisar_estado(
+            _TIPO_RESPALDO, "pendientes" if resp["n"] else "ok",
+            f"*{resp['ventas']} venta(s) en el respaldo de MySQL* ({resp['n']} evento(s), el más viejo de "
+            f"{resp['desde']:%d-%b %H:%M} UTC): kubera no las tiene y el libro no las resta. "
+            f"Reprocesar en /migracion → Errores o con el job PEDIDOS_RESPALDO_REPROCESO."
+            if resp["n"] else "",
+            texto_ok="*Respaldo de pedidos* vacío: kubera tiene todas las ventas.")
+    return resp
+
+
+def _respaldo_json(resp: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not resp:
+        return None
+    return {**resp, "desde": resp["desde"].isoformat() if resp.get("desde") else None}
+
+
 def revisar() -> dict[str, Any]:
     """⚠️ BLOQUEA. Una revisión: cuenta, avisa al cambiar de estado y deja el resultado
     en `estado()`. Nunca lanza."""
@@ -115,7 +135,11 @@ def revisar() -> dict[str, Any]:
             f"*Vigilante de ventas reclamadas*: no pudo leer kubera ({type(exc).__name__}: "
             f"{str(exc)[:120]}). Mientras tanto nadie cuenta las ventas sin pedido.",
             texto_ok=f"*Ventas reclamadas:* ninguna sin pedido hace más de {umbral} min.")
+        # Segunda revisión, #9: con kubera sin contestar es cuando las ventas caen al respaldo de MySQL;
+        # justo entonces hay que contarlas.
+        resp = _avisar_respaldo(alertas)
         _ultimo = {"estado": "sin_lectura", "error": str(exc)[:200],
+                   "respaldo": _respaldo_json(resp),
                    "revisado_at": datetime.now(timezone.utc).isoformat()}
         return _ultimo
     estado = "pendientes" if filas else "ok"
@@ -123,18 +147,9 @@ def revisar() -> dict[str, Any]:
     alertas.avisar_estado(
         _TIPO, estado, _texto(filas, umbral) if filas else "",
         texto_ok=f"*Ventas reclamadas:* ninguna sin pedido hace más de {umbral} min.")
-    resp = respaldo()
-    if resp is not None:
-        alertas.avisar_estado(
-            _TIPO_RESPALDO, "pendientes" if resp["n"] else "ok",
-            f"*{resp['ventas']} venta(s) en el respaldo de MySQL* ({resp['n']} evento(s), el más viejo de "
-            f"{resp['desde']:%d-%b %H:%M} UTC): kubera no las tiene y el libro no las resta. "
-            f"Reprocesar en /migracion → Errores o con el job PEDIDOS_RESPALDO_REPROCESO."
-            if resp["n"] else "",
-            texto_ok="*Respaldo de pedidos* vacío: kubera tiene todas las ventas.")
+    resp = _avisar_respaldo(alertas)
     _ultimo = {"estado": estado, "n": len(filas), "umbral_min": umbral,
-               "respaldo": ({**resp, "desde": resp["desde"].isoformat() if resp.get("desde") else None}
-                            if resp else None),
+               "respaldo": _respaldo_json(resp),
                "muestra": [{k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in f.items()}
                            for f in filas[:_MUESTRA]],
                "excluidas": _excluir(),

@@ -129,5 +129,19 @@ class ElSql(unittest.TestCase):
         self.assertNotIn("sdb.execute", fuente)
 
 
+class RespaldoAunqueKuberaNoConteste(unittest.TestCase):   # 2.15, segunda revisión #9
+    def test_sin_lectura_de_kubera_igual_cuenta_y_avisa_el_respaldo(self):
+        from services import alertas, pedidos_vigilante as V
+        resp = {"n": 2, "ventas": 1, "desde": datetime(2026, 10, 28, 17, 0, tzinfo=timezone.utc)}
+        with mock.patch.object(settings, "pedidos_vigilante_enabled", True), \
+             mock.patch.object(V, "pendientes", side_effect=RuntimeError("kubera caída")), \
+             mock.patch.object(V, "respaldo", return_value=resp), \
+             mock.patch.object(alertas, "avisar_estado") as av:
+            r = V.revisar()
+        self.assertEqual(r["estado"], "sin_lectura")
+        self.assertEqual(r["respaldo"]["n"], 2)
+        self.assertIn((V._TIPO_RESPALDO, "pendientes"), [(c.args[0], c.args[1]) for c in av.call_args_list])
+
+
 if __name__ == "__main__":
     unittest.main()

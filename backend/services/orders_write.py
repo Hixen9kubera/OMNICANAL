@@ -27,7 +27,7 @@ Revertir = SUPABASE_WRITE_ORDERS=false (vuelve el dual-write clásico).
 from __future__ import annotations
 
 import logging
-from datetime import timezone
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from config import settings
@@ -282,6 +282,7 @@ def liberar(canal: str, cuenta: str, external_order_id: str) -> None:
 # `for no key update` la fila queda tomada hasta el COMMIT: la foto de antes es la de verdad.
 _SQL_FOTO = """
 select o.skus is null as esqueleto, o.estado_wc, o.wc_order_id, o.actualizado_at,
+       o.stock_compensado_at, o.stock_revertido_at,
        coalesce(o.registrado_at, o.creado_at) as registrado,
        coalesce((select json_agg(json_build_object('sku', i.sku::text, 'cantidad', i.cantidad,
                                                    'es_fulfillment', i.es_fulfillment) order by i.linea)
@@ -389,8 +390,13 @@ def guardar(origen_py: str, funcion: str, encabezado: dict[str, Any],
         log.warning("escritura primaria kubera channel.orders(%s) falló — MySQL "
                     "aguanta y el evento viaja por el espejo: %s", clave, exc)
         escribir_mysql()  # si esto también truena, el error sube al llamador
+        # `evento_at` (2.15, segunda revisión #3b): la hora del EVENTO, para el candado de vigencia del
+        # worker y del reproceso. El `ts` de espejo_kubera_log es cuando FALLÓ el worker, que puede ser
+        # después; contra él, una escritura de kubera entre los dos momentos parecía más vieja que el evento.
         kubera_mirror.espejar(origen_py, f"{funcion} (corte→espejo)", "pedidos_ml",
-                              "channel.orders", "UPSERT", encabezado, clave=clave)
+                              "channel.orders", "UPSERT",
+                              {**encabezado, "evento_at": datetime.now(timezone.utc).isoformat()},
+                              clave=clave)
         kubera_mirror.espejar(origen_py, f"{funcion} (corte→espejo líneas)",
                               "pedidos_ml_items", "channel.order_items", "UPSERT",
                               lineas, clave=clave)

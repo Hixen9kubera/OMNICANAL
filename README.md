@@ -1011,15 +1011,31 @@ estado de hace 40 días.
 
 **Qué cambia:**
 - `kubera_mirror.reprocesar_errores(max_items, tablas=None)`. Para los eventos de pedidos, del job o del botón:
-  - **candado de vigencia**: el encabezado no se aplica si kubera ya tiene la venta completa con
-    `actualizado_at` ≥ el `ts` del evento; se cierra con la nota «superado: … no se aplicó». Un esqueleto o una venta
-    que no existe sí se llenan; las líneas siempre;
+  - **candado de vigencia** (`_vigencia`): el encabezado no se aplica si kubera ya tiene la venta completa con una
+    escritura más nueva que el evento; se cierra con la nota «superado: … no se aplicó». Un esqueleto o una venta que
+    no existe sí se llenan; las líneas siempre. Tres cuidados (segunda revisión de MAESTRO, 3-nov):
+    - **contra la venta como estaba ANTES del primer evento de esa venta en la corrida.** Cada evento va en su
+      transacción y `orders_touch` sube `actualizado_at`: contra la foto del momento, el segundo encabezado de la
+      MISMA venta se veía «superado» por lo que escribió el primero y una cancelación encolada se perdía (#1);
+    - **la hora del EVENTO**: `orders_write.guardar` pone `evento_at` en el encabezado al caer a MySQL; el `ts` del
+      log es cuando falló el worker y solo se usa para los eventos viejos (#3b);
+    - **«ambiguo»**: las marcas de compensación (`marcar_compensado`/`marcar_revertido`) también suben
+      `actualizado_at` y no dicen cuándo se escribió la venta. Si la última escritura fue una marca posterior al evento
+      y el estado difiere, el evento queda PENDIENTE con su nota (una sola vez) y lo decide una persona; con el mismo
+      estado se aplica. El rol de la base no puede saltarse el trigger (`session_replication_role`) (#3a);
   - **la señal de cada venta** (foto antes del primer evento y después del último) va al mismo enganche del fan-out
     que `sincronizar`; con `FANOUT_FUENTE=woo` no hace nada.
+- El worker del espejo (`_trabajar`) aplica el mismo candado a un encabezado con `evento_at`: no pisa lo más nuevo, y
+  lo ambiguo lo manda a la cola del respaldo (#3c).
+- **Uno a la vez:** el botón y el job (mismo proceso) no corren juntos; el segundo se va sin hacer nada. Una venta
+  cuya señal no se arma no corta el aviso de las demás (#9).
 - Job `PEDIDOS_RESPALDO_REPROCESO_ENABLED` (apagado; cada 5 min, lote 50): reprocesa solo pedidos.
-- El vigilante de pedidos cuenta los eventos pendientes del respaldo y avisa aparte («pedidos_en_respaldo»).
+- El vigilante de pedidos cuenta los eventos pendientes del respaldo y avisa aparte («pedidos_en_respaldo»), también
+  cuando no puede leer kubera, que es justo cuando las ventas caen al respaldo (#9).
 
-**Pruebas:** `test_respaldo_pedidos` (8), `test_pedidos_vigilante` (+3). Sandbox con el código real y ROLLBACK: 6/6.
+**Pruebas:** `test_respaldo_pedidos` (25: dos y más encabezados por venta, kubera primero, ambiguo, `evento_at`, el
+worker, el lote que no se corta, el candado; mutantes de #1, #3a y #3b caen), `test_pedidos_vigilante` (+4). Sandbox con
+el código real y ROLLBACK (R7: dos encabezados con el `orders_touch` real; R8: `marcar_compensado` real): 10/10.
 Acta: `_paso_prod_respaldo_2_15`.
 
 ### v0.721.0 — «Actualizar en ML» manda TODO (fotos y categoría incluidas), parte por parte y en las dos cuentas a la vez
