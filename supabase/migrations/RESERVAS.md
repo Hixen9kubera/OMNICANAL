@@ -52,7 +52,7 @@ Este archivo dice **quién tiene cada número**, no qué está aplicado. Si los 
 | 0075–0077 | almacén: ubicaciones y `odoo_historia`, fuente única, traslados y claves | sí | sí (28-oct, de 04:19 a 05:04) | Acta 1.11, el esquema del libro de T0 |
 | 0078 | `channel_categoria_vectores` | sí | sí (27-oct) | |
 | 0079 | `channel_orders_registrado_at` | sí | sí (28-oct, 17:40) | Acta 2.2 + 2.6 |
-| 0080 | `core_products_familia` (3.2) | no | no | **Reservada** para WOO SALIDA, para la 3.2 rediseñada: publicado calculado desde los canales y archivado en columnas propias. La versión vieja (`0080_core_products_familia_ciclo.sql`, en `feat/catalogo-3-2` y `feat/catalogo-3-3`, *(local)*) está aplicada **solo en el sandbox**: la nueva tiene que partir de ese estado o deshacerlo primero. Número por confirmar con Brandon |
+| 0080 | `core_products_familia_ciclo` (3.2, diseño del 2-nov) | no | no | **Reservada** para WOO SALIDA, para la 3.2 rediseñada: publicado calculado desde los canales y archivado en columnas propias. La versión vieja (`0080_core_products_familia_ciclo.sql`, en `feat/catalogo-3-2` y `feat/catalogo-3-3`, *(local)*) está aplicada **solo en el sandbox**: la nueva tiene que partir de ese estado o deshacerlo primero. Número por confirmar con Brandon |
 
 ## Antes de la 0050
 
