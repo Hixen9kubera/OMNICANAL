@@ -4,8 +4,9 @@
 1. **Por omisión el Publicador oculta lo archivado** (General, vista productos): se quita de la página, padres y
    variantes, y viaja `archivados_ocultos`. Con kubera sin contestar (o sin la 0080) no se oculta nada.
 2. **Las demás vistas y `archivados=todos` no ocultan.**
-3. **`archivados=vivos`** (dados de baja y todavía publicados) se resuelve ANTES de listar como lista exacta de SKUs,
-   se cruza con la caja de SKUs, vacío da 0 sin llamar a Woo, y una falla da 503 (nunca un vacío falso).
+3. **`archivados=vivos`** (dados de baja y todavía publicados) se resuelve ANTES de listar, se cruza con la caja de
+   SKUs, vacío da 0 sin llamar a Woo, y una falla da 503 (nunca un vacío falso). **En General se pinta desde kubera**
+   (P1 de la verificación de 8c7dd6bb): Woo no lista la papelera ni lo que ya borró. No se combina con `etapa`.
 4. **`core_read`**: `archivados_de` devuelve None si no puede leer; `archivados_vivos` lee la vista y LANZA.
 
 Sin red ni base:
@@ -107,20 +108,39 @@ class OcultaPorOmision(_Base):
 
 
 class ArchivadosVivos(_Base):
-    def test_lista_exacta_antes_de_listar(self):
-        with mock.patch.object(core_read, "archivados_vivos", return_value=["BAJA-0003", "OTRO-0009"]):
+    FICHAS = [{"sku": "BAJA-0003", "nombre": "Silla rota", "wc_id": 5, "status": "trash"},
+              {"sku": "OTRO-0009", "nombre": "Mesa", "wc_id": None, "status": "publish"}]
+
+    def test_general_se_pinta_desde_kubera_aunque_woo_no_lo_liste(self):
+        with mock.patch.object(core_read, "archivados_vivos", return_value=["BAJA-0003", "OTRO-0009"]), \
+                mock.patch.object(core_read, "fichas_de", return_value=self.FICHAS) as f:
             r = self._get(archivados="vivos")
         self.assertEqual(r.status_code, 200, r.text)
-        kw = self.woo_kw[-1]
-        self.assertEqual(kw["skus"], ["BAJA-0003", "OTRO-0009"])
-        self.assertTrue(kw["skus_exactos"])
-        # con el filtro pedido, lo archivado NO se oculta
-        self.assertIn("BAJA-0003", self._skus(r)[0])
+        self.assertEqual(self.woo_kw, [])                  # Woo no trae la papelera ni lo que borró
+        self.assertEqual(f.call_args.args[0], ["BAJA-0003", "OTRO-0009"])
+        self.assertEqual(self._skus(r)[0], ["BAJA-0003", "OTRO-0009"])
+        j = r.json()
+        self.assertEqual((j["paginacion"]["total"], j["items"][0]["estado"]), (2, "trash"))
+        self.assertEqual(j["archivados_ocultos"], 0)       # con el filtro pedido, lo archivado NO se oculta
 
     def test_se_cruza_con_la_caja_de_skus(self):
-        with mock.patch.object(core_read, "archivados_vivos", return_value=["BAJA-0003", "OTRO-0009"]):
+        with mock.patch.object(core_read, "archivados_vivos", return_value=["BAJA-0003", "OTRO-0009"]), \
+                mock.patch.object(core_read, "fichas_de", return_value=self.FICHAS[1:]) as f:
             self._get(archivados="vivos", skus="otro-0009, NADA-1")
-        self.assertEqual(self.woo_kw[-1]["skus"], ["OTRO-0009"])
+        self.assertEqual(f.call_args.args[0], ["OTRO-0009"])
+
+    def test_busqueda_y_paginas(self):
+        fichas = [{"sku": f"BAJA-{i:04d}", "nombre": "silla" if i % 2 else "mesa", "wc_id": i, "status": "trash"}
+                  for i in range(5)]
+        with mock.patch.object(core_read, "archivados_vivos", return_value=[f["sku"] for f in fichas]), \
+                mock.patch.object(core_read, "fichas_de", return_value=fichas):
+            r = self._get(archivados="vivos", search="SILLA", per_page=1, page=2)
+        j = r.json()
+        self.assertEqual((j["paginacion"]["total"], j["paginacion"]["total_pages"]), (2, 2))
+        self.assertEqual([i["sku"] for i in j["items"]], ["BAJA-0003"])
+
+    def test_no_se_combina_con_etapa(self):
+        self.assertEqual(self._get(archivados="vivos", etapa="en_full").status_code, 422)
 
     def test_ninguno_da_cero_sin_llamar_a_woo(self):
         with mock.patch.object(core_read, "archivados_vivos", return_value=[]):
@@ -161,6 +181,25 @@ class CoreRead(unittest.TestCase):
             self.assertIsNone(core_read.archivados_de(["B"]))
         self.assertEqual(lg.warning.call_count, 1)
         self.assertEqual(lg.debug.call_count, 1)
+
+    def test_tras_una_lectura_buena_la_siguiente_caida_vuelve_a_avisar(self):   # P4
+        with mock.patch.object(core_read, "_baja_avisada", False), mock.patch.object(core_read, "log") as lg:
+            with mock.patch.object(core_read.sdb, "fetch_all", side_effect=RuntimeError("x")):
+                core_read.archivados_de(["A"])
+            with mock.patch.object(core_read.sdb, "fetch_all", return_value=[]):
+                core_read.archivados_de(["A"])
+            with mock.patch.object(core_read.sdb, "fetch_all", side_effect=RuntimeError("y")):
+                core_read.archivados_de(["A"])
+        self.assertEqual(lg.warning.call_count, 2)
+
+    def test_fichas_de_en_mayusculas_y_por_sku(self):
+        with mock.patch.object(core_read.sdb, "fetch_all", return_value=[
+                {"sku": "B-2", "nombre": "b", "wc_id": None, "status": "trash"},
+                {"sku": "A-1", "nombre": "a", "wc_id": 1, "status": "publish"}]) as m:
+            r = core_read.fichas_de(["b-2", "a-1", ""])
+        self.assertEqual([f["sku"] for f in r], ["A-1", "B-2"])
+        self.assertIn("upper(sku::text)", m.call_args.args[0])
+        self.assertEqual(m.call_args.args[1], (["b-2", "a-1"],))
 
     def test_archivados_vivos_lee_la_vista_y_lanza(self):
         with mock.patch.object(core_read.sdb, "fetch_all", return_value=[{"sku": "A"}]) as m:

@@ -14,7 +14,7 @@ import { ChipModo, esPadre, TipoBadge, VariantesBoton, VariantesTabla } from "@/
 import { TituloMoneda } from "@/components/Moneda";
 
 import {
-  configEstudio, leerModosPublicacion, listarCanales, listarCategorias, listarProductos,
+  ApiError, configEstudio, leerModosPublicacion, listarCanales, listarCategorias, listarProductos,
   type CategoriaWC,
 } from "@/lib/api";
 import type { CanalInfo, EstudioConfig, ModoPublicacion, Paginacion, Producto, VarianteResumen } from "@/lib/types";
@@ -289,6 +289,10 @@ export default function ProductosPage() {
   // que sigue publicado en algún canal: lo que hay que bajar o desarchivar.
   const [archivadosVivos, setArchivadosVivos] = useState(false);
   const [archivadosOcultos, setArchivadosOcultos] = useState(0);
+  // Lo que contestó el servidor cuando el chip no se pudo resolver (p. ej. 503
+  // antes de la migración 0080): se muestra, y la lista queda VACÍA. Un chip
+  // encendido sobre el catálogo normal diría algo falso.
+  const [errorArchivados, setErrorArchivados] = useState<string | null>(null);
   // Categoría de WooCommerce (id). El mismo filtro que Omnicanal, y como allá
   // se acumula con la búsqueda, "Filtrar SKUs" y DROP OFF: el backend lo
   // resuelve en la misma consulta, así que el total y las páginas son del filtro.
@@ -422,6 +426,7 @@ export default function ProductosPage() {
         setProductos(r.items);
         setPag(r.paginacion);
         setArchivadosOcultos(r.archivados_ocultos ?? 0);
+        setErrorArchivados(null);
         // Sin búsqueda/filtro y 0 resultados → probablemente el índice de
         // WooCommerce todavía se está construyendo (arranque en frío). Reintenta
         // en vez de mostrar "no encontrados".
@@ -440,6 +445,18 @@ export default function ProductosPage() {
         // conexión: reintentamos igual que con 0 resultados, en vez de dejar la
         // pantalla en "no encontrados" por un error de red silencioso.
         if (exc?.name === "AbortError") return;
+        // El servidor SÍ contestó, con un error, a «Archivados vivos»: no es un
+        // backend levantándose. Reintentar dejaría el catálogo normal bajo el chip.
+        if (archivadosVivos && exc instanceof ApiError) {
+          setProductos([]);
+          setPag({ page: 1, per_page: PER_PAGE, total: 0, total_pages: 0,
+                   tiene_anterior: false, tiene_siguiente: false });
+          setErrorArchivados(exc.detail || exc.message);
+          reintentos.current = 0;
+          setPreparando(false);
+          primeraCarga.current = false;
+          return;
+        }
         if (reintentos.current < 45) {
           reintentos.current += 1;
           setPreparando(true);
@@ -640,7 +657,7 @@ export default function ProductosPage() {
           {/* ARCHIVADOS VIVOS — dados de baja en kubera y todavía publicados
               (activa o pausada). Sin el chip, lo archivado no aparece aquí. */}
           <button
-            onClick={() => { setArchivadosVivos(!archivadosVivos); setPage(1); }}
+            onClick={() => { setArchivadosVivos(!archivadosVivos); setErrorArchivados(null); setPage(1); }}
             title={archivadosVivos
               ? "Mostrando SOLO lo archivado que sigue publicado en algún canal: hay que bajarlo del canal o desarchivarlo."
               : "Lo archivado no aparece en el Publicador. Este filtro muestra lo archivado que todavía está publicado (activa o pausada)."}
@@ -654,6 +671,11 @@ export default function ProductosPage() {
             <Archive size={15} className="shrink-0" />
             Archivados vivos
           </button>
+          {archivadosVivos && errorArchivados && (
+            <span role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-2 py-1 text-xs text-rose-700">
+              No se pudo leer lo archivado: {errorArchivados}
+            </span>
+          )}
           {archivadosOcultos > 0 && !archivadosVivos && (
             <span className="text-xs text-slate-500" title="Dados de baja en kubera (archivado). El total de la paginación todavía los cuenta.">
               {archivadosOcultos} archivado{archivadosOcultos === 1 ? "" : "s"} oculto{archivadosOcultos === 1 ? "" : "s"} en esta página

@@ -335,6 +335,8 @@ async def listar_productos(
         raise HTTPException(404, f"Canal desconocido: {canal}")
     if archivados not in (None, "vivos", "todos"):
         raise HTTPException(422, "archivados: vivos | todos (sin valor, el Publicador oculta los archivados)")
+    if archivados == "vivos" and etapa:
+        raise HTTPException(422, "archivados=vivos no se combina con etapa: elige uno")
 
     estados_lista = [e.strip() for e in estados.split(",")] if estados else None
     # `.strip()` en el VALOR, no solo en la condición. Antes se filtraban los
@@ -416,6 +418,7 @@ async def listar_productos(
 
     revisado_truncado = False
     archivados_ocultos = 0
+    vivos_lista: list[str] | None = None
     if revisado:
         try:
             marcados = await asyncio.to_thread(costing_read.skus_revisados)
@@ -453,6 +456,7 @@ async def listar_productos(
         else:
             skus_lista = vivos
             skus_exactos = True
+            vivos_lista = vivos
 
     et = await _resolver_etapa(canal=canal, etapa=etapa, revisado=revisado,
                                vista=vista, skus_lista=skus_lista,
@@ -472,17 +476,33 @@ async def listar_productos(
                                   tiene_siguiente=False))
 
     if canal == Canal.GENERAL.value:
-        try:
-            items_raw, total, total_pages = await woocommerce.listar_productos(
-                page=page, per_page=per_page, search=search,
-                orden=orden, estados=estados_lista, categoria=categoria,
-                skus=skus_lista, vista=vista, skus_exactos=skus_exactos,
-                aplanar=aplanar, ids_productos=et.ids_productos,
-                ids_filas=et.ids_filas, estricto=estricto,
-            )
-        except wp_db.FiltroExactoNoAplicable as exc:
-            log.warning("General no pudo aplicar el filtro exacto: %s", exc)
-            _sin_filtro("WordPress no respondió con el filtro exacto.", etapa)
+        if vivos_lista is not None:
+            # «ARCHIVADOS VIVOS» SE PINTA DESDE KUBERA (P1 de la verificación de 8c7dd6bb). El
+            # listado de Woo no trae la papelera ni lo que Woo ya borró, que es justo lo que se
+            # archivó solo (`papelera_woo`, `ya_no_en_woo`): pedírselo daba «no se encontraron»
+            # con archivados vivos. Aquí: nombre y wc_id del padrón, búsqueda por SKU o nombre y
+            # orden por SKU. Categoría y estado de Woo no aplican a una baja. Son pocos.
+            fichas = await asyncio.to_thread(core_read.fichas_de, vivos_lista)
+            if search and search.strip():
+                t = search.strip().lower()
+                fichas = [f for f in fichas if t in f["sku"].lower() or t in (f["nombre"] or "").lower()]
+            total = len(fichas)
+            total_pages = (total + per_page - 1) // per_page
+            items_raw = [{"sku": f["sku"], "nombre": f["nombre"] or f["sku"], "wc_id": f["wc_id"],
+                          "estado": f["status"], "variantes": []}
+                         for f in fichas[(page - 1) * per_page: page * per_page]]
+        else:
+            try:
+                items_raw, total, total_pages = await woocommerce.listar_productos(
+                    page=page, per_page=per_page, search=search,
+                    orden=orden, estados=estados_lista, categoria=categoria,
+                    skus=skus_lista, vista=vista, skus_exactos=skus_exactos,
+                    aplanar=aplanar, ids_productos=et.ids_productos,
+                    ids_filas=et.ids_filas, estricto=estricto,
+                )
+            except wp_db.FiltroExactoNoAplicable as exc:
+                log.warning("General no pudo aplicar el filtro exacto: %s", exc)
+                _sin_filtro("WordPress no respondió con el filtro exacto.", etapa)
         # LO ARCHIVADO NO ESTORBA EN LA COLA (3.2): el Publicador lo oculta por omisión.
         # Se quita de la PÁGINA ya traída (el total de Woo no lo descuenta) y se dice
         # cuántos en `archivados_ocultos`. Hoy son casi cero: la papelera de Woo no se

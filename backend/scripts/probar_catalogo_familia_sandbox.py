@@ -13,8 +13,12 @@ SUPABASE_DB_URL y SUPABASE_PROD_REF.
   C5. Trigger: status trash → archivado (por woo, papelera_woo) sin tocar estado_ciclo; volver a publish no lo
       desarchiva.
   C6. Un alta nueva nace draft y sin archivar.
-  C7. Los CHECK frenan: un estado que no existe, una baja sin motivo, recodificado sin destino y destino sin
-      recodificado. Una baja de persona con recodificado y destino entra, y la vista la ve.
+  C7. Los CHECK frenan: un estado que no existe, una baja sin motivo, recodificado sin destino, destino sin
+      recodificado y un recodificado hacia sí mismo. Una baja de persona con recodificado y destino entra, y la vista
+      la ve.
+  C8. `core.publicacion_abierta` canal por canal contra una tabla de casos, incluidos los que confunden la columna
+      (status contra situación) en TikTok y Amazon.
+  C9. service_role lee la vista (es invoker: ejecuta las funciones; M1).
 
 Uso: backend/.venv/Scripts/python.exe backend/scripts/probar_catalogo_familia_sandbox.py
 """
@@ -112,6 +116,35 @@ try:
     distintos, en_ml = c.fetchone()
     check("C4 Mercado Libre = la regla de Catálogo", en_ml > 0 and distintos == 0,
           f"{en_ml} SKUs publicados en ML, distintos {distintos}")
+    CASOS = [
+        ("mercado_libre", "published", "active", "MLM1", True), ("mercado_libre", None, "paused", "MLM1", True),
+        ("mercado_libre", "published", "under_review", "MLM1", False), ("mercado_libre", "published", "active", "", False),
+        ("mercado_libre", "active", None, "MLM1", False),
+        ("amazon", "PUBLISHED", "BUYABLE", "B0", True), ("amazon", None, "DISCOVERABLE", "B0", True),
+        ("amazon", "DELETED", "BUYABLE", "B0", False), ("amazon", "INVALID", None, "B0", False),
+        ("amazon", "PUBLISHED", "closed", "B0", False), ("amazon", "BUYABLE", None, "B0", False),
+        ("tiktok", "ACTIVATE", None, "1", True), ("tiktok", "SELLER_DEACTIVATED", "APPROVED", "1", True),
+        ("tiktok", "PLATFORM_DEACTIVATED", None, "1", True), ("tiktok", "FREEZE", None, "1", True),
+        ("tiktok", "DRAFT", "NONE", "1", False), ("tiktok", "DELETED", None, "1", False),
+        ("tiktok", "PENDING", "PRE_APPROVED", "1", False), ("tiktok", None, "ACTIVATE", "1", False),
+        ("temu", "2/8", None, "1", True), ("temu", "3/2", None, "1", True), ("temu", "3/3", None, "1", True),
+        ("temu", "4/7", None, "1", False), ("temu", "5/None", None, "1", False), ("temu", "9/9", None, "1", False),
+        ("walmart", "PUBLISHED", None, "1", True), ("walmart", "UNPUBLISHED", None, "1", False),
+        ("general", "publish", "active", "1", False), ("shein", "ACTIVE", "active", "1", False),
+    ]
+    malos = []
+    for canal, st, sit, lid, esperado in CASOS:
+        c.execute("select core.publicacion_abierta(%s, %s, %s, %s)", (canal, st, sit, lid))
+        if c.fetchone()[0] is not esperado:
+            malos.append((canal, st, sit, lid))
+    check("C8 la regla canal por canal contra la función real", not malos, f"{len(CASOS)} casos, malos: {malos}")
+    cn.rollback()
+    try:
+        c.execute("set local role service_role")
+        c.execute("select count(*) from core.products_ciclo_v where archivado_at is not null")
+        check("C9 service_role lee la vista (ejecuta las funciones)", True)
+    except psycopg2.Error as exc:
+        check("C9 service_role lee la vista (ejecuta las funciones)", False, f"{type(exc).__name__}: {exc}".strip())
     cn.rollback()
 
     c.execute("set local statement_timeout = '60s'")
@@ -138,6 +171,10 @@ try:
     check("C7 destino sin recodificado no entra",
           frena(c, "update core.products set archivado_at = now(), archivado_por = 'x@kubera.mx', "
                    "archivado_motivo = 'duplicado', archivado_sku_destino = %s where sku = 'ZZZ-CATALOGO-1'", (sku,)))
+    check("C7 un recodificado hacia sí mismo no entra",
+          frena(c, "update core.products set archivado_at = now(), archivado_por = 'x@kubera.mx', "
+                   "archivado_motivo = 'recodificado', archivado_sku_destino = 'ZZZ-CATALOGO-1' "
+                   "where sku = 'ZZZ-CATALOGO-1'"))
     c.execute("update core.products set archivado_at = now(), archivado_por = 'x@kubera.mx', "
               "archivado_motivo = 'recodificado', archivado_sku_destino = %s where sku = 'ZZZ-CATALOGO-1'", (sku,))
     c.execute("select situacion from core.products_ciclo_v where sku = 'ZZZ-CATALOGO-1'")

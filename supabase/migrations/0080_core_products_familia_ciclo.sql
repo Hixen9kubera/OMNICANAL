@@ -63,6 +63,10 @@
 --     drop column archivado_at, drop column archivado_por, drop column archivado_motivo,
 --     drop column archivado_sku_destino;
 --   update core.products set parent_sku = null, has_variations = false;   -- solo si se quiere volver al vacío
+--   -- ops.migraciones es de solo agregar: la reversa deja su propia fila (M2 de la verificación de 8c7dd6bb).
+--   insert into ops.migraciones (migracion, detalle)
+--     values ('0080_core_products_familia_ciclo', '{"modo": "revertida"}'::jsonb);
+--   ANTES de la reversa: guardar las filas con archivado_at (las bajas de una persona se perderían).
 -- ═══════════════════════════════════════════════════════════════════════════
 
 begin;
@@ -106,7 +110,9 @@ returns boolean language sql immutable as $$
     -- 2/8 a la venta · 3/1 agotada · 3/3 retenida · 2/4 activa sin vender · 3/2 apagada. Fuera: 4/7
     -- incompleta, 5/None borrador, 6/None sin publicar y cualquier código que nadie ha visto.
     when 'temu'          then coalesce(p_status, '') in ('2/8', '3/1', '3/3', '2/4', '3/2')
-    when 'walmart'       then upper(coalesce(p_status, '')) in ('PUBLISHED', 'UNPUBLISHED')
+    -- Solo PUBLISHED, como el resto del código (F2 de la verificación de 8c7dd6bb). La foto de Walmart es
+    -- de agosto y nadie la escribe: UNPUBLISHED no dice si existe hoy.
+    when 'walmart'       then upper(coalesce(p_status, '')) = 'PUBLISHED'
     else false
   end
 $$;
@@ -180,7 +186,9 @@ alter table core.products add constraint products_archivado_chk check (
                                                         'papelera_woo', 'ya_no_en_woo'))
   -- el destino va si y solo si es recodificado
   and (archivado_sku_destino is null or archivado_motivo = 'recodificado')
-  and (archivado_motivo is distinct from 'recodificado' or archivado_sku_destino is not null));
+  and (archivado_motivo is distinct from 'recodificado' or archivado_sku_destino is not null)
+  -- y no es el mismo SKU (M4). Cadenas y ciclos (A→B con B archivado) no los ve un CHECK: los cuida quien archiva.
+  and archivado_sku_destino is distinct from sku);
 create index if not exists products_archivados_idx on core.products (sku) where archivado_at is not null;
 
 -- ── Bajas: status trash/deleted → archivado (si no lo estaba). Nunca desarchiva ──
@@ -222,6 +230,11 @@ revoke all on function core.publicacion_abierta(text, text, text, text) from pub
 revoke all on function core.estado_ciclo_inicial(text) from public, anon, authenticated;
 revoke all on function core.sku_publicado(citext, boolean) from public, anon, authenticated;
 revoke all on function core.tg_products_archivar() from public, anon, authenticated;
+-- La vista es security_invoker: quien la lee ejecuta estas funciones. Sin el grant, service_role daba «permission
+-- denied» (M1 de la verificación de 8c7dd6bb; el mismo patrón que 0064, 0065 y 0074).
+grant execute on function core.publicacion_abierta(text, text, text, text) to service_role;
+grant execute on function core.estado_ciclo_inicial(text) to service_role;
+grant execute on function core.sku_publicado(citext, boolean) to service_role;
 
 insert into ops.migraciones (migracion, detalle)
 select '0080_core_products_familia_ciclo',

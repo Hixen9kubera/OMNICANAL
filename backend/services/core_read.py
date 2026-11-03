@@ -117,6 +117,7 @@ def archivados_de(skus: list[str]) -> set[str] | None:
     """Los SKUs de `skus` dados de baja, en MAYÚSCULAS (citext). ``None`` = no se pudo
     saber (la 0080 todavía no está aplicada, o kubera no contestó): el llamador NO oculta
     nada. Es solo para no estorbar en la cola; ningún flujo decide con esto."""
+    global _baja_avisada
     salida: set[str] = set()
     limpios = [str(s).strip() for s in skus if str(s or "").strip()]
     try:
@@ -126,10 +127,10 @@ def archivados_de(skus: list[str]) -> set[str] | None:
                     where archivado_at is not null and sku = any(%s::citext[])""",
                     (limpios[i:i + 800],)):
                 salida.add(r["sku"])
+        _baja_avisada = False        # P4: tras una lectura buena, la siguiente caída vuelve a avisar
     except Exception as exc:  # noqa: BLE001
         # Entre el push del código y la 0080 esto falla en CADA listado: un aviso por
         # proceso basta (el resto a debug), para no llenar el log del Publicador.
-        global _baja_avisada
         (log.debug if _baja_avisada else log.warning)(
             "no se pudo leer la baja del catálogo (no se oculta nada): %s", exc)
         _baja_avisada = True
@@ -145,3 +146,15 @@ def archivados_vivos() -> list[str]:
         """select upper(sku::text) as sku from core.products_ciclo_v
             where archivado_at is not null and situacion = 'incoherente'
             order by 1""")]
+
+
+def fichas_de(skus: list[str]) -> list[dict[str, Any]]:
+    """`[{sku, nombre, wc_id, status}]` del padrón, en MAYÚSCULAS y por SKU, para pintar lo que
+    Woo ya no lista (los archivados vivos, P1). Lanza si no puede leer."""
+    salida: list[dict[str, Any]] = []
+    limpios = [str(s).strip() for s in skus if str(s or "").strip()]
+    for i in range(0, len(limpios), 800):
+        salida += sdb.fetch_all(
+            """select upper(sku::text) as sku, name as nombre, wc_id, status from core.products
+                where sku = any(%s::citext[])""", (limpios[i:i + 800],))
+    return sorted(salida, key=lambda f: f["sku"])

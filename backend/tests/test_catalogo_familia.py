@@ -131,15 +131,35 @@ class Migracion0080(unittest.TestCase):
         self.assertIn("nullif(l.listing_id, '') is not null", ml)
         self.assertIn(f"lower(coalesce(l.situacion, '')) in ({sits})", ml)
 
+    # La regla ENTERA, rama por rama (R1 de la verificación de 8c7dd6bb: con fragmentos sobrevivían mutantes que
+    # cambiaban el canal o la columna de TikTok y Amazon). Cambiar una regla obliga a cambiar esta línea.
+    REGLA = ("select nullif(p_listing_id, '') is not null and case p_canal "
+             "when 'general' then false "
+             "when 'mercado_libre' then lower(coalesce(p_situacion, '')) in ('active', 'paused') "
+             "when 'amazon' then upper(coalesce(p_situacion, '')) in ('BUYABLE', 'DISCOVERABLE', 'PUBLISHED') "
+             "and upper(coalesce(p_status, '')) not in ('DELETED', 'INVALID') "
+             "when 'tiktok' then upper(coalesce(p_status, '')) in ('ACTIVATE', 'SELLER_DEACTIVATED', "
+             "'PLATFORM_DEACTIVATED', 'FREEZE') "
+             "when 'temu' then coalesce(p_status, '') in ('2/8', '3/1', '3/3', '2/4', '3/2') "
+             "when 'walmart' then upper(coalesce(p_status, '')) = 'PUBLISHED' "
+             "else false end")
+
     def test_reglas_de_los_demas_canales(self):
-        for regla in ("when 'general' then false",
-                      "upper(coalesce(p_situacion, '')) in ('BUYABLE', 'DISCOVERABLE', 'PUBLISHED') "
-                      "and upper(coalesce(p_status, '')) not in ('DELETED', 'INVALID')",
-                      "in ('ACTIVATE', 'SELLER_DEACTIVATED', 'PLATFORM_DEACTIVATED', 'FREEZE')",
-                      "when 'temu' then coalesce(p_status, '') in ('2/8', '3/1', '3/3', '2/4', '3/2')",
-                      "when 'walmart' then upper(coalesce(p_status, '')) in ('PUBLISHED', 'UNPUBLISHED')",
-                      "else false end"):
-            self.assertIn(regla, self.s)
+        cuerpo = re.search(r"create or replace function core\.publicacion_abierta\(.*?\$\$ (.*?) \$\$", self.s).group(1)
+        self.assertEqual(cuerpo, self.REGLA)
+
+    def test_service_role_ejecuta_las_funciones_de_la_vista(self):           # M1
+        for f in ("core.publicacion_abierta(text, text, text, text)", "core.estado_ciclo_inicial(text)",
+                  "core.sku_publicado(citext, boolean)"):
+            self.assertIn(f"grant execute on function {f} to service_role", self.s)
+        self.assertLess(self.s.index("revoke all on function core.sku_publicado(citext, boolean)"),
+                        self.s.index("grant execute on function core.sku_publicado(citext, boolean) to service_role"))
+
+    def test_el_destino_no_es_el_mismo_sku(self):                            # M4
+        self.assertIn("and archivado_sku_destino is distinct from sku)", self.s)
+
+    def test_la_reversa_deja_su_fila(self):                                  # M2
+        self.assertIn("""values ('0080_core_products_familia_ciclo', '{"modo": "revertida"}'::jsonb)""", self.sql)
 
     def test_preparacion_de_arranque(self):
         self.assertIn("create or replace function core.estado_ciclo_inicial(p_status text)", self.s)
