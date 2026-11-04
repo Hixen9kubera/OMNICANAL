@@ -3282,7 +3282,7 @@ export async function pricingHoja(nombre: string, version: string): Promise<stri
 
 // ── CATÁLOGO (v0.703.0): el artifact del catálogo vivo, con la foto del packing list ─
 
-import type { Catalogo, CatalogoPublicados } from "@/components/catalogo/logica";
+import type { Catalogo, CatalogoCategoriaGeneral, CatalogoPublicados } from "@/components/catalogo/logica";
 
 /** El catálogo completo (~13 MB abiertos; viaja comprimido). Sin costos: ver `backend/services/catalogo.py`. */
 export function catalogoDatos(signal?: AbortSignal): Promise<Catalogo> {
@@ -3292,6 +3292,11 @@ export function catalogoDatos(signal?: AbortSignal): Promise<Catalogo> {
 /** Lo publicado HOY en Mercado Libre (activa o pausada), por cuenta (v0.708.0). Lo único en vivo de la pestaña. */
 export function catalogoPublicados(signal?: AbortSignal): Promise<CatalogoPublicados> {
   return getJSON<CatalogoPublicados>("/api/catalogo/publicados", signal);
+}
+
+/** La categoría GENERAL (raíz de ML) decidida con la foto del packing list (v0.728.0). Solo las aplicadas. */
+export function catalogoCategoriaGeneral(signal?: AbortSignal): Promise<CatalogoCategoriaGeneral> {
+  return getJSON<CatalogoCategoriaGeneral>("/api/catalogo/categoria-general", signal);
 }
 
 /** Una hoja de fotos (`f0`, `f12`…) como URL de objeto. `version` cambia la URL con cada catálogo nuevo. */

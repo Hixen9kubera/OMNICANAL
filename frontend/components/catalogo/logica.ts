@@ -43,10 +43,24 @@ export interface Fila {
   _mv: string[];
   /** Publicado HOY en Mercado Libre (v0.708.0): [cuenta, active|paused]; [] = no; undefined = todavía sin dato. */
   _pub?: [string, string][];
+  /** Categoría GENERAL decidida con la foto del packing list (v0.728.0): [raíz de ML, confianza]; null = sin
+   *  categoría general aplicada (o es un renglón sin SKU); undefined = todavía sin dato. */
+  _cg?: [string, string] | null;
 }
 
 /** `GET /api/catalogo/publicados`: lo publicado HOY en ML (activa o pausada), por cuenta, y la hora del último sync. */
 export interface CatalogoPublicados { actualizado: string | null; ml: Record<string, [string, string][]> }
+
+/** `GET /api/catalogo/categoria-general` (v0.728.0): todas, con su confianza (revisado · alta · media · baja). */
+export interface CatalogoCategoriaGeneral { total: number; por_confianza: Record<string, number>; skus: Record<string, [string, string]> }
+
+/** Etiqueta de cada confianza: revisado y alta están aplicadas; media y baja, pendientes de revisión. */
+export const CONFIANZA_GENERAL: Record<string, { texto: string; tono: "indigo" | "emerald" | "amber" | "rojo"; pendiente: boolean }> = {
+  revisado: { texto: "revisada a mano", tono: "indigo", pendiente: false },
+  alta: { texto: "confianza alta", tono: "emerald", pendiente: false },
+  media: { texto: "confianza media · por revisar", tono: "amber", pendiente: true },
+  baja: { texto: "confianza baja · por revisar", tono: "rojo", pendiente: true },
+};
 
 export interface Contenedor {
   n: number | null; clave: string; codigos: string[]; orig: number[]; val: number[]; pz: number; pz_orig: number;
@@ -186,6 +200,14 @@ export function marcarPublicados(R: Fila[], ml: CatalogoPublicados["ml"]): void 
 
 export const publicadoEnML = (r: Fila) => !!(r._pub && r._pub.length);
 
+/** Le pone a cada fila su categoría general (v0.728.0). Un renglón sin SKU no tiene. */
+export function marcarCategoriaGeneral(R: Fila[], skus: CatalogoCategoriaGeneral["skus"]): void {
+  R.forEach((r) => { r._cg = r.sin ? null : skus[String(r.s || "").toUpperCase()] || null; });
+}
+
+/** Valor del filtro «Categoría general» que pide los que todavía no tienen. */
+export const SIN_CATEGORIA_GENERAL = "—";
+
 /** «SANCORFASHION» no cabe en la columna. */
 export const cuentaCorta = (c: string) => (c === "SANCORFASHION" ? "SANCOR" : c);
 
@@ -216,12 +238,13 @@ export function enContenedor(r: Fila, c: string): Fila {
 /**
  * `val`: "" = todo el catálogo · "*" = lo que hay que validar, por cualquier motivo · una llave de MOTIVOS.
  * `sku`: "" · "con" · "sin" (tiene SKU o es un renglón del packing list sin SKU). `pub`: "" · "si" · "no" (publicado
- * HOY en Mercado Libre). Los dos de v0.708.0 (Brandon, 30-oct-2026).
+ * HOY en Mercado Libre). Los dos de v0.708.0 (Brandon, 30-oct-2026). `cg`: "" · una raíz de ML · "—" (sin categoría
+ * general todavía), v0.728.0.
  */
 export interface Filtros {
-  q: string; cat: string; sub: string; est: string; con: string; pre: string; emp: string; val: string; sku: string; pub: string;
+  q: string; cat: string; sub: string; est: string; con: string; pre: string; emp: string; val: string; sku: string; pub: string; cg: string;
 }
-export const SIN_FILTROS: Filtros = { q: "", cat: "", sub: "", est: "", con: "", pre: "", emp: "", val: "", sku: "", pub: "" };
+export const SIN_FILTROS: Filtros = { q: "", cat: "", sub: "", est: "", con: "", pre: "", emp: "", val: "", sku: "", pub: "", cg: "" };
 /** Como abre la pestaña (Brandon, 30-oct-2026): «que muestre lo que necesitamos validar primero que nada». */
 export const POR_VALIDAR: Filtros = { ...SIN_FILTROS, val: "*" };
 
@@ -265,6 +288,8 @@ export function pasa(D: Catalogo, r: Fila, E: Filtros): boolean {
   if (E.sku === "sin" && !r.sin) return false;
   if (E.pub === "si" && !publicadoEnML(r)) return false;
   if (E.pub === "no" && publicadoEnML(r)) return false;
+  if (E.cg === SIN_CATEGORIA_GENERAL && r._cg) return false;
+  if (E.cg && E.cg !== SIN_CATEGORIA_GENERAL && (!r._cg || r._cg[0] !== E.cg)) return false;
   if (E.q && r._b.indexOf(E.q) < 0) return false;
   if (E.cat && c1(D, r) !== E.cat) return false;
   if (E.sub && c2(D, r) !== E.sub) return false;
@@ -424,7 +449,7 @@ export function tsv(D: Catalogo, vista: Fila[]): string {
   const cab = ["SKU", "Título", "Nombre original", "Categoría", "Subcategoría", "Comprado", "Salió", "Queda", "SOLD OUT", "Odoo libre",
     "min_meli", "media_meli", "mediana_meli", "max_meli", "publicaciones_meli", "precio_meli_usado", "precio_meli_depurado_eduardo", "fuente_meli", "valor_meli",
     "min_amz", "media_amz", "max_amz", "publicaciones_amz", "precio_amz_usado", "amz_medido_o_estimado", "valor_amz",
-    "Contenedores", "Empate", "Foto", "Publicado en ML"];
+    "Contenedores", "Empate", "Foto", "Publicado en ML", "Categoría general", "Confianza de la categoría general"];
   const enML = (r: Fila) => (r.sin ? "" : r._pub == null ? "sin dato"
     : r._pub.length ? r._pub.map(([c, s]) => `${c} ${s === "active" ? "activa" : "pausada"}`).join("; ") : "no");
   const tipo = (f: boolean, e: Estimado | undefined, r: Fila) => (f ? "medido" : e ? `estimado: ${comoSeEstimo(e)}` : r.nv ? "insumo, no se valúa" : "");
@@ -444,7 +469,8 @@ export function tsv(D: Catalogo, vista: Fila[]): string {
     out.push([r.sin ? "(sin SKU)" : r.s, r.t, r.n || "", c1(D, r), c2(D, r), r.pc != null ? r.pc : "", r.pz || r.ps || 0,
       r.pc != null ? r.pq : "", r.so ? "sí" : "", r.lb || 0]
       .concat(meli(r) as (string | number)[], canal(r.az, r._fa, r.ea, r._pa, r._ta, r) as (string | number)[],
-        [Object.keys(r.ct || {}).join(" "), (r.cm || []).join(" "), r.fo === "pl" ? "packing list" : r.fo === "odoo" ? "Odoo" : "", enML(r)])
+        [Object.keys(r.ct || {}).join(" "), (r.cm || []).join(" "), r.fo === "pl" ? "packing list" : r.fo === "odoo" ? "Odoo" : "", enML(r),
+          r._cg ? r._cg[0] : "", r._cg ? (CONFIANZA_GENERAL[r._cg[1]]?.texto ?? r._cg[1]) : ""])
       .map((v) => String(v ?? "").replace(/[\t\n]/g, " ")).join("\t"));
   });
   return out.join("\n");

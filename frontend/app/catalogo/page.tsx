@@ -19,12 +19,12 @@ import { AlertTriangle, BookOpen, Loader2, Lock, RotateCw } from "lucide-react";
 
 import AppNavbar from "@/components/AppNavbar";
 import { ProveedorFotos } from "@/components/catalogo/Fotos";
-import Productos, { type EstadoPublicados } from "@/components/catalogo/Productos";
+import Productos, { type EstadoCategoriaGeneral, type EstadoPublicados } from "@/components/catalogo/Productos";
 import { Contenedores, Empate, Metodo, PorCategoria } from "@/components/catalogo/Otras";
 import {
-  type Catalogo, type Filtros, POR_VALIDAR, SIN_FILTROS, hora, marcarPublicados, nf, preparar, sumar,
+  type Catalogo, type Filtros, POR_VALIDAR, SIN_FILTROS, hora, marcarCategoriaGeneral, marcarPublicados, nf, preparar, sumar,
 } from "@/components/catalogo/logica";
-import { ApiError, catalogoDatos, catalogoPublicados, mensajeDeError } from "@/lib/api";
+import { ApiError, catalogoCategoriaGeneral, catalogoDatos, catalogoPublicados, mensajeDeError } from "@/lib/api";
 import { quienSoy } from "@/lib/sesion";
 
 const SIN_LOGIN = process.env.NEXT_PUBLIC_AUTH_OFF === "true";
@@ -62,16 +62,27 @@ function Catalogo() {
   const [filtros, setFiltros] = useState<Filtros>(POR_VALIDAR);
   // Lo publicado en ML (v0.708.0) llega DESPUÉS del catálogo y no lo frena: es lo único en vivo de la pestaña.
   const [pub, setPub] = useState<EstadoPublicados>({ estado: "cargando" });
+  // La categoría general (v0.728.0) también llega después y no frena: vive en kubera, no en el archivo del catálogo.
+  const [cg, setCg] = useState<EstadoCategoriaGeneral>({ estado: "cargando" });
 
   useEffect(() => {
     const ctl = new AbortController();
     setError(null);
     setPub({ estado: "cargando" });
+    setCg({ estado: "cargando" });
     catalogoDatos(ctl.signal)
       .then((d) => {
         if (ctl.signal.aborted) return;
         preparar(d.R);
         setD(d);
+        catalogoCategoriaGeneral(ctl.signal)
+          .then((c) => {
+            if (ctl.signal.aborted) return;
+            marcarCategoriaGeneral(d.R, c.skus);
+            setD({ ...d });
+            setCg({ estado: "ok", total: c.total, porConfianza: c.por_confianza });
+          })
+          .catch(() => { if (!ctl.signal.aborted) setCg({ estado: "error" }); });
         catalogoPublicados(ctl.signal)
           .then((p) => {
             if (ctl.signal.aborted) return;
@@ -167,7 +178,7 @@ function Catalogo() {
         </div>
 
         <section role="tabpanel">
-          {pestana === "pro" && <Productos D={D} filtros={filtros} setFiltros={setFiltros} pub={pub} />}
+          {pestana === "pro" && <Productos D={D} filtros={filtros} setFiltros={setFiltros} pub={pub} cg={cg} />}
           {pestana === "cat" && <PorCategoria D={D} irA={irA} />}
           {pestana === "con" && <Contenedores D={D} irA={irA} />}
           {pestana === "emp" && <Empate D={D} irA={irA} />}

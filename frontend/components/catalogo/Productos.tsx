@@ -10,6 +10,10 @@
 // SKU Y PUBLICADO (v0.708.0, Brandon, 30-oct-2026): «sepárame los productos que tienen SKU de los que NO tienen SKU
 // explícitamente», «un filtro de los que ya están publicados vs los que no» y «una columna nueva para que podamos
 // diferenciarlos a vista». Publicado = en Mercado Libre HOY (activa o pausada), lo único en vivo de la pestaña.
+//
+// CATEGORÍA GENERAL (v0.728.0, Eduardo, 4-nov-2026): la raíz de ML decidida con la FOTO del renglón del packing list
+// (`channel.categoria_general`, migración 0082). Solo las aplicadas (confianza alta o revisada a mano); media y baja
+// siguen pendientes. Va arriba en la columna «Categoría», con la del catálogo debajo, y tiene su filtro.
 
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDownWideNarrow, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardCheck, ClipboardCopy, Search, X } from "lucide-react";
@@ -19,12 +23,39 @@ import { Foto } from "./Fotos";
 import Detalle from "./Detalle";
 import { CeldaPrecio, CeldaValor, Estado, Etiqueta, Mini, Publicacion, SoldOut, TriCab } from "./Celdas";
 import {
-  CORTO, MOTIVOS, PRIORIDADES, SIN_FILTROS, type Catalogo, type Fila, type Filtros, type Orden, c1, c2, enContenedor, hora, nf,
-  ordenar, pasa, publicadoEnML, sumar, tsv,
+  CONFIANZA_GENERAL, CORTO, MOTIVOS, PRIORIDADES, SIN_CATEGORIA_GENERAL, SIN_FILTROS, type Catalogo, type Fila, type Filtros, type Orden, c1, c2,
+  enContenedor, hora, nf, ordenar, pasa, publicadoEnML, sumar, tsv,
 } from "./logica";
 
 /** Cómo va la lectura de lo publicado en ML (la página la pide después del catálogo). */
 export type EstadoPublicados = { estado: "cargando" | "ok" | "error"; actualizado?: string | null };
+/** Cómo va la lectura de la categoría general (v0.728.0; también llega después del catálogo). */
+export type EstadoCategoriaGeneral = { estado: "cargando" | "ok" | "error"; total?: number; porConfianza?: Record<string, number> };
+
+/** La celda «Categoría»: arriba la general (foto del packing list) con la etiqueta de su confianza, debajo la del
+ *  catálogo. Media y baja se ven, pero su etiqueta dice que falta revisarlas. */
+function CeldaCategoria({ D, r, cg }: { D: Catalogo; r: Fila; cg: EstadoCategoriaGeneral }) {
+  const conf = r._cg ? CONFIANZA_GENERAL[r._cg[1]] : undefined;
+  const color = !conf ? "text-slate-700" : conf.tono === "rojo" ? "text-rose-800" : conf.tono === "amber" ? "text-amber-900" : "text-emerald-800";
+  return (
+    <div className="space-y-1.5">
+      {r._cg ? (
+        <div>
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">General · foto del packing list</div>
+          <div className={`text-xs font-semibold ${color}`}>{r._cg[0]}</div>
+          <Etiqueta tono={conf?.tono ?? "slate"}>{conf?.texto ?? r._cg[1]}</Etiqueta>
+        </div>
+      ) : !r.sin && cg.estado === "ok" ? (
+        <div className="text-[11px] text-slate-400">Sin categoría general</div>
+      ) : null}
+      <div>
+        {r._cg && <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Catálogo</div>}
+        <div className={`text-xs ${r._cg ? "text-slate-500" : "font-semibold text-slate-700"}`}>{c1(D, r)}</div>
+        <div className="text-[11px] text-slate-500">{c2(D, r)}{r.kq === "r" ? " · predicha" : r.kq === "p" ? " · estimada" : ""}</div>
+      </div>
+    </div>
+  );
+}
 
 const CORTO_MOTIVO: Record<string, string> = Object.fromEntries(MOTIVOS.map(([k, n]) => [k, n]));
 
@@ -112,8 +143,8 @@ const COLS: [Orden | "", string, string][] = [
   ["_ta", "Valor a precio de Amazon", "az"], ["", "Contenedor", ""],
 ];
 
-export default function Productos({ D, filtros, setFiltros, pub }: {
-  D: Catalogo; filtros: Filtros; setFiltros: (f: Filtros) => void; pub: EstadoPublicados;
+export default function Productos({ D, filtros, setFiltros, pub, cg }: {
+  D: Catalogo; filtros: Filtros; setFiltros: (f: Filtros) => void; pub: EstadoPublicados; cg: EstadoCategoriaGeneral;
 }) {
   const [busca, setBusca] = useState(filtros.q);
   const [orden, setOrden] = useState<{ k: Orden; d: number }>({ k: "_tm", d: -1 });
@@ -170,6 +201,19 @@ export default function Productos({ D, filtros, setFiltros, pub }: {
     return { sku: [sinSku.length, con, sinSku.length - con], pub: [sinPub.length, pubs, sinPub.length - pubs] };
   }, [D, filtros]);
   const pubOk = pub.estado === "ok";
+  // «Categoría general»: cada raíz con cuántos productos tiene, respetando los demás filtros (sin el suyo).
+  const generales = useMemo((): [string, string][] => {
+    if (cg.estado !== "ok") return [["", cg.estado === "cargando" ? "Leyendo…" : "No se pudo leer"]];
+    const c: Record<string, number> = {};
+    let sin = 0;
+    D.R.forEach((r) => {
+      if (!pasa(D, r, { ...filtros, cg: "" })) return;
+      if (r._cg) c[r._cg[0]] = (c[r._cg[0]] || 0) + 1;
+      else if (!r.sin) sin++;
+    });
+    return [["", "Todas"], ...Object.keys(c).sort().map((k): [string, string] => [k, `${k} (${nf(c[k])})`]),
+      [SIN_CATEGORIA_GENERAL, `Sin categoría general (${nf(sin)})`]];
+  }, [D, filtros, cg.estado]);
   const prioridad = PRIORIDADES.find((p) => p[0] === orden.k && orden.d < 0);
 
   const cambiar = (k: keyof Filtros) => (v: string) => setFiltros({ ...filtros, [k]: v, ...(k === "cat" ? { sub: "" } : {}) });
@@ -237,11 +281,18 @@ export default function Productos({ D, filtros, setFiltros, pub }: {
           {pubOk
             ? <>Publicado = en Mercado Libre <b>hoy</b>, activa o pausada, en cualquiera de las dos cuentas{pub.actualizado ? <> (sync de ML del {hora(pub.actualizado)})</> : null}.</>
             : pub.estado === "cargando" ? "Leyendo lo publicado en Mercado Libre…" : <span className="text-amber-700">No se pudo leer lo publicado en Mercado Libre: el filtro y la columna no lo muestran.</span>}
+          {" "}
+          {cg.estado === "ok"
+            ? <>Categoría general = la raíz de Mercado Libre decidida con la foto del renglón del packing list (<b>{nf(cg.total || 0)}</b> SKUs):{" "}
+              {(["revisado", "alta", "media", "baja"] as const).map((k, i) => (
+                <span key={k}>{i ? " · " : ""}{CONFIANZA_GENERAL[k].texto} <b>{nf(cg.porConfianza?.[k] || 0)}</b></span>
+              ))}. Las de confianza media y baja se ven, pero falta revisarlas.</>
+            : cg.estado === "cargando" ? "Leyendo la categoría general…" : <span className="text-amber-700">No se pudo leer la categoría general.</span>}
         </p>
       </div>
 
       <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-card">
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8">
           <label className="flex min-w-0 flex-col gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500 sm:col-span-2 xl:col-span-1">
             Buscar
             <span className="relative">
@@ -250,7 +301,8 @@ export default function Productos({ D, filtros, setFiltros, pub }: {
                 className="w-full rounded-xl border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm font-medium normal-case tracking-normal text-slate-800 outline-none transition placeholder:font-normal placeholder:text-slate-400 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100" />
             </span>
           </label>
-          <Selector etiqueta="Categoría" valor={filtros.cat} onChange={cambiar("cat")} opciones={[["", "Todas"], ...categorias.map((c): [string, string] => [c, c])]} />
+          <Selector etiqueta="Categoría general" valor={filtros.cg} onChange={cambiar("cg")} opciones={generales} />
+          <Selector etiqueta="Categoría del catálogo" valor={filtros.cat} onChange={cambiar("cat")} opciones={[["", "Todas"], ...categorias.map((c): [string, string] => [c, c])]} />
           <Selector etiqueta="Subcategoría" valor={filtros.sub} onChange={cambiar("sub")} opciones={[["", "Todas"], ...subcategorias.map((c): [string, string] => [c, c])]} />
           <Selector etiqueta="Estado" valor={filtros.est} onChange={cambiar("est")} opciones={ESTADOS} />
           <Selector etiqueta="Contenedor" valor={filtros.con} onChange={cambiar("con")}
@@ -322,10 +374,7 @@ export default function Productos({ D, filtros, setFiltros, pub }: {
                       </td>
                       <td className="min-w-[230px] max-w-[260px] px-3 py-2.5"><Titulos r={r} /></td>
                       <td className="min-w-[140px] px-3 py-2.5"><Publicacion r={r} /></td>
-                      <td className="max-w-[180px] px-3 py-2.5">
-                        <div className="text-xs font-semibold text-slate-700">{c1(D, r)}</div>
-                        <div className="text-[11px] text-slate-500">{c2(D, r)}{r.kq === "r" ? " · predicha" : r.kq === "p" ? " · estimada" : ""}</div>
-                      </td>
+                      <td className="min-w-[170px] max-w-[200px] px-3 py-2.5"><CeldaCategoria D={D} r={r} cg={cg} /></td>
                       <td className="px-3 py-2.5 text-right">
                         {r.pc != null ? (
                           <>

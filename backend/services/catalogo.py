@@ -148,6 +148,35 @@ def publicados() -> dict[str, Any]:
     return dato
 
 
+CATEGORIA_GENERAL_TTL = 600   # segundos: la tabla cambia por cargas a mano, no por un sync
+_cat_general: dict[str, Any] = {"t": 0.0, "dato": None}
+_lock_cat_general = threading.Lock()
+
+
+def categoria_general() -> dict[str, Any]:
+    """BLOQUEANTE (kubera). {total, por_confianza, skus: {SKU: [categoria, confianza]}} de `channel.categoria_general`
+    (0082, v0.728.0).
+
+    TODAS, cada una con su confianza (Eduardo, 4-nov-2026: «sube todos y ponle etiquetas dependiendo de la confianza»):
+    `revisado` y `alta` están aplicadas; `media` y `baja` siguen pendientes de revisión (estado `pendiente`) y la
+    pantalla lo dice en su etiqueta. Un SKU que no viene no tiene categoría general. La llave va en MAYÚSCULAS."""
+    with _lock_cat_general:
+        if _cat_general["dato"] is not None and time.monotonic() - _cat_general["t"] < CATEGORIA_GENERAL_TTL:
+            return _cat_general["dato"]
+    from services import supabase_db as sdb
+    filas = sdb.fetch_all(
+        """select upper(sku::text) as sku, categoria, confianza
+             from channel.categoria_general""")
+    por_confianza: dict[str, int] = {}
+    for f in filas:
+        por_confianza[f["confianza"]] = por_confianza.get(f["confianza"], 0) + 1
+    dato = {"total": len(filas), "por_confianza": por_confianza,
+            "skus": {f["sku"]: [f["categoria"], f["confianza"]] for f in filas}}
+    with _lock_cat_general:
+        _cat_general.update(t=time.monotonic(), dato=dato)
+    return dato
+
+
 def olvidar() -> None:
     """Vacía la caché (pruebas, o tras dejar archivos nuevos en la carpeta)."""
     global _indice
@@ -157,3 +186,5 @@ def olvidar() -> None:
         _indice = None
     with _lock_publicados:
         _publicados.update(t=0.0, dato=None)
+    with _lock_cat_general:
+        _cat_general.update(t=0.0, dato=None)

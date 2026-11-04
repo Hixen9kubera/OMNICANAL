@@ -11,11 +11,13 @@ export const Mini = ({ children, className = "" }: { children: ReactNode; classN
   <div className={`text-[11px] leading-snug text-slate-500 ${className}`}>{children}</div>
 );
 
-export function Etiqueta({ children, tono = "slate" }: { children: ReactNode; tono?: "slate" | "amber" | "rose" | "emerald" | "indigo" }) {
+export function Etiqueta({ children, tono = "slate" }: { children: ReactNode; tono?: "slate" | "amber" | "rose" | "emerald" | "indigo" | "rojo" }) {
   const c = {
     slate: "bg-slate-100 text-slate-600 ring-slate-200", amber: "bg-amber-50 text-amber-800 ring-amber-200",
     rose: "bg-rose-600 text-white ring-rose-600", emerald: "bg-emerald-50 text-emerald-700 ring-emerald-200",
     indigo: "bg-indigo-50 text-indigo-700 ring-indigo-200",
+    // «rojo» es la versión suave de «rose» (que es SOLD OUT, sólido): para avisos, no para estados de inventario.
+    rojo: "bg-rose-50 text-rose-700 ring-rose-200",
   }[tono];
   return <span className={`inline-flex items-center whitespace-nowrap rounded-md px-1.5 py-0.5 text-[10.5px] font-semibold ring-1 ${c}`}>{children}</span>;
 }

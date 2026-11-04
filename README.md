@@ -1001,6 +1001,25 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.728.0 — CATÁLOGO: la categoría GENERAL en la pestaña, con una etiqueta por confianza
+
+Eduardo (4-nov-2026): «sube todos y ponle etiquetas dependiendo de la confianza». La pestaña CATÁLOGO lee
+`channel.categoria_general` (0082) en vivo, igual que lo publicado en ML:
+
+- **`GET /api/catalogo/categoria-general`** → `{total, por_confianza, skus: {SKU: [categoría, confianza]}}`. Caché de
+  10 min (la tabla cambia por cargas a mano, no por un sync). En un hilo (regla 11).
+- **Columna «Categoría»**: arriba la general («General · foto del packing list») con su etiqueta; debajo la del
+  catálogo, para comparar. Etiquetas: *revisada a mano* (índigo), *confianza alta* (verde), *confianza media · por
+  revisar* (ámbar), *confianza baja · por revisar* (rojo suave; el rojo sólido sigue siendo SOLD OUT).
+- **Filtro «Categoría general»**: las raíces con su conteo (respetando los demás filtros) y «Sin categoría general».
+  El de antes se llama ahora «Categoría del catálogo».
+- **Copiar para Excel** suma «Categoría general» y su confianza.
+
+**Datos.** Además de las 10,393 de confianza revisada/alta (estado `aplicada`, v0.727.0) se cargan las 4,263 de
+confianza media (3,591) y baja (672) con estado **`pendiente`** (lote `catgen_2026-11-04_pendientes`): se ven, y la
+etiqueta dice que falta revisarlas. Reversa de esa carga: `delete from channel.categoria_general where lote =
+'catgen_2026-11-04_pendientes'`. Solo lectura: no cambia la categoría que usa el publicador ni ninguna publicación.
+
 ### v0.727.0 — CATÁLOGO: la categoría GENERAL de cada SKU, decidida con la foto del packing list (migración 0082)
 
 **Qué es.** Una tabla nueva, `channel.categoria_general`, con la raíz de ML México

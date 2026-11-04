@@ -4,6 +4,7 @@ catalogo.py — La pestaña CATÁLOGO (v0.703.0). Ver `services/catalogo.py`.
   GET /api/catalogo            → el catálogo completo (JSON comprimido con gzip, tal como está en el repo)
   GET /api/catalogo/img/{hoja} → una hoja de fotos (`f0`, `f12`…), WebP
   GET /api/catalogo/publicados → qué SKUs están publicados HOY en Mercado Libre, por cuenta (v0.708.0)
+  GET /api/catalogo/categoria-general → la categoría general (raíz de ML) de cada SKU, con su confianza (v0.728.0)
 
 Solo lectura. `operador`, como Competencia (core/rbac.py): trae precios de mercado y el valor del inventario, no
 costos.
@@ -42,6 +43,16 @@ async def publicados() -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         log.warning("catálogo: no se pudo leer lo publicado en ML: %s", exc)
         raise HTTPException(status_code=503, detail="No se pudo leer qué está publicado en Mercado Libre.") from exc
+
+
+@router.get("/categoria-general")
+async def categoria_general() -> dict[str, Any]:
+    """La categoría GENERAL (raíz de ML) decidida con la foto del packing list (0082, v0.728.0), con su confianza."""
+    try:
+        return await asyncio.to_thread(catalogo.categoria_general)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("catálogo: no se pudo leer la categoría general: %s", exc)
+        raise HTTPException(status_code=503, detail="No se pudo leer la categoría general.") from exc
 
 
 @router.get("/img/{hoja}")
