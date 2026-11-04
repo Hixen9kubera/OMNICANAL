@@ -1049,7 +1049,10 @@ cerrados devuelven `category_id.not_modifiable`).
   - el relleno, sin mover `updated_at`; el trigger `products_archivar` (trash/deleted → archivado por `woo`; nunca
     desarchiva); el candado de la casa, con `grant execute` a `service_role`; y su reversa al pie, que deja una fila
     «revertida».
-  - **Abierto para Eduardo:** si «publicado» cuenta por familia (hoy, por omisión, sí; MAESTRO recomienda directo).
+  - **La familia cuenta solo hacia arriba:** un padre está publicado si lo está él o alguna de sus variantes; una
+    variante, solo por la suya. La publicación ML del padre es otra, suelta y casi siempre pausada, que no contiene a
+    la variante (medición de MAESTRO del 4-nov: 0 de 815). En producción, esa noche: 3,882 directos y 4,073 con
+    los padres.
 
 **Pruebas:** `test_catalogo_familia` (la migración, la regla de `publicacion_abierta` comparada entera, ML = Catálogo,
 grants, el ETL, el manifiesto) y `test_publicador_archivados` (19). En el sandbox, la 0080 rehecha y reaplicada con

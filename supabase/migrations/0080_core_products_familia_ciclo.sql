@@ -21,9 +21,11 @@
 --     (`channel_read._SIT_PUBLICADO_ML`, v0.708.0: `listing_id` con valor y situación active o
 --     paused). Para Temu y TikTok, los estados que `publicaciones_lote._ESTADOS` llama a la venta,
 --     publicada, apagada o apagada por el canal (existen en el canal); un código que nadie ha visto
---     NO cuenta. Abierto, lo decide Eduardo: si cuenta POR FAMILIA (la propuesta: una variante sale
---     publicada si lo está su padre, y un padre si lo está alguna de sus variantes; ML publica la
---     familia bajo el artículo padre). `core.sku_publicado(sku, por_familia)` deja las dos.
+--     NO cuenta. La familia cuenta SOLO HACIA ARRIBA: un padre está publicado si lo está él o
+--     alguna de sus variantes (el padre no se publica: es el resumen de su familia). Una variante
+--     cuenta SOLO por su propia publicación: la del padre en ML es otra publicación, suelta y casi
+--     siempre pausada, que no la contiene (medición de MAESTRO del 4-nov: 0 de 815 variantes).
+--     `core.sku_publicado(sku, por_familia)`; con false, solo la propia.
 --   · ARCHIVADO es una BAJA que decide una persona (descontinuado, duplicado, recodificado a otro
 --     SKU, de prueba): fecha, quién, motivo y, si es recodificado, a qué SKU pasó. Solo una persona
 --     lo quita. Mientras Woo exista, la papelera de Woo lo archiva sola (trigger) y el ETL archiva
@@ -122,21 +124,19 @@ comment on function core.publicacion_abierta(text, text, text, text) is
 
 create or replace function core.sku_publicado(p_sku citext, p_por_familia boolean default true)
 returns boolean language sql stable as $$
-  -- Tres EXISTS por separado, cada uno por índice (channel.listings.sku, core.products.pk y
-  -- parent_sku). Con los tres en un solo EXISTS unidos por OR, cada fila recorría
-  -- channel.listings completa (sandbox, 28-oct).
+  -- Dos EXISTS por separado, cada uno por índice (channel.listings.sku y parent_sku). Unidos por OR
+  -- en un solo EXISTS, cada fila recorría channel.listings completa (sandbox, 28-oct).
+  -- La variante NO hereda la publicación de su padre: en ML es otra publicación, suelta, que no la
+  -- contiene (medición de MAESTRO del 4-nov: 0 de 815).
   select exists (select 1 from channel.listings l
                   where l.sku = p_sku and core.publicacion_abierta(l.canal, l.status, l.situacion, l.listing_id))
-      or (p_por_familia and exists (
-            select 1 from core.products pr join channel.listings l on l.sku = pr.parent_sku
-             where pr.sku = p_sku and core.publicacion_abierta(l.canal, l.status, l.situacion, l.listing_id)))
       or (p_por_familia and exists (
             select 1 from core.products h join channel.listings l on l.sku = h.sku
              where h.parent_sku = p_sku and core.publicacion_abierta(l.canal, l.status, l.situacion, l.listing_id)))
 $$;
 comment on function core.sku_publicado(citext, boolean) is
-  '¿El SKU está publicado (una publicación que existe, activa o pausada)? Con por_familia (la propuesta, '
-  'abierta para Eduardo) también cuenta la del padre y la de cualquier variante.';
+  '¿El SKU está publicado (una publicación que existe, activa o pausada)? Cuenta la suya; con por_familia '
+  '(por omisión), un padre también por la de cualquiera de sus variantes. Una variante nunca por la de su padre.';
 
 create or replace function core.estado_ciclo_inicial(p_status text)
 returns text language sql immutable as $$
@@ -219,6 +219,7 @@ select p.sku, p.estado_ciclo, p.procesada_at,
   from core.products p;
 comment on view core.products_ciclo_v is
   'Publicado (calculado) y archivado (decisión) del SKU, con la situación de la tabla de Eduardo del 2-nov. '
+  'publicado = core.sku_publicado(sku): su propia publicación y, si es padre, la de cualquiera de sus variantes. '
   'Para el universo entero es pesada (sku_publicado por fila): filtrar antes (p. ej. archivado_at is not null).';
 
 -- ── Candado (patrón de la casa) ─────────────────────────────────────────────

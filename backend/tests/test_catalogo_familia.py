@@ -108,15 +108,17 @@ class Migracion0080(unittest.TestCase):
         self.assertIn("create index if not exists products_archivados_idx on core.products (sku) "
                       "where archivado_at is not null", self.s)
 
-    def test_publicado_se_calcula_y_cuenta_por_familia(self):
+    def test_publicado_se_calcula_y_el_padre_cuenta_por_sus_variantes(self):
         self.assertIn("create or replace function core.publicacion_abierta(p_canal text, p_status text, "
                       "p_situacion text, p_listing_id text)", self.s)
         self.assertIn("create or replace function core.sku_publicado(p_sku citext, p_por_familia boolean default true)",
                       self.s)
-        self.assertIn("join channel.listings l on l.sku = pr.parent_sku where pr.sku = p_sku", self.s)
+        # d2: el padre cuenta por sus variantes
         self.assertIn("join channel.listings l on l.sku = h.sku where h.parent_sku = p_sku", self.s)
-        self.assertEqual(self.s.count("core.publicacion_abierta(l.canal, l.status, l.situacion, l.listing_id)"), 3)
-        self.assertEqual(self.s.count("p_por_familia and exists"), 2)
+        # d1 fuera: la variante no hereda la publicación de su padre (medición de MAESTRO del 4-nov)
+        self.assertNotIn("l.sku = pr.parent_sku", self.s)
+        self.assertEqual(self.s.count("core.publicacion_abierta(l.canal, l.status, l.situacion, l.listing_id)"), 2)
+        self.assertEqual(self.s.count("p_por_familia and exists"), 1)
         # nadie lo guarda: ninguna columna «publicado» ni relleno que lo escriba
         self.assertNotRegex(self.s, r"add column if not exists publicad")
         self.assertIn("core.sku_publicado(p.sku) as publicado", self.s)

@@ -7,8 +7,9 @@ SUPABASE_DB_URL y SUPABASE_PROD_REF.
   C1. Criterio de F0.3: toda variación (wc_parent_id) tiene parent_sku y es el sku de su padre; has_variations
       en los padres.
   C2. estado_ciclo lleno en todas las filas y SOLO preparación (draft | procesado | listo).
-  C3. «Publicado» se calcula y cuenta por familia: una variación cuyo padre tiene una publicación abierta sale
-      publicada; sin familia, no.
+  C3. «Publicado» se calcula y la familia cuenta solo hacia arriba: una variación cuenta solo por su publicación,
+      aunque su padre tenga una abierta; un padre con una variación publicada sale publicado; sin familia, solo
+      cuenta la suya.
   C4. Mercado Libre: la función da EXACTAMENTE lo que la pestaña Catálogo (`channel_read.sql_publicado_ml`).
   C5. Trigger: status trash → archivado (por woo, papelera_woo) sin tocar estado_ciclo; volver a publish no lo
       desarchiva.
@@ -97,16 +98,25 @@ try:
                    from core.products""")
     nulos, fuera = c.fetchone()
     check("C2 estado_ciclo lleno y solo preparación", nulos == 0 and fuera == 0, f"nulos {nulos}, fuera {fuera}")
-    c.execute(f"""select count(*) filter (where not core.sku_publicado(v.sku)),
-                         count(*) filter (where core.sku_publicado(v.sku, false)
+    c.execute(f"""select count(*) filter (where core.sku_publicado(v.sku)
                                             <> exists (select 1 from channel.listings l where l.sku = v.sku and {ABIERTA})),
                          count(*)
                     from core.products v
                    where v.parent_sku is not null
                      and exists (select 1 from channel.listings l where l.sku = v.parent_sku and {ABIERTA})""")
+    heredadas, n = c.fetchone()
+    check("C3 una variación cuenta solo por su publicación, no por la de su padre", n > 0 and heredadas == 0,
+          f"{n} variaciones con padre publicado, distintas de la suya: {heredadas}")
+    c.execute(f"""select count(*) filter (where not core.sku_publicado(p.sku)),
+                         count(*) filter (where core.sku_publicado(p.sku, false)
+                                            <> exists (select 1 from channel.listings l where l.sku = p.sku and {ABIERTA})),
+                         count(*)
+                    from core.products p
+                   where exists (select 1 from core.products h join channel.listings l on l.sku = h.sku
+                                  where h.parent_sku = p.sku and {ABIERTA})""")
     huecos, sin_familia_mal, n = c.fetchone()
-    check("C3 la publicación del padre cuenta para sus variaciones", n > 0 and huecos == 0,
-          f"{n} variaciones con padre publicado, sin publicar: {huecos}")
+    check("C3 un padre cuenta por sus variaciones", n > 0 and huecos == 0,
+          f"{n} padres con una variación publicada, sin publicar: {huecos}")
     check("C3 sin familia solo cuentan las suyas", sin_familia_mal == 0, f"distintas: {sin_familia_mal}")
     c.execute(f"""select count(*) filter (where
                          exists (select 1 from channel.listings l where l.sku = p.sku and l.canal = 'mercado_libre'
