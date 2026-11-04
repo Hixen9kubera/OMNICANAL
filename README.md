@@ -1015,7 +1015,7 @@ Pedido de Brandon (4-nov-2026): «ingresar la columna de la imagen de odoo, deja
   y pinta las 5,745 fotos que no estaban en hojas NUEVAS `f93`…`f150` (+18 MB). Las 1,012 que ya eran la foto de una
   fila se reusan. **No reescribe ninguna hoja existente ni el `f` de nadie**; se puede volver a correr (rehace solo
   sus hojas, desde `meta.fotos.odoo_desde`). Solo lee archivos locales.
-- Las 3,433 filas sin producto en Odoo (casi todas sin SKU) muestran «Sin foto en Odoo».
+- Las 3,433 filas sin foto de Odoo en el artifact (1,427 de ellas sin SKU) muestran «Sin foto en Odoo».
 
 ### v0.723.0 — Catálogo en kubera: la FAMILIA, la PREPARACIÓN y la BAJA del SKU; «publicado» se calcula (PLAN MAESTRO 3.2). El código va antes que su migración (0080)
 
