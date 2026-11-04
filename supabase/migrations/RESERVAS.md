@@ -25,7 +25,7 @@ Este archivo dice **quién tiene cada número**, no qué está aplicado. Si los 
 
 ## Siguiente libre
 
-**0082**. La 0080 y la 0081 están apartadas; ver abajo.
+**0083**. La 0080 y la 0081 están apartadas; ver abajo.
 
 ## Estado desde la 0050 (medido el 3-nov-2026; horas en UTC)
 
@@ -54,6 +54,7 @@ Este archivo dice **quién tiene cada número**, no qué está aplicado. Si los 
 | 0079 | `channel_orders_registrado_at` | sí | sí (28-oct, 17:40) | Acta 2.2 + 2.6 |
 | 0080 | `core_products_familia_ciclo` (3.2, diseño del 2-nov) | sí (v0.723.0, en el mismo push que esta fila) | no | **Reservada** para WOO SALIDA, para la 3.2 rediseñada: publicado calculado desde los canales y archivado en columnas propias. **El push no la aplica:** la aplica su acta (`_paso_prod_catalogo_3_2`). En el sandbox, la nueva deshizo a la vieja y se reaplicó; `ops.migraciones` tiene las filas «rehecha» y «reaplicada». La vieja sigue en `feat/catalogo-3-2` y `feat/catalogo-3-3` *(local)*. Número por confirmar con Brandon |
 | 0081 | `channel_orders_ultimo_evento` (nombre tentativo) | no | no | **Reservada** para WOO SALIDA: diseño del job de 2.15 (`ultimo_evento_at`), **sin construir**. Solo DDL, sin relleno. Se construye si Eduardo la decide junto con T0, después de que MAESTRO revise el diseño. Si se abandona, queda `quemada` |
+| 0082 | `channel_categoria_general` | sí (v0.727.0) | no al subir este push; la aplica su acta (`_paso_prod_categoria_general`) | Tabla aparte con la categoría GENERAL (raíz de ML) por SKU, decidida con la foto del packing list; no toca `channel.product_category`. En el sandbox sí (4-nov, 22:05 UTC, 10,391 filas). Para saber si ya está en producción manda `ops.migraciones` |
 
 ## Antes de la 0050
 

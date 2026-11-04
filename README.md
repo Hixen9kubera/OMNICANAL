@@ -1001,6 +1001,29 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.727.0 — CATÁLOGO: la categoría GENERAL de cada SKU, decidida con la foto del packing list (migración 0082)
+
+**Qué es.** Una tabla nueva, `channel.categoria_general`, con la raíz de ML México
+(«Ropa, Bolsas y Calzado», «Hogar, Muebles y Jardín»…) de cada SKU, su confianza,
+su estado (`aplicada` | `pendiente`) y de dónde salió (`sku_foto` = el SKU del
+modelo cuya foto decidió). Va **aparte** de `channel.product_category`, que guarda
+la HOJA que usa el publicador: no la toca ni la reemplaza. **Hoy no la lee nadie.**
+
+**De dónde salen los datos.** El 4-nov-2026 se revisó todo el catálogo (16,171
+SKUs). Por cada modelo se miró la foto del RENGLÓN del packing list —no la de
+Odoo/Woo, que a veces es de otro producto— con los títulos del packing list, Odoo,
+la IA y Gemini, y se eligió la raíz de una lista cerrada (nunca «Servicios»; lo
+sexual explícito a Otras Categorías, lencería y disfraces sexys a Ropa). 6,527
+modelos; la decisión pasa a sus variantes. Controles escondidos (SKUs revisados a
+mano): confianza **alta 110/111**, media 60/77, baja 9/16. Eduardo decidió cargar
+solo la alta y la revisada a mano (10,393 SKUs); media y baja quedan pendientes.
+
+**El push no aplica la migración.** La aplica su acta
+(`_paso_prod_categoria_general`): primero el sandbox (hecho el 4-nov: 10,391 filas,
+2 SKUs no existen en la copia), luego producción con el sí de Eduardo.
+Reversa: `delete from channel.categoria_general where lote = 'catgen_2026-11-04'`
+o `drop table channel.categoria_general`.
+
 ### v0.726.0 — TikTok: por qué se quedó sin fotos, dicho de verdad (y una red de seguridad)
 
 **El síntoma.** «Ninguna imagen se pudo subir a TikTok (se convierten a JPEG
