@@ -25,7 +25,7 @@ Este archivo dice **quién tiene cada número**, no qué está aplicado. Si los 
 
 ## Siguiente libre
 
-**0081**. La 0080 está apartada; ver abajo.
+**0082**. La 0080 y la 0081 están apartadas; ver abajo.
 
 ## Estado desde la 0050 (medido el 3-nov-2026; horas en UTC)
 
@@ -52,7 +52,8 @@ Este archivo dice **quién tiene cada número**, no qué está aplicado. Si los 
 | 0075–0077 | almacén: ubicaciones y `odoo_historia`, fuente única, traslados y claves | sí | sí (28-oct, de 04:19 a 05:04) | Acta 1.11, el esquema del libro de T0 |
 | 0078 | `channel_categoria_vectores` | sí | sí (27-oct) | |
 | 0079 | `channel_orders_registrado_at` | sí | sí (28-oct, 17:40) | Acta 2.2 + 2.6 |
-| 0080 | `core_products_familia_ciclo` (3.2, diseño del 2-nov) | no | no | **Reservada** para WOO SALIDA, para la 3.2 rediseñada: publicado calculado desde los canales y archivado en columnas propias. La versión vieja (`0080_core_products_familia_ciclo.sql`, en `feat/catalogo-3-2` y `feat/catalogo-3-3`, *(local)*) está aplicada **solo en el sandbox**: la nueva tiene que partir de ese estado o deshacerlo primero. Número por confirmar con Brandon |
+| 0080 | `core_products_familia_ciclo` (3.2, diseño del 2-nov) | sí (v0.723.0, en el mismo push que esta fila) | no | **Reservada** para WOO SALIDA, para la 3.2 rediseñada: publicado calculado desde los canales y archivado en columnas propias. **El push no la aplica:** la aplica su acta (`_paso_prod_catalogo_3_2`). En el sandbox, la nueva deshizo a la vieja y se reaplicó; `ops.migraciones` tiene las filas «rehecha» y «reaplicada». La vieja sigue en `feat/catalogo-3-2` y `feat/catalogo-3-3` *(local)*. Número por confirmar con Brandon |
+| 0081 | `channel_orders_ultimo_evento` (nombre tentativo) | no | no | **Reservada** para WOO SALIDA: diseño del job de 2.15 (`ultimo_evento_at`), **sin construir**. Solo DDL, sin relleno. Se construye si Eduardo la decide junto con T0, después de que MAESTRO revise el diseño. Si se abandona, queda `quemada` |
 
 ## Antes de la 0050
 
