@@ -1001,6 +1001,22 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.724.0 — CATÁLOGO: columna «Foto Odoo» junto a la del packing list
+
+Pedido de Brandon (4-nov-2026): «ingresar la columna de la imagen de odoo, deja la imagen de packing list».
+
+- **Tabla de Productos** (`frontend/components/catalogo/Productos.tsx`): la columna «Foto» pasa a llamarse «Foto
+  packing list» y al lado sale «Foto Odoo». Clic en cualquiera → la foto en grande, diciendo de dónde es.
+- **«Foto packing list» ya no rellena con la de Odoo.** Antes, las 2,440 filas sin renglón con foto mostraban ahí la
+  de Odoo; ahora ese cuadro dice «Sin foto en el packing list» y la de Odoo está en su columna. El detalle de la fila
+  y la pestaña «Otras» siguen igual (`Foto` con `cual="f"`, el de siempre).
+- **De dónde sale.** Las mismas fotos de Odoo que ya traía el artifact (hojas `g`, foto del 13-oct): Odoo no se
+  consulta. `catalogo_preparar.py odoo reportes/catalogo_vivo` agrega `fg` a cada fila con producto en Odoo (11,771)
+  y pinta las 5,745 fotos que no estaban en hojas NUEVAS `f93`…`f150` (+18 MB). Las 1,012 que ya eran la foto de una
+  fila se reusan. **No reescribe ninguna hoja existente ni el `f` de nadie**; se puede volver a correr (rehace solo
+  sus hojas, desde `meta.fotos.odoo_desde`). Solo lee archivos locales.
+- Las 3,433 filas sin producto en Odoo (casi todas sin SKU) muestran «Sin foto en Odoo».
+
 ### v0.723.0 — Catálogo en kubera: la FAMILIA, la PREPARACIÓN y la BAJA del SKU; «publicado» se calcula (PLAN MAESTRO 3.2). El código va antes que su migración (0080)
 
 **Qué pasaba.** Para que un SKU nazca y viva en kubera sin Woo faltaban dos cosas que solo existían en Woo:

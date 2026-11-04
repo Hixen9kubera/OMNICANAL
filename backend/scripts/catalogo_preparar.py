@@ -15,6 +15,9 @@ desde los packing lists): `backend/data/catalogo/catalogo.json.gz` y las hojas d
                  el artifact es el respaldo de los datos (Brandon, 29-oct-2026).
   titulos        Solo agrega a `catalogo.json.gz` el título de los renglones del packing list de cada fila (`pt`),
                  sin rehacer las hojas. Lo lee «Mejorar con IA» de Mercado Libre (v0.706.0). `armar` ya lo incluye.
+  odoo           Agrega la foto de ODOO de cada fila (`fg`) en hojas NUEVAS, detrás de las que ya hay, sin tocar las
+                 del packing list ni el `f` de nadie (v0.724.0, Brandon, 4-nov-2026: «ingresar la columna de la
+                 imagen de odoo, deja la imagen de packing list»). Se puede volver a correr: rehace solo sus hojas.
 
 LA FOTO DE CADA FILA (pedido de Brandon, 29-oct-2026: «cambiarás las imágenes de odoo a las de packing list»)
     1. La foto ORIGINAL de su renglón en el packing list: el catálogo guarda su sha1 (`pl.json`) y aquí se busca
@@ -440,6 +443,67 @@ def titulos(cat: Path, salida: Path) -> None:
     print(f"catalogo.json.gz · {len(crudo) / 1e6:.1f} MB sin comprimir → {ruta.stat().st_size / 1e6:.1f} MB")
 
 
+def odoo(cat: Path, salida: Path) -> None:
+    """La foto de Odoo de cada fila (`fg`), aparte de la que ya muestra (`f`). Las filas cuya foto YA es la de Odoo
+    (`fo == "odoo"`) reusan su cuadro; las demás van a hojas nuevas que empiezan en la siguiente hoja entera, así que
+    ninguna hoja existente se reescribe."""
+    from PIL import Image
+
+    d = json.loads((cat / "datos_pl.json").read_text(encoding="utf-8"))
+    ruta = salida / "catalogo.json.gz"
+    doc = json.loads(gzip.decompress(ruta.read_bytes()))
+    if [r["s"] for r in doc["R"]] != [r["s"] for r in d["R"]]:
+        raise SystemExit("Las filas de catalogo.json.gz no son las del artifact: corre `armar` completo.")
+    fm = doc["meta"]["fotos"]
+    por_hoja, lado, cols = fm["por_hoja"], fm["lado"], fm["cols"]
+    # Una corrida anterior: sus hojas se rehacen desde donde empezaron.
+    desde = fm.get("odoo_desde", fm["hojas"])
+    for viejo in (salida / "img").glob("f*.webp"):
+        if int(viejo.stem[1:]) >= desde:
+            viejo.unlink()
+
+    llaves: dict[int, int] = {}
+    for r, a in zip(doc["R"], d["R"]):  # lo que ya está en las hojas del packing list
+        if r.get("fo") == "odoo" and r.get("f") is not None and a.get("i") is not None:
+            llaves.setdefault(a["i"], r["f"])
+    nuevas: list[int] = []
+    # En el mismo orden en que abre la tabla (mayor retorno), como `armar`.
+    vista = sorted(range(len(d["R"])), key=lambda k: (-(retorno(d["R"][k]) or -1), -(d["R"][k].get("pq") or 0), d["R"][k]["s"]))
+    for k in vista:
+        i = d["R"][k].get("i")
+        if i is not None and i not in llaves:
+            llaves[i] = desde * por_hoja + len(nuevas)
+            nuevas.append(i)
+    con = 0
+    for r, a in zip(doc["R"], d["R"]):
+        r.pop("fg", None)
+        if a.get("i") is not None:
+            r["fg"] = llaves[a["i"]]
+            con += 1
+
+    g = Hojas(cat / "img", d["spriteG"], "g")
+    total_bytes = 0
+    for h0 in range(0, len(nuevas), por_hoja):
+        hoja = Image.new("RGB", (cols * lado, cols * lado), "white")
+        for k, i in enumerate(nuevas[h0:h0 + por_hoja]):
+            try:
+                hoja.paste(_cuadro(g.foto(i), lado), ((k % cols) * lado, (k // cols) * lado))
+            except Exception as exc:  # noqa: BLE001 — una foto rota deja su cuadro en blanco
+                print(f"  ⚠ foto de Odoo {i} no se pudo pintar: {exc}")
+        destino = salida / "img" / f"f{desde + h0 // por_hoja}.webp"
+        hoja.save(destino, "WEBP", quality=CALIDAD, method=6)
+        total_bytes += destino.stat().st_size
+    hojas_nuevas = (len(nuevas) + por_hoja - 1) // por_hoja
+    fm.update({"odoo_desde": desde, "hojas": desde + hojas_nuevas, "total": desde * por_hoja + len(nuevas),
+               "con_odoo": con})
+    print(f"{con} filas con foto de Odoo · {len(nuevas)} fotos nuevas en {hojas_nuevas} hojas "
+          f"(f{desde}…) · {total_bytes / 1e6:.1f} MB")
+    comprobar_sin_costos(doc)
+    crudo = json.dumps(doc, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ruta.write_bytes(gzip.compress(crudo, 9, mtime=0))
+    print(f"catalogo.json.gz · {ruta.stat().st_size / 1e6:.1f} MB")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -454,8 +518,13 @@ def main() -> None:
     t = sub.add_parser("titulos")
     t.add_argument("catalogo", type=Path)
     t.add_argument("--salida", type=Path, default=_BACKEND / "data" / "catalogo")
+    o = sub.add_parser("odoo")
+    o.add_argument("catalogo", type=Path)
+    o.add_argument("--salida", type=Path, default=_BACKEND / "data" / "catalogo")
     args = ap.parse_args()
-    if args.cmd == "bajar":
+    if args.cmd == "odoo":
+        odoo(args.catalogo, args.salida)
+    elif args.cmd == "bajar":
         bajar(args.cache, args.env)
     elif args.cmd == "titulos":
         titulos(args.catalogo, args.salida)

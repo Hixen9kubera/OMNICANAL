@@ -27,7 +27,7 @@ export interface Renglon { c: string | number; av?: number; fv?: number | string
 
 export interface Fila {
   s: string; t: string; n?: string; tf?: string; td?: number; tg?: string; tv?: string; trv?: number; trm?: string;
-  tfm?: string; k?: number; kq?: string; f?: number; fo?: "pl" | "odoo";
+  tfm?: string; k?: number; kq?: string; f?: number; fo?: "pl" | "odoo"; fg?: number;
   pc?: number; pq?: number; pp?: number; ps?: number; pz?: number; uf?: number; cl?: Record<string, number>;
   so?: number; sin?: number; nr?: number; dm?: number; rm?: number; pe?: number; ec?: string | number; lb?: number;
   en?: number; aj?: number; v?: number; v1?: string; v2?: string; nv?: number; mr?: { lo: number; me: number; hi: number; rq?: string };
@@ -55,7 +55,7 @@ export interface Catalogo {
   meta: {
     generado: string; preparado: string;
     fotos: { lado: number; cols: number; por_hoja: number; total: number; hojas: number; pl_original: number;
-      pl_artifact: number; odoo: number; sin: number };
+      pl_artifact: number; odoo: number; sin: number; odoo_desde?: number; con_odoo?: number };
   };
   fuentes: Record<string, string>;
   resumen: Record<string, any>;

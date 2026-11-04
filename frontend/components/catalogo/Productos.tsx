@@ -88,7 +88,7 @@ function Segmentos({ etiqueta, valor, opciones, onChange, apagado }: {
 }
 
 const COLS: [Orden | "", string, string][] = [
-  ["", "Foto", ""], ["s", "Producto", ""], ["", "SKU y Mercado Libre", ""], ["", "Categoría", ""], ["pc", "Comprado", "d"], ["ps", "Salió", "d"], ["pq", "Queda", "d"],
+  ["", "Foto packing list", ""], ["", "Foto Odoo", ""], ["s", "Producto", ""], ["", "SKU y Mercado Libre", ""], ["", "Categoría", ""], ["pc", "Comprado", "d"], ["ps", "Salió", "d"], ["pq", "Queda", "d"],
   ["lb", "Odoo libre", "d"], ["mlm", "Mercado Libre por pieza", "ml"], ["_tm", "Valor a precio de ML", "ml"], ["azm", "Amazon por pieza", "az"],
   ["_ta", "Valor a precio de Amazon", "az"], ["", "Contenedor", ""],
 ];
@@ -262,7 +262,7 @@ export default function Productos({ D, filtros, setFiltros, pub }: {
 
       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-card">
         <div ref={caja} className="overflow-x-auto">
-          <table className="w-full min-w-[1840px] border-collapse text-sm">
+          <table className="w-full min-w-[1920px] border-collapse text-sm">
             <thead className="bg-slate-50 text-[10.5px] font-semibold uppercase tracking-wide text-slate-500">
               <tr>
                 {COLS.map(([k, nom, cl]) => {
@@ -289,7 +289,8 @@ export default function Productos({ D, filtros, setFiltros, pub }: {
                 return (
                   <Fragment key={`${r._i}-${filtros.con}`}>
                     <tr className={`align-top transition-colors ${ab ? "bg-indigo-50/40" : "hover:bg-slate-50/70"} border-b border-slate-100`}>
-                      <td className="px-3 py-2.5"><Foto r={r} px={52} /></td>
+                      <td className="px-3 py-2.5"><Foto r={r} px={52} cual="pl" /></td>
+                      <td className="px-3 py-2.5"><Foto r={r} px={52} cual="odoo" /></td>
                       <td className="max-w-[340px] px-3 py-2.5">
                         <button type="button" onClick={() => setAbiertas((a) => ({ ...a, [r._i]: !a[r._i] }))} aria-expanded={ab}
                           className="inline-flex items-center gap-1 font-mono text-xs font-bold text-indigo-700 hover:underline">

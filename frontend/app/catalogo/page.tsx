@@ -120,7 +120,7 @@ function Catalogo() {
     ["Movimientos de Odoo", D.fuentes?.movimientos, "hechos, desde dic-2025"],
     ["Mercado Libre", undefined, ml ? `API, 6 y 7 de oct (Eduardo)${D.v3 ? ` · precios v3 sin marcas en ${nf(D.v3.con_precio)} filas` : ""}` : `${nf(D.mercado?.ml?.produccion)} SKUs medidos`],
     ["Amazon", D.mercado?.amazon?.actualizado, `${nf(D.mercado?.amazon?.palabras)} palabras clave`],
-    ["Fotos", undefined, `${nf(f.pl_original + f.pl_artifact)} del packing list · ${nf(f.odoo)} de Odoo`],
+    ["Fotos", undefined, `${nf(f.pl_original + f.pl_artifact)} del packing list · ${nf(f.con_odoo ?? f.odoo)} con foto de Odoo`],
   ];
 
   return (
