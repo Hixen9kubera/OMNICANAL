@@ -1056,7 +1056,7 @@ cerrados devuelven `category_id.not_modifiable`).
 
 **Pruebas:** `test_catalogo_familia` (la migración, la regla de `publicacion_abierta` comparada entera, ML = Catálogo,
 grants, el ETL, el manifiesto) y `test_publicador_archivados` (19). En el sandbox, la 0080 rehecha y reaplicada con
-`aplicar_0080.py` (es re-ejecutable), idéntica al plan; `scripts/probar_catalogo_familia_sandbox.py` 18/18, con C8 (29
+`aplicar_0080.py` (es re-ejecutable), idéntica al plan; `scripts/probar_catalogo_familia_sandbox.py` 19/19, con C8 (29
 casos contra la función real) y C9 (service_role lee la vista). Acta: `_paso_prod_catalogo_3_2`.
 
 ### v0.722.0 — La venta que cae al respaldo de MySQL vuelve sola a kubera sin pisar lo más nuevo (PLAN MAESTRO 2.15, riesgo 21). El job NACE APAGADO

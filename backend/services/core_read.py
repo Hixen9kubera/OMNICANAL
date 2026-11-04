@@ -140,9 +140,9 @@ def archivados_de(skus: list[str]) -> set[str] | None:
 
 
 def archivados_vivos() -> list[str]:
-    """Los SKUs archivados que siguen publicados (activa o pausada, por familia): lo que
-    hay que bajar del canal o desarchivar. LANZA si no puede leer: el filtro da 503,
-    nunca una lista vacía que parezca «no hay ninguno»."""
+    """Los SKUs archivados que siguen publicados (activa o pausada; el padre cuenta por sus
+    variantes; la variante, solo por la suya): lo que hay que bajar del canal o desarchivar.
+    LANZA si no puede leer: el filtro da 503, nunca una lista vacía que parezca «no hay ninguno»."""
     return [r["sku"] for r in sdb.fetch_all(
         """select upper(sku::text) as sku from core.products_ciclo_v
             where archivado_at is not null and situacion = 'incoherente'
