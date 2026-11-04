@@ -1001,6 +1001,46 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.726.0 — TikTok: por qué se quedó sin fotos, dicho de verdad (y una red de seguridad)
+
+**El síntoma.** «Ninguna imagen se pudo subir a TikTok (se convierten a JPEG
+≥1000 px antes de mandarlas)». El mensaje mandaba a revisar el conversor.
+
+**El conversor NO era el culpable.** Probado con las URLs reales de
+`OFI-0239-PLA`: se bajan (99 KB) y se convierten (1000×991 JPEG) sin un fallo.
+Lo que pasaba es que el producto llegaba **sin una sola URL**: no hubo nada que
+convertir.
+
+**Qué se midió.** En producción, el camino de publicar a TikTok devuelve **0
+imágenes para todos los SKUs probados**, mientras el MISMO commit (`82ece4b`)
+contra la MISMA base da 5, 6, 6 y 2:
+
+| SKU | en Woo | lo que ve producción |
+|---|---|---|
+| `OFI-0239-PLA` | 5 | **0** |
+| `TEC-0776-LIL` | 6 | **0** |
+| `MUE-0438-MET` | 6 | **0** |
+| `TEC-1372-MET` | 2 | **0** |
+
+Todo lo demás del producto **sí** llega bien de Woo en producción (peso 0.800,
+medidas 12×12×20, precio 1,599.50, stock 180), así que no es la conexión ni el
+`wc_id`: es sólo la lista de imágenes. **La causa de fondo sigue sin fijarse**:
+no se pudo reproducir fuera de producción.
+
+**Lo que trae esta versión:**
+
+1. **Red de seguridad**: si `construir_prod` devuelve 0 imágenes, se le pregunta
+   DIRECTO a Woo con `wp_db.imagenes(wc_id)` antes de rendirse — la misma
+   función que sí contesta. Si entra por ahí, queda un WARNING que lo dice.
+2. **El mensaje distingue las dos causas.** «Sin imágenes que mandar: WooCommerce
+   no devolvió ninguna» (con el SKU y el `wc_id`) **no es** lo mismo que «se
+   bajaron pero TikTok las rechazó todas», que además nombra los archivos y
+   remite al log, donde `subir_imagen` ya anota el `code` de TikTok.
+
+⚠️ **Esto puede no arreglar la causa de fondo**, y está escrito a propósito para
+que la próxima vez el error diga cuál de las dos cosas pasó en vez de acusar al
+conversor.
+
 ### v0.725.0 — CATÁLOGO: columna «Título packing list y Odoo»
 
 Pedido de Brandon (4-nov-2026): «traigas los títulos de packing list y el título de odoo», «indícame explícitamente

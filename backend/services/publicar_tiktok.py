@@ -196,7 +196,26 @@ async def _armar(req: dict[str, Any], token: str, cipher: str,
         except Exception as exc:  # noqa: BLE001
             log.warning("construir_prod(%s) falló: %s — se usa solo el formulario",
                         sku, exc)
-    campos.setdefault("imagenes", prod.get("images") or [])
+    # ⚠️ ÚLTIMO RECURSO ANTES DE QUEDARSE SIN FOTOS (4-nov-2026). `construir_prod`
+    # resuelve las imágenes por `_imagenes_para`, que antes consulta
+    # `imagenes_variante.para_publicar`: ESA puede devolver lista VACÍA (regla
+    # "sin_fotos") y entonces la galería del producto ya no se mira. Medido en
+    # producción: peso, medidas, precio y stock llegaban bien de Woo y
+    # `main_images` salía `[]` para TODOS los SKUs probados, mientras la misma
+    # consulta daba 5 y 6 fotos fuera de ahí. Se pregunta directo a Woo antes de
+    # darse por vencido: es la misma función que ya usa el resto del publicador.
+    if not campos.get("imagenes"):
+        campos["imagenes"] = prod.get("images") or []
+    if not campos.get("imagenes") and wc_id:
+        try:
+            from services import wp_db as _wp
+            campos["imagenes"] = _wp.imagenes(int(wc_id)) or []
+            if campos["imagenes"]:
+                log.warning("tiktok %s: construir_prod devolvió 0 imágenes y "
+                            "wp_db.imagenes(%s) devolvió %d — se usan esas",
+                            sku, wc_id, len(campos["imagenes"]))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("tiktok %s: no se pudo leer la galería de Woo: %s", sku, exc)
     for k, origen in (("precio_regular", "price"), ("peso", "weight"),
                       ("largo", "length"), ("ancho", "width"), ("alto", "height"),
                       ("stock", "stock")):
@@ -230,14 +249,27 @@ async def _armar(req: dict[str, Any], token: str, cipher: str,
     # muestra cuántas se enviarán en vez de sus identificadores.
     uris: list[dict[str, str]] = []
     imagenes = [u for u in (campos.get("imagenes") or []) if u][:MAX_IMAGENES]
+    # El mensaje DISTINGUE las dos causas. Antes las dos decían "se convierten a
+    # JPEG ≥1000 px", y mandaba a revisar el conversor —que funcionaba— cuando lo
+    # que fallaba era que el producto llegaba SIN URLs.
+    if not imagenes:
+        raise RuntimeError(
+            f"Sin imágenes que mandar: WooCommerce no devolvió ninguna para "
+            f"{sku}" + (f" (wc_id {wc_id})" if wc_id else " (sin wc_id)") +
+            ". No es la conversión a JPEG: no hubo nada que convertir.")
     if subir_imagenes:
+        fallos: list[str] = []
         for u in imagenes:
             uri = await tk.subir_imagen(u, token)
             if uri:
                 uris.append({"uri": uri})
+            else:
+                fallos.append(str(u).rsplit("/", 1)[-1])
         if not uris:
-            raise RuntimeError("Ninguna imagen se pudo subir a TikTok "
-                               "(se convierten a JPEG ≥1000 px antes de mandarlas).")
+            raise RuntimeError(
+                f"Las {len(imagenes)} imágenes se bajaron pero TikTok rechazó "
+                f"todas: {', '.join(fallos[:4])}. Revisa el log del backend: "
+                f"`subir_imagen` anota el code y el mensaje de TikTok.")
 
     desc = (campos.get("descripcion") or prod.get("description") or "").strip() \
         or f"<p>{titulo}</p>"
