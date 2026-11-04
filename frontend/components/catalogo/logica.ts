@@ -28,6 +28,8 @@ export interface Renglon { c: string | number; av?: number; fv?: number | string
 export interface Fila {
   s: string; t: string; n?: string; tf?: string; td?: number; tg?: string; tv?: string; trv?: number; trm?: string;
   tfm?: string; k?: number; kq?: string; f?: number; fo?: "pl" | "odoo"; fg?: number;
+  /** v0.725.0: «Description of Goods» del packing list original (`pd`) y nombre del producto en Odoo (`on`). */
+  pd?: string[]; pdc?: number; on?: string;
   pc?: number; pq?: number; pp?: number; ps?: number; pz?: number; uf?: number; cl?: Record<string, number>;
   so?: number; sin?: number; nr?: number; dm?: number; rm?: number; pe?: number; ec?: string | number; lb?: number;
   en?: number; aj?: number; v?: number; v1?: string; v2?: string; nv?: number; mr?: { lo: number; me: number; hi: number; rq?: string };
@@ -172,7 +174,7 @@ export function preparar(R: Fila[]): void {
     r._tm = r._vm != null ? r._vm : r._em;
     r._ta = r._va != null ? r._va : r._ea;
     r._m = r.cm ? ["foto", "texto", "foto_odoo", "foto_parecida", "cantidad", "ia", "bodega"].filter((k) => r.cm!.indexOf(k) >= 0)[0] ?? null : null;
-    r._b = `${r.s} ${r.t} ${r.n || ""} ${Object.keys(r.ct || {}).join(" ")}`.toLowerCase();
+    r._b = `${r.s} ${r.t} ${r.n || ""} ${(r.pd || []).join(" ")} ${r.on || ""} ${Object.keys(r.ct || {}).join(" ")}`.toLowerCase();
     r._mv = motivos(r);
   });
 }

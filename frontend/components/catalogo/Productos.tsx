@@ -47,6 +47,25 @@ const EMPATES: [string, string][] = [
   ["foto_parecida", "Foto de Odoo parecida"], ["cantidad", "Cantidad de la compra"], ["ia", "Inferido por IA"],
 ];
 
+/** «Título packing list y Odoo» (v0.725.0, Brandon, 4-nov-2026): cada título con su origen escrito. El del packing
+ *  list es su columna «英文品名* Description of Goods» del original del proveedor; el de Odoo, el nombre del producto
+ *  en la copia del 13-oct. */
+function Titulos({ r }: { r: Fila }) {
+  const bloque = (de: string, texto: React.ReactNode, vacio: string) => (
+    <div>
+      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">{de}</div>
+      {texto ? <div className="text-[12.5px] leading-snug text-slate-800">{texto}</div> : <div className="text-[11px] text-slate-300">{vacio}</div>}
+    </div>
+  );
+  return (
+    <div className="space-y-2">
+      {bloque("Packing list · Description of Goods", r.pd?.length ? r.pd.join(" · ") : null,
+        r.pdc ? "el packing list solo lo trae en chino" : r.rn?.length ? "vacío en el packing list" : "sin renglón en el packing list")}
+      {bloque("Odoo", r.on || null, r.sin ? "sin SKU" : "sin producto en Odoo")}
+    </div>
+  );
+}
+
 function Selector({ etiqueta, valor, opciones, onChange }: { etiqueta: string; valor: string; opciones: [string, string][]; onChange: (v: string) => void }) {
   return (
     <label className="flex min-w-0 flex-col gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
@@ -88,7 +107,7 @@ function Segmentos({ etiqueta, valor, opciones, onChange, apagado }: {
 }
 
 const COLS: [Orden | "", string, string][] = [
-  ["", "Foto packing list", ""], ["", "Foto Odoo", ""], ["s", "Producto", ""], ["", "SKU y Mercado Libre", ""], ["", "Categoría", ""], ["pc", "Comprado", "d"], ["ps", "Salió", "d"], ["pq", "Queda", "d"],
+  ["", "Foto packing list", ""], ["", "Foto Odoo", ""], ["s", "Producto", ""], ["", "Título packing list y Odoo", ""], ["", "SKU y Mercado Libre", ""], ["", "Categoría", ""], ["pc", "Comprado", "d"], ["ps", "Salió", "d"], ["pq", "Queda", "d"],
   ["lb", "Odoo libre", "d"], ["mlm", "Mercado Libre por pieza", "ml"], ["_tm", "Valor a precio de ML", "ml"], ["azm", "Amazon por pieza", "az"],
   ["_ta", "Valor a precio de Amazon", "az"], ["", "Contenedor", ""],
 ];
@@ -262,7 +281,7 @@ export default function Productos({ D, filtros, setFiltros, pub }: {
 
       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-card">
         <div ref={caja} className="overflow-x-auto">
-          <table className="w-full min-w-[1920px] border-collapse text-sm">
+          <table className="w-full min-w-[2180px] border-collapse text-sm">
             <thead className="bg-slate-50 text-[10.5px] font-semibold uppercase tracking-wide text-slate-500">
               <tr>
                 {COLS.map(([k, nom, cl]) => {
@@ -301,6 +320,7 @@ export default function Productos({ D, filtros, setFiltros, pub }: {
                         <div className="mt-1 flex flex-wrap gap-1"><Estado r={r} />{r.td && !r._mv.length ? <Etiqueta>título por confirmar</Etiqueta> : null}
                           {r._mv.filter((m) => m !== "sin_sku").map((m) => <Etiqueta key={m} tono="amber">{CORTO_MOTIVO[m]}</Etiqueta>)}</div>
                       </td>
+                      <td className="min-w-[230px] max-w-[260px] px-3 py-2.5"><Titulos r={r} /></td>
                       <td className="min-w-[140px] px-3 py-2.5"><Publicacion r={r} /></td>
                       <td className="max-w-[180px] px-3 py-2.5">
                         <div className="text-xs font-semibold text-slate-700">{c1(D, r)}</div>

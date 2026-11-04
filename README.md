@@ -1001,6 +1001,26 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.725.0 — CATÁLOGO: columna «Título packing list y Odoo»
+
+Pedido de Brandon (4-nov-2026): «traigas los títulos de packing list y el título de odoo», «indícame explícitamente
+cuál es el título de packing list y el de odoo, en la columna de 英文品名* Description of Goods» y «no necesito el
+título en chino».
+
+- **Tabla de Productos**: columna nueva al lado de «Producto» con dos títulos rotulados: «Packing list · Description
+  of Goods» y «Odoo». El buscador también los encuentra.
+- **Packing list (`pd`)**: la columna «英文品名* Description of Goods» de los renglones de la fila — primero el original
+  del proveedor, luego el validado — sin repetir, máximo 2. Ejemplo comprobado: `TCKU6731180 Lista de empaque.xlsx`,
+  renglón «monitor». Va también en las filas SIN SKU. **13,050 filas** lo traen.
+- **Sin chino**: se quitan los caracteres chinos (`catalogo_preparar.py::sin_chino`); «猫三角除毛刷绿色/pet brush» queda
+  «pet brush». Si no queda nada, la celda dice «el packing list solo lo trae en chino» (128 filas: incluye los
+  validados de los contenedores 7 y 35, que **no tienen columna en inglés**).
+- **106 filas con foto del packing list y sin título**: la celda «Description of Goods» está VACÍA en el propio
+  archivo (comprobado en el del contenedor 78, sin celdas combinadas). La tabla dice «vacío en el packing list».
+- **Odoo (`on`)**: el nombre del producto por SKU, de la copia de Odoo del 13-oct (`datos/odoo_mayoreo.json`, la
+  misma fecha del catálogo): Odoo ya no se consulta. **12,169 filas**.
+- Sale de `catalogo_preparar.py odoo` (el mismo paso de las fotos de Odoo); solo lee archivos locales.
+
 ### v0.724.0 — CATÁLOGO: columna «Foto Odoo» junto a la del packing list
 
 Pedido de Brandon (4-nov-2026): «ingresar la columna de la imagen de odoo, deja la imagen de packing list».

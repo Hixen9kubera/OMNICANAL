@@ -18,6 +18,10 @@ desde los packing lists): `backend/data/catalogo/catalogo.json.gz` y las hojas d
   odoo           Agrega la foto de ODOO de cada fila (`fg`) en hojas NUEVAS, detrás de las que ya hay, sin tocar las
                  del packing list ni el `f` de nadie (v0.724.0, Brandon, 4-nov-2026: «ingresar la columna de la
                  imagen de odoo, deja la imagen de packing list»). Se puede volver a correr: rehace solo sus hojas.
+                 Desde v0.725.0 también pone los dos TÍTULOS por fila: `pd`, la columna «英文品名* Description of
+                 Goods» del packing list ORIGINAL, y `on`, el nombre del producto en Odoo (copia del 13-oct,
+                 `datos/odoo_mayoreo.json`: Odoo ya no se consulta). El chino NO va (Brandon: «no necesito el título
+                 en chino»).
 
 LA FOTO DE CADA FILA (pedido de Brandon, 29-oct-2026: «cambiarás las imágenes de odoo a las de packing list»)
     1. La foto ORIGINAL de su renglón en el packing list: el catálogo guarda su sha1 (`pl.json`) y aquí se busca
@@ -443,6 +447,67 @@ def titulos(cat: Path, salida: Path) -> None:
     print(f"catalogo.json.gz · {len(crudo) / 1e6:.1f} MB sin comprimir → {ruta.stat().st_size / 1e6:.1f} MB")
 
 
+MAX_DESC_PL = 2    # «Description of Goods» distintas por fila (v0.725.0)
+_RE_CHINO = re.compile("[\u3000-\u303f\u3400-\u9fff\uf900-\ufaff\uff00-\uffef]+")  # chino y ancho completo
+
+
+def sin_chino(t: str) -> str:
+    """El título sin caracteres chinos (ni su puntuación de ancho completo). Si no queda ninguna letra latina, ""."""
+    t = re.sub(r"\s+", " ", _RE_CHINO.sub(" ", t)).strip(" /:;,.-*()")
+    return t if re.search(r"[A-Za-zÁÉÍÓÚÑáéíóúñ]", t) else ""
+
+
+def titulos_pl_y_odoo(R: list[dict[str, Any]], d: dict[str, Any], pl: dict[str, Any],
+                      odoo_filas: list[dict[str, Any]]) -> tuple[int, int]:
+    """El título del packing list y el de Odoo, cada uno por su lado (v0.725.0, Brandon, 4-nov-2026: «indícame
+    explícitamente cuál es el título de packing list y el de odoo, en la columna de 英文品名* Description of Goods»).
+
+    `pd`: la «Description of Goods» (`titulo` de `pl.json`) de los renglones de la fila, sin repetir: primero los del
+    packing list ORIGINAL, luego los del validado. Va también en las filas SIN SKU. El «中文品名» NO va (Brandon: «no
+    necesito el título en chino»): dos validados (contenedores 7 y 35) leyeron su título de esa columna porque NO
+    tienen columna en inglés, y hay renglones donde el proveedor la llenó en chino: se quitan los caracteres chinos
+    (`sin_chino`) y, si no queda nada, la fila lleva `pdc: 1` («solo trae el nombre en chino»).
+    `on`: el nombre del producto en Odoo, por SKU. Devuelve (filas con `pd`, filas con `on`)."""
+    orig = {(a["id"], f["fila"]): f for a in pl["originales"] for f in a.get("filas") or []}
+    chino = {a["id"] for a in pl.get("validados") or [] if re.search(r"tit=\d+:\S*(中文|chinese)", a.get("cols") or "", re.I)}
+    val = {(a["id"], f["fila"]): f for a in pl.get("validados") or [] for f in a.get("filas") or []}
+    nombres: dict[str, str] = {}
+    for f in odoo_filas:
+        sku, nom = str(f.get("sku") or "").strip().upper(), re.sub(r"\s+", " ", str(f.get("nombre") or "")).strip()
+        if sku and nom:
+            nombres.setdefault(sku, nom)
+    con_pd = con_on = 0
+    for x, r in zip(R, d["R"]):
+        for k in ("pd", "pdc", "on"):
+            x.pop(k, None)
+        en: list[str] = []
+        solo_chino = False
+        renglones = [orig.get((rn.get("ao"), fo - 1)) for rn in r.get("rn") or [] for fo in rn.get("fo") or []]
+        for rn in r.get("rn") or []:
+            if rn.get("fv"):
+                if rn.get("av") in chino:
+                    solo_chino = True
+                else:
+                    renglones.append(val.get((rn.get("av"), rn["fv"] - 1)))
+        for f in renglones:
+            crudo = str((f or {}).get("titulo") or "")
+            t = sin_chino(crudo)[:LARGO_TITULO_PL]
+            if t and t.lower() not in {v.lower() for v in en}:
+                en.append(t)
+            elif crudo.strip() and not t:
+                solo_chino = True
+        if en:
+            x["pd"] = en[:MAX_DESC_PL]
+            con_pd += 1
+        elif solo_chino:
+            x["pdc"] = 1
+        nom = nombres.get(str(x.get("s") or "").strip().upper()) if not x.get("sin") else None
+        if nom:
+            x["on"] = nom
+            con_on += 1
+    return con_pd, con_on
+
+
 def odoo(cat: Path, salida: Path) -> None:
     """La foto de Odoo de cada fila (`fg`), aparte de la que ya muestra (`f`). Las filas cuya foto YA es la de Odoo
     (`fo == "odoo"`) reusan su cuadro; las demás van a hojas nuevas que empiezan en la siguiente hoja entera, así que
@@ -494,6 +559,11 @@ def odoo(cat: Path, salida: Path) -> None:
         hoja.save(destino, "WEBP", quality=CALIDAD, method=6)
         total_bytes += destino.stat().st_size
     hojas_nuevas = (len(nuevas) + por_hoja - 1) // por_hoja
+    pl = json.loads((cat / "datos" / "pl.json").read_text(encoding="utf-8"))
+    copia = json.loads((cat / "datos" / "odoo_mayoreo.json").read_text(encoding="utf-8"))
+    con_pd, con_on = titulos_pl_y_odoo(doc["R"], d, pl, copia.get("filas") or [])
+    doc["meta"]["titulos"] = {"pl": con_pd, "odoo": con_on, "odoo_leido": copia.get("leido_hasta")}
+    print(f"{con_pd} filas con «Description of Goods» del packing list · {con_on} con nombre de Odoo")
     fm.update({"odoo_desde": desde, "hojas": desde + hojas_nuevas, "total": desde * por_hoja + len(nuevas),
                "con_odoo": con})
     print(f"{con} filas con foto de Odoo · {len(nuevas)} fotos nuevas en {hojas_nuevas} hojas "
