@@ -437,7 +437,8 @@ async def llamar(ruta: str, token: str, params: dict[str, Any] | None = None,
     return j.get("data") or {}
 
 
-async def subir_imagen(url: str, token: str | None = None) -> str | None:
+async def subir_imagen(url: str, token: str | None = None, *,
+                       causas: list[str] | None = None) -> str | None:
     """
     Sube una imagen a TikTok y devuelve su `uri` — el identificador OPACO que
     viaja en el producto. TikTok rehospeda: la URL de chunche.shop no sirve.
@@ -455,16 +456,32 @@ async def subir_imagen(url: str, token: str | None = None) -> str | None:
 
     La firma se arma aquí y no en `llamar()` porque este endpoint es
     **multipart**: el cuerpo no entra en la cadena firmada.
+
+    `causas` ES LO QUE HACE DIAGNOSTICABLE EL FALLO (5-nov-2026). Esta función
+    devolvía `None` ante CUATRO cosas distintas —sin token, la descarga, el code
+    de TikTok y la excepción— y el panel las resumía todas en "Ninguna imagen se
+    pudo subir (se convierten a JPEG ≥1000 px)", que acusa al conversor. Medido
+    el 5-nov con los dos SKUs de la bitácora, OFI-0239-PLA y TEC-0776-LIL: sus
+    11 imágenes bajaban y convertían SIN UN SOLO ERROR, así que el mensaje
+    señalaba al único tramo que estaba bien. Pasando una lista aquí, el motivo
+    real —`36009033 IP no permitida`, un token vencido, un 403— sube hasta la
+    pantalla en vez de quedarse en los logs de Railway.
     """
     import asyncio
 
+    def _anotar(causa: str) -> None:
+        if causas is not None and causa not in causas:
+            causas.append(causa)
+
     token = token or access_token()
     if not token:
+        _anotar("no hay access_token de TikTok guardado")
         return None
     try:
         from services import imagenes_amazon as ia
         crudo = await ia._descargar(url)  # noqa: SLF001
         if not crudo:
+            _anotar("WooCommerce no entregó el archivo (descarga vacía)")
             return None
         contenido, _w, _h = await asyncio.to_thread(ia._a_jpeg, crudo, 1000)  # noqa: SLF001
         ruta = "/product/202309/images/upload"
@@ -482,10 +499,12 @@ async def subir_imagen(url: str, token: str | None = None) -> str | None:
         if j.get("code") not in (0, "0"):
             log.warning("subir_imagen(%s): code=%s %s", url[:60], j.get("code"),
                         j.get("message"))
+            _anotar(f"TikTok {j.get('code')}: {j.get('message')}")
             return None
         return (j.get("data") or {}).get("uri")
     except Exception as exc:  # noqa: BLE001
         log.warning("subir_imagen(%s) falló: %s", url[:60], exc)
+        _anotar(f"{type(exc).__name__}: {exc}")
         return None
 
 

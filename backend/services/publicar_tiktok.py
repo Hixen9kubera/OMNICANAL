@@ -259,17 +259,25 @@ async def _armar(req: dict[str, Any], token: str, cipher: str,
             ". No es la conversión a JPEG: no hubo nada que convertir.")
     if subir_imagenes:
         fallos: list[str] = []
+        # La causa viaja AQUÍ, no a los logs (5-nov-2026). El mensaje de antes
+        # terminaba en "revisa el log del backend", que para quien está en el
+        # panel es lo mismo que no decir nada: no tiene Railway abierto. Ahora
+        # el code de TikTok —`36009033 IP no permitida`, un token vencido— se
+        # lee en la misma pantalla donde falló.
+        causas: list[str] = []
         for u in imagenes:
-            uri = await tk.subir_imagen(u, token)
+            uri = await tk.subir_imagen(u, token, causas=causas)
             if uri:
                 uris.append({"uri": uri})
             else:
                 fallos.append(str(u).rsplit("/", 1)[-1])
         if not uris:
+            porque = ("; ".join(causas[:3]) if causas
+                      else "TikTok no dijo por qué")
             raise RuntimeError(
-                f"Las {len(imagenes)} imágenes se bajaron pero TikTok rechazó "
-                f"todas: {', '.join(fallos[:4])}. Revisa el log del backend: "
-                f"`subir_imagen` anota el code y el mensaje de TikTok.")
+                f"Las {len(imagenes)} imágenes se bajaron y se convirtieron "
+                f"bien, pero TikTok no aceptó ninguna. Motivo de TikTok: "
+                f"{porque}. (Archivos: {', '.join(fallos[:4])}.)")
 
     desc = (campos.get("descripcion") or prod.get("description") or "").strip() \
         or f"<p>{titulo}</p>"

@@ -130,7 +130,33 @@ async def _armar(req: dict[str, Any]) -> dict[str, Any]:
                     publicar_ready.construir_prod, sku, int(wc_id), campos)
         except Exception as exc:  # noqa: BLE001
             avisos.append(f"No se pudo leer el producto de Woo: {exc}")
-    campos.setdefault("imagenes", prod.get("images") or [])
+    # ⚠️ ÚLTIMO RECURSO ANTES DE QUEDARSE SIN FOTOS (5-nov-2026). El gemelo de lo
+    # que `publicar_tiktok` arregló el 4-nov, que aquí quedó pendiente.
+    #
+    # Dos agujeros, y el `setdefault` que había antes no tapaba ninguno:
+    #   1. `setdefault` solo rellena la clave AUSENTE. Si el panel manda
+    #      `imagenes: []` —presente y vacía— la galería de Woo se tiraba a la
+    #      basura y el alta moría abajo con "Sin imágenes: Temu las exige".
+    #      Era el ÚNICO campo de esta función que no usaba el `if not ...` que
+    #      la línea siguiente aplica a precio, peso, medidas y stock.
+    #   2. `construir_prod` resuelve las fotos por `_imagenes_para`, que antes
+    #      pregunta a `imagenes_variante.para_publicar`: ESA puede contestar
+    #      lista VACÍA (regla "sin_fotos") y entonces la galería ya no se mira.
+    #
+    # Se pregunta directo a Woo antes de darse por vencido. Medido el 5-nov:
+    # OFI-0239-PLA tenía 5 fotos en Woo que bajaban y convertían sin un error.
+    if not campos.get("imagenes"):
+        campos["imagenes"] = prod.get("images") or []
+    if not campos.get("imagenes") and wc_id:
+        try:
+            from services import wp_db as _wp
+            campos["imagenes"] = _wp.imagenes(int(wc_id)) or []
+            if campos["imagenes"]:
+                log.warning("temu %s: construir_prod devolvió 0 imágenes y "
+                            "wp_db.imagenes(%s) devolvió %d — se usan esas",
+                            sku, wc_id, len(campos["imagenes"]))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("temu %s: no se pudo leer la galería de Woo: %s", sku, exc)
     for k, origen in (("precio_regular", "price"), ("peso", "weight"),
                       ("largo", "length"), ("ancho", "width"),
                       ("alto", "height"), ("stock", "stock")):
@@ -191,9 +217,14 @@ async def _armar(req: dict[str, Any]) -> dict[str, Any]:
                       f"volumétrico y ese cobro sale de aquí.")
 
     imagenes = [u for u in (campos.get("imagenes") or []) if u][:MAX_IMAGENES]
+    # El mensaje DICE DE QUÉ PRODUCTO no hay fotos. El de antes —"Sin imágenes:
+    # Temu las exige"— era verdad y no servía: no distinguía "Woo no devolvió
+    # ninguna" de "la conversión falló", que se arreglan en lugares distintos.
     if not imagenes:
-        raise RuntimeError("Sin imágenes: Temu las exige (es uno de los cinco "
-                           "campos que sí valida).")
+        raise RuntimeError(
+            f"Sin imágenes que mandar: WooCommerce no devolvió ninguna para "
+            f"{sku}" + (f" (wc_id {wc_id})" if wc_id else " (sin wc_id)") +
+            ". No es la conversión a JPEG: no hubo nada que convertir.")
 
     sufijo = sku.split("-")[-1] if "-" in sku else ""
     payload = {

@@ -1001,6 +1001,40 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.730.0 — PUBLICAR: los errores de imagen dicen la verdad (y Temu recupera la galería de Woo)
+
+Brandon (5-nov-2026), sobre los fallos de la bitácora: «puedes ayudarme con estos errores? realiza el fix». Los dos que
+se veían eran de imágenes, y los dos **acusaban a las fotos cuando las fotos estaban bien**. Medido antes de tocar
+nada: las 11 imágenes de los dos SKUs de la bitácora (OFI-0239-PLA y TEC-0776-LIL) bajan de Woo y se convierten a JPEG
+1000 px **sin un solo error**.
+
+- **Temu se quedaba sin fotos teniéndolas** (`publicar_temu._armar`). La línea era
+  `campos.setdefault("imagenes", prod.get("images") or [])`, y `setdefault` solo rellena la clave AUSENTE: cuando el
+  panel mandaba `imagenes: []` —presente y vacía— la galería de Woo se tiraba a la basura y el alta moría con «Sin
+  imágenes: Temu las exige». Era el ÚNICO campo de esa función que no usaba el `if not …` que la línea siguiente aplica
+  a precio, peso, medidas y stock. Ahora usa el mismo molde que `publicar_tiktok` estrenó el 4-nov, con el segundo
+  recurso incluido: si `construir_prod` devuelve cero fotos (puede pasar: `_imagenes_para` consulta antes a
+  `imagenes_variante.para_publicar`, que contesta lista vacía por la regla «sin_fotos»), se le pregunta directo a
+  `wp_db.imagenes(wc_id)`. Verificado con OFI-0239-PLA: el código de producción falla con `imagenes: []`, el nuevo
+  recupera las 5 fotos.
+- **TikTok mandaba a leer los logs de Railway.** `tiktok.subir_imagen` devolvía `None` ante CUATRO cosas distintas —sin
+  token, la descarga, el `code` de TikTok y la excepción— y el panel las resumía todas en «Ninguna imagen se pudo subir
+  (se convierten a JPEG ≥1000 px)», que señala al conversor, el único tramo que estaba bien. Ahora acepta un
+  acumulador `causas` y el motivo real sube a la pantalla.
+- **La causa de los 4 fallos de TikTok de la bitácora, por fin visible:** probado en vivo con una imagen real de
+  OFI-0239-PLA, TikTok contesta `36009033 — Access denied. Your IP address is not in the IP allow list`. No eran las
+  fotos: era la **allowlist de IPs** (la de Railway, 152.55.177.181, hay que re-publicarla con «Publicar cambios»). Con
+  el mensaje viejo eso era indistinguible de un problema de conversión.
+- **El mensaje de Temu nombra al producto**: «Sin imágenes que mandar: WooCommerce no devolvió ninguna para SKU (wc_id
+  N). No es la conversión a JPEG: no hubo nada que convertir.»
+
+Sin bandera de activación: es un fix, no una función nueva. No enciende ningún flujo — Temu y TikTok siguen EN PAUSA.
+
+**Lo que este fix NO arregla, porque no es código** (43 de los 56 fallos de los últimos 7 días, todos de Mercado Libre y
+todos ya bien explicados por el panel): 29 por foto de menos de 500 × 250 px —15 SKUs del lote nuevo que se crearon con
+**la foto del packing list** como única imagen, de 366 × 159 px: necesitan foto real—, 22 por GTIN y 12 por guía de
+tallas de ropa y calzado.
+
 ### v0.729.0 — CATÁLOGO: la búsqueda por categoría agrupa cada producto en su categoría correcta
 
 Eduardo (5-nov-2026): «que en la búsqueda por categoría se asignen a su categoría correcta en caso de que tengan más
