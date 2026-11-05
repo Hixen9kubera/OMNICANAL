@@ -1001,6 +1001,50 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.732.0 — ODOO EN SOLO LECTURA: el backend ya no puede escribir en Odoo (y la pestaña Inventario vuelve a leerlo)
+
+Eduardo (5-nov-2026): con la llave nueva de Odoo, levantar otra vez la pestaña Inventario, primero en el sandbox. Desde
+el corte del 15-oct la cuenta de Railway está rechazada y la pestaña marcaba casi todo como «Sin producto en Odoo».
+
+**Por qué no bastaba con poner la llave.** Esa llave la usa todo el backend, no solo la pestaña. Medido en producción el
+5-nov: `odoo_ventas_enabled` y `odoo_ventas_enabled_canal_temu` siguen ENCENDIDAS en `ops.automatizacion_flags` (desde el
+1-sep), TikTok queda encendido por omisión (`ODOO_VENTAS_CANALES`), y en Railway `ODOO_VENTAS_SOLO_REGISTRO=false` y
+`ODOO_VENTAS_CONFIRMAR=true`. Lo único que impedía escribir era que Odoo rechazaba la cuenta. Con una llave buena habrían
+vuelto, sin que nadie lo decidiera: la creación y confirmación de órdenes de TikTok y Temu (apartan stock en Odoo), la guía
+y el PDF en las entregas (`fijar_guia`/`fijar_etiqueta` no miran SOLO_REGISTRO) y la compra automática de guías de Temu.
+
+- **La guarda** (`services/odoo.py`, `_ObjetoSoloLectura`). Las dos puertas por las que el backend llega al endpoint
+  `object` de Odoo —`_models()` y `_proxy_con_tiempo("object")`— devuelven el proxy envuelto. Pasan solo `search`,
+  `search_read`, `search_count`, `read`, `read_group`, `fields_get`, `name_get` y `name_search`. Todo lo demás (create,
+  write, unlink, action_confirm, action_cancel, message_post, la API vieja `execute`…) lanza `OdooSoloLectura`
+  (subclase de RuntimeError) ANTES de salir a la red, con un log ERROR «Odoo es de SOLO LECTURA: se negó modelo.método».
+  `odoo_ventas._kw` (órdenes, guías, Crear FULL, notas de combinados) pasa por `_models()`: no tiene puerta propia.
+  `common` (authenticate) no se envuelve. Los scripts de `scripts/` que abren su propio ServerProxy se corren a mano y no
+  pasan por aquí.
+- **Sin variable** (regla 15): la reversa es revertir el commit.
+- **La pestaña dice lo que es hoy.** El banner decía «Odoo es el maestro del inventario». Ahora: Odoo dejó de ser la fuente
+  del stock el 15-oct y no conoce las ventas desde entonces; aquí es referencia, no saldo; lo que reciben los canales sale
+  de WooCommerce. La pastilla «Odoo → Woo → canales» pasa a «Woo → canales» más «Odoo: solo lectura · referencia», y el
+  KPI «Disponible» dice «libre en Odoo · referencia».
+
+**Verificado** (5-nov, sandbox `yvootpbz`, backend local con la llave nueva y el scheduler apagado, frontend detrás de un
+proxy que solo deja pasar GET):
+- La pestaña carga el catálogo completo (14,766 SKUs) con ficha, ubicaciones, variantes, fotos, recepciones, cuadre y
+  movimientos de Odoo. En la primera página, 8 de 40 salen «Sin producto en Odoo» y son de verdad: ninguno tuvo `odoo_id`
+  ni etiqueta `odoo` en `core.products` antes del corte.
+- La cuenta nueva (solo ve la compañía 73) ve los 13,177 `odoo_id` de `core.products` sin que falte ninguno.
+- Contra el Odoo REAL, con el código de esta versión: `sale.order.write`, `create` y `action_confirm` por `odoo_ventas._kw`,
+  `product.product.write` por `_kw_flujo` y `execute` (API vieja) se negaron; **0 escrituras salieron a la red** (un
+  cinturón a nivel xmlrpc las contaba).
+- Pruebas: `tests/test_odoo_solo_lectura.py` (10, con un barrido que exige que todo método de Odoo escrito en `services/`
+  y `routers/` sea una lectura permitida o una escritura conocida). Suite: 4,335 pruebas; las 5 fallas
+  (`test_competencia_juez_rutas` ×1, `test_pedidos_ml_sondeo` ×4) son las mismas en v0.731.0 sin este cambio. `tsc` limpio.
+
+**Para producción** (acta aparte; este commit solo no lo hace): (1) apagar `odoo_ventas_enabled` —la guarda niega la
+escritura, pero la compra automática de guías de Temu mira la bandera, no la guarda—; (2) este push; (3) la llave nueva en
+`ODOO_USER`/`ODOO_PASSWORD` de BackendOmnicanal. Con la llave vuelven LECTURAS que hoy fallan: el flujo del inventario, la
+revisión de cancelaciones de Temu (lee Odoo y anota en nuestra bitácora), guías del día y las fotos de costos.
+
 ### v0.731.0 — MEJORAR CON IA (ML): título sin color, capacidad ni medidas; descripción solo con lo que se ve
 
 Brandon (4 y 5-nov-2026). Antes de tocar el panel se probó en local con 10 SKUs del lote Deportes (cinco caminadoras,

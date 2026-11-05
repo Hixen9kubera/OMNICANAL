@@ -13,12 +13,12 @@
  * DOS COSAS DEL DISEÑO QUE NO SE COPIARON LITERAL, Y POR QUÉ:
  *
  * 1. El banner del diseño dice «La bodega es la fuente de verdad» y «Odoo: solo
- *    lectura histórica». Hoy es al revés y está medido: `stock_watch` copia el
- *    `free_qty` de Odoo a Woo cada pasada, y el libro de Odoo reproduce ese
- *    saldo en el 100% de una muestra de 150 SKUs. Rotularlo como dice el diseño
- *    sería escribir en pantalla lo contrario de lo que hace el sistema, así que
- *    el banner dice lo que ES hoy. La frase del diseño describe el destino, y
- *    se pondrá el día que la cadena se invierta de verdad.
+ *    lectura histórica». Hasta el 15-oct-2026 era al revés (`stock_watch`
+ *    copiaba el `free_qty` de Odoo a Woo), y el banner decía eso. Ese día Odoo
+ *    salió de la operación: `stock_watch` está apagado, Woo baja con las ventas
+ *    y alimenta a los canales, y desde la v0.732.0 el backend solo puede LEER
+ *    Odoo. El banner dice eso: Odoo es referencia, no saldo. «La bodega es la
+ *    fuente de verdad» se pondrá cuando el libro de kubera cargue el saldo (T0).
  *
  * 2. «Conteo físico» y «Entrada por packing list» ESCRIBEN stock. Van pintados
  *    porque son parte del diseño, pero deshabilitados y diciendo qué falta: un
@@ -465,7 +465,8 @@ export default function InventarioPage() {
 
         <p className="mt-4 text-xs leading-relaxed text-slate-400">
           Todo se lee en vivo de WooCommerce, Odoo y kubera en cada carga — nada
-          sale de caché. Esta pestaña no escribe stock en ninguna parte.
+          sale de caché. Esta pestaña no escribe stock en ninguna parte. Odoo
+          salió de la operación el 15-oct-2026: sus números son referencia.
         </p>
       </main>
 
@@ -526,16 +527,23 @@ function Banner({
               </span>
             )}
           </h1>
-          {/* El diseño dice aquí «La bodega es la fuente de verdad». Hoy no lo
-              es y está medido; el rótulo dice lo que el sistema HACE. */}
+          {/* El rótulo dice lo que el sistema HACE. Hasta el 15-oct-2026 decía
+              «Odoo es el maestro del inventario»; desde ese día Odoo salió de la
+              operación y el backend solo puede LEERLO (v0.732.0). */}
           <p className="mt-1.5 max-w-2xl text-sm text-white/80">
-            Odoo es el maestro del inventario y su libro de movimientos es la
-            única trazabilidad que existe. Esta vista lo lee — no lo modifica.
+            Odoo dejó de ser la fuente del stock el 15-oct-2026 y no conoce las
+            ventas desde entonces: aquí es referencia, no saldo. Lo que reciben
+            los canales sale de WooCommerce. Esta vista lee Odoo y no lo modifica.
           </p>
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <span className={pastilla}>
               <ArrowUpDown className="h-3.5 w-3.5" />
-              Odoo → Woo → ML · Amazon · TikTok
+              Woo → ML · Amazon · TikTok
+            </span>
+            <span className={pastilla}
+                  title="El backend solo puede leer Odoo: cualquier escritura se niega antes de salir">
+              <Database className="h-3.5 w-3.5" />
+              Odoo: solo lectura · referencia
             </span>
             <span className={pastilla}>
               <Clock className="h-3.5 w-3.5" />
@@ -580,7 +588,7 @@ function Banner({
 
 function Kpis({ resumen }: { resumen: InventarioResp["resumen"] }) {
   const tarjetas = [
-    { t: "Disponible", v: resumen.disponible, p: "libre de venta en Odoo", i: Boxes, tono: "" },
+    { t: "Disponible", v: resumen.disponible, p: "libre en Odoo · referencia", i: Boxes, tono: "" },
     { t: "Reservado", v: resumen.reservado, p: "comprometido en pedidos", i: Layers, tono: "" },
     {
       // «En recepción» se leía como un lugar. Es un ESTADO: piezas que Odoo

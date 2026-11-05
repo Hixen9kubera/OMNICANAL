@@ -20,6 +20,58 @@ from config import settings
 log = logging.getLogger("omnicanal.odoo")
 
 
+# ── SOLO LECTURA (v0.732.0) ─────────────────────────────────────────────────
+# Odoo salió de la operación el 15-oct-2026 (decisión de Eduardo): el panel ya
+# no escribe ahí. Las DOS puertas por las que el backend llega al endpoint
+# `object` de Odoo —`_models()` y `_proxy_con_tiempo("object")`; todo lo demás,
+# incluido `odoo_ventas._kw`, pasa por la primera— devuelven este envoltorio,
+# que deja pasar solo métodos que LEEN. Todo lo demás (create, write, unlink,
+# action_confirm, action_cancel, message_post…) se niega ANTES de salir a la red.
+#
+# Por qué aquí y no en las banderas: el 5-nov-2026 seguían encendidas
+# `odoo_ventas_enabled` y la del canal Temu (desde el 1-sep), con
+# SOLO_REGISTRO=false y CONFIRMAR=true. Lo único que impedía escribir era que la
+# cuenta de Railway estaba rechazada. Poner una llave que sirva —para que la
+# pestaña Inventario vuelva a leer— habría revivido, sin que nadie lo
+# decidiera, la creación y confirmación de órdenes de TikTok y Temu, la guía y
+# el PDF en las entregas (`fijar_guia`/`fijar_etiqueta` no miran SOLO_REGISTRO)
+# y la compra automática de guías de Temu que espera esa orden.
+#
+# Sin variable (regla 15): la reversa es revertir este commit. Los scripts de
+# `scripts/` que abren su propio ServerProxy se corren a mano y no pasan por aquí.
+_METODOS_DE_LECTURA = frozenset({
+    "search", "search_read", "search_count", "read", "read_group",
+    "fields_get", "name_get", "name_search",
+})
+
+
+class OdooSoloLectura(RuntimeError):
+    """El backend intentó escribir en Odoo. Desde el 15-oct-2026 solo se lee."""
+
+
+class _ObjetoSoloLectura:
+    """El endpoint `object` de Odoo con la guarda de solo lectura."""
+
+    def __init__(self, proxy: xmlrpc.client.ServerProxy) -> None:
+        self._proxy = proxy
+
+    def execute_kw(self, *args: Any) -> Any:
+        # (db, uid, password, modelo, metodo, args[, kwargs])
+        modelo = args[3] if len(args) > 3 else "?"
+        metodo = args[4] if len(args) > 4 else "?"
+        if metodo not in _METODOS_DE_LECTURA:
+            log.error("Odoo es de SOLO LECTURA: se negó %s.%s", modelo, metodo)
+            raise OdooSoloLectura(
+                f"Odoo es de solo lectura desde el 15-oct-2026: se negó {modelo}.{metodo}")
+        return self._proxy.execute_kw(*args)
+
+    def __getattr__(self, nombre: str) -> Any:
+        # `execute` (la API vieja), `exec_workflow`… no traen el método en un
+        # lugar fijo para revisarlo: no pasan.
+        raise OdooSoloLectura(
+            f"Odoo es de solo lectura: el endpoint object no permite «{nombre}»")
+
+
 @lru_cache
 def _uid() -> int | None:
     try:
@@ -33,8 +85,9 @@ def _uid() -> int | None:
         return None
 
 
-def _models() -> xmlrpc.client.ServerProxy:
-    return xmlrpc.client.ServerProxy(f"{settings.odoo_url}/xmlrpc/2/object")
+def _models() -> _ObjetoSoloLectura:
+    return _ObjetoSoloLectura(
+        xmlrpc.client.ServerProxy(f"{settings.odoo_url}/xmlrpc/2/object"))
 
 
 def stock_por_sku(skus: list[str]) -> dict[str, float]:
@@ -1484,15 +1537,17 @@ def _timeout_flujo(timeout: float | None) -> float:
                  else settings.inventario_flujo_timeout_s)
 
 
-def _proxy_con_tiempo(ruta: str, timeout: float) -> xmlrpc.client.ServerProxy:
+def _proxy_con_tiempo(ruta: str, timeout: float) -> Any:
     """Un `ServerProxy` NUEVO por llamada: no son seguros entre hilos, y el
-    armado de la foto corre en su propio hilo mientras el panel usa los otros."""
+    armado de la foto corre en su propio hilo mientras el panel usa los otros.
+    El de `object` sale con la guarda de solo lectura; `common` solo autentica."""
     if not settings.odoo_url:
         raise RuntimeError("ODOO_URL no está configurada")
     url = f"{settings.odoo_url}/xmlrpc/2/{ruta}"
     transporte = (_TransporteSeguroConTiempo(timeout) if url.startswith("https")
                   else _TransporteConTiempo(timeout))
-    return xmlrpc.client.ServerProxy(url, transport=transporte)
+    proxy = xmlrpc.client.ServerProxy(url, transport=transporte)
+    return _ObjetoSoloLectura(proxy) if ruta == "object" else proxy
 
 
 # uid PROPIO de estas lecturas. No se reusa `_uid()` por dos razones: su

@@ -25,6 +25,9 @@ BEKURA="Kubera" y SANCORFASHION="San Corpe")**, **Amazon** (San Corpe) y, vía
   29 comprometidas en borradores —1 vendible— y Woo ofrecía 14. Se vuelve a
   delta con la misma variable, sin deploy, si Odoo dejara de registrar salidas.
   `odoo_watch` se RETIRÓ en la v0.694.0 (Odoo salió el 15-oct-2026; ruta directa al libro de kubera).
+  **Desde la v0.732.0 el backend solo puede LEER Odoo**: `services/odoo.py` niega create/write/action_*
+  antes de salir a la red (`OdooSoloLectura`). Las órdenes de venta, guías, Crear FULL y notas en Odoo
+  quedan muertas aunque sus banderas digan otra cosa. Sin variable: la reversa es revertir el commit.
 - **Cada venta se congela como PEDIDO de WooCommerce** con el precio real de
   venta, comisión y neto en metas `_ml_*` (los precios de catálogo cambian a
   diario; el pedido es el registro histórico). Tabla de control: `pedidos_ml`
