@@ -295,6 +295,22 @@ _NO_CONTRADECIR = (
     "cambies el tipo de producto."
 )
 
+# El TÍTULO de ML va sin color, sin capacidad y sin medidas (Brandon, 5-nov-2026). Mercado Libre pega
+# el valor del atributo Color al final del título de toda alta nueva (`family_name`): con el color en
+# el texto salía «… Negra Negro» (87 de las 207 del lote Deportes). Capacidad y medidas van en los
+# atributos, salvo cuando son lo que el comprador elige (el largo de un cable).
+_TITULO_ML_SIN_COLOR_NI_MEDIDAS = (
+    "En el TÍTULO NO van el color, la capacidad ni las medidas:\n"
+    "- Sin color: Mercado Libre agrega el color al final del título (lo toma del atributo Color); si "
+    "lo escribes, sale repetido («… Negra Negro»).\n"
+    "- Sin capacidad ni medidas: ni para cuántas personas, ni dimensiones, pies, centímetros, litros "
+    "o kilos. «Tienda De Campaña Familiar Para Acampar», no «… Para 6 Personas»; «Red De Practica De "
+    "Beisbol Con Tee», no «… 7x7 Pies Con Tee». Esos datos van en los atributos.\n"
+    "- Excepción: la medida SÍ va cuando es lo que el comprador elige y sin ella no sabe qué compra: "
+    "el largo de un cable o de una manguera, la medida de una llanta o de una broca, el tamaño de una "
+    "sábana o de un colchón (Individual, Matrimonial, King) o las piezas de un paquete."
+)
+
 _MEJORAR: dict[str, dict[str, Any]] = {
     "mercado_libre": {
         "max_tokens": 1500,
@@ -306,7 +322,7 @@ _MEJORAR: dict[str, dict[str, Any]] = {
             "En atributos incluye los NECESARIOS de la categoría (marca, modelo, color, "
             "material, tamaño…) y los secundarios que ayuden a la ficha. No inventes datos "
             "que no se puedan inferir del producto. " + sin_garantia.REGLA + " " + sin_tildes.REGLA
-            + _NO_CONTRADECIR
+            + _NO_CONTRADECIR + "\n" + _TITULO_ML_SIN_COLOR_NI_MEDIDAS
         ),
     },
     # AMAZON no está en este diccionario a propósito: `mejorar()` desvía el canal
@@ -382,7 +398,10 @@ _ML_CON_FOTO = (
     "Eres experto en publicaciones de Mercado Libre México. Con la FOTO, los TÍTULOS DE REFERENCIA y "
     "las PALABRAS DE MERCADO LIBRE, propón el título y la descripción para publicar el producto.\n\n"
     "CÓMO SE USAN LAS FUENTES\n"
-    "- La FOTO dice qué es el producto, su color, su forma y qué piezas se ven.\n"
+    "- La FOTO dice qué es el producto, su color, su forma y qué piezas se ven. Lo que lo acompaña en la "
+    "foto —personas, una tablet o un celular, decoración, otros objetos— NO es parte del producto: no lo "
+    "menciones. Tampoco llames a una pieza con el nombre de otro producto: la consola o la bandeja de una "
+    "caminadora no es «escritorio» ni «mesa de trabajo».\n"
     "- Los TÍTULOS DE REFERENCIA —el del packing list, que es el del proveedor y casi siempre viene en "
     "inglés o chino, y el nombre actual en la tienda— dicen qué se compró y lo que la foto no muestra: "
     "medidas, cantidad, capacidad, voltaje. Pueden venir genéricos («tape»), en otro idioma o con faltas: "
@@ -397,12 +416,26 @@ _ML_CON_FOTO = (
     "se mencionan. Si dudas de un dato, déjalo fuera y anótalo en \"dudas\".\n\n"
     "TÍTULO: máximo 60 caracteres, español de México. " + sin_tildes.REGLA + " Empieza por el tipo de "
     "producto con las palabras "
-    "con que la gente lo busca; luego lo que lo distingue (función principal, medida o cantidad si se "
-    "conoce, color si se ve). Sin marcas ni modelos, sin signos promocionales y sin palabras en "
-    "mayúsculas sostenidas.\n"
-    "DESCRIPCIÓN: texto plano, sin HTML ni emojis, de 80 a 200 palabras: un párrafo de qué es y para "
-    "qué sirve, viñetas con «- » con sus características, y un cierre con sus usos. Sin teléfonos, "
-    "correos, enlaces ni datos de contacto. " + sin_garantia.REGLA + "\n"
+    "con que la gente lo busca; luego lo que lo distingue (tipo o característica clave, función "
+    "principal o uso). Primera letra de cada palabra en mayúscula («Caminadora Electrica Plegable Para "
+    "Casa»). Sin marcas ni modelos, sin signos promocionales y sin palabras en mayúsculas sostenidas.\n"
+    + _TITULO_ML_SIN_COLOR_NI_MEDIDAS + "\n"
+    "DESCRIPCIÓN: clara, directa y natural, como la escribiría un vendedor real y no como un texto "
+    "generado por IA. Texto plano, sin HTML ni emojis, máximo 600 caracteres, en este orden:\n"
+    "1. Una frase inicial: qué es el producto y para qué se usa.\n"
+    "2. Viñetas con «- » SOLO con lo que se ve en la foto: tipo, color, material aparente y componentes "
+    "visibles.\n"
+    "3. Una o dos frases de cómo se usa, solo si se deduce de la foto; si aplica, una indicación básica "
+    "de uso seguro (por ejemplo, colocarlo sobre una superficie firme).\n"
+    "En la descripción va SOLO lo que se ve. No supongas piezas, accesorios ni el contenido de la caja, "
+    "ni medidas, peso, potencia, capacidad, niveles de resistencia, pantallas, conectividad o "
+    "certificaciones que no se vean (los datos de los títulos de referencia van en los atributos); si "
+    "algo no se ve con claridad, no lo menciones. Nada de envío, devoluciones, precio ni promociones. "
+    "Sin tono de IA ni de folleto: nada de «es una opción para complementar», «ideal para», «perfecto "
+    "para», «no te pierdas», «eleva tu experiencia», «a tu ritmo» ni adjetivos exagerados (increíble, "
+    "excelente, innovador, premium). No repitas la misma idea con otras palabras: cada frase aporta "
+    "algo nuevo. Español de México sencillo, frases cortas, sin mayúsculas sostenidas ni signos de "
+    "exclamación. Sin teléfonos, correos, enlaces ni datos de contacto. " + sin_garantia.REGLA + "\n"
     "El título y la descripción se escriben para el COMPRADOR: no hables de la foto, de «la imagen», de "
     "los datos, del packing list, del proveedor ni de tus dudas (nada de «la imagen muestra», «según la "
     "información», «se observa» o «revisa las medidas»). Lo que no sea seguro se queda fuera y va solo "

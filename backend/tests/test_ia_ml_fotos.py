@@ -388,5 +388,39 @@ class ElCatalogoDelRepo(unittest.TestCase):
         self.assertEqual(catalogo.titulos_pl(""), [])
 
 
+class PromptsDeBrandon(unittest.TestCase):
+    """5-nov-2026: el prompt de siempre (`_ML_CON_FOTO`) con los cambios de Brandon. Título sin color,
+    capacidad ni medidas; descripción humana y solo con lo que se ve (de su prompt del 4-nov)."""
+
+    def test_el_titulo_va_sin_color_capacidad_ni_medidas(self):
+        # Mercado Libre pega el color del atributo al final: si el título también lo trae, sale dos veces.
+        regla = G._TITULO_ML_SIN_COLOR_NI_MEDIDAS
+        for texto in ("Sin color", "Para 6 Personas", "7x7 Pies", "el largo de un cable"):
+            self.assertIn(texto, regla)
+        self.assertIn(regla, G._ML_CON_FOTO)
+        self.assertIn(regla, G._MEJORAR["mercado_libre"]["system"])      # también sin foto
+        self.assertNotIn("color si se ve", G._ML_CON_FOTO)
+        self.assertNotIn("medida o cantidad si se", G._ML_CON_FOTO)
+
+    def test_lo_que_acompana_en_la_foto_no_es_el_producto(self):
+        # TEC-2231-BLN salió «… Con Mesa De Trabajo» por la consola de la caminadora con una tablet encima.
+        self.assertIn("NO es parte del producto", G._ML_CON_FOTO)
+        self.assertIn("«mesa de trabajo»", G._ML_CON_FOTO)
+
+    def test_la_descripcion_solo_lleva_lo_que_se_ve(self):
+        for texto in ("como la escribiría un vendedor real", "máximo 600 caracteres",
+                      "No supongas piezas", "«ideal para»", "superficie firme"):
+            self.assertIn(texto, G._ML_CON_FOTO)
+        self.assertNotIn("de 80 a 200 palabras", G._ML_CON_FOTO)
+        self.assertNotIn("van en la descripción", G._ML_CON_FOTO)
+
+    def test_una_sola_llamada(self):
+        # La descripción ya no va en una llamada aparte: sale del mismo JSON que el título.
+        cli = _Cli([_respuesta_ia(BUENA)])
+        r, _, _ = _mejorar(cli)
+        self.assertEqual(len(cli.enviados), 1)
+        self.assertEqual(r["campos"]["titulo"], BUENA["titulo"])
+
+
 if __name__ == "__main__":
     unittest.main()

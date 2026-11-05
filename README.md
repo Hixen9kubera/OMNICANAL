@@ -1001,6 +1001,41 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.731.0 — MEJORAR CON IA (ML): título sin color, capacidad ni medidas; descripción solo con lo que se ve
+
+Brandon (4 y 5-nov-2026). Antes de tocar el panel se probó en local con 10 SKUs del lote Deportes (cinco caminadoras,
+dos bicicletas de spinning, un banco, una red de béisbol y una casa de campaña): tres títulos lado a lado —el de siempre
+de «Mejorar con IA» y dos prompts SEO suyos con keywords numeradas— y se quedó con el de siempre: «me gustó más con el
+primer prompt». Todo va DENTRO de `ia_generadores._ML_CON_FOTO`: la misma llamada a OpenRouter de antes, sin llamadas
+nuevas.
+
+- **El título va sin color.** Toda alta nueva lleva `family_name` y Mercado Libre le pega al final el valor del atributo
+  Color: con el color en el texto salía «Caminadora Electrica Plegable Para Casa Negra **Negro**» (87 de las 207
+  publicaciones del lote Deportes). Lo prohíbe la regla nueva `_TITULO_ML_SIN_COLOR_NI_MEDIDAS`, que también va en el
+  respaldo sin foto (DeepSeek → Claude).
+- **Sin capacidad ni medidas en el título**: ni «para 6 personas» ni «7x7 pies» — «Tienda De Campaña Familiar Para
+  Acampar» basta. Excepción: cuando la medida es lo que el comprador elige y sin ella no sabe qué compra (el largo de un
+  cable o una manguera, la medida de una llanta o una broca, el tamaño de una sábana o un colchón, las piezas de un
+  paquete). Esos datos se quedan en los atributos.
+- **Primera letra de cada palabra en mayúscula**, como los títulos que ya se publicaban: 3 de 10 salían en minúsculas.
+- **Lo que acompaña al producto en la foto no es el producto** (personas, una tablet, decoración), y una pieza no se
+  nombra como otro producto. Caso: TEC-2231-BLN salía «Caminadora … Con Mesa De Trabajo» por la consola con una tablet
+  encima (Brandon: «no sirve para nada»); ahora «Caminadora Electrica Con Pasamanos Y Consola».
+- **La descripción, rediseñada con el prompt de Brandon** («que sea humanizado pero que no suponga piezas, solo lo que
+  se vea»): máximo 600 caracteres; una frase de qué es y para qué se usa, viñetas SOLO con lo visible y cómo se usa con
+  seguridad. Sin frases de IA («ideal para», «perfecto para», «a tu ritmo»…), sin repetir ideas, sin exclamaciones. Los
+  datos de los títulos de referencia (medidas, capacidad) ya no entran a la descripción: van a los atributos. En los 10
+  SKUs bajó de 597–797 a 190–296 caracteres, y ninguna menciona una pieza que no se vea.
+
+Lo que NO cambia: los modelos (OpenRouter `gpt-6-luna` → `gemini-2.5-flash`), las fuentes (foto, título del packing
+list, palabras de ML), los atributos (`ml_atributos`), `sin_tildes` y `sin_garantia`. Los títulos SEO con keywords que
+se probaron el 4 y 5-nov no quedaron.
+
+Sin bandera: cambia el texto que propone un botón; no enciende ningún flujo ni toca publicaciones existentes. Los 10
+SKUs de la prueba ya tienen ese título y esa descripción guardados en el Publicador (`enrich.channel_content`, fila sin
+cuenta y la de BEKURA donde existía) y su foto principal mejorada en Woo; eso se hizo desde un proceso local, fuera de
+este repo. Pruebas: `tests/test_ia_ml_fotos.py`, clase `PromptsDeBrandon`.
+
 ### v0.730.0 — PUBLICAR: los errores de imagen dicen la verdad (y Temu recupera la galería de Woo)
 
 Brandon (5-nov-2026), sobre los fallos de la bitácora: «puedes ayudarme con estos errores? realiza el fix». Los dos que
