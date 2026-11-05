@@ -1001,6 +1001,28 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.729.0 — CATÁLOGO: la búsqueda por categoría agrupa cada producto en su categoría correcta
+
+Eduardo (5-nov-2026): «que en la búsqueda por categoría se asignen a su categoría correcta en caso de que tengan más
+acercamiento». Hasta la v0.728.0 el filtro «Categoría», la «Subcategoría» y la vista «Por categoría» seguían la
+categoría del CATÁLOGO, muchas veces predicha (el spray para cabello HIG-0146-EST salía en Hogar › Cocina).
+
+- **Nuevo `services/categoria_cercana.py`** (funciones puras): busca la subcategoría de ML más cercana a las palabras
+  del producto (título, nombre de Odoo, texto del packing list) DENTRO de su categoría general, en
+  `channel.ml_category_tree` (hojas publicables) y con la normalización del buscador del Estudio. Cada palabra pesa más
+  mientras más al principio del título está y mientras menos común sea en esa categoría; la del nombre de la hoja vale
+  doble.
+- **Cuándo se reubica:** confianza revisada o alta, siempre; media o baja, solo si su mejor coincidencia en la general
+  le gana por 25 % a la mejor en la categoría del catálogo. Misma raíz → se queda la subcategoría del catálogo.
+- **`GET /api/catalogo/categoria-general`** suma a cada SKU su `ubicación` (`null` o `[subcategoría, hoja]`) y el total
+  `reubicados`. El cálculo tarda ~3.5 s la primera vez y queda en la caché de 10 min.
+- **Pantalla:** `c1`/`c2` (filtro, subcategorías, «Por categoría», copiar para Excel) usan la ubicación; la celda dice
+  «Se agrupa aquí · subcategoría › hoja» y muestra la del catálogo tachada como «Catálogo (antes)». El Excel suma la
+  categoría y subcategoría ORIGINALES del catálogo. El filtro vuelve a llamarse «Categoría».
+
+Medido en el sandbox: 2,316 productos se agrupan en su categoría general (1,646 de confianza alta o revisada, 670 de
+media o baja); 1,152 de media o baja se quedan en la del catálogo. Solo lectura: no escribe nada.
+
 ### v0.728.0 — CATÁLOGO: la categoría GENERAL en la pestaña, con una etiqueta por confianza
 
 Eduardo (4-nov-2026): «sube todos y ponle etiquetas dependiendo de la confianza». La pestaña CATÁLOGO lee

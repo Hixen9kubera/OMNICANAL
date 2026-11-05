@@ -23,14 +23,16 @@ import { Foto } from "./Fotos";
 import Detalle from "./Detalle";
 import { CeldaPrecio, CeldaValor, Estado, Etiqueta, Mini, Publicacion, SoldOut, TriCab } from "./Celdas";
 import {
-  CONFIANZA_GENERAL, CORTO, MOTIVOS, PRIORIDADES, SIN_CATEGORIA_GENERAL, SIN_FILTROS, type Catalogo, type Fila, type Filtros, type Orden, c1, c2,
-  enContenedor, hora, nf, ordenar, pasa, publicadoEnML, sumar, tsv,
+  CONFIANZA_GENERAL, CORTO, MOTIVOS, PRIORIDADES, SIN_CATEGORIA_GENERAL, SIN_FILTROS, type Catalogo, type Fila, type Filtros, type Orden, c1, c1Catalogo,
+  c2, c2Catalogo, enContenedor, hora, nf, ordenar, pasa, publicadoEnML, reubicado, sumar, tsv,
 } from "./logica";
 
 /** Cómo va la lectura de lo publicado en ML (la página la pide después del catálogo). */
 export type EstadoPublicados = { estado: "cargando" | "ok" | "error"; actualizado?: string | null };
 /** Cómo va la lectura de la categoría general (v0.728.0; también llega después del catálogo). */
-export type EstadoCategoriaGeneral = { estado: "cargando" | "ok" | "error"; total?: number; porConfianza?: Record<string, number> };
+export type EstadoCategoriaGeneral = {
+  estado: "cargando" | "ok" | "error"; total?: number; porConfianza?: Record<string, number>; reubicados?: number;
+};
 
 /** La celda «Categoría»: arriba la general (foto del packing list) con la etiqueta de su confianza, debajo la del
  *  catálogo. Media y baja se ven, pero su etiqueta dice que falta revisarlas. */
@@ -44,14 +46,19 @@ function CeldaCategoria({ D, r, cg }: { D: Catalogo; r: Fila; cg: EstadoCategori
           <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">General · foto del packing list</div>
           <div className={`text-xs font-semibold ${color}`}>{r._cg[0]}</div>
           <Etiqueta tono={conf?.tono ?? "slate"}>{conf?.texto ?? r._cg[1]}</Etiqueta>
+          {reubicado(r) && (
+            <div className="mt-1 text-[11px] leading-snug text-slate-600" title="Subcategoría más cercana a las palabras del producto dentro de su categoría general, según el árbol de Mercado Libre">
+              Se agrupa aquí{r._cg[2]![0] ? <> · <b className="font-semibold">{r._cg[2]![0]}</b>{r._cg[2]![1] ? ` › ${r._cg[2]![1]}` : ""}</> : " · sin subcategoría cercana"}
+            </div>
+          )}
         </div>
       ) : !r.sin && cg.estado === "ok" ? (
         <div className="text-[11px] text-slate-400">Sin categoría general</div>
       ) : null}
       <div>
-        {r._cg && <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Catálogo</div>}
-        <div className={`text-xs ${r._cg ? "text-slate-500" : "font-semibold text-slate-700"}`}>{c1(D, r)}</div>
-        <div className="text-[11px] text-slate-500">{c2(D, r)}{r.kq === "r" ? " · predicha" : r.kq === "p" ? " · estimada" : ""}</div>
+        {r._cg && <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">{reubicado(r) ? "Catálogo (antes)" : "Catálogo · aquí se agrupa"}</div>}
+        <div className={`text-xs ${r._cg ? "text-slate-500" : "font-semibold text-slate-700"} ${reubicado(r) ? "line-through decoration-slate-300" : ""}`}>{c1Catalogo(D, r)}</div>
+        <div className="text-[11px] text-slate-500">{c2Catalogo(D, r)}{r.kq === "r" ? " · predicha" : r.kq === "p" ? " · estimada" : ""}</div>
       </div>
     </div>
   );
@@ -286,7 +293,10 @@ export default function Productos({ D, filtros, setFiltros, pub, cg }: {
             ? <>Categoría general = la raíz de Mercado Libre decidida con la foto del renglón del packing list (<b>{nf(cg.total || 0)}</b> SKUs):{" "}
               {(["revisado", "alta", "media", "baja"] as const).map((k, i) => (
                 <span key={k}>{i ? " · " : ""}{CONFIANZA_GENERAL[k].texto} <b>{nf(cg.porConfianza?.[k] || 0)}</b></span>
-              ))}. Las de confianza media y baja se ven, pero falta revisarlas.</>
+              ))}. Las de confianza media y baja se ven, pero falta revisarlas.{" "}
+              Los filtros de categoría y la vista «Por categoría» agrupan a <b>{nf(cg.reubicados || 0)}</b> productos en su categoría general
+              (confianza alta o revisada siempre; media y baja solo si sus palabras se acercan más a ella que a la del catálogo),
+              con la subcategoría más cercana según el árbol de Mercado Libre.</>
             : cg.estado === "cargando" ? "Leyendo la categoría general…" : <span className="text-amber-700">No se pudo leer la categoría general.</span>}
         </p>
       </div>
@@ -302,7 +312,7 @@ export default function Productos({ D, filtros, setFiltros, pub, cg }: {
             </span>
           </label>
           <Selector etiqueta="Categoría general" valor={filtros.cg} onChange={cambiar("cg")} opciones={generales} />
-          <Selector etiqueta="Categoría del catálogo" valor={filtros.cat} onChange={cambiar("cat")} opciones={[["", "Todas"], ...categorias.map((c): [string, string] => [c, c])]} />
+          <Selector etiqueta="Categoría" valor={filtros.cat} onChange={cambiar("cat")} opciones={[["", "Todas"], ...categorias.map((c): [string, string] => [c, c])]} />
           <Selector etiqueta="Subcategoría" valor={filtros.sub} onChange={cambiar("sub")} opciones={[["", "Todas"], ...subcategorias.map((c): [string, string] => [c, c])]} />
           <Selector etiqueta="Estado" valor={filtros.est} onChange={cambiar("est")} opciones={ESTADOS} />
           <Selector etiqueta="Contenedor" valor={filtros.con} onChange={cambiar("con")}

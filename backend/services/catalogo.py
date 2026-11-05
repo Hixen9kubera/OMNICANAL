@@ -151,27 +151,73 @@ def publicados() -> dict[str, Any]:
 CATEGORIA_GENERAL_TTL = 600   # segundos: la tabla cambia por cargas a mano, no por un sync
 _cat_general: dict[str, Any] = {"t": 0.0, "dato": None}
 _lock_cat_general = threading.Lock()
+_textos: dict[str, tuple[str | None, dict[str, float]]] | None = None
+
+
+def _textos_catalogo() -> dict[str, tuple[str | None, dict[str, float]]]:
+    """BLOQUEANTE, la primera vez: {SKU: (raíz de su categoría en el catálogo, pesos de sus palabras)} (v0.729.0).
+    Del catálogo abierto se queda esto, no los ~14 MB."""
+    global _textos
+    from services import categoria_cercana
+    with _lock_indice:
+        if _textos is None:
+            datos = json.loads(gzip.decompress(datos_gz()))
+            K = datos.get("K") or []
+            salida: dict[str, tuple[str | None, dict[str, float]]] = {}
+            for r in datos.get("R") or []:
+                sku = str(r.get("s") or "").strip().upper()
+                if not sku or r.get("sin") or sku in salida:
+                    continue
+                k = r.get("k")
+                raiz = K[k][0] if isinstance(k, int) and 0 <= k < len(K) and K[k] and K[k][0] else None
+                salida[sku] = (raiz, categoria_cercana.textos(r))
+            _textos = salida
+        return _textos
 
 
 def categoria_general() -> dict[str, Any]:
-    """BLOQUEANTE (kubera). {total, por_confianza, skus: {SKU: [categoria, confianza]}} de `channel.categoria_general`
-    (0082, v0.728.0).
+    """BLOQUEANTE (kubera). {total, por_confianza, reubicados, skus: {SKU: [categoria, confianza, ubicacion]}} de
+    `channel.categoria_general` (0082, v0.728.0).
 
     TODAS, cada una con su confianza (Eduardo, 4-nov-2026: «sube todos y ponle etiquetas dependiendo de la confianza»):
     `revisado` y `alta` están aplicadas; `media` y `baja` siguen pendientes de revisión (estado `pendiente`) y la
-    pantalla lo dice en su etiqueta. Un SKU que no viene no tiene categoría general. La llave va en MAYÚSCULAS."""
+    pantalla lo dice en su etiqueta. Un SKU que no viene no tiene categoría general. La llave va en MAYÚSCULAS.
+
+    `ubicacion` (v0.729.0, Eduardo, 5-nov: «que en la búsqueda por categoría se asignen a su categoría correcta»):
+    dónde se AGRUPA en la pestaña. None = en la categoría del catálogo (misma raíz, o una media/baja que no se acerca
+    más a la general); [subcategoría, hoja] = en la general, con su subcategoría más cercana según el árbol de ML
+    ("" si ninguna). Ver `services/categoria_cercana.py`."""
     with _lock_cat_general:
         if _cat_general["dato"] is not None and time.monotonic() - _cat_general["t"] < CATEGORIA_GENERAL_TTL:
             return _cat_general["dato"]
+    from services import categoria_cercana
     from services import supabase_db as sdb
     filas = sdb.fetch_all(
         """select upper(sku::text) as sku, categoria, confianza
              from channel.categoria_general""")
+    try:
+        hojas = sdb.fetch_all(
+            """select category_id, path_names from channel.ml_category_tree
+                where is_leaf and listing_allowed""")
+    except Exception:  # noqa: BLE001 — sin árbol, se reubica sin subcategoría (y media/baja se quedan)
+        hojas = []
+    indice = categoria_cercana.Indice((h["category_id"], list(h["path_names"] or [])) for h in hojas)
+    try:
+        textos = _textos_catalogo()
+    except SinCatalogo:
+        textos = {}
     por_confianza: dict[str, int] = {}
+    skus: dict[str, list[Any]] = {}
+    reubicados = 0
     for f in filas:
         por_confianza[f["confianza"]] = por_confianza.get(f["confianza"], 0) + 1
-    dato = {"total": len(filas), "por_confianza": por_confianza,
-            "skus": {f["sku"]: [f["categoria"], f["confianza"]] for f in filas}}
+        ubicacion = None
+        t = textos.get(f["sku"])
+        if t is not None:
+            ubicacion = categoria_cercana.ubicar(indice, f["categoria"], f["confianza"], t[0], t[1])
+            reubicados += ubicacion is not None
+        skus[f["sku"]] = [f["categoria"], f["confianza"], ubicacion]
+    dato = {"total": len(filas), "por_confianza": por_confianza, "reubicados": reubicados, "skus": skus}
     with _lock_cat_general:
         _cat_general.update(t=time.monotonic(), dato=dato)
     return dato
@@ -179,11 +225,12 @@ def categoria_general() -> dict[str, Any]:
 
 def olvidar() -> None:
     """Vacía la caché (pruebas, o tras dejar archivos nuevos en la carpeta)."""
-    global _indice
+    global _indice, _textos
     with _lock:
         _cache.clear()
     with _lock_indice:
         _indice = None
+        _textos = None
     with _lock_publicados:
         _publicados.update(t=0.0, dato=None)
     with _lock_cat_general:

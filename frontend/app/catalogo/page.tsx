@@ -80,7 +80,7 @@ function Catalogo() {
             if (ctl.signal.aborted) return;
             marcarCategoriaGeneral(d.R, c.skus);
             setD({ ...d });
-            setCg({ estado: "ok", total: c.total, porConfianza: c.por_confianza });
+            setCg({ estado: "ok", total: c.total, porConfianza: c.por_confianza, reubicados: c.reubicados });
           })
           .catch(() => { if (!ctl.signal.aborted) setCg({ estado: "error" }); });
         catalogoPublicados(ctl.signal)

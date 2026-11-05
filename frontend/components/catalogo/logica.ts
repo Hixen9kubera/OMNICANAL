@@ -43,16 +43,24 @@ export interface Fila {
   _mv: string[];
   /** Publicado HOY en Mercado Libre (v0.708.0): [cuenta, active|paused]; [] = no; undefined = todavía sin dato. */
   _pub?: [string, string][];
-  /** Categoría GENERAL decidida con la foto del packing list (v0.728.0): [raíz de ML, confianza]; null = sin
-   *  categoría general aplicada (o es un renglón sin SKU); undefined = todavía sin dato. */
-  _cg?: [string, string] | null;
+  /** Categoría GENERAL decidida con la foto del packing list (v0.728.0): [raíz de ML, confianza, ubicación]; null =
+   *  sin categoría general (o es un renglón sin SKU); undefined = todavía sin dato. `ubicación` (v0.729.0): null = se
+   *  agrupa en la categoría del catálogo; [subcategoría, hoja] = se agrupa en la general, con su subcategoría más
+   *  cercana según el árbol de ML ("" si ninguna). */
+  _cg?: [string, string, Ubicacion?] | null;
 }
 
 /** `GET /api/catalogo/publicados`: lo publicado HOY en ML (activa o pausada), por cuenta, y la hora del último sync. */
 export interface CatalogoPublicados { actualizado: string | null; ml: Record<string, [string, string][]> }
 
-/** `GET /api/catalogo/categoria-general` (v0.728.0): todas, con su confianza (revisado · alta · media · baja). */
-export interface CatalogoCategoriaGeneral { total: number; por_confianza: Record<string, number>; skus: Record<string, [string, string]> }
+/** Dónde se agrupa un SKU dentro de su categoría general: [subcategoría, hoja] (v0.729.0). */
+export type Ubicacion = [string, string] | null;
+
+/** `GET /api/catalogo/categoria-general` (v0.728.0): todas, con su confianza (revisado · alta · media · baja) y, desde
+ *  la v0.729.0, dónde se agrupa cada una (`reubicados` = cuántas se mueven a su categoría general). */
+export interface CatalogoCategoriaGeneral {
+  total: number; por_confianza: Record<string, number>; reubicados: number; skus: Record<string, [string, string, Ubicacion]>;
+}
 
 /** Etiqueta de cada confianza: revisado y alta están aplicadas; media y baja, pendientes de revisión. */
 export const CONFIANZA_GENERAL: Record<string, { texto: string; tono: "indigo" | "emerald" | "amber" | "rojo"; pendiente: boolean }> = {
@@ -163,8 +171,15 @@ export function etiquetaEstimado(e: Estimado): string {
 
 // ── Categorías ───────────────────────────────────────────────────────────────
 
-export const c1 = (D: Catalogo, r: Fila) => (r.k == null ? "Sin categoría" : D.K[r.k][0]);
-export const c2 = (D: Catalogo, r: Fila) => (r.k == null ? "" : D.K[r.k][1] || "");
+/** La categoría y subcategoría TAL COMO VIENEN en el catálogo (lo que el artifact predijo o estimó). */
+export const c1Catalogo = (D: Catalogo, r: Fila) => (r.k == null ? "Sin categoría" : D.K[r.k][0]);
+export const c2Catalogo = (D: Catalogo, r: Fila) => (r.k == null ? "" : D.K[r.k][1] || "");
+/** ¿Se agrupa en su categoría general en vez de la del catálogo? (v0.729.0) */
+export const reubicado = (r: Fila) => !!(r._cg && r._cg[2]);
+/** Con la que se busca, filtra y agrupa (v0.729.0, Eduardo, 5-nov-2026: «que en la búsqueda por categoría se asignen a su
+ *  categoría correcta»): la general cuando el backend la reubica (`ubicación`), si no, la del catálogo. */
+export const c1 = (D: Catalogo, r: Fila) => (reubicado(r) ? r._cg![0] : c1Catalogo(D, r));
+export const c2 = (D: Catalogo, r: Fila) => (reubicado(r) ? r._cg![2]![0] : c2Catalogo(D, r));
 
 // ── Preparar (una vez al cargar) ─────────────────────────────────────────────
 
@@ -449,7 +464,8 @@ export function tsv(D: Catalogo, vista: Fila[]): string {
   const cab = ["SKU", "Título", "Nombre original", "Categoría", "Subcategoría", "Comprado", "Salió", "Queda", "SOLD OUT", "Odoo libre",
     "min_meli", "media_meli", "mediana_meli", "max_meli", "publicaciones_meli", "precio_meli_usado", "precio_meli_depurado_eduardo", "fuente_meli", "valor_meli",
     "min_amz", "media_amz", "max_amz", "publicaciones_amz", "precio_amz_usado", "amz_medido_o_estimado", "valor_amz",
-    "Contenedores", "Empate", "Foto", "Publicado en ML", "Categoría general", "Confianza de la categoría general"];
+    "Contenedores", "Empate", "Foto", "Publicado en ML", "Categoría general", "Confianza de la categoría general",
+    "Categoría del catálogo (original)", "Subcategoría del catálogo (original)"];
   const enML = (r: Fila) => (r.sin ? "" : r._pub == null ? "sin dato"
     : r._pub.length ? r._pub.map(([c, s]) => `${c} ${s === "active" ? "activa" : "pausada"}`).join("; ") : "no");
   const tipo = (f: boolean, e: Estimado | undefined, r: Fila) => (f ? "medido" : e ? `estimado: ${comoSeEstimo(e)}` : r.nv ? "insumo, no se valúa" : "");
@@ -470,7 +486,7 @@ export function tsv(D: Catalogo, vista: Fila[]): string {
       r.pc != null ? r.pq : "", r.so ? "sí" : "", r.lb || 0]
       .concat(meli(r) as (string | number)[], canal(r.az, r._fa, r.ea, r._pa, r._ta, r) as (string | number)[],
         [Object.keys(r.ct || {}).join(" "), (r.cm || []).join(" "), r.fo === "pl" ? "packing list" : r.fo === "odoo" ? "Odoo" : "", enML(r),
-          r._cg ? r._cg[0] : "", r._cg ? (CONFIANZA_GENERAL[r._cg[1]]?.texto ?? r._cg[1]) : ""])
+          r._cg ? r._cg[0] : "", r._cg ? (CONFIANZA_GENERAL[r._cg[1]]?.texto ?? r._cg[1]) : "", c1Catalogo(D, r), c2Catalogo(D, r)])
       .map((v) => String(v ?? "").replace(/[\t\n]/g, " ")).join("\t"));
   });
   return out.join("\n");
