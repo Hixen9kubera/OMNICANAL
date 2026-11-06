@@ -1062,6 +1062,15 @@ export function agregarImagenes(
   return postJSON(`/api/imagenes/${encodeURIComponent(sku)}/agregar`, body);
 }
 
+/** Las 6 primeras fotos de una URL de Alibaba, agregadas a la galería del SKU (Apify:
+ *  tarda de 1 a 3 minutos). Responde como `agregarImagenes`. */
+export function traerFotosAlibaba(
+  sku: string,
+  body: { wc_id: number | null; url: string; variante?: boolean },
+): Promise<GaleriaEscrituraResp> {
+  return postJSON(`/api/imagenes/${encodeURIComponent(sku)}/alibaba`, body);
+}
+
 // ── Guardar contenido (título/descripción/atributos) a WooCommerce (General) ──
 export function guardarContenido(
   sku: string,

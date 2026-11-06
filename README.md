@@ -1001,6 +1001,74 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.733.0 — ESTUDIO DE PRODUCTO: familias principal y complementaria, sin Costos, fotos desde Alibaba y con movimiento
+
+**Por qué (6-nov-2026, Brandon).**
+- La sección de **Costos** sale del Estudio.
+- La URL de Alibaba recupera su scraper: un botón trae las **6 fotos** y las guarda en el SKU.
+- El Estudio se ordena por **familias**. Primero los componentes principales —título, categoría, imágenes y precio—;
+  después los complementarios —descripción y atributos—.
+- Se armaron dos prototipos en local:
+  - **A**: el orden nuevo.
+  - **B**: A con animaciones y reacciones al clic, sobre la referencia **Fernly** (Code and Chill) y un reel.
+- Brandon eligió **B**.
+
+**Las dos familias (`ProductStudio.tsx`, «LAS DOS FAMILIAS»).**
+- **Principal**, «lo que ve primero el comprador». Va en dos columnas, como la ficha de un marketplace:
+  - a la izquierda, las **Imágenes**, con «Fotos desde Alibaba» dentro;
+  - a la derecha, **Título**, la **Categoría** del canal y el **Precio** (regular, oferta, costo total y stock), con
+    «Sugerir precio» debajo.
+- **Complementario**, «lo que completa la ficha». Va abajo, en un panel tenue: **Descripción**, los extras de Amazon y
+  Walmart, **Atributos** y el **GTIN**. El GTIN salió de la tarjeta de categoría; en Amazon, TikTok, Temu y Walmart
+  esa tarjeta ya no queda vacía.
+- Cada familia lleva su encabezado (`CabeceraFamilia`). Los bloques se MOVIERON, no se reescribieron, así que su
+  lógica es la de antes.
+
+**Costos fuera.**
+- Se quitó la tarjeta COSTOS completa: costo del producto en USD, tipo de cambio, peso, margen, comisión, envío,
+  dimensiones de la pieza, «Regenerar costo», los resultados y «Guardar costo y precios».
+- También se fue su código muerto: `regenerarCosto`, `guardarCosto`, `reflejarComision`, sus estados y la celda
+  `Resultado`.
+- La fila de **precio sigue** (es componente principal) y «Guardar precio y costo» va por el mismo escritor de Costos.
+- Consecuencia: **peso y medidas ya no se editan en el Estudio**. Se siguen leyendo de Woo y viajan al publicar
+  como antes.
+- El «Precio Alibaba» pasa a ser solo lectura junto a la URL. El campo editable no se guardaba en ningún lado: solo
+  sembraba el costo que se quitó.
+
+**Fotos desde Alibaba (`POST /api/imagenes/{sku}/alibaba`, `routers/imagenes.py`).**
+- Reusa el scraper de Crear (`crear_producto.scrape_alibaba`, Apify, proxy residencial MX), que se quedó sin botón
+  cuando Crear se apagó (2-nov).
+- Baja las **6 primeras** fotos y las **agrega** a la galería por la misma ruta que el «+» (`agregar`). Así se
+  respetan las fotos propias de una variante y la sincronización de las hijas.
+- Guarda la URL en la meta `url_alibaba`.
+- Agrega, no reemplaza: lo que sobre se quita con «Eliminar».
+- Solo acepta `alibaba.com`. Si Alibaba no devuelve fotos, contesta 422 sin escribir nada.
+- Apify tarda de 1 a 3 minutos y cuesta centavos por corrida. El botón lo dice mientras espera.
+- Los errores llegan en llano al recuadro de la galería y al aviso.
+
+**Movimiento (`globals.css`, bloque `studio-*`).** Solo CSS propio, sin dependencias y sin código de Fernly:
+- las tarjetas entran en **cascada** y vuelven a entrar al cambiar de canal; se alterna el nombre de la animación
+  (`data-vuelta`) en vez de desmontar la ficha;
+- una **onda** nace donde se hace clic en cualquier botón (un solo manejador en la raíz, `ondaAlClic`) y los botones
+  se hunden y rebotan;
+- la píldora del canal elegido **salta**;
+- la foto grande **se funde** al cambiarla;
+- tarjetas y miniaturas **se levantan** al pasar el mouse;
+- un **aviso flotante** abajo a la izquierda repite el resultado de cada acción y se va solo a los 3.6 s; usa los
+  mismos mensajes de siempre;
+- el **stock cuenta** hasta su valor (`NumeroAnimado`);
+- la raya de cada familia **se dibuja**.
+
+Todo cuelga de la clase `studio` de la raíz del Estudio. Con «reducir movimiento» del sistema no se anima nada.
+
+**Verificado.**
+- `tests/test_imagenes_alibaba.py` (3): solo Alibaba, baja las 6 primeras por la ruta del «+» y guarda la URL; sin
+  fotos no escribe.
+- 70 pruebas de galería y publicador en verde, y `tsc --noEmit` limpio.
+- En local (backend sin scheduler ni tokens): OFI-0086-ROJ, la cascada cuadro por cuadro, la onda y el aviso con una
+  URL inválida, que el backend rechaza con 400.
+- **«Traer 6 fotos» no se probó contra un SKU real**: escribe en su galería de Woo y gasta Apify.
+
 ### v0.732.0 — ODOO EN SOLO LECTURA: el backend ya no puede escribir en Odoo (y la pestaña Inventario vuelve a leerlo)
 
 Eduardo (5-nov-2026): con la llave nueva de Odoo, levantar otra vez la pestaña Inventario, primero en el sandbox. Desde

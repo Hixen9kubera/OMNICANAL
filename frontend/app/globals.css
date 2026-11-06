@@ -408,3 +408,70 @@ body {
   border-radius: 50%;
   animation: login-gira 0.65s linear infinite;
 }
+
+/* ═══ ESTUDIO DE PRODUCTO EN MOVIMIENTO (v0.733.0, 6-nov-2026) ═══
+   Patrones de la referencia de Brandon (Fernly): entrada escalonada, respuesta al
+   clic, avisos que suben desde abajo y números que cuentan. Solo CSS; el JS se
+   limita a la onda del clic y al contador (ProductStudio.tsx). Todo cuelga de la
+   clase `studio` de la raíz del Estudio, así que no se cuela en otras pantallas. */
+
+/* Entrada escalonada: cada hijo de una cascada sube y aparece, uno tras otro. Al
+   cambiar de canal se alterna el nombre de la animación (data-vuelta) para que
+   vuelva a correr sin desmontar nada. */
+@keyframes studio-entra-a { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+@keyframes studio-entra-b { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+.studio .studio-cascada > * { animation: studio-entra-a 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.studio .studio-cascada[data-vuelta="1"] > * { animation-name: studio-entra-b; }
+.studio .studio-cascada > *:nth-child(2) { animation-delay: 70ms; }
+.studio .studio-cascada > *:nth-child(3) { animation-delay: 140ms; }
+.studio .studio-cascada > *:nth-child(4) { animation-delay: 210ms; }
+.studio .studio-cascada > *:nth-child(5) { animation-delay: 280ms; }
+.studio .studio-cascada > *:nth-child(n + 6) { animation-delay: 350ms; }
+
+/* La raya de la cabecera de familia se dibuja de izquierda a derecha. */
+@keyframes studio-traza { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+.studio .studio-traza { transform-origin: left; animation: studio-traza 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) 0.15s both; }
+
+/* Tarjetas: se levantan al pasar el mouse. */
+.studio section.rounded-2xl { transition: box-shadow 0.25s ease, transform 0.25s ease; }
+.studio section.rounded-2xl:hover { box-shadow: 0 14px 30px -18px rgba(15, 23, 42, 0.35); }
+
+/* Botones: se hunden al presionar y sueltan con rebote. */
+.studio button { transition: transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1), filter 0.2s ease, box-shadow 0.2s ease; }
+.studio button:not(:disabled):active { transform: scale(0.96); }
+
+/* La onda que nace donde se hizo clic (la crea `ondaAlClic`). */
+@keyframes studio-onda { from { transform: scale(0); opacity: 0.35; } to { transform: scale(2.6); opacity: 0; } }
+.studio-onda {
+  position: absolute;
+  border-radius: 9999px;
+  pointer-events: none;
+  background: currentColor;
+  animation: studio-onda 0.6s ease-out forwards;
+}
+
+/* La píldora del canal elegido «salta» al seleccionarse. */
+@keyframes studio-salta { 0% { transform: scale(0.92); } 55% { transform: scale(1.09); } 100% { transform: scale(1.03); } }
+.studio .studio-salta { animation: studio-salta 0.42s cubic-bezier(0.34, 1.56, 0.64, 1) both; }
+
+/* La foto grande entra con un fundido suave al cambiarla. */
+@keyframes studio-funde { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: none; } }
+.studio .studio-funde { animation: studio-funde 0.35s ease-out both; }
+
+/* Las miniaturas se levantan al pasar el mouse. */
+.studio .studio-mini { transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.2s ease; }
+.studio .studio-mini:hover { transform: translateY(-3px); }
+
+/* Aviso (toast) que sube desde abajo a la izquierda. */
+@keyframes studio-aviso { from { opacity: 0; transform: translateY(16px) scale(0.96); } to { opacity: 1; transform: none; } }
+.studio-aviso { animation: studio-aviso 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) both; }
+@keyframes studio-barra { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+.studio-aviso-barra { transform-origin: left; animation: studio-barra 3.6s linear forwards; }
+
+/* Quien pidió menos movimiento, no lo recibe. */
+@media (prefers-reduced-motion: reduce) {
+  .studio-cascada > *, .studio-traza, .studio-salta, .studio-funde, .studio-aviso,
+  .studio-aviso-barra, .studio-onda { animation: none !important; }
+  .studio button, .studio section.rounded-2xl, .studio-mini { transition: none !important; }
+  .studio button:not(:disabled):active, .studio-mini:hover { transform: none; }
+}

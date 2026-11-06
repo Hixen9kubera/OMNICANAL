@@ -445,6 +445,8 @@ export type GaleriaEscrituraResp = Partial<GaleriaResp> & {
   ok?: boolean;
   agregadas?: number;
   image_id?: number;
+  /** Solo en «Traer 6 fotos» de Alibaba: cuántas tenía el producto y cuántas entraron. */
+  alibaba?: { encontradas: number; agregadas: number };
 };
 
 // ── IA: generadores de contenido por canal ──────────────────────────

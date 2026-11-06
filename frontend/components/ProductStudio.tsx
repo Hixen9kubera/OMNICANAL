@@ -12,7 +12,7 @@ import {
   UploadCloud,
   CheckCircle2,
   AlertTriangle,
-  Calculator,
+  Download,
   RefreshCw,
   Save,
   Plus,
@@ -61,6 +61,7 @@ import {
   costoPreview,
   adoptarImagen,
   agregarImagenes,
+  traerFotosAlibaba,
   eliminarImagenGaleria,
   galeriaProducto,
   hacerPrincipalImagen,
@@ -659,10 +660,8 @@ export default function ProductStudio({
   const [margen, setMargen] = useState("48");
   const [incluirEnvio, setIncluirEnvio] = useState(true);
   const [costoCalc, setCostoCalc] = useState<Partial<CostoCalculo> | null>(null);
-  const [costoFresco, setCostoFresco] = useState(false); // true tras Regenerar/Guardar
-  const [regenerando, setRegenerando] = useState(false);
-  const [guardandoCosto, setGuardandoCosto] = useState(false);
-  const [costoMsg, setCostoMsg] = useState<{ ok: boolean; texto: string } | null>(null);
+  // «Traer 6 fotos» desde la URL de Alibaba (Apify tarda de 1 a 3 minutos).
+  const [trayendoAlibaba, setTrayendoAlibaba] = useState(false);
 
   // Precio escrito a mano: `preciosTocados` (ref) protege lo tecleado de la
   // metadata que llega async, y `preciosEditados` (estado) muestra el botón de
@@ -685,6 +684,57 @@ export default function ProductStudio({
   const skuVivo = useRef(sku);
 
   const cargandoCampos = useRef(false);
+
+  // ── Movimiento del Estudio (v0.733.0, referencia Fernly de Brandon) ──
+  // Lo visual vive en globals.css (`.studio …`); aquí solo el aviso, la cascada
+  // al cambiar de canal y la onda del clic. Con «reducir movimiento» no se anima.
+  // Aviso flotante: repite abajo a la izquierda el resultado de cada acción (los
+  // mismos mensajes de siempre; nada cambia en cómo se guarda).
+  const [aviso, setAviso] = useState<{ ok: boolean; texto: string; id: number } | null>(null);
+  const avisar = useCallback((m: { ok: boolean; texto: string } | null) => {
+    if (m) setAviso({ ...m, id: Date.now() });
+  }, []);
+  useEffect(() => avisar(canalMsg), [canalMsg, avisar]);
+  useEffect(() => avisar(precioMsg), [precioMsg, avisar]);
+  useEffect(() => avisar(contenidoMsg), [contenidoMsg, avisar]);
+  useEffect(() => { if (avisoGal) avisar({ ok: false, texto: avisoGal }); }, [avisoGal, avisar]);
+  useEffect(() => {
+    if (!aviso) return;
+    const t = window.setTimeout(() => setAviso(null), 3600);
+    return () => window.clearTimeout(t);
+  }, [aviso]);
+  // Al cambiar de canal las tarjetas vuelven a entrar en cascada (ver `.studio-cascada`
+  // en globals.css): se alterna el nombre de la animación en vez de desmontar la ficha.
+  const [vuelta, setVuelta] = useState(0);
+  const primerCanal = useRef(true);
+  useEffect(() => {
+    if (primerCanal.current) { primerCanal.current = false; return; }
+    setVuelta((v) => v ^ 1);
+  }, [canal]);
+
+  // La onda del clic: nace donde se presionó cualquier botón del Estudio y se borra
+  // sola al terminar. Un solo manejador en la raíz, en vez de uno por botón.
+  function ondaAlClic(e: React.PointerEvent) {
+    const b = (e.target as HTMLElement).closest("button");
+    if (!b || b.disabled || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const r = b.getBoundingClientRect();
+    const d = Math.max(r.width, r.height);
+    const onda = document.createElement("span");
+    onda.className = "studio-onda";
+    Object.assign(onda.style, {
+      width: `${d}px`, height: `${d}px`,
+      left: `${e.clientX - r.left - d / 2}px`, top: `${e.clientY - r.top - d / 2}px`,
+    });
+    const antes = { position: b.style.position, overflow: b.style.overflow };
+    if (getComputedStyle(b).position === "static") b.style.position = "relative";
+    b.style.overflow = "hidden";
+    b.appendChild(onda);
+    onda.addEventListener("animationend", () => {
+      onda.remove();
+      b.style.position = antes.position;
+      b.style.overflow = antes.overflow;
+    }, { once: true });
+  }
 
   // ── Tema del canal seleccionado ────────────────────────────────────
   const canalInfo = useMemo(() => canales.find((c) => c.id === canal), [canales, canal]);
@@ -724,8 +774,6 @@ export default function ProductStudio({
     setMargen("48");
     setIncluirEnvio(true);
     setCostoCalc(null);
-    setCostoFresco(false);
-    setCostoMsg(null);
     medidasEscritas.current = new Set();
     skuVivo.current = sku;
   }, [sku]);
@@ -1317,13 +1365,6 @@ export default function ProductStudio({
     pct_comision: comision.trim() ? (aNumero(comision) ?? 0) / 100 : null,
   });
 
-  // Tras calcular, refleja la comisión usada en el campo (si estaba vacío).
-  const reflejarComision = (c: Partial<CostoCalculo>) => {
-    if (!comision.trim() && c.pct_comision != null) {
-      setComision(String(Math.round(c.pct_comision * 1000) / 10));
-    }
-  };
-
   // Refleja el cálculo en los campos que usa el resto del modal (publicar).
   const sincronizarCampos = (c: Partial<CostoCalculo>) => {
     // El cálculo acaba de escribir los precios (Regenerar / Guardar costo):
@@ -1341,28 +1382,10 @@ export default function ProductStudio({
     }));
   };
 
-  async function regenerarCosto() {
-    if (!sku) return;
-    setRegenerando(true);
-    setCostoMsg(null);
-    try {
-      const r = await costoPreview(sku, overridesCosto());
-      setCostoCalc(r.calculo);
-      setCostoFresco(true);
-      sincronizarCampos(r.calculo);
-      reflejarComision(r.calculo);
-    } catch (e) {
-      setCostoMsg({ ok: false, texto: mensajeDeError(e, "No se pudo calcular: revisa el costo, o ingresa la Comisión ML (%) — no se encontró la de la categoría.") });
-    } finally {
-      setRegenerando(false);
-    }
-  }
-
-  // Precio fijado A MANO. Va por el MISMO escritor que "Guardar costo y
-  // precios" (costos_finales + WooCommerce, replicando a variantes): el panel
-  // lee el precio de costos_finales, así que escribir solo en Woo dejaría el
-  // Estudio mostrando el viejo. El backend recalcula el desglose con este
-  // precio, y "Regenerar" abajo lo vuelve a derivar del costo si hace falta.
+  // Precio fijado A MANO. Va por el escritor de Costos (costos_finales +
+  // WooCommerce, replicando a variantes): el panel lee el precio de
+  // costos_finales, así que escribir solo en Woo dejaría el Estudio mostrando el
+  // viejo. El backend recalcula el desglose con este precio.
   // Tras un guardado que llegó a WooCommerce: vuelve a leer qué tiene ahora la
   // variante (peso, medidas, precios y qué sigue viniendo del padre). Sin esto la
   // pantalla seguía con las marcas de antes de guardar y «Publicar» mandaba un
@@ -1433,57 +1456,6 @@ export default function ProductStudio({
       });
     } finally {
       setGuardandoPrecios(false);
-    }
-  }
-
-  async function guardarCosto() {
-    if (!sku || soloVistaAgrupada) return;
-    setGuardandoCosto(true);
-    setCostoMsg(null);
-    try {
-      // Guarda LO QUE SE VE: si el usuario fijó un precio a mano, se respeta en
-      // vez de recalcularlo. Dos botones que guardan precios con semánticas
-      // opuestas confundían — para volver al precio derivado está "Regenerar".
-      const r = await costoGuardar(sku, {
-        ...overridesCosto(),
-        ...(preciosTocados.current ? {
-          precio_base: precioParaGuardar("precioRegular"),
-          precio_sugerido: precioParaGuardar("precioOferta"),
-        } : {}),
-        sincronizar_woo: true,
-      });
-      const f = r.finales as Record<string, unknown>;
-      const num = (v: unknown) => (v == null || v === "" ? undefined : Number(v));
-      const merged: Partial<CostoCalculo> = {
-        ...(costoCalc ?? {}),
-        costo_producto: num(f.costo_producto),
-        costo_cbm: num(f.costo_cbm),
-        costo_unitario: num(f.costo_unitario),
-        costo_comision: num(f.costo_comision),
-        costo_fee_envio: num(f.costo_fee_envio),
-        precio_base: num(f.precio_base),
-        precio_sugerido: num(f.precio_sugerido),
-        pct_comision: num(f.pct_comision) ?? undefined,
-      };
-      setCostoCalc(merged);
-      setCostoFresco(true);
-      sincronizarCampos(merged);
-      reflejarComision(merged);
-      setCostoMsg({
-        ok: true,
-        texto: r.sincronizado_woo
-          ? "Guardado y sincronizado con WooCommerce."
-          : r.sync_error
-            ? `Costo guardado en la base, pero WooCommerce NO se actualizó: ${r.sync_error}`
-            : "Guardado en la base de datos.",
-      });
-      // Si Woo no se actualizó, releerlo pisaría lo tecleado con lo de antes.
-      if (r.sincronizado_woo) void releerTrasGuardar();
-      onGuardado?.();
-    } catch (e) {
-      setCostoMsg({ ok: false, texto: mensajeDeError(e, "No se pudo guardar el costo.") });
-    } finally {
-      setGuardandoCosto(false);
     }
   }
 
@@ -2071,6 +2043,39 @@ export default function ProductStudio({
     }
   }
 
+  // Las 6 primeras fotos de la URL de Alibaba, a la galería del SKU (v0.733.0). Mismo
+  // camino que el «+»: una variante va por `escribirGaleria` (que pinta su error en el
+  // recuadro rojo de la galería); el producto simple o el padre, con la galería que
+  // devuelve Woo.
+  async function traerAlibaba() {
+    const url = campos.alibabaUrl.trim();
+    if (!url || !sku || soloVistaAgrupada || trayendoAlibaba) return;
+    setTrayendoAlibaba(true);
+    setAvisoGal(null);
+    try {
+      let agregadas = 0;
+      if (infoVar) {
+        await escribirGaleria(
+          async () => {
+            const r = await traerFotosAlibaba(sku, { wc_id: wcIdActivo, url, variante: true });
+            agregadas = r.alibaba?.agregadas ?? 0;
+            return r;
+          },
+          { error: "No se pudieron traer las fotos de Alibaba." },
+        );
+      } else {
+        const r = await traerFotosAlibaba(sku, { wc_id: wcId, url });
+        if (r.imagenes?.length) setGaleria(r.imagenes);
+        agregadas = r.alibaba?.agregadas ?? 0;
+      }
+      if (agregadas) avisar({ ok: true, texto: `${agregadas} fotos de Alibaba agregadas a la galería.` });
+    } catch (e) {
+      setAvisoGal(mensajeDeError(e, "No se pudieron traer las fotos de Alibaba."));
+    } finally {
+      setTrayendoAlibaba(false);
+    }
+  }
+
   if (!sku) return null;
 
   const imagenes = data?.imagenes?.length ? data.imagenes : data?.imagen ? [data.imagen] : [];
@@ -2097,9 +2102,10 @@ export default function ProductStudio({
   return (
     <div
       className={conVariantes
-        ? "fixed inset-0 z-50 flex items-center justify-center p-4"
-        : "fixed inset-0 z-50 flex justify-end"}
+        ? "studio fixed inset-0 z-50 flex items-center justify-center p-4"
+        : "studio fixed inset-0 z-50 flex justify-end"}
       style={variablesTema(tema)}
+      onPointerDown={ondaAlClic}
     >
       <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm" onClick={onClose} />
 
@@ -2174,7 +2180,7 @@ export default function ProductStudio({
                   style={sel ? { backgroundColor: c.color, color: c.color_texto, borderColor: c.color } : undefined}
                   className={[
                     "flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm font-semibold transition-all",
-                    sel ? "scale-[1.03] shadow-sm"
+                    sel ? "studio-salta scale-[1.03] shadow-sm"
                       : off ? "cursor-not-allowed border-dashed border-slate-200 bg-slate-50 text-slate-400"
                       : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
                   ].join(" ")}
@@ -2225,8 +2231,8 @@ export default function ProductStudio({
             {mejorando ? "Mejorando…" : `Mejorar con IA · ${canalInfo?.label ?? canal}`}
           </button>
           <p className="mt-1.5 text-center text-[11px] text-slate-400">
-            <strong>Publicar</strong> envía los datos actuales al canal (revisas antes).{" "}
-            <strong>Mejorar con IA</strong> optimiza título, descripción y atributos{esAmazon ? " + highlights, bullets y términos de búsqueda" : esTikTok ? " + puntos clave, con los atributos reales de su categoría de TikTok" : ""} (no toca precio/costo/dimensiones; el precio lo sugiere <strong>Sugerir precio</strong>, junto a los precios).
+            <strong>Publicar</strong> envía lo que ves (lo revisas antes). <strong>Mejorar con IA</strong> reescribe título,
+            descripción y atributos{esAmazon ? ", highlights, bullets y términos de búsqueda" : esTikTok ? " y puntos clave" : ""}; el precio no lo toca.
           </p>
 
           {/* EL PARTE DEL GENERADOR (Amazon).
@@ -2424,7 +2430,7 @@ export default function ProductStudio({
               tema={tema}
             />
           )}
-        <div className="flex-1 space-y-5 overflow-y-auto overscroll-contain px-6 py-5">
+        <div className="studio-cascada flex-1 space-y-5 overflow-y-auto overscroll-contain px-6 py-5" data-vuelta={vuelta}>
           {conVariantes && agrupada && !agrupadaHabilitada && (
             <AvisoAgrupadaPronto canalLabel={canalInfo?.label ?? canal} />
           )}
@@ -2508,860 +2514,748 @@ export default function ProductStudio({
                 </div>
               )}
 
-              {/* LA CATEGORÍA DEL CANAL ABIERTO, y solo ésa.
-                  Cada canal tiene su propio mundo y no se traducen entre sí:
-                  ML usa `MLM…`, Amazon un `productType` de lista plana y TikTok
-                  un id numérico de hoja. Antes se pintaba SIEMPRE la de Mercado
-                  Libre, así que estando en Amazon o TikTok se leía la categoría
-                  de otro canal como si fuera la suya. */}
-              {/* Los pickers guardan solos y no reciben `disabled`: en la vista
-                  previa de agrupada (donde `sku` es el padre) se envuelven en
-                  un <fieldset disabled>, que apaga sus botones e inputs sin
-                  tocar los componentes. Sólo se monta si hay picker: vacío,
-                  sumaría un hueco de `space-y` en ML y en General. */}
-              {((esAmazon && wcId != null) || (esTikTok && sku) || (esTemu && sku) || (esWalmart && sku)) && (
-              <fieldset disabled={soloVistaAgrupada} title={soloVistaAgrupada ? TITULO_SOLO_VISTA : undefined}
-                className={soloVistaAgrupada ? "min-w-0 opacity-60" : "min-w-0"}>
-              {esAmazon && wcId != null && (
-                <TipoAmazonPicker sku={sku!} wcId={wcId} titulo={titulo || data?.nombre} />
-              )}
-              {/* El título que ve el usuario, no el de Woo: si acaba de mejorarlo
-                  con IA, la recomendación tiene que salir de ESE texto. */}
-              {esTikTok && sku && (
-                <CategoriaTikTokPicker sku={sku} titulo={titulo || data?.nombre} />
-              )}
-              {/* En Temu la categoría no es cosmética: DETERMINA qué atributos
-                  existen, así que sin elegirla no hay contenido ni alta. */}
-              {esTemu && sku && (
-                <CategoriaTemuPicker sku={sku} titulo={titulo || data?.nombre} />
-              )}
-              {/* En Walmart la categoría decide dos cosas: qué campos exige el
-                  bloque `Visible` y si hay EXENCIÓN DE UPC para publicar. Sin
-                  selector, el publicador decidía solo con patrones de título. */}
-              {esWalmart && sku && (
-                <CategoriaWalmartPicker sku={sku} titulo={titulo || data?.nombre}
-                  onCambio={() => setCatWalmartVer((v) => v + 1)} />
-              )}
-              </fieldset>
-              )}
-
-              {/* CATEGORÍA (Mercado Libre editable + WooCommerce)
-                  El picker de ML solo se pinta en ML y en General: en Amazon y
-                  en TikTok arriba ya está el suyo, y mostrar los dos hacía creer
-                  que la categoría de ML viajaba a esos canales. */}
-              <section className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4">
-                {/* Categoría ML — buscador por nombre. ES LA QUE SE ENVÍA a Mercado
-                    Libre al publicar (define además la comisión del costo). */}
-                {(esML || esGeneral) && (
-                  <>
-                    <div className="flex items-center justify-between">
-                      <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-indigo-600">
-                        Se envía a Mercado Libre
+              {/* LAS DOS FAMILIAS (Brandon, 6-nov-2026). PRINCIPAL: lo que el comprador ve primero
+                  —fotos, título, categoría y precio—, en dos columnas como la ficha de un marketplace.
+                  COMPLEMENTARIO: lo que completa la ficha —descripción, atributos y códigos—, abajo y en
+                  un panel más tenue. La sección de COSTOS salió del Estudio (los costos viven en Costos). */}
+              <CabeceraFamilia familia="principal" tema={tema} />
+              <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
+                <div className="studio-cascada min-w-0 space-y-4" data-vuelta={vuelta}>
+                  {/* Galería / Editor de imágenes */}
+                  <section className="rounded-2xl border border-slate-200 bg-white p-4">
+                    <div className="mb-2 flex items-center justify-between">
+                      <span className="text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">Imágenes</span>
+                      <span className="text-[11px] text-slate-400">
+                        {!galEditable
+                          ? "cargando…"
+                          : infoVar
+                            ? `${galItems.length} de la variante · ${infoVar.heredadas.length} del padre`
+                            : `${galItems.length} en galería`}
                       </span>
-                      {guardandoCat && (
-                        <span className="flex items-center gap-1 text-[10px] font-medium text-slate-400">
-                          <Loader2 size={11} className="animate-spin" /> guardando…
+                    </div>
+
+                    {/* Preview grande de la imagen activa */}
+                    <div className="relative mb-3 flex h-64 items-center justify-center overflow-hidden rounded-xl border border-slate-100 bg-white">
+                      {galActiva ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          key={(galActiva.id && progresoImg[galActiva.id]?.nueva_url) || galActiva.src}
+                          src={(galActiva.id && progresoImg[galActiva.id]?.nueva_url) || galActiva.src}
+                          alt=""
+                          className="studio-funde h-full w-full object-contain"
+                        />
+                      ) : (<ImageIcon size={48} className="text-slate-200" />)}
+                      {galActiva?.id && progresoImg[galActiva.id]?.estado === "procesando" && (
+                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-white/75">
+                          <Loader2 size={26} className="animate-spin" style={{ color: tema.color }} />
+                          <span className="text-xs font-semibold text-slate-500">{progresoImg[galActiva.id]?.paso}</span>
+                        </div>
+                      )}
+                      {heredadaVista && (
+                        <span className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-full bg-violet-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.15em] text-violet-700">
+                          <Layers size={10} /> Del padre
                         </span>
                       )}
                     </div>
-                    <fieldset disabled={soloVistaAgrupada} title={soloVistaAgrupada ? TITULO_SOLO_VISTA : undefined}
-                      className={soloVistaAgrupada ? "min-w-0 opacity-60" : "min-w-0"}>
-                      <CategoriaMLPicker
-                        value={catMlId}
-                        pathInicial={catMlNiveles ?? meta?.categoria_ml?.niveles}
-                        onChange={elegirCategoriaML}
-                        acento={tema.acento}
-                      />
-                    </fieldset>
-                    {/* El semáforo de esa categoría: el título, la descripción y las 2
-                        primeras fotos contra todo el árbol de ML, antes de llenar
-                        atributos. Nada si CATEGORIA_VEC_ENABLED está apagada. */}
-                    <SemaforoCategoriaML
-                      sku={sku}
-                      wcId={wcIdEscritura}
-                      categoriaId={catMlId}
-                      titulo={titulo || data?.nombre || ""}
-                      descripcion={descripcion}
-                      fotos={(galeria ?? []).map((g) => g.src)}
-                      listo={galeria !== null && !!(titulo || data?.nombre)}
-                      onUsar={elegirCategoriaML}
-                      bloqueado={soloVistaAgrupada}
-                      acento={tema.acento}
-                    />
-                  </>
-                )}
-                {/* La categoría de WooCommerce SOLO en General. En un
-                    marketplace confunde: cada canal tiene su propia taxonomía
-                    —y en Temu la categoría además DECIDE qué atributos
-                    existen—, así que ver la de Woo al lado de la del canal
-                    invita a creer que alguna de las dos se envía. Ninguna sale
-                    de aquí: la de Woo es de la tienda web. */}
-                {esGeneral && (
-                <div className="border-t border-slate-100 pt-3">
-                  <div className="mb-1 flex items-center gap-2">
-                    <span className="text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">Categoría WooCommerce</span>
-                    <span className="text-[10px] font-medium text-slate-400">(solo tienda web)</span>
-                  </div>
-                  {categoriaWC.length ? (
-                    <div className="flex flex-wrap items-center gap-1 text-sm text-slate-700">
-                      {categoriaWC.map((n, i) => (
-                        <span key={i} className="flex items-center gap-1">
-                          {i > 0 && <ChevronRight size={13} className="text-slate-300" />}
-                          <span className="font-medium">{n.nombre}</span>
-                        </span>
-                      ))}
-                    </div>
-                  ) : (<span className="text-sm text-slate-400">Sin categoría asignada</span>)}
-                </div>
-                )}
 
-                {/* Código de barras / GTIN — requerido por ML en ciertas
-                    categorías (ej. colchones en SANCORFASHION). Se guarda en Woo. */}
-                <div className="border-t border-slate-100 pt-3">
-                  <div className="mb-1 flex items-center justify-between">
-                    <span className="text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">
-                      Código de barras / GTIN
-                    </span>
-                    {guardandoGtin ? (
-                      <span className="flex items-center gap-1 text-[10px] font-medium text-slate-400">
-                        <Loader2 size={11} className="animate-spin" /> guardando…
-                      </span>
-                    ) : gtinGuardado ? (
-                      <span className="text-[10px] font-semibold text-emerald-600">✓ guardado</span>
-                    ) : null}
-                  </div>
-                  <input
-                    value={gtin}
-                    onChange={(e) => setGtin(e.target.value.replace(/[^\d]/g, ""))}
-                    onBlur={guardarGtinHandler}
-                    disabled={soloVistaAgrupada}
-                    title={soloVistaAgrupada ? TITULO_SOLO_VISTA : undefined}
-                    inputMode="numeric"
-                    maxLength={14}
-                    placeholder="EAN-13 / UPC-12 (8-14 dígitos)"
-                    className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2"
-                    style={{ outlineColor: tema.acento }}
-                  />
-                  <p className="mt-1 text-[11px] text-slate-400">
-                    Solo si la categoría lo exige (ML lo valida contra su base — debe ser real).
-                  </p>
-                </div>
-              </section>
-
-              {/* Galería / Editor de imágenes */}
-              <section className="rounded-2xl border border-slate-200 bg-white p-4">
-                <div className="mb-2 flex items-center justify-between">
-                  <span className="text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">Imágenes</span>
-                  <span className="text-[11px] text-slate-400">
-                    {!galEditable
-                      ? "cargando…"
-                      : infoVar
-                        ? `${galItems.length} de la variante · ${infoVar.heredadas.length} del padre`
-                        : `${galItems.length} en galería`}
-                  </span>
-                </div>
-
-                {/* Preview grande de la imagen activa */}
-                <div className="relative mb-3 flex h-64 items-center justify-center overflow-hidden rounded-xl border border-slate-100 bg-white">
-                  {galActiva ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={(galActiva.id && progresoImg[galActiva.id]?.nueva_url) || galActiva.src}
-                      alt=""
-                      className="h-full w-full object-contain"
-                    />
-                  ) : (<ImageIcon size={48} className="text-slate-200" />)}
-                  {galActiva?.id && progresoImg[galActiva.id]?.estado === "procesando" && (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-white/75">
-                      <Loader2 size={26} className="animate-spin" style={{ color: tema.color }} />
-                      <span className="text-xs font-semibold text-slate-500">{progresoImg[galActiva.id]?.paso}</span>
-                    </div>
-                  )}
-                  {heredadaVista && (
-                    <span className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-full bg-violet-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.15em] text-violet-700">
-                      <Layers size={10} /> Del padre
-                    </span>
-                  )}
-                </div>
-
-                {/* Label de carga: paso global, avance y errores por imagen */}
-                {jobActivo && (
-                  <div className="mb-3 rounded-xl border px-3 py-2" style={{ borderColor: hexToRgba(tema.color, 0.4), background: tema.suave }}>
-                    <div className="flex items-center gap-2 text-sm font-semibold" style={{ color: tema.acento }}>
-                      <Loader2 size={15} className="animate-spin" />
-                      <span className="truncate">{jobImg?.paso_global || "Procesando imágenes…"}</span>
-                      <span className="ml-auto shrink-0 text-xs font-normal text-slate-500">{jobImg?.procesadas ?? 0}/{jobImg?.total ?? 0}</span>
-                    </div>
-                    <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
-                      <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pctImg}%`, backgroundColor: tema.color }} />
-                    </div>
-                    {(jobImg?.imagenes ?? []).some((x) => x.estado === "error") && (
-                      <ul className="mt-2 space-y-0.5">
-                        {(jobImg?.imagenes ?? []).filter((x) => x.estado === "error").map((x) => (
-                          <li key={x.indice} className="flex items-start gap-1.5 text-[11px] text-red-600">
-                            <AlertTriangle size={11} className="mt-0.5 shrink-0" />
-                            <span>Imagen {x.indice + 1}: {x.error ?? "error"}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
-                )}
-
-                {/* Variante (es_variante=true): fotos propias editables + las del
-                    padre de solo lectura. Si no, las miniaturas de siempre. */}
-                {infoVar ? (
-                  <GaleriaVariante
-                    propias={galItems}
-                    principalId={infoVar.principalId}
-                    heredadas={infoVar.heredadas}
-                    regla={infoVar.regla}
-                    aviso={infoVar.aviso}
-                    tema={tema}
-                    idxActiva={galIdxActiva}
-                    onSeleccionar={(i) => { setImgActiva(i); setHeredadaActiva(null); }}
-                    heredadaActiva={heredadaActiva}
-                    onVerHeredada={setHeredadaActiva}
-                    flagsDef={FLAGS_IMG}
-                    flagsImg={flagsImg}
-                    toggleFlag={toggleFlag}
-                    hasFlags={hasFlags}
-                    countFlags={countFlags}
-                    progreso={progresoImg}
-                    accionId={accionImgId}
-                    ocupado={jobActivo || accionImgId !== null || agregandoImg}
-                    agregando={agregandoImg}
-                    bloqueado={soloVistaAgrupada}
-                    tituloBloqueo={TITULO_SOLO_VISTA}
-                    onAgregar={(files) => { void agregarArchivos(files); }}
-                    onEliminar={(img) => { void eliminarImg(img); }}
-                    onPrincipal={hacerPrincipal}
-                    onReordenar={reordenarGaleria}
-                    onAdoptar={adoptarHeredada}
-                  />
-                ) : (
-                // Miniaturas con controles al hover (flags + eliminar)
-                <div className="flex flex-wrap gap-2">
-                  {galItems.map((img, i) => {
-                    const prog = img.id ? progresoImg[img.id] : undefined;
-                    const activa = i === galIdxActiva;
-                    return (
-                      <div key={img.id || `u${i}`} className="group relative">
-                        <button
-                          onClick={() => setImgActiva(i)}
-                          className={["relative block h-16 w-16 overflow-hidden rounded-lg border-2 transition-colors", activa ? "" : "border-slate-200 hover:border-slate-300"].join(" ")}
-                          style={activa ? { borderColor: tema.color } : undefined}
-                        >
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img src={prog?.nueva_url || img.src} alt="" className="h-full w-full object-contain" />
-                          {prog?.estado === "procesando" && (
-                            <div className="absolute inset-0 flex items-center justify-center bg-white/70">
-                              <Loader2 size={16} className="animate-spin" style={{ color: tema.color }} />
-                            </div>
-                          )}
-                          {prog?.estado === "error" && (
-                            <div className="absolute inset-0 flex items-center justify-center bg-red-500/25" title={prog.error ?? "Error"}>
-                              <AlertTriangle size={15} className="text-red-600" />
-                            </div>
-                          )}
-                          {prog?.estado === "listo" && (
-                            <div className="absolute right-0 top-0 rounded-bl-md bg-emerald-500 p-0.5">
-                              <CheckCircle2 size={11} className="text-white" />
-                            </div>
-                          )}
-                          {galEditable && !!img.id && !prog && hasFlags(img.id) && (
-                            <div className="absolute left-0 top-0 rounded-br-md px-1 text-[9px] font-bold text-white" style={{ backgroundColor: tema.color }}>
-                              {countFlags(img.id)}
-                            </div>
-                          )}
-                        </button>
-
-                        {/* Popover al hover: seleccionar flags + eliminar */}
-                        {galEditable && !!img.id && (
-                          <div className="absolute bottom-full left-1/2 z-30 hidden -translate-x-1/2 pb-2 group-hover:block">
-                            <div className="w-52 rounded-xl border border-slate-200 bg-white p-2 shadow-xl">
-                              <div className="mb-1 px-1 text-[10px] font-bold uppercase tracking-wide text-slate-400">Editar con IA</div>
-                              <div className="space-y-1">
-                                {FLAGS_IMG.map(({ key, label, Icon }) => {
-                                  const on = !!flagsImg[img.id]?.[key];
-                                  return (
-                                    <button
-                                      key={key}
-                                      onClick={() => toggleFlag(img.id, key)}
-                                      className={["flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs font-semibold transition-colors", on ? "" : "bg-slate-50 text-slate-600 hover:bg-slate-100"].join(" ")}
-                                      style={on ? { backgroundColor: tema.color, color: tema.texto } : undefined}
-                                    >
-                                      <Icon size={13} /> {label}
-                                      {on && <CheckCircle2 size={12} className="ml-auto" />}
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                              <button
-                                onClick={() => eliminarImg(img)}
-                                disabled={eliminandoId === img.id || soloVistaAgrupada}
-                                title={soloVistaAgrupada ? TITULO_SOLO_VISTA : undefined}
-                                className="mt-1.5 flex w-full items-center justify-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-2 py-1.5 text-xs font-bold text-red-600 transition-colors hover:bg-red-100 disabled:opacity-50"
-                              >
-                                {eliminandoId === img.id ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
-                                Eliminar
-                              </button>
-                            </div>
-                          </div>
+                    {/* Label de carga: paso global, avance y errores por imagen */}
+                    {jobActivo && (
+                      <div className="mb-3 rounded-xl border px-3 py-2" style={{ borderColor: hexToRgba(tema.color, 0.4), background: tema.suave }}>
+                        <div className="flex items-center gap-2 text-sm font-semibold" style={{ color: tema.acento }}>
+                          <Loader2 size={15} className="animate-spin" />
+                          <span className="truncate">{jobImg?.paso_global || "Procesando imágenes…"}</span>
+                          <span className="ml-auto shrink-0 text-xs font-normal text-slate-500">{jobImg?.procesadas ?? 0}/{jobImg?.total ?? 0}</span>
+                        </div>
+                        <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
+                          <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pctImg}%`, backgroundColor: tema.color }} />
+                        </div>
+                        {(jobImg?.imagenes ?? []).some((x) => x.estado === "error") && (
+                          <ul className="mt-2 space-y-0.5">
+                            {(jobImg?.imagenes ?? []).filter((x) => x.estado === "error").map((x) => (
+                              <li key={x.indice} className="flex items-start gap-1.5 text-[11px] text-red-600">
+                                <AlertTriangle size={11} className="mt-0.5 shrink-0" />
+                                <span>Imagen {x.indice + 1}: {x.error ?? "error"}</span>
+                              </li>
+                            ))}
+                          </ul>
                         )}
                       </div>
-                    );
-                  })}
-                  {galEditable && (
-                    <label
-                      onDragOver={(e) => { e.preventDefault(); if (!soloVistaAgrupada) setDragImg(true); }}
-                      onDragLeave={() => setDragImg(false)}
-                      onDrop={(e) => { e.preventDefault(); setDragImg(false); void agregarArchivos(e.dataTransfer.files); }}
-                      title={soloVistaAgrupada ? TITULO_SOLO_VISTA : "Agregar imágenes (clic o arrastra aquí)"}
-                      className={["flex h-16 w-16 flex-col items-center justify-center rounded-lg border-2 border-dashed transition-colors", soloVistaAgrupada ? "cursor-not-allowed opacity-50" : "cursor-pointer", dragImg ? "" : "border-slate-200 text-slate-300 hover:border-slate-300 hover:text-slate-400"].join(" ")}
-                      style={dragImg ? { borderColor: tema.color, color: tema.color } : undefined}
-                    >
-                      {agregandoImg ? <Loader2 size={18} className="animate-spin" style={{ color: tema.color }} /> : <Plus size={20} />}
-                      <input type="file" accept="image/*" multiple className="hidden" disabled={soloVistaAgrupada}
-                        onChange={(e) => { void agregarArchivos(e.target.files); e.currentTarget.value = ""; }} />
-                    </label>
-                  )}
-                </div>
-                )}
+                    )}
 
-                {/* Procesar con IA (on-demand) */}
-                {galEditable && (
-                  <>
-                    <button
-                      onClick={procesarIA}
-                      disabled={jobActivo || totalConFlags === 0 || soloVistaAgrupada || (!!infoVar && accionImgId !== null)}
-                      title={soloVistaAgrupada ? TITULO_SOLO_VISTA : undefined}
-                      className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold shadow-sm transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
-                      style={{ background: `linear-gradient(120deg, ${tema.color}, ${tema.acento})`, color: tema.texto }}
-                    >
-                      {jobActivo ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
-                      {jobActivo
-                        ? "Procesando imágenes…"
-                        : totalConFlags
-                          ? `Procesar con IA · ${totalConFlags} imagen${totalConFlags > 1 ? "es" : ""}`
-                          : "Procesar con IA"}
-                    </button>
+                    {/* Variante (es_variante=true): fotos propias editables + las del
+                        padre de solo lectura. Si no, las miniaturas de siempre. */}
                     {infoVar ? (
-                      <p className="mt-1.5 text-center text-[11px] text-slate-400">
-                        Pasa el mouse sobre una foto <strong>de esta variante</strong> para elegir <strong>Fondo</strong>, <strong>Traducir texto</strong>, <strong>Quitar logos</strong> o <strong>Modelo</strong>. Al procesar, la editada <strong>reemplaza</strong> a la anterior solo en esta variante: el padre y las hermanas no cambian.
-                      </p>
+                      <GaleriaVariante
+                        propias={galItems}
+                        principalId={infoVar.principalId}
+                        heredadas={infoVar.heredadas}
+                        regla={infoVar.regla}
+                        aviso={infoVar.aviso}
+                        tema={tema}
+                        idxActiva={galIdxActiva}
+                        onSeleccionar={(i) => { setImgActiva(i); setHeredadaActiva(null); }}
+                        heredadaActiva={heredadaActiva}
+                        onVerHeredada={setHeredadaActiva}
+                        flagsDef={FLAGS_IMG}
+                        flagsImg={flagsImg}
+                        toggleFlag={toggleFlag}
+                        hasFlags={hasFlags}
+                        countFlags={countFlags}
+                        progreso={progresoImg}
+                        accionId={accionImgId}
+                        ocupado={jobActivo || accionImgId !== null || agregandoImg}
+                        agregando={agregandoImg}
+                        bloqueado={soloVistaAgrupada}
+                        tituloBloqueo={TITULO_SOLO_VISTA}
+                        onAgregar={(files) => { void agregarArchivos(files); }}
+                        onEliminar={(img) => { void eliminarImg(img); }}
+                        onPrincipal={hacerPrincipal}
+                        onReordenar={reordenarGaleria}
+                        onAdoptar={adoptarHeredada}
+                      />
                     ) : (
-                      <p className="mt-1.5 text-center text-[11px] text-slate-400">
-                        Pasa el mouse sobre una imagen para elegir <strong>Fondo</strong> (quitar fondo), <strong>Traducir texto</strong>, <strong>Quitar logos</strong> o <strong>Modelo</strong> (cambiar persona), o eliminarla. Al procesar, la imagen editada <strong>reemplaza</strong> a la anterior en WooCommerce.
-                      </p>
-                    )}
-                  </>
-                )}
-
-                {/* Error de una escritura de galería de variante, en llano. No
-                    depende de `infoVar`: si el flag se apagó a media sesión
-                    (409), la relectura ya no trae es_variante y el motivo
-                    tiene que seguir a la vista. */}
-                {avisoGal && (
-                  <div className="mt-2 flex items-start gap-1.5 rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5 text-[11px] font-semibold text-red-700">
-                    <AlertTriangle size={12} className="mt-0.5 shrink-0" />
-                    <span>{avisoGal}</span>
-                  </div>
-                )}
-              </section>
-
-              {/* TÍTULO */}
-              <section className="rounded-2xl border border-slate-200 bg-white p-4">
-                <div className="mb-1.5 flex items-center justify-between gap-2">
-                  <label className="text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">Título</label>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={descartarBorrador}
-                      title="Descarta tus ediciones locales y recarga el contenido desde WooCommerce"
-                      className="flex items-center gap-1 rounded-md border border-rose-200 bg-rose-50 px-2 py-0.5 text-[11px] font-bold text-rose-600 transition-colors hover:bg-rose-100"
-                    >
-                      <RefreshCw size={11} /> Descartar borrador
-                    </button>
-                    {limiteTitulo ? (
-                      <span className={["text-[11px] font-semibold tabular-nums", titulo.length > limiteTitulo ? "text-red-500" : "text-slate-400"].join(" ")}>
-                        {titulo.length}/{limiteTitulo}{titulo.length > limiteTitulo ? " · excede" : ""}
-                      </span>
-                    ) : (
-                      <span className="text-[11px] text-slate-400">{titulo.length} car.</span>
-                    )}
-                  </div>
-                </div>
-                <input value={titulo} onChange={(e) => setTitulo(e.target.value)}
-                  placeholder={sinTituloPropio ? "Sin título propio en este canal" : undefined}
-                  className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm text-slate-800 outline-none focus:ring-2" style={{ outlineColor: tema.acento }} />
-                {sinTituloPropio && (
-                  <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                    Esta variante no tiene título propio en {canalInfo?.label ?? canal}. Un anuncio nuevo saldría con el del padre
-                    {data?.nombre ? <>: <strong>«{data.nombre}»</strong></> : null}. Usa <strong>Mejorar con IA</strong>
-                    {esWalmart ? <>, o escríbelo y <strong>guarda el contenido</strong> antes de publicar (Walmart no toma el del formulario).</> : <> o escríbelo aquí.</>}
-                  </p>
-                )}
-              </section>
-
-              {/* DESCRIPCIÓN */}
-              <section className="rounded-2xl border border-slate-200 bg-white p-4">
-                <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">Descripción</label>
-                <textarea value={descripcion} onChange={(e) => setDescripcion(e.target.value)} rows={6}
-                  className="w-full resize-y rounded-lg border border-slate-200 px-3 py-2.5 text-sm leading-relaxed text-slate-700 outline-none focus:ring-2" style={{ outlineColor: tema.acento }} />
-              </section>
-
-              {/* AMAZON: HIGHLIGHTS + BULLETS (desbloqueado en Amazon) */}
-              {esAmazon && (
-                <section className="space-y-4 rounded-2xl border-2 p-4" style={{ borderColor: hexToRgba(tema.color, 0.5), background: tema.suave }}>
-                  <div className="text-[11px] font-bold uppercase tracking-[0.15em]" style={{ color: tema.acento }}>Campos Amazon</div>
-                  <div>
-                    <div className="mb-1.5 flex items-center justify-between">
-                      <label className="text-[11px] font-bold uppercase tracking-[0.15em] text-slate-500">Item Highlights</label>
-                      <span className="text-[11px] text-slate-400">{highlights.length}/125</span>
-                    </div>
-                    <input value={highlights} onChange={(e) => setHighlights(e.target.value)} placeholder="Se llena al Mejorar con IA…"
-                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none focus:ring-2" style={{ outlineColor: tema.acento }} />
-                  </div>
-                  {/* TÉRMINOS DE BÚSQUEDA — el contador va en BYTES, no en
-                      caracteres, y no es un capricho: Amazon cuenta bytes UTF-8
-                      y cada acento o ñ pesa 2. Un byte de más y IGNORA EL CAMPO
-                      ENTERO, sin avisar. Por eso el texto se escribe sin
-                      acentos (Amazon los normaliza igual al indexar). */}
-                  <div>
-                    <div className="mb-1.5 flex items-center justify-between">
-                      <label className="text-[11px] font-bold uppercase tracking-[0.15em] text-slate-500">
-                        Términos de búsqueda <span className="normal-case tracking-normal text-slate-400">(no los ve el comprador)</span>
-                      </label>
-                      <span className={`text-[11px] ${bytesUTF8(searchTerms) > 249 ? "font-bold text-rose-600" : "text-slate-400"}`}>
-                        {bytesUTF8(searchTerms)}/249 bytes
-                      </span>
-                    </div>
-                    <textarea value={searchTerms} onChange={(e) => setSearchTerms(e.target.value)} rows={2}
-                      placeholder="Sinónimos y variantes, separados por espacios. Se llena al Mejorar con IA…"
-                      className="w-full resize-y rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2" style={{ outlineColor: tema.acento }} />
-                    {bytesUTF8(searchTerms) > 249 && (
-                      <p className="mt-1 text-[11px] text-rose-600">
-                        Pasado de 249 bytes: Amazon ignoraría el campo completo. Quita acentos o palabras.
-                      </p>
-                    )}
-                  </div>
-                  <div>
-                    <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.15em] text-slate-500">Bullet Points (5)</label>
-                    <div className="space-y-2">
-                      {Array.from({ length: Math.max(bullets.length, 5) }).map((_, i) => (
-                        <div key={i} className="flex items-start gap-2">
-                          <span className="mt-2.5 h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: tema.acento }} />
-                          <textarea
-                            value={bullets[i] ?? ""}
-                            onChange={(e) => setBullet(i, e.target.value)}
-                            rows={2}
-                            placeholder={`Bullet ${i + 1} (se llena al Mejorar con IA)`}
-                            className="w-full resize-y rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2"
-                            style={{ outlineColor: tema.acento }}
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </section>
-              )}
-
-              {/* CAMPOS WALMART — mismo lugar y misma forma que los de Amazon.
-                  Las viñetas se editan aquí (son texto y se guardan bien); los
-                  ATRIBUTOS de la categoría NO, y por eso viven abajo, junto a
-                  los de Woo: llevan listas y medidas que una caja de texto
-                  aplanaría a "[object Object]" — y en Walmart eso se publica
-                  sin dar error. */}
-              {esWalmart && (
-                <section className="space-y-4 rounded-2xl border-2 p-4"
-                         style={{ borderColor: hexToRgba(tema.color, 0.5), background: tema.suave }}>
-                  <div className="text-[11px] font-bold uppercase tracking-[0.15em]"
-                       style={{ color: tema.acento }}>Campos Walmart</div>
-                  <div>
-                    <div className="mb-1.5 flex items-center justify-between">
-                      <label className="text-[11px] font-bold uppercase tracking-[0.15em] text-slate-500">
-                        Viñetas de beneficio
-                      </label>
-                      {/* El tope de 50 es de ESTE canal — el más apretado del
-                          panel— y Walmart lo pide literal ("oraciones breves de
-                          50 caracteres"). Se enseña por viñeta, no al final. */}
-                      <span className="text-[11px] text-slate-400">máx. 50 caracteres c/u · mínimo 3</span>
-                    </div>
-                    <div className="space-y-2">
-                      {Array.from({ length: Math.max(bullets.length, 5) }).map((_, i) => {
-                        const largo = (bullets[i] ?? "").length;
+                    // Miniaturas con controles al hover (flags + eliminar)
+                    <div className="flex flex-wrap gap-2">
+                      {galItems.map((img, i) => {
+                        const prog = img.id ? progresoImg[img.id] : undefined;
+                        const activa = i === galIdxActiva;
                         return (
-                          <div key={i} className="flex items-start gap-2">
-                            <span className="mt-2.5 h-1.5 w-1.5 shrink-0 rounded-full"
-                                  style={{ background: tema.acento }} />
-                            <div className="w-full">
-                              <textarea
-                                value={bullets[i] ?? ""}
-                                onChange={(e) => setBullet(i, e.target.value)}
-                                rows={2}
-                                placeholder={`Viñeta ${i + 1} (se llena al Mejorar con IA)`}
-                                className="w-full resize-y rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2"
-                                style={{ outlineColor: tema.acento }}
-                              />
-                              {largo > 0 && (
-                                <span className={"text-[10.5px] " + (largo > 50 ? "font-semibold text-rose-600" : "text-slate-400")}>
-                                  {largo}/50{largo > 50 ? " · Walmart la recorta" : ""}
-                                </span>
+                          <div key={img.id || `u${i}`} className="group relative">
+                            <button
+                              onClick={() => setImgActiva(i)}
+                              className={["studio-mini relative block h-16 w-16 overflow-hidden rounded-lg border-2 transition-colors", activa ? "" : "border-slate-200 hover:border-slate-300"].join(" ")}
+                              style={activa ? { borderColor: tema.color } : undefined}
+                            >
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img src={prog?.nueva_url || img.src} alt="" className="h-full w-full object-contain" />
+                              {prog?.estado === "procesando" && (
+                                <div className="absolute inset-0 flex items-center justify-center bg-white/70">
+                                  <Loader2 size={16} className="animate-spin" style={{ color: tema.color }} />
+                                </div>
                               )}
-                            </div>
+                              {prog?.estado === "error" && (
+                                <div className="absolute inset-0 flex items-center justify-center bg-red-500/25" title={prog.error ?? "Error"}>
+                                  <AlertTriangle size={15} className="text-red-600" />
+                                </div>
+                              )}
+                              {prog?.estado === "listo" && (
+                                <div className="absolute right-0 top-0 rounded-bl-md bg-emerald-500 p-0.5">
+                                  <CheckCircle2 size={11} className="text-white" />
+                                </div>
+                              )}
+                              {galEditable && !!img.id && !prog && hasFlags(img.id) && (
+                                <div className="absolute left-0 top-0 rounded-br-md px-1 text-[9px] font-bold text-white" style={{ backgroundColor: tema.color }}>
+                                  {countFlags(img.id)}
+                                </div>
+                              )}
+                            </button>
+
+                            {/* Popover al hover: seleccionar flags + eliminar */}
+                            {galEditable && !!img.id && (
+                              <div className="absolute bottom-full left-1/2 z-30 hidden -translate-x-1/2 pb-2 group-hover:block">
+                                <div className="w-52 rounded-xl border border-slate-200 bg-white p-2 shadow-xl">
+                                  <div className="mb-1 px-1 text-[10px] font-bold uppercase tracking-wide text-slate-400">Editar con IA</div>
+                                  <div className="space-y-1">
+                                    {FLAGS_IMG.map(({ key, label, Icon }) => {
+                                      const on = !!flagsImg[img.id]?.[key];
+                                      return (
+                                        <button
+                                          key={key}
+                                          onClick={() => toggleFlag(img.id, key)}
+                                          className={["flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs font-semibold transition-colors", on ? "" : "bg-slate-50 text-slate-600 hover:bg-slate-100"].join(" ")}
+                                          style={on ? { backgroundColor: tema.color, color: tema.texto } : undefined}
+                                        >
+                                          <Icon size={13} /> {label}
+                                          {on && <CheckCircle2 size={12} className="ml-auto" />}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                  <button
+                                    onClick={() => eliminarImg(img)}
+                                    disabled={eliminandoId === img.id || soloVistaAgrupada}
+                                    title={soloVistaAgrupada ? TITULO_SOLO_VISTA : undefined}
+                                    className="mt-1.5 flex w-full items-center justify-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-2 py-1.5 text-xs font-bold text-red-600 transition-colors hover:bg-red-100 disabled:opacity-50"
+                                  >
+                                    {eliminandoId === img.id ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                                    Eliminar
+                                  </button>
+                                </div>
+                              </div>
+                            )}
                           </div>
                         );
                       })}
+                      {galEditable && (
+                        <label
+                          onDragOver={(e) => { e.preventDefault(); if (!soloVistaAgrupada) setDragImg(true); }}
+                          onDragLeave={() => setDragImg(false)}
+                          onDrop={(e) => { e.preventDefault(); setDragImg(false); void agregarArchivos(e.dataTransfer.files); }}
+                          title={soloVistaAgrupada ? TITULO_SOLO_VISTA : "Agregar imágenes (clic o arrastra aquí)"}
+                          className={["flex h-16 w-16 flex-col items-center justify-center rounded-lg border-2 border-dashed transition-colors", soloVistaAgrupada ? "cursor-not-allowed opacity-50" : "cursor-pointer", dragImg ? "" : "border-slate-200 text-slate-300 hover:border-slate-300 hover:text-slate-400"].join(" ")}
+                          style={dragImg ? { borderColor: tema.color, color: tema.color } : undefined}
+                        >
+                          {agregandoImg ? <Loader2 size={18} className="animate-spin" style={{ color: tema.color }} /> : <Plus size={20} />}
+                          <input type="file" accept="image/*" multiple className="hidden" disabled={soloVistaAgrupada}
+                            onChange={(e) => { void agregarArchivos(e.target.files); e.currentTarget.value = ""; }} />
+                        </label>
+                      )}
                     </div>
-                  </div>
-                  {Array.isArray(servidor?.caracteristicas)
-                    && (servidor.caracteristicas as string[]).length > 0 && (
-                    <div>
-                      <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.15em] text-slate-500">
-                        Características
-                      </label>
-                      <ul className="ml-4 list-disc space-y-0.5 text-[12.5px] text-slate-700">
-                        {(servidor.caracteristicas as string[]).map((c2, i) => <li key={i}>{c2}</li>)}
-                      </ul>
-                    </div>
-                  )}
-                </section>
-              )}
-
-              {/* SUGERIR PRECIO (v0.686.0; v0.696.0): el catálogo maestro (ML y
-                  Amazon) o, si no lo tiene, el modo completo. «Usar en Precio
-                  oferta» y «Usar estas medidas» solo llenan los campos de abajo;
-                  se guardan con sus botones de siempre. */}
-              {sku && (
-                <SugerirPrecio
-                  sku={sku}
-                  titulo={titulo || data?.nombre || sku}
-                  mlCatId={catMlId || meta?.categoria_ml?.category_id || null}
-                  imagen={data?.imagen ?? data?.imagenes?.[0] ?? null}
-                  disabled={soloVistaAgrupada}
-                  onUsar={(precio) => setCampo("precioOferta", String(precio))}
-                  onUsarMedidas={(m) => {
-                    setCampo("peso", String(m.peso_kg));
-                    setCampo("largo", String(m.largo_cm));
-                    setCampo("ancho", String(m.ancho_cm));
-                    setCampo("alto", String(m.alto_cm));
-                  }}
-                />
-              )}
-
-              {/* PRECIOS + COSTO + STOCK.
-                  Precio regular, precio oferta y COSTO se editan aquí y
-                  "Guardar precio y costo" los persiste (costos_validados +
-                  costos_finales + WooCommerce, el mismo escritor que COSTOS).
-                  Lo escrito a mano manda sobre lo derivado hasta que alguien
-                  pulse Regenerar abajo.
-                  El costo capturado aquí es el TOTAL (producto + flete); para
-                  desglosarlo está el bloque COSTOS ↓ (costo USD + dimensiones).
-                  Si el producto aún no tiene categoría ML, el costo se guarda
-                  igual y se avisa que el precio no se pudo derivar — antes eso
-                  era un 422 y no se podía capturar nada.
-                  Stock sigue siendo espejo: lo manda Woo. */}
-              <section className="space-y-3">
-                <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-                  <Campo label="Precio regular" prefijo="$" moneda="MXN" value={campos.precioRegular}
-                    onChange={(v) => setCampo("precioRegular", v)} acento={tema.acento}
-                    nota={esGeneral ? undefined : `Se publica en ${canalInfo?.label ?? canal}`}
-                    insignia={precioDelPadre("precioRegular") ? <MarcaDelPadre estado="precio" /> : undefined} />
-                  <Campo label="Precio oferta" prefijo="$" moneda="MXN" value={campos.precioOferta}
-                    onChange={(v) => setCampo("precioOferta", v)} acento={tema.acento}
-                    insignia={precioDelPadre("precioOferta") ? <MarcaDelPadre estado="precio" /> : undefined} />
-                  {/* OJO: este "Costo" NO es el "Costo producto" de abajo. Aquí
-                      va el total en pesos, ya con flete; abajo, la compra en
-                      dólares. La nota lo dice porque el nombre no alcanza. */}
-                  <Campo label="Costo" prefijo="$" moneda="MXN" value={campos.costo}
-                    onChange={(v) => setCampo("costo", v)} acento={tema.acento}
-                    nota="Total por pieza, ya con flete"
-                    insignia={precioDelPadre("costo") ? <MarcaDelPadre estado="precio" /> : undefined} />
-                  <div>
-                    <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">
-                      Stock <span className="normal-case text-slate-300">(solo lectura)</span>
-                    </label>
-                    <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-bold text-slate-700">
-                      {meta?.stock != null ? meta.stock : "—"}
-                      <span className="text-xs font-normal text-slate-400">u</span>
-                    </div>
-                  </div>
-                </div>
-                {/* El title no se ve en el teléfono: la regla se dice también aquí. */}
-                {(["precioRegular", "precioOferta", "costo"] as const).some(precioDelPadre) && (
-                  <p className="text-[11px] text-violet-700">
-                    Lo marcado <strong>del padre</strong> es de la familia: al guardar no se copia a esta variante, se
-                    calcula con lo suyo. Si es el mismo, escríbelo.
-                  </p>
-                )}
-
-                {/* El bloque sigue montado mientras haya mensaje: si dependiera
-                    solo de `preciosEditados`, al guardar bien se desmontaría y
-                    el "Precio guardado…" se vería medio parpadeo. */}
-                {(preciosEditados || precioMsg) && (
-                  <div className={["rounded-xl border p-3", preciosEditados ? "border-amber-200 bg-amber-50/60" : "border-slate-200 bg-slate-50"].join(" ")}>
-                    {preciosEditados && (
-                      <button
-                        onClick={guardarPrecios}
-                        disabled={guardandoPrecios || !data || soloVistaAgrupada}
-                        title={soloVistaAgrupada ? TITULO_SOLO_VISTA : undefined}
-                        className="flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-bold text-white shadow-sm transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
-                        style={{ background: `linear-gradient(120deg, ${tema.color}, ${tema.acento})` }}
-                      >
-                        {guardandoPrecios ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />}
-                        {guardandoPrecios ? "Guardando…" : "Guardar precio y costo"}
-                      </button>
                     )}
-                    {precioMsg ? (
-                      <div className={["flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium", preciosEditados ? "mt-2" : "", precioMsg.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"].join(" ")}>
-                        {precioMsg.ok ? <CheckCircle2 size={13} /> : <AlertTriangle size={13} />}
-                        {precioMsg.texto}
+
+                    {/* FOTOS DESDE ALIBABA (v0.733.0): las 6 primeras fotos de la URL entran a la
+                        galería por la misma ruta que el «+» (`/api/imagenes/{sku}/alibaba`, el
+                        scraper de Crear con Apify) y la URL queda guardada en el SKU. */}
+                    <div className="mt-3 border-t border-slate-100 pt-3">
+                      <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">
+                        <Link2 size={13} /> Fotos desde Alibaba
+                        {campos.alibabaPrecio && (
+                          <span className="ml-auto font-medium normal-case tracking-normal">
+                            precio Alibaba ${campos.alibabaPrecio} USD
+                          </span>
+                        )}
                       </div>
-                    ) : (
-                      <p className="mt-1.5 text-center text-[11px] text-amber-700">
-                        Cambiaste precio o costo: sin guardar, <strong>no se aplica</strong>.
+                      <div className="flex items-center gap-2">
+                        <input value={campos.alibabaUrl} onChange={(e) => setCampo("alibabaUrl", e.target.value)}
+                          placeholder="https://www.alibaba.com/product-detail/…" disabled={trayendoAlibaba}
+                          aria-label="URL de Alibaba"
+                          className="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 disabled:bg-slate-50"
+                          style={{ outlineColor: tema.acento }} />
+                        {campos.alibabaUrl && (
+                          <a href={campos.alibabaUrl} target="_blank" rel="noreferrer" title="Abrir en Alibaba"
+                            className="shrink-0 rounded-lg border border-slate-200 p-2 text-slate-400 hover:bg-slate-50">
+                            <ExternalLink size={15} />
+                          </a>
+                        )}
+                        <button
+                          type="button"
+                          onClick={traerAlibaba}
+                          disabled={!campos.alibabaUrl.trim() || trayendoAlibaba || !galEditable || soloVistaAgrupada}
+                          title={soloVistaAgrupada ? TITULO_SOLO_VISTA : undefined}
+                          className="flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-bold shadow-sm transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+                          style={{ background: `linear-gradient(120deg, ${tema.color}, ${tema.acento})`, color: tema.texto }}
+                        >
+                          {trayendoAlibaba ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+                          {trayendoAlibaba ? "Trayendo…" : "Traer 6 fotos"}
+                        </button>
+                      </div>
+                      <p className="mt-1 text-[11px] text-slate-400">
+                        {trayendoAlibaba
+                          ? "Leyendo la página de Alibaba: tarda de 1 a 3 minutos."
+                          : "Se agregan al final de la galería; las que sobren se quitan con Eliminar."}
+                      </p>
+                    </div>
+
+                    {/* Procesar con IA (on-demand) */}
+                    {galEditable && (
+                      <>
+                        <button
+                          onClick={procesarIA}
+                          disabled={jobActivo || totalConFlags === 0 || soloVistaAgrupada || (!!infoVar && accionImgId !== null)}
+                          title={soloVistaAgrupada ? TITULO_SOLO_VISTA : undefined}
+                          className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold shadow-sm transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+                          style={{ background: `linear-gradient(120deg, ${tema.color}, ${tema.acento})`, color: tema.texto }}
+                        >
+                          {jobActivo ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
+                          {jobActivo
+                            ? "Procesando imágenes…"
+                            : totalConFlags
+                              ? `Procesar con IA · ${totalConFlags} imagen${totalConFlags > 1 ? "es" : ""}`
+                              : "Procesar con IA"}
+                        </button>
+                        {infoVar ? (
+                          <p className="mt-1.5 text-center text-[11px] text-slate-400">
+                            Pasa el mouse sobre una foto <strong>de esta variante</strong> para elegir <strong>Fondo</strong>, <strong>Traducir texto</strong>, <strong>Quitar logos</strong> o <strong>Modelo</strong>. Al procesar, la editada <strong>reemplaza</strong> a la anterior solo en esta variante: el padre y las hermanas no cambian.
+                          </p>
+                        ) : (
+                          <p className="mt-1.5 text-center text-[11px] text-slate-400">
+                            Pasa el mouse sobre una imagen para elegir <strong>Fondo</strong> (quitar fondo), <strong>Traducir texto</strong>, <strong>Quitar logos</strong> o <strong>Modelo</strong> (cambiar persona), o eliminarla. Al procesar, la imagen editada <strong>reemplaza</strong> a la anterior en WooCommerce.
+                          </p>
+                        )}
+                      </>
+                    )}
+
+                    {/* Error de una escritura de galería de variante, en llano. No
+                        depende de `infoVar`: si el flag se apagó a media sesión
+                        (409), la relectura ya no trae es_variante y el motivo
+                        tiene que seguir a la vista. */}
+                    {avisoGal && (
+                      <div className="mt-2 flex items-start gap-1.5 rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5 text-[11px] font-semibold text-red-700">
+                        <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+                        <span>{avisoGal}</span>
+                      </div>
+                    )}
+                  </section>
+                </div>
+                <div className="studio-cascada min-w-0 space-y-4" data-vuelta={vuelta}>
+                  {/* TÍTULO */}
+                  <section className="rounded-2xl border border-slate-200 bg-white p-4">
+                    <div className="mb-1.5 flex items-center justify-between gap-2">
+                      <label className="text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">Título</label>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={descartarBorrador}
+                          title="Descarta tus ediciones locales y recarga el contenido desde WooCommerce"
+                          className="flex items-center gap-1 rounded-md border border-rose-200 bg-rose-50 px-2 py-0.5 text-[11px] font-bold text-rose-600 transition-colors hover:bg-rose-100"
+                        >
+                          <RefreshCw size={11} /> Descartar borrador
+                        </button>
+                        {limiteTitulo ? (
+                          <span className={["text-[11px] font-semibold tabular-nums", titulo.length > limiteTitulo ? "text-red-500" : "text-slate-400"].join(" ")}>
+                            {titulo.length}/{limiteTitulo}{titulo.length > limiteTitulo ? " · excede" : ""}
+                          </span>
+                        ) : (
+                          <span className="text-[11px] text-slate-400">{titulo.length} car.</span>
+                        )}
+                      </div>
+                    </div>
+                    <input value={titulo} onChange={(e) => setTitulo(e.target.value)}
+                      placeholder={sinTituloPropio ? "Sin título propio en este canal" : undefined}
+                      className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm text-slate-800 outline-none focus:ring-2" style={{ outlineColor: tema.acento }} />
+                    {sinTituloPropio && (
+                      <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                        Esta variante no tiene título propio en {canalInfo?.label ?? canal}. Un anuncio nuevo saldría con el del padre
+                        {data?.nombre ? <>: <strong>«{data.nombre}»</strong></> : null}. Usa <strong>Mejorar con IA</strong>
+                        {esWalmart ? <>, o escríbelo y <strong>guarda el contenido</strong> antes de publicar (Walmart no toma el del formulario).</> : <> o escríbelo aquí.</>}
                       </p>
                     )}
-                  </div>
-                )}
-              </section>
+                  </section>
 
-              {/* COSTOS — dims de pieza → CBM → costo → precios */}
-              <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.15em]" style={{ color: tema.acento }}>
-                    <Calculator size={14} /> Costos
-                  </div>
-                  {costoCalc?.pct_comision != null && (
-                    <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] text-slate-500">
-                      comisión ML {Math.round((costoCalc.pct_comision ?? 0) * 100)}%
-                    </span>
+                  {/* LA CATEGORÍA DEL CANAL ABIERTO, y solo ésa.
+                      Cada canal tiene su propio mundo y no se traducen entre sí:
+                      ML usa `MLM…`, Amazon un `productType` de lista plana y TikTok
+                      un id numérico de hoja. Antes se pintaba SIEMPRE la de Mercado
+                      Libre, así que estando en Amazon o TikTok se leía la categoría
+                      de otro canal como si fuera la suya. */}
+                  {/* Los pickers guardan solos y no reciben `disabled`: en la vista
+                      previa de agrupada (donde `sku` es el padre) se envuelven en
+                      un <fieldset disabled>, que apaga sus botones e inputs sin
+                      tocar los componentes. Sólo se monta si hay picker: vacío,
+                      sumaría un hueco de `space-y` en ML y en General. */}
+                  {((esAmazon && wcId != null) || (esTikTok && sku) || (esTemu && sku) || (esWalmart && sku)) && (
+                  <fieldset disabled={soloVistaAgrupada} title={soloVistaAgrupada ? TITULO_SOLO_VISTA : undefined}
+                    className={soloVistaAgrupada ? "min-w-0 opacity-60" : "min-w-0"}>
+                  {esAmazon && wcId != null && (
+                    <TipoAmazonPicker sku={sku!} wcId={wcId} titulo={titulo || data?.nombre} />
                   )}
-                </div>
-
-                {/* Entradas editables */}
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                  <div>
-                    {/* El "(USD)" del rótulo sobra: lo dice el chip. */}
-                    <Campo label="Costo producto" prefijo="$" moneda="USD" value={costoProducto} onChange={setCostoProducto} acento={tema.acento} />
-                    {(() => {
-                      const usd = aNumero(costoProducto) ?? 0;
-                      const tc = aNumero(tipoCambio) ?? 0;
-                      // La conversión en vivo: la comprobación de que se tecleó
-                      // en la moneda que se creía, antes de guardar.
-                      return usd > 0 && tc > 0
-                        ? <p className="mt-1 flex items-center gap-1 text-[10px] text-slate-500">
-                            = {precioMXN(Math.round(usd * tc * 100) / 100)}
-                            <ChipMoneda moneda="MXN" />
-                            <span className="text-slate-400">es lo que se guarda</span>
-                          </p>
-                        : null;
-                    })()}
-                  </div>
-                  {/* El puente entre las dos monedas: no es dinero, es la tasa. */}
-                  <div>
-                    <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">
-                      Tipo de cambio
-                    </label>
-                    <div className="relative">
-                      <input value={tipoCambio} onChange={(e) => setTipoCambio(e.target.value)} inputMode="decimal"
-                        className="w-full rounded-lg border-2 border-slate-200 bg-white py-2.5 pl-3 pr-[74px] text-sm tabular-nums text-slate-800 outline-none focus:ring-2 focus:ring-slate-300" />
-                      <span className="pointer-events-none absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-0.5">
-                        <ChipMoneda moneda="USD" />
-                        <span className="text-[9px] font-bold text-slate-400">→</span>
-                        <ChipMoneda moneda="MXN" />
-                      </span>
-                    </div>
-                  </div>
-                  <div>
-                    <Campo label="Peso (kg)" value={campos.peso} onChange={(v) => setCampo("peso", v)} acento={tema.acento} />
-                    {/* Debajo y no en el rótulo: con «se guardará como suyo» no cabe. */}
-                    {estadoMedidas.has("peso") && <div className="mt-1"><MarcaDelPadre estado={estadoMedidas.get("peso")!} /></div>}
-                  </div>
-                  <Campo label="Margen (%)" value={margen} onChange={setMargen} acento={tema.acento} />
-                  <div>
-                    <Campo label="Comisión ML (%)" value={comision} onChange={setComision} acento={tema.acento} />
-                    {costoCalc?.comision_estimada && !comision.trim() && (
-                      <p className="mt-1 text-[10px] text-amber-600">estimada · por categoría (histórico)</p>
-                    )}
-                  </div>
-                  <div>
-                    <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">Envío</label>
-                    <label className="flex h-[42px] cursor-pointer items-center gap-2 rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600">
-                      <input type="checkbox" checked={incluirEnvio} onChange={(e) => setIncluirEnvio(e.target.checked)} className="h-4 w-4" style={{ accentColor: tema.acento }} />
-                      Sumar al precio
-                    </label>
-                  </div>
-                </div>
-
-                {/* Dimensiones de la PIEZA (el flete se calcula por pieza) */}
-                <div>
-                  <div className="mb-1.5 flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">
-                    Dimensiones de la pieza — Largo × Ancho × Alto (cm)
-                    {costoCalc?.volumen_m3 != null && <span className="rounded bg-amber-100 px-1.5 py-0.5 font-mono text-[10px] normal-case tracking-normal text-amber-700">{costoCalc.volumen_m3} m³</span>}
-                  </div>
-                  <div className="grid grid-cols-3 gap-2">
-                    {(["largo", "ancho", "alto"] as const).map((k) => (
-                      <div key={k}>
-                        <input value={campos[k]} onChange={(e) => setCampo(k, e.target.value)} placeholder={k}
-                          aria-label={k}
-                          className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:ring-2" style={{ outlineColor: tema.acento }} />
-                        {/* Debajo y no dentro del campo: en el teléfono cada uno mide un tercio. */}
-                        {estadoMedidas.has(k) && <div className="mt-1"><MarcaDelPadre estado={estadoMedidas.get(k)!} /></div>}
-                      </div>
-                    ))}
-                  </div>
-                  <p className="mt-1 text-[11px] text-slate-400">
-                    Flete por pieza (CBM) = volumen × ${(costoCalc?.tarifa_cbm_m3 ?? 7500).toLocaleString("es-MX")}/m³ (contenedor estándar).
-                  </p>
-                  {/* El title no se ve en el teléfono: la regla se dice también aquí. */}
-                  {[...estadoMedidas.values()].includes("padre") && (
-                    <p className="mt-1 text-[11px] text-violet-700">
-                      Lo marcado <strong>del padre</strong> es el paquete de la familia: el precio se calcula con él, pero
-                      guardar no lo copia a esta variante. Si cambias otro dato del paquete, la marca dice qué pasará
-                      con él al guardar.
-                    </p>
+                  {/* El título que ve el usuario, no el de Woo: si acaba de mejorarlo
+                      con IA, la recomendación tiene que salir de ESE texto. */}
+                  {esTikTok && sku && (
+                    <CategoriaTikTokPicker sku={sku} titulo={titulo || data?.nombre} />
                   )}
-                  {[...estadoMedidas.values()].includes("propio") && (
-                    <p className="mt-1 text-[11px] text-amber-700">
-                      Cambiaste el paquete: al guardar, lo marcado <strong>se guardará como suyo</strong> pasa a ser de esta
-                      variante, en costos y en WooCommerce.
-                    </p>
+                  {/* En Temu la categoría no es cosmética: DETERMINA qué atributos
+                      existen, así que sin elegirla no hay contenido ni alta. */}
+                  {esTemu && sku && (
+                    <CategoriaTemuPicker sku={sku} titulo={titulo || data?.nombre} />
                   )}
-                  {estadoMedidas.get("peso") === "suelto" && (
-                    <p className="mt-1 text-[11px] text-amber-700">
-                      El peso venía del padre porque la caja era la misma. Cambiaste la caja: ese peso <strong>no se guarda</strong>.
-                      Escribe el peso real de esta variante.
-                    </p>
+                  {/* En Walmart la categoría decide dos cosas: qué campos exige el
+                      bloque `Visible` y si hay EXENCIÓN DE UPC para publicar. Sin
+                      selector, el publicador decidía solo con patrones de título. */}
+                  {esWalmart && sku && (
+                    <CategoriaWalmartPicker sku={sku} titulo={titulo || data?.nombre}
+                      onCambio={() => setCatWalmartVer((v) => v + 1)} />
                   )}
-                </div>
-
-                {/* Regenerar (preview) */}
-                <button
-                  onClick={regenerarCosto}
-                  disabled={regenerando || !data}
-                  className="flex w-full items-center justify-center gap-2 rounded-xl border-2 bg-white px-4 py-2 text-sm font-bold transition-all hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-60"
-                  style={{ borderColor: tema.color, color: tema.acento }}
-                >
-                  {regenerando ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
-                  {regenerando ? "Calculando…" : "Regenerar costo"}
-                </button>
-
-                {/* Resultados */}
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                  <Resultado label="Flete CBM" value={precioMXN(costoCalc?.costo_cbm)} />
-                  <Resultado label="Costo" value={precioMXN(costoCalc?.costo_unitario)} destacado acento={tema.acento} />
-                  <Resultado label="Comisión ML" value={precioMXN(costoCalc?.costo_comision)} />
-                  <Resultado label="Envío" value={precioMXN(costoCalc?.costo_fee_envio)} />
-                  <Resultado label="Precio regular" value={precioMXN(costoCalc?.precio_base)} />
-                  <Resultado label="Precio oferta" value={precioMXN(costoCalc?.precio_sugerido)} destacado acento={tema.acento} />
-                </div>
-                {costoFresco && costoCalc?.ganancia_neta != null && (
-                  <div className="text-[11px] text-slate-500">
-                    Ganancia neta <strong>{precioMXN(costoCalc.ganancia_neta)}</strong>
-                    {costoCalc.roi != null && <> · ROI <strong>{Math.round((costoCalc.roi ?? 0) * 100)}%</strong></>}
-                  </div>
-                )}
-
-                {/* Guardar */}
-                <button
-                  onClick={guardarCosto}
-                  disabled={guardandoCosto || !data || soloVistaAgrupada}
-                  title={soloVistaAgrupada ? TITULO_SOLO_VISTA : undefined}
-                  className="flex w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold shadow-sm transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
-                  style={{ background: `linear-gradient(120deg, ${tema.color}, ${tema.acento})`, color: tema.texto }}
-                >
-                  {guardandoCosto ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
-                  {guardandoCosto ? "Guardando…" : "Guardar costo y precios"}
-                </button>
-                {costoMsg && (
-                  <div className={["flex items-start gap-2 rounded-lg px-3 py-2 text-sm", costoMsg.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-600"].join(" ")}>
-                    {costoMsg.ok ? <CheckCircle2 size={15} className="mt-0.5 shrink-0" /> : <AlertTriangle size={15} className="mt-0.5 shrink-0" />}
-                    {costoMsg.texto}
-                  </div>
-                )}
-                <p className="text-[11px] text-slate-400">
-                  <strong>Regenerar</strong> recalcula sin escribir — y descarta el precio que hayas puesto a mano arriba, volviendo al derivado del costo.
-                  {" "}<strong>Guardar</strong> persiste en la base y actualiza WooCommerce (precio regular/oferta, costo, peso y dimensiones; lo marcado <strong>del padre</strong>, sólo si dice «se guardará como suyo»); si fijaste un precio arriba, guarda <strong>ese</strong>.
-                </p>
-              </section>
-
-              {/* ALIBABA */}
-              <section className="grid grid-cols-1 gap-4 sm:grid-cols-[1fr,180px]">
-                <div>
-                  <label className="mb-1.5 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400"><Link2 size={13} /> URL Alibaba</label>
-                  <div className="flex items-center gap-2">
-                    <input value={campos.alibabaUrl} onChange={(e) => setCampo("alibabaUrl", e.target.value)} placeholder="https://www.alibaba.com/…"
-                      className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:ring-2" style={{ outlineColor: tema.acento }} />
-                    {campos.alibabaUrl && <a href={campos.alibabaUrl} target="_blank" rel="noreferrer" className="shrink-0 rounded-lg border border-slate-200 p-2 text-slate-400 hover:bg-slate-50"><ExternalLink size={15} /></a>}
-                  </div>
-                </div>
-                {/* En DÓLARES: no es una suposición sobre Alibaba — este valor
-                    siembra el "Costo producto" de arriba, que es el campo en
-                    dólares (ver el efecto que lee m.alibaba_precio). */}
-                <Campo label="Precio Alibaba" prefijo="$" moneda="USD" value={campos.alibabaPrecio}
-                  onChange={(v) => setCampo("alibabaPrecio", v)} acento={tema.acento}
-                  nota="Siembra el costo del producto" />
-              </section>
-
-              {/* ATRIBUTOS 1×1 (editables) — sin las filas basura de dimensiones/peso */}
-              {(atributosVisibles.length > 0 || atrsWalmart.length > 0) && (
-                <section className="rounded-2xl border border-slate-200 bg-white p-4">
-                  <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">Atributos</div>
-                  {atributosVisibles.length > 0 && (
-                    <div className="grid gap-2">
-                      {atributosVisibles.map(({ a, i }) => (
-                        <div key={i} className="grid grid-cols-[160px,1fr] items-center gap-3">
-                          <span className="truncate text-xs font-semibold uppercase tracking-wide text-slate-400" title={a.nombre}>{a.nombre}</span>
-                          <input value={a.valor} onChange={(e) => setAtributo(i, e.target.value)}
-                            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2" style={{ outlineColor: tema.acento }} />
-                        </div>
-                      ))}
-                    </div>
+                  </fieldset>
                   )}
 
-                  {/* LOS DE WALMART, DEBAJO Y APARTE.
-                      Arriba están los atributos de WooCommerce, que son del
-                      producto. Estos son los de la CATEGORÍA de Walmart y viven
-                      en `enrich.channel_content` — la tabla de contenido por
-                      canal—, no en Woo. Se pintan de SOLO LECTURA a propósito:
-                      sus valores llevan listas ("Interior · Exterior") y medidas
-                      ({measure, unit}), y una caja de texto los guardaría de
-                      vuelta como "[object Object]". En este canal eso no da
-                      error: se publica. */}
-                  {atrsWalmart.length > 0 && (
-                    <div className={atributosVisibles.length > 0
-                      ? "mt-4 border-t border-slate-100 pt-3" : ""}>
-                      <div className="mb-2 flex items-baseline justify-between">
-                        <span className="text-[11px] font-bold uppercase tracking-[0.15em]"
-                              style={{ color: tema.acento }}>
-                          Atributos de Walmart{faltantes?.categoria ? ` · ${faltantes.categoria}` : ""}
-                        </span>
-                        <span className="text-[11px] text-slate-400">
-                          {atrsWalmart.length} guardado(s) · solo lectura
-                        </span>
-                      </div>
-                      <div className="grid gap-1.5">
-                        {atrsWalmart.map((a) => (
-                          <div key={a.campo} className="grid grid-cols-[160px,1fr] items-center gap-3">
-                            <span className="truncate font-mono text-[10.5px] uppercase tracking-wide text-slate-400"
-                                  title={a.campo}>{a.campo}</span>
-                            <span className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-700">
-                              {a.valor}
+                  {/* CATEGORÍA (Mercado Libre editable + WooCommerce)
+                      El picker de ML solo se pinta en ML y en General: en Amazon y
+                      en TikTok arriba ya está el suyo, y mostrar los dos hacía creer
+                      que la categoría de ML viajaba a esos canales. El GTIN pasó a la
+                      familia complementaria, así que sin ML ni General no queda nada aquí. */}
+                  {(esML || esGeneral) && (
+                  <section className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4">
+                    {/* Categoría ML — buscador por nombre. ES LA QUE SE ENVÍA a Mercado
+                        Libre al publicar (define además la comisión del costo). */}
+                    {(esML || esGeneral) && (
+                      <>
+                        <div className="flex items-center justify-between">
+                          <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-indigo-600">
+                            Se envía a Mercado Libre
+                          </span>
+                          {guardandoCat && (
+                            <span className="flex items-center gap-1 text-[10px] font-medium text-slate-400">
+                              <Loader2 size={11} className="animate-spin" /> guardando…
                             </span>
+                          )}
+                        </div>
+                        <fieldset disabled={soloVistaAgrupada} title={soloVistaAgrupada ? TITULO_SOLO_VISTA : undefined}
+                          className={soloVistaAgrupada ? "min-w-0 opacity-60" : "min-w-0"}>
+                          <CategoriaMLPicker
+                            value={catMlId}
+                            pathInicial={catMlNiveles ?? meta?.categoria_ml?.niveles}
+                            onChange={elegirCategoriaML}
+                            acento={tema.acento}
+                          />
+                        </fieldset>
+                        {/* El semáforo de esa categoría: el título, la descripción y las 2
+                            primeras fotos contra todo el árbol de ML, antes de llenar
+                            atributos. Nada si CATEGORIA_VEC_ENABLED está apagada. */}
+                        <SemaforoCategoriaML
+                          sku={sku}
+                          wcId={wcIdEscritura}
+                          categoriaId={catMlId}
+                          titulo={titulo || data?.nombre || ""}
+                          descripcion={descripcion}
+                          fotos={(galeria ?? []).map((g) => g.src)}
+                          listo={galeria !== null && !!(titulo || data?.nombre)}
+                          onUsar={elegirCategoriaML}
+                          bloqueado={soloVistaAgrupada}
+                          acento={tema.acento}
+                        />
+                      </>
+                    )}
+                    {/* La categoría de WooCommerce SOLO en General. En un
+                        marketplace confunde: cada canal tiene su propia taxonomía
+                        —y en Temu la categoría además DECIDE qué atributos
+                        existen—, así que ver la de Woo al lado de la del canal
+                        invita a creer que alguna de las dos se envía. Ninguna sale
+                        de aquí: la de Woo es de la tienda web. */}
+                    {esGeneral && (
+                    <div className="border-t border-slate-100 pt-3">
+                      <div className="mb-1 flex items-center gap-2">
+                        <span className="text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">Categoría WooCommerce</span>
+                        <span className="text-[10px] font-medium text-slate-400">(solo tienda web)</span>
+                      </div>
+                      {categoriaWC.length ? (
+                        <div className="flex flex-wrap items-center gap-1 text-sm text-slate-700">
+                          {categoriaWC.map((n, i) => (
+                            <span key={i} className="flex items-center gap-1">
+                              {i > 0 && <ChevronRight size={13} className="text-slate-300" />}
+                              <span className="font-medium">{n.nombre}</span>
+                            </span>
+                          ))}
+                        </div>
+                      ) : (<span className="text-sm text-slate-400">Sin categoría asignada</span>)}
+                    </div>
+                    )}
+                  </section>
+                  )}
+
+                  {/* PRECIO — el que se publica. Los costos se capturan en la pestaña Costos. */}
+                  <section className="rounded-2xl border border-slate-200 bg-white p-4">
+                    <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">Precio</div>
+                    {/* PRECIOS + COSTO + STOCK.
+                        Precio regular, precio oferta y COSTO se editan aquí y
+                        "Guardar precio y costo" los persiste (costos_validados +
+                        costos_finales + WooCommerce, el mismo escritor que COSTOS).
+                        Lo escrito a mano manda sobre lo derivado hasta que alguien
+                        pulse Regenerar abajo.
+                        El costo capturado aquí es el TOTAL (producto + flete); para
+                        desglosarlo está el bloque COSTOS ↓ (costo USD + dimensiones).
+                        Si el producto aún no tiene categoría ML, el costo se guarda
+                        igual y se avisa que el precio no se pudo derivar — antes eso
+                        era un 422 y no se podía capturar nada.
+                        Stock sigue siendo espejo: lo manda Woo. */}
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-2 gap-3">
+                        <Campo label="Precio regular" prefijo="$" moneda="MXN" value={campos.precioRegular}
+                          onChange={(v) => setCampo("precioRegular", v)} acento={tema.acento}
+                          nota={esGeneral ? undefined : `Se publica en ${canalInfo?.label ?? canal}`}
+                          insignia={precioDelPadre("precioRegular") ? <MarcaDelPadre estado="precio" /> : undefined} />
+                        <Campo label="Precio oferta" prefijo="$" moneda="MXN" value={campos.precioOferta}
+                          onChange={(v) => setCampo("precioOferta", v)} acento={tema.acento}
+                          insignia={precioDelPadre("precioOferta") ? <MarcaDelPadre estado="precio" /> : undefined} />
+                        {/* OJO: este "Costo" NO es el "Costo producto" de abajo. Aquí
+                            va el total en pesos, ya con flete; abajo, la compra en
+                            dólares. La nota lo dice porque el nombre no alcanza. */}
+                        <Campo label="Costo" prefijo="$" moneda="MXN" value={campos.costo}
+                          onChange={(v) => setCampo("costo", v)} acento={tema.acento}
+                          nota="Total por pieza, ya con flete"
+                          insignia={precioDelPadre("costo") ? <MarcaDelPadre estado="precio" /> : undefined} />
+                        <div>
+                          <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">
+                            Stock <span className="normal-case text-slate-300">(solo lectura)</span>
+                          </label>
+                          <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-bold text-slate-700">
+                            {meta?.stock != null ? <NumeroAnimado valor={meta.stock} /> : "—"}
+                            <span className="text-xs font-normal text-slate-400">u</span>
+                          </div>
+                        </div>
+                      </div>
+                      {/* El title no se ve en el teléfono: la regla se dice también aquí. */}
+                      {(["precioRegular", "precioOferta", "costo"] as const).some(precioDelPadre) && (
+                        <p className="text-[11px] text-violet-700">
+                          Lo marcado <strong>del padre</strong> es de la familia: al guardar no se copia a esta variante, se
+                          calcula con lo suyo. Si es el mismo, escríbelo.
+                        </p>
+                      )}
+
+                      {/* El bloque sigue montado mientras haya mensaje: si dependiera
+                          solo de `preciosEditados`, al guardar bien se desmontaría y
+                          el "Precio guardado…" se vería medio parpadeo. */}
+                      {(preciosEditados || precioMsg) && (
+                        <div className={["rounded-xl border p-3", preciosEditados ? "border-amber-200 bg-amber-50/60" : "border-slate-200 bg-slate-50"].join(" ")}>
+                          {preciosEditados && (
+                            <button
+                              onClick={guardarPrecios}
+                              disabled={guardandoPrecios || !data || soloVistaAgrupada}
+                              title={soloVistaAgrupada ? TITULO_SOLO_VISTA : undefined}
+                              className="flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-bold text-white shadow-sm transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+                              style={{ background: `linear-gradient(120deg, ${tema.color}, ${tema.acento})` }}
+                            >
+                              {guardandoPrecios ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />}
+                              {guardandoPrecios ? "Guardando…" : "Guardar precio y costo"}
+                            </button>
+                          )}
+                          {precioMsg ? (
+                            <div className={["flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium", preciosEditados ? "mt-2" : "", precioMsg.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"].join(" ")}>
+                              {precioMsg.ok ? <CheckCircle2 size={13} /> : <AlertTriangle size={13} />}
+                              {precioMsg.texto}
+                            </div>
+                          ) : (
+                            <p className="mt-1.5 text-center text-[11px] text-amber-700">
+                              Cambiaste precio o costo: sin guardar, <strong>no se aplica</strong>.
+                            </p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </section>
+
+                  {/* SUGERIR PRECIO (v0.686.0; v0.696.0): el catálogo maestro (ML y
+                      Amazon) o, si no lo tiene, el modo completo. «Usar en Precio
+                      oferta» y «Usar estas medidas» solo llenan los campos de abajo;
+                      se guardan con sus botones de siempre. */}
+                  {sku && (
+                    <SugerirPrecio
+                      sku={sku}
+                      titulo={titulo || data?.nombre || sku}
+                      mlCatId={catMlId || meta?.categoria_ml?.category_id || null}
+                      imagen={data?.imagen ?? data?.imagenes?.[0] ?? null}
+                      disabled={soloVistaAgrupada}
+                      onUsar={(precio) => setCampo("precioOferta", String(precio))}
+                      onUsarMedidas={(m) => {
+                        setCampo("peso", String(m.peso_kg));
+                        setCampo("largo", String(m.largo_cm));
+                        setCampo("ancho", String(m.ancho_cm));
+                        setCampo("alto", String(m.alto_cm));
+                      }}
+                    />
+                  )}
+                </div>
+              </div>
+
+              <CabeceraFamilia familia="secundaria" tema={tema} />
+              <div className="space-y-4 rounded-2xl bg-slate-100/70 p-3">
+                {/* DESCRIPCIÓN */}
+                <section className="rounded-2xl border border-slate-200 bg-white p-4">
+                  <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">Descripción</label>
+                  <textarea value={descripcion} onChange={(e) => setDescripcion(e.target.value)} rows={6}
+                    className="w-full resize-y rounded-lg border border-slate-200 px-3 py-2.5 text-sm leading-relaxed text-slate-700 outline-none focus:ring-2" style={{ outlineColor: tema.acento }} />
+                </section>
+
+                {/* AMAZON: HIGHLIGHTS + BULLETS (desbloqueado en Amazon) */}
+                {esAmazon && (
+                  <section className="space-y-4 rounded-2xl border-2 p-4" style={{ borderColor: hexToRgba(tema.color, 0.5), background: tema.suave }}>
+                    <div className="text-[11px] font-bold uppercase tracking-[0.15em]" style={{ color: tema.acento }}>Campos Amazon</div>
+                    <div>
+                      <div className="mb-1.5 flex items-center justify-between">
+                        <label className="text-[11px] font-bold uppercase tracking-[0.15em] text-slate-500">Item Highlights</label>
+                        <span className="text-[11px] text-slate-400">{highlights.length}/125</span>
+                      </div>
+                      <input value={highlights} onChange={(e) => setHighlights(e.target.value)} placeholder="Se llena al Mejorar con IA…"
+                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none focus:ring-2" style={{ outlineColor: tema.acento }} />
+                    </div>
+                    {/* TÉRMINOS DE BÚSQUEDA — el contador va en BYTES, no en
+                        caracteres, y no es un capricho: Amazon cuenta bytes UTF-8
+                        y cada acento o ñ pesa 2. Un byte de más y IGNORA EL CAMPO
+                        ENTERO, sin avisar. Por eso el texto se escribe sin
+                        acentos (Amazon los normaliza igual al indexar). */}
+                    <div>
+                      <div className="mb-1.5 flex items-center justify-between">
+                        <label className="text-[11px] font-bold uppercase tracking-[0.15em] text-slate-500">
+                          Términos de búsqueda <span className="normal-case tracking-normal text-slate-400">(no los ve el comprador)</span>
+                        </label>
+                        <span className={`text-[11px] ${bytesUTF8(searchTerms) > 249 ? "font-bold text-rose-600" : "text-slate-400"}`}>
+                          {bytesUTF8(searchTerms)}/249 bytes
+                        </span>
+                      </div>
+                      <textarea value={searchTerms} onChange={(e) => setSearchTerms(e.target.value)} rows={2}
+                        placeholder="Sinónimos y variantes, separados por espacios. Se llena al Mejorar con IA…"
+                        className="w-full resize-y rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2" style={{ outlineColor: tema.acento }} />
+                      {bytesUTF8(searchTerms) > 249 && (
+                        <p className="mt-1 text-[11px] text-rose-600">
+                          Pasado de 249 bytes: Amazon ignoraría el campo completo. Quita acentos o palabras.
+                        </p>
+                      )}
+                    </div>
+                    <div>
+                      <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.15em] text-slate-500">Bullet Points (5)</label>
+                      <div className="space-y-2">
+                        {Array.from({ length: Math.max(bullets.length, 5) }).map((_, i) => (
+                          <div key={i} className="flex items-start gap-2">
+                            <span className="mt-2.5 h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: tema.acento }} />
+                            <textarea
+                              value={bullets[i] ?? ""}
+                              onChange={(e) => setBullet(i, e.target.value)}
+                              rows={2}
+                              placeholder={`Bullet ${i + 1} (se llena al Mejorar con IA)`}
+                              className="w-full resize-y rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2"
+                              style={{ outlineColor: tema.acento }}
+                            />
                           </div>
                         ))}
                       </div>
-                      <p className="mt-2 text-[11px] text-slate-400">
-                        Los genera <strong>Mejorar con IA</strong> contra la lista cerrada de la
-                        categoría y viajan tal cual en el feed. Las medidas y el peso los
-                        toma el publicador de WooCommerce.
-                      </p>
                     </div>
-                  )}
+                  </section>
+                )}
+
+                {/* CAMPOS WALMART — mismo lugar y misma forma que los de Amazon.
+                    Las viñetas se editan aquí (son texto y se guardan bien); los
+                    ATRIBUTOS de la categoría NO, y por eso viven abajo, junto a
+                    los de Woo: llevan listas y medidas que una caja de texto
+                    aplanaría a "[object Object]" — y en Walmart eso se publica
+                    sin dar error. */}
+                {esWalmart && (
+                  <section className="space-y-4 rounded-2xl border-2 p-4"
+                           style={{ borderColor: hexToRgba(tema.color, 0.5), background: tema.suave }}>
+                    <div className="text-[11px] font-bold uppercase tracking-[0.15em]"
+                         style={{ color: tema.acento }}>Campos Walmart</div>
+                    <div>
+                      <div className="mb-1.5 flex items-center justify-between">
+                        <label className="text-[11px] font-bold uppercase tracking-[0.15em] text-slate-500">
+                          Viñetas de beneficio
+                        </label>
+                        {/* El tope de 50 es de ESTE canal — el más apretado del
+                            panel— y Walmart lo pide literal ("oraciones breves de
+                            50 caracteres"). Se enseña por viñeta, no al final. */}
+                        <span className="text-[11px] text-slate-400">máx. 50 caracteres c/u · mínimo 3</span>
+                      </div>
+                      <div className="space-y-2">
+                        {Array.from({ length: Math.max(bullets.length, 5) }).map((_, i) => {
+                          const largo = (bullets[i] ?? "").length;
+                          return (
+                            <div key={i} className="flex items-start gap-2">
+                              <span className="mt-2.5 h-1.5 w-1.5 shrink-0 rounded-full"
+                                    style={{ background: tema.acento }} />
+                              <div className="w-full">
+                                <textarea
+                                  value={bullets[i] ?? ""}
+                                  onChange={(e) => setBullet(i, e.target.value)}
+                                  rows={2}
+                                  placeholder={`Viñeta ${i + 1} (se llena al Mejorar con IA)`}
+                                  className="w-full resize-y rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2"
+                                  style={{ outlineColor: tema.acento }}
+                                />
+                                {largo > 0 && (
+                                  <span className={"text-[10.5px] " + (largo > 50 ? "font-semibold text-rose-600" : "text-slate-400")}>
+                                    {largo}/50{largo > 50 ? " · Walmart la recorta" : ""}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    {Array.isArray(servidor?.caracteristicas)
+                      && (servidor.caracteristicas as string[]).length > 0 && (
+                      <div>
+                        <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.15em] text-slate-500">
+                          Características
+                        </label>
+                        <ul className="ml-4 list-disc space-y-0.5 text-[12.5px] text-slate-700">
+                          {(servidor.caracteristicas as string[]).map((c2, i) => <li key={i}>{c2}</li>)}
+                        </ul>
+                      </div>
+                    )}
+                  </section>
+                )}
+
+                {/* ATRIBUTOS 1×1 (editables) — sin las filas basura de dimensiones/peso */}
+                {(atributosVisibles.length > 0 || atrsWalmart.length > 0) && (
+                  <section className="rounded-2xl border border-slate-200 bg-white p-4">
+                    <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">Atributos</div>
+                    {atributosVisibles.length > 0 && (
+                      <div className="grid gap-2">
+                        {atributosVisibles.map(({ a, i }) => (
+                          <div key={i} className="grid grid-cols-[160px,1fr] items-center gap-3">
+                            <span className="truncate text-xs font-semibold uppercase tracking-wide text-slate-400" title={a.nombre}>{a.nombre}</span>
+                            <input value={a.valor} onChange={(e) => setAtributo(i, e.target.value)}
+                              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2" style={{ outlineColor: tema.acento }} />
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* LOS DE WALMART, DEBAJO Y APARTE.
+                        Arriba están los atributos de WooCommerce, que son del
+                        producto. Estos son los de la CATEGORÍA de Walmart y viven
+                        en `enrich.channel_content` — la tabla de contenido por
+                        canal—, no en Woo. Se pintan de SOLO LECTURA a propósito:
+                        sus valores llevan listas ("Interior · Exterior") y medidas
+                        ({measure, unit}), y una caja de texto los guardaría de
+                        vuelta como "[object Object]". En este canal eso no da
+                        error: se publica. */}
+                    {atrsWalmart.length > 0 && (
+                      <div className={atributosVisibles.length > 0
+                        ? "mt-4 border-t border-slate-100 pt-3" : ""}>
+                        <div className="mb-2 flex items-baseline justify-between">
+                          <span className="text-[11px] font-bold uppercase tracking-[0.15em]"
+                                style={{ color: tema.acento }}>
+                            Atributos de Walmart{faltantes?.categoria ? ` · ${faltantes.categoria}` : ""}
+                          </span>
+                          <span className="text-[11px] text-slate-400">
+                            {atrsWalmart.length} guardado(s) · solo lectura
+                          </span>
+                        </div>
+                        <div className="grid gap-1.5">
+                          {atrsWalmart.map((a) => (
+                            <div key={a.campo} className="grid grid-cols-[160px,1fr] items-center gap-3">
+                              <span className="truncate font-mono text-[10.5px] uppercase tracking-wide text-slate-400"
+                                    title={a.campo}>{a.campo}</span>
+                              <span className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-700">
+                                {a.valor}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                        <p className="mt-2 text-[11px] text-slate-400">
+                          Los genera <strong>Mejorar con IA</strong> contra la lista cerrada de la
+                          categoría y viajan tal cual en el feed. Las medidas y el peso los
+                          toma el publicador de WooCommerce.
+                        </p>
+                      </div>
+                    )}
+                  </section>
+                )}
+
+                <section className="rounded-2xl border border-slate-200 bg-white p-4">
+                  {/* Código de barras / GTIN — requerido por ML en ciertas
+                      categorías (ej. colchones en SANCORFASHION). Se guarda en Woo. */}
+                  <div>
+                    <div className="mb-1 flex items-center justify-between">
+                      <span className="text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">
+                        Código de barras / GTIN
+                      </span>
+                      {guardandoGtin ? (
+                        <span className="flex items-center gap-1 text-[10px] font-medium text-slate-400">
+                          <Loader2 size={11} className="animate-spin" /> guardando…
+                        </span>
+                      ) : gtinGuardado ? (
+                        <span className="text-[10px] font-semibold text-emerald-600">✓ guardado</span>
+                      ) : null}
+                    </div>
+                    <input
+                      value={gtin}
+                      onChange={(e) => setGtin(e.target.value.replace(/[^\d]/g, ""))}
+                      onBlur={guardarGtinHandler}
+                      disabled={soloVistaAgrupada}
+                      title={soloVistaAgrupada ? TITULO_SOLO_VISTA : undefined}
+                      inputMode="numeric"
+                      maxLength={14}
+                      placeholder="EAN-13 / UPC-12 (8-14 dígitos)"
+                      className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2"
+                      style={{ outlineColor: tema.acento }}
+                    />
+                    <p className="mt-1 text-[11px] text-slate-400">
+                      Solo si la categoría lo exige (ML lo valida contra su base — debe ser real).
+                    </p>
+                  </div>
                 </section>
-              )}
+              </div>
 
               {/* GUARDAR CONTENIDO — solo canal General (persiste a WooCommerce) */}
               {esGeneral && (
@@ -3860,6 +3754,26 @@ export default function ProductStudio({
           </div>
         </div>
       )}
+
+      {/* Aviso flotante: sube desde abajo a la izquierda, encima del pie
+          del Estudio, y se va solo; la barra de abajo marca cuánto le queda. */}
+      {aviso && (
+        <div key={aviso.id} role="status"
+          className={["studio-aviso fixed bottom-20 left-5 z-[70] w-[min(92vw,360px)] overflow-hidden rounded-xl border bg-white shadow-2xl",
+            aviso.ok ? "border-emerald-200" : "border-red-200"].join(" ")}>
+          <div className="flex items-start gap-2.5 px-4 py-3 text-sm">
+            {aviso.ok
+              ? <CheckCircle2 size={18} className="mt-0.5 shrink-0 text-emerald-600" />
+              : <AlertTriangle size={18} className="mt-0.5 shrink-0 text-red-600" />}
+            <span className="min-w-0 flex-1 text-slate-700">{aviso.texto}</span>
+            <button onClick={() => setAviso(null)} aria-label="Cerrar aviso"
+              className="rounded p-0.5 text-slate-400 hover:bg-slate-100">
+              <X size={14} />
+            </button>
+          </div>
+          <div className="studio-aviso-barra h-1" style={{ background: aviso.ok ? "#10b981" : "#ef4444" }} />
+        </div>
+      )}
     </div>
   );
 }
@@ -3938,24 +3852,42 @@ function Campo({ label, value, onChange, acento, prefijo, soloLectura, nota, mon
   );
 }
 
-// Celda de resultado (solo lectura) del bloque COSTOS.
-/* Todo lo CALCULADO sale en pesos, sin excepción — el chip lo dice una vez por
-   tarjeta en vez de dejar que se deduzca del contexto. */
-function Resultado({ label, value, destacado, acento }: {
-  label: string; value: string; destacado?: boolean; acento?: string;
-}) {
+// Un número que cuenta hasta su valor al aparecer, como las cifras de la referencia
+// (v0.733.0). Con «reducir movimiento» se pinta directo.
+function NumeroAnimado({ valor }: { valor: number }) {
+  const [n, setN] = useState(0);
+  useEffect(() => {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) { setN(valor); return; }
+    let raf = 0;
+    const t0 = performance.now();
+    const paso = (t: number) => {
+      const k = Math.min(1, (t - t0) / 700);
+      setN(Math.round(valor * (1 - Math.pow(1 - k, 3))));
+      if (k < 1) raf = requestAnimationFrame(paso);
+    };
+    raf = requestAnimationFrame(paso);
+    return () => cancelAnimationFrame(raf);
+  }, [valor]);
+  return <>{n.toLocaleString("es-MX")}</>;
+}
+
+// Las dos familias del Estudio (Brandon, 6-nov-2026): primero lo que ve el comprador,
+// después lo que completa la ficha. Ver «LAS DOS FAMILIAS» en el cuerpo.
+const FAMILIAS = {
+  principal: { titulo: "Principal", texto: "Lo que ve primero el comprador: fotos, título, categoría y precio" },
+  secundaria: { titulo: "Complementario", texto: "Lo que completa la ficha: descripción, atributos y códigos" },
+} as const;
+
+function CabeceraFamilia({ familia, tema }: { familia: keyof typeof FAMILIAS; tema: CanalTheme }) {
+  const f = FAMILIAS[familia];
   return (
-    <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
-      <div className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400">
-        {label}
-        <ChipMoneda moneda="MXN" />
-      </div>
-      <div
-        className={["mt-0.5 font-bold", destacado ? "text-base" : "text-sm text-slate-700"].join(" ")}
-        style={destacado ? { color: acento } : undefined}
-      >
-        {value}
-      </div>
+    <div className="flex items-center gap-3">
+      <span className="text-[11px] font-black uppercase tracking-[0.2em]"
+        style={{ color: familia === "principal" ? tema.acento : "#94a3b8" }}>
+        {f.titulo}
+      </span>
+      <span className="studio-traza h-px flex-1 bg-slate-200" />
+      <span className="hidden text-[11px] text-slate-400 sm:inline">{f.texto}</span>
     </div>
   );
 }

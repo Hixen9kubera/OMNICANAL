@@ -9,6 +9,7 @@ imagenes.py — Editor de imágenes de producto (galería WooCommerce + IA).
   POST /api/imagenes/{sku}/principal  → (variante) esa foto propia pasa a principal
   POST /api/imagenes/{sku}/reordenar  → (variante) orden completo de las propias
   POST /api/imagenes/{sku}/adoptar    → (variante) una heredada pasa a ser propia
+  POST /api/imagenes/{sku}/alibaba    → trae las 6 primeras fotos de una URL de Alibaba
 
 GALERÍA POR VARIANTE (`settings.galeria_variante`, env GALERIA_VARIANTE)
 ────────────────────────────────────────────────────────────────────────
@@ -52,6 +53,7 @@ import asyncio
 import logging
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
@@ -105,6 +107,12 @@ class ImagenVarianteReq(BaseModel):
 class ReordenarReq(BaseModel):
     wc_id: int | None = None
     ids: list[int] = []
+
+
+class AlibabaReq(BaseModel):
+    wc_id: int | None = None
+    url: str
+    variante: bool = False  # A5
 
 
 # ── Galería por variante: resolución y errores ───────────────────────────────
@@ -355,6 +363,63 @@ async def adoptar(sku: str, req: ImagenVarianteReq):
     """(Variante) Una foto heredada del padre pasa a la galería propia (mismo adjunto)."""
     var = await _variante_obligatoria(sku, req.wc_id)
     return await _escribir(sku, imagenes_variante.adoptar, var[0], req.image_id)
+
+
+# Cuántas fotos se traen de una URL de Alibaba: las primeras del producto (Brandon, 6-nov-2026).
+FOTOS_ALIBABA = 6
+
+
+async def _bajar_fotos(urls: list[str]) -> list[ImagenNueva]:
+    """Descarga las fotos y las deja en la forma de `agregar`. Las que no bajan no vienen."""
+    import base64
+    fotos: list[ImagenNueva] = []
+    async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as cli:
+        for i, url in enumerate(urls, start=1):
+            try:
+                r = await cli.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            except httpx.HTTPError as exc:
+                log.warning("foto %d de Alibaba (%s): %s", i, url, exc)
+                continue
+            mime = r.headers.get("content-type", "").split(";")[0].strip()
+            if r.status_code == 200 and r.content and mime.startswith("image/"):
+                fotos.append(ImagenNueva(filename=f"alibaba-{i}", mime=mime,
+                                         data_b64=base64.b64encode(r.content).decode()))
+    return fotos
+
+
+@router.post("/{sku:path}/alibaba")
+async def desde_alibaba(sku: str, req: AlibabaReq):
+    """
+    Trae las primeras 6 fotos de una URL de Alibaba y las AGREGA a la galería del SKU.
+
+    Es el scraper de Crear (`crear_producto.scrape_alibaba`, Apify), que se quedó sin botón
+    cuando Crear se apagó (2-nov-2026). Las fotos entran por `agregar`, la misma ruta que el
+    «+» de la galería, con variante incluida. La URL queda en la meta `url_alibaba`, que es la
+    que lee el Estudio. Agrega y no reemplaza: lo que sobre se quita con el bote de siempre.
+    """
+    from services import crear_producto
+
+    url = req.url.strip()
+    if "alibaba.com" not in url.lower():
+        raise HTTPException(400, "Pega la URL de un producto de Alibaba (alibaba.com).")
+    try:
+        scrape = await crear_producto.scrape_alibaba(url)
+    except RuntimeError as exc:  # sin APIFY_API_KEY
+        raise HTTPException(503, str(exc))
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"Apify no respondió: {exc}")
+    urls = (scrape or {}).get("imagenes") or []
+    if not urls:
+        raise HTTPException(422, "Alibaba no devolvió fotos: el producto no está disponible "
+                                 "o la página no cargó. Revisa la URL e intenta de nuevo.")
+    fotos = await _bajar_fotos(urls[:FOTOS_ALIBABA])
+    if not fotos:
+        raise HTTPException(502, "Alibaba tiene fotos pero ninguna se pudo descargar.")
+    res = await agregar(sku, AgregarReq(wc_id=req.wc_id, imagenes=fotos, variante=req.variante))
+    if req.wc_id:
+        await woocommerce.guardar_meta(req.wc_id, "url_alibaba", url)
+    res["alibaba"] = {"encontradas": len(urls), "agregadas": len(fotos)}
+    return res
 
 
 # -- Registro DIFERIDO de la ruta comodín -------------------------------------
