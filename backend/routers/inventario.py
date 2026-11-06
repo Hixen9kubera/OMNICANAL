@@ -1,7 +1,9 @@
 """
 inventario.py — Endpoints de la pestaña INVENTARIO · Catálogo Maestro.
 
-TODO ES DE LECTURA. No hay POST/PUT/PATCH a propósito: la pestaña nace VISOR
+TODO ES DE LECTURA salvo dos escrituras que no tocan stock: las specs editables
+(`PUT …/specs/{canal}`) y el «ya lo vi» del vigilante de cuarentena
+(`POST /cuarentena/revisar`). Fuera de eso, nada: la pestaña nace VISOR
 (ver la cabecera de `services/inventario_maestro.py` para el porqué medido), y
 la captura humana de entradas —que sí escribiría stock y por tanto enciende un
 flujo vivo— va aparte y con el dale de Brandon.
@@ -21,15 +23,19 @@ from __future__ import annotations
 import asyncio
 import logging
 
+import psycopg2.errors
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
+from core import actor as core_actor
 from core.marketplaces import es_canal_valido
+from services import cuarentena as cuar
 from services import inventario_flujo as invf
 from services import inventario_maestro as inv
 from services import specs_editor
+from services import supabase_db as sdb
 
-log = logging.getLogger("omnicanal.routers.inventario")
+log =logging.getLogger("omnicanal.routers.inventario")
 
 router = APIRouter(prefix="/api/inventario", tags=["inventario"])
 
@@ -306,6 +312,86 @@ async def movimientos(
 # error en los logs. Starlette devuelve la PRIMERA ruta que casa entera,
 # así que la comodín se declara arriba (donde se lee) y se REGISTRA aquí,
 # la última.
+# ── VIGILANTE DE CUARENTENA (Brandon, 6-nov) ───────────────────────────────
+# Van ANTES del comodín `/{sku:path}`: registrado primero, se tragaría
+# "cuarentena" como si fuera un SKU. Ver services/cuarentena.py.
+
+class _Revisar(BaseModel):
+    ids: list[int] = []
+
+
+def _sin_tabla(exc: Exception) -> HTTPException | None:
+    """La tabla de revisadas llega con la 0083, que aplica Eduardo: mientras no
+    exista, se dice tal cual en vez de un 500 mudo."""
+    if isinstance(exc, psycopg2.errors.UndefinedTable):
+        return HTTPException(503, "Falta la migración 0083 (almacen.cuarentena_revisadas): "
+                                  "el aviso de cuarentena funciona en cuanto se aplique.")
+    return None
+
+
+def _leer_pendientes() -> tuple[list[dict], list[dict]]:
+    with sdb.get_cursor() as cur:
+        return cuar.pendientes(cur), cuar.copia(cur)
+
+
+@router.get("/cuarentena/pendientes")
+async def cuarentena_pendientes():
+    """Para el globo y la franja: las llegadas a cuarentena que nadie ha visto.
+    Solo kubera: no pregunta a Odoo."""
+    try:
+        pend, copia = await asyncio.to_thread(_leer_pendientes)
+    except Exception as exc:  # noqa: BLE001
+        falta = _sin_tabla(exc)
+        if falta:
+            raise falta from exc
+        raise
+    return {"pendientes": pend, "skus": len(pend), "piezas": sum(p["piezas"] for p in pend),
+            "copia": copia}
+
+
+@router.get("/cuarentena")
+async def cuarentena_popup():
+    """Para el popup: todo lo que hay HOY en cuarentena (Odoo en vivo), los nuevos
+    arriba. Si Odoo no contesta, los pendientes salen igual y `odoo.motivo` lo dice."""
+    try:
+        (pend, copia), hoy = await asyncio.gather(asyncio.to_thread(_leer_pendientes),
+                                                  asyncio.to_thread(cuar.en_cuarentena))
+    except Exception as exc:  # noqa: BLE001
+        falta = _sin_tabla(exc)
+        if falta:
+            raise falta from exc
+        raise
+
+    def _ultimas() -> dict:
+        with sdb.get_cursor() as cur:
+            return cuar.ultimas_llegadas(cur, [s["sku"] for s in hoy["skus"]])
+
+    ultimas = await asyncio.to_thread(_ultimas)
+    return {"pendientes": pend, "lista": cuar.armar_popup(pend, hoy["skus"], ultimas),
+            "odoo": {"ok": hoy["ok"], "motivo": hoy["motivo"]}, "copia": copia}
+
+
+@router.post("/cuarentena/revisar")
+async def cuarentena_revisar(body: _Revisar):
+    """Deja como revisadas, PARA TODOS, las llegadas que el popup le enseñó a quien
+    lo abrió. No toca stock ni Odoo: solo apunta quién y cuándo."""
+    quien = core_actor.actual()
+    if not quien:
+        raise HTTPException(401, "Sin usuario de sesión no se puede marcar como revisado.")
+
+    def _guardar() -> int:
+        with sdb.get_cursor() as cur:
+            return cuar.revisar(cur, body.ids, quien)
+
+    try:
+        return {"revisadas": await asyncio.to_thread(_guardar)}
+    except Exception as exc:  # noqa: BLE001
+        falta = _sin_tabla(exc)
+        if falta:
+            raise falta from exc
+        raise
+
+
 # ── SPECS EDITABLES (Brandon, 18-sep) ──────────────────────────────────────
 # Van ANTES del comodín `/{sku:path}` de abajo: `:path` es goloso y, registrado
 # primero, se tragaría "TEC-0370-NEG/specs/mercado_libre" entero como SKU.
