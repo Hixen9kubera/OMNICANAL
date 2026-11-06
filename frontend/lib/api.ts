@@ -5,6 +5,8 @@ import { haySesion, refrescar, token } from "./sesion";
 import type {
   CanalInfo,
   CoberturaPublicaciones,
+  CuarentenaPendientesResp,
+  CuarentenaResp,
   CompetenciaCorrida,
   CompetenciaEstado,
   CompetenciaSku,
@@ -2278,6 +2280,20 @@ export async function cargarListaChecklist(
   const res = await fetchSesion(`${BASE}/api/checklist/lista`, { method: "POST", body: fd });
   if (!res.ok) throw await errorDeRespuesta(res, "/api/checklist/lista");
   return res.json();
+}
+
+/* Vigilante de cuarentena: el globo y la franja (solo kubera), el popup (con
+ * Odoo en vivo) y el «ya lo vi» que quita el aviso para todos. */
+export function cuarentenaPendientes(signal?: AbortSignal): Promise<CuarentenaPendientesResp> {
+  return getJSON("/api/inventario/cuarentena/pendientes", signal);
+}
+
+export function cuarentenaPopup(signal?: AbortSignal): Promise<CuarentenaResp> {
+  return getJSON("/api/inventario/cuarentena", signal);
+}
+
+export function revisarCuarentena(ids: number[]): Promise<{ revisadas: number }> {
+  return postJSON("/api/inventario/cuarentena/revisar", { ids });
 }
 
 export function guardarAlmacenChecklist(

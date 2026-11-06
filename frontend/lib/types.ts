@@ -3186,3 +3186,61 @@ export interface ImportacionChecklist {
   sin_cambios: number;
   guardados?: { ml: number; almacen: number; fallidos: { sku: string; motivo: string }[] };
 }
+
+/* ─────────── Vigilante de cuarentena (pestaña Inventario, 6-nov-2026) ─────────── */
+
+/** Un movimiento de Odoo que llevó piezas a TEXCO/FERRAFORME/CUARENTENA. */
+export interface LlegadaCuarentena {
+  odoo_move_line_id: number;
+  sku: string;
+  fecha: string;
+  piezas: number;
+  /** La ruta de Odoo de donde salió. */
+  desde: string;
+  documento: string | null;
+  quien: string | null;
+  cedis: string;
+}
+
+/** Llegadas que nadie ha visto todavía, por SKU. */
+export interface PendienteCuarentena {
+  sku: string;
+  piezas: number;
+  ultima: string;
+  llegadas: LlegadaCuarentena[];
+}
+
+/** Qué tan al día está la copia del historial de Odoo, por almacén. */
+export interface CopiaOdoo {
+  almacen: string;
+  nombre: string;
+  historial_hasta: string | null;
+  ultima_pasada_at: string | null;
+  ultima_pasada_ok: boolean;
+}
+
+export interface CuarentenaPendientesResp {
+  pendientes: PendienteCuarentena[];
+  skus: number;
+  piezas: number;
+  copia: CopiaOdoo[];
+}
+
+/** Un renglón del popup: lo que hay hoy en cuarentena, los nuevos arriba. */
+export interface RenglonCuarentena {
+  sku: string;
+  nombre: string;
+  /** 0 si llegó y ya salió. */
+  piezas: number;
+  nuevo: boolean;
+  llegada: LlegadaCuarentena | null;
+  llegadas: LlegadaCuarentena[];
+}
+
+export interface CuarentenaResp {
+  pendientes: PendienteCuarentena[];
+  lista: RenglonCuarentena[];
+  /** Si Odoo no contestó, `lista` trae solo los pendientes y `motivo` dice por qué. */
+  odoo: { ok: boolean; motivo: string | null };
+  copia: CopiaOdoo[];
+}

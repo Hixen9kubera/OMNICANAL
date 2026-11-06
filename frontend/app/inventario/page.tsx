@@ -46,13 +46,14 @@ import { CamposAtributos, faltaCampo, sinUnidad } from "@/components/EditorAtrib
 import InventarioPestanas from "@/components/InventarioPestanas";
 import SelectorSemana from "@/components/SelectorSemana";
 import {
-  guardarSpecsCanal, listarInventario, mensajeDeError, movimientosInventario,
-  specsCanal,
+  cuarentenaPendientes, cuarentenaPopup, guardarSpecsCanal, listarInventario, mensajeDeError,
+  movimientosInventario, revisarCuarentena, specsCanal,
 } from "@/lib/api";
 import type {
-  ClaveEtapa, ClavePunto, ContenedorTabla, Cuadre, EstadoEtapa, EstadoPunto, FilaInventario,
+  ClaveEtapa, ClavePunto, ContenedorTabla, CopiaOdoo, Cuadre, CuarentenaPendientesResp,
+  CuarentenaResp, EstadoEtapa, EstadoPunto, FilaInventario,
   InventarioResp, Movimiento, MovimientosResp, OrdenCompra,
-  RecepcionPendiente, SpecCanal, EditorSpecs,
+  RecepcionPendiente, RenglonCuarentena, SpecCanal, EditorSpecs,
 } from "@/lib/types";
 
 /**
@@ -362,6 +363,18 @@ export default function InventarioPage() {
 
   useEffect(() => cargar(), [cargar]);
 
+  // Vigilante de cuarentena: el globo del recuadro y la franja. Solo kubera; el
+  // popup es el que le pregunta a Odoo. Se relee con el botón de recargar.
+  const [cuar, setCuar] = useState<CuarentenaPendientesResp | null>(null);
+  const [cuarError, setCuarError] = useState<string | null>(null);
+  const [verCuar, setVerCuar] = useState(false);
+  const cargarCuar = useCallback(() => {
+    cuarentenaPendientes()
+      .then((d) => { setCuar(d); setCuarError(null); })
+      .catch((e: unknown) => setCuarError(mensajeDeError(e, "No se pudo leer la cuarentena.")));
+  }, []);
+  useEffect(() => cargarCuar(), [cargarCuar]);
+
   const filtradas = useMemo(() => {
     let items = datos?.items ?? [];
     if (alerta) {
@@ -423,7 +436,14 @@ export default function InventarioPage() {
                   mostrados: datos.total } : null}
                 catalogoTotal={esCatalogo ? datos?.catalogo_total ?? null : null}
                 buscando={esCatalogo ? datos?.q ?? "" : ""}
-                cargando={cargando} onRecargar={cargar} />
+                cargando={cargando}
+                onRecargar={() => { cargar(); cargarCuar(); }}
+                cuarentena={cuar ? cuar.skus : null} cuarentenaError={cuarError}
+                onCuarentena={() => setVerCuar(true)} />
+
+        {cuar && cuar.skus > 0 && (
+          <FranjaCuarentena datos={cuar} onVer={() => setVerCuar(true)} />
+        )}
 
         {error && (
           <div className="mt-4 flex items-start gap-2 rounded-xl bg-rose-50 p-3 text-sm text-rose-700 ring-1 ring-rose-200">
@@ -475,6 +495,10 @@ export default function InventarioPage() {
                onTraza={() => setTraza(abierto)} />
       )}
       {traza && <Trazabilidad fila={traza} onCerrar={() => setTraza(null)} />}
+      {verCuar && (
+        <CuarentenaPopup onCerrar={() => setVerCuar(false)}
+                         onRevisado={() => setCuar((c) => c && { ...c, pendientes: [], skus: 0, piezas: 0 })} />
+      )}
     </div>
   );
 }
@@ -483,6 +507,7 @@ export default function InventarioPage() {
 
 function Banner({
   resumen, esPiloto, semana, catalogoTotal, buscando, cargando, onRecargar,
+  cuarentena, cuarentenaError, onCuarentena,
 }: {
   resumen?: InventarioResp["resumen"];
   esPiloto: boolean;
@@ -493,12 +518,18 @@ function Banner({
   buscando: string;
   cargando: boolean;
   onRecargar: () => void;
+  /** SKUs que llegaron a cuarentena y nadie ha visto; null = aún no se sabe. */
+  cuarentena: number | null;
+  cuarentenaError: string | null;
+  onCuarentena: () => void;
 }) {
   const empuje = resumen?.ultimo_empuje;
   const pastilla =
     "inline-flex items-center gap-1.5 rounded-lg bg-white/15 px-2.5 py-1 text-[11px] font-semibold text-white/90 backdrop-blur-sm";
   return (
-    <section className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-indigo-600 via-indigo-600 to-violet-700 px-6 py-5 text-white shadow-[0_2px_8px_rgba(79,70,229,.25)]">
+    // `overflow-clip`, no `hidden`: el círculo decorativo se sale 64 px y con
+    // `hidden` el recuadro se deja recorrer de lado al enfocar un botón.
+    <section className="relative overflow-clip rounded-2xl bg-gradient-to-br from-indigo-600 via-indigo-600 to-violet-700 px-6 py-5 text-white shadow-[0_2px_8px_rgba(79,70,229,.25)]">
       <div className="pointer-events-none absolute -right-16 -top-20 h-64 w-64 rounded-full bg-white/10" />
       <div className="relative flex flex-wrap items-start justify-between gap-6">
         <div className="min-w-0">
@@ -573,6 +604,22 @@ function Banner({
           )}
           <button
             type="button"
+            onClick={onCuarentena}
+            title={cuarentenaError
+              ?? (cuarentena ? `${cuarentena} SKU(s) llegaron a cuarentena y nadie los ha visto`
+                : "Lo que hay en la cuarentena de Odoo y su historial")}
+            className="relative inline-flex items-center gap-1.5 rounded-lg bg-white/15 px-3 py-2 text-xs font-bold text-white backdrop-blur-sm transition hover:bg-white/25"
+          >
+            <ShieldAlert className="h-4 w-4" />
+            Cuarentena
+            {!!cuarentena && (
+              <span className="absolute -right-2 -top-2 min-w-[20px] rounded-full bg-rose-500 px-1.5 py-0.5 text-center text-[11px] font-extrabold leading-none text-white ring-2 ring-indigo-600">
+                {cuarentena}
+              </span>
+            )}
+          </button>
+          <button
+            type="button"
             onClick={onRecargar}
             disabled={cargando}
             title="Volver a cruzar WooCommerce, Odoo y kubera"
@@ -583,6 +630,221 @@ function Banner({
         </div>
       </div>
     </section>
+  );
+}
+
+/* ─────────────── el vigilante de cuarentena (Brandon, 6-nov) ─────────────── */
+
+/** Entre el recuadro y las tarjetas, solo cuando hay llegadas sin ver. */
+function FranjaCuarentena({ datos, onVer }: { datos: CuarentenaPendientesResp; onVer: () => void }) {
+  const muestra = datos.pendientes.slice(0, 6);
+  const resto = datos.pendientes.length - muestra.length;
+  return (
+    <button type="button" onClick={onVer}
+            className="mt-4 flex w-full items-center gap-3 rounded-xl bg-rose-50 px-4 py-3 text-left text-sm text-rose-800 ring-1 ring-rose-200 transition hover:bg-rose-100">
+      <ShieldAlert className="h-5 w-5 shrink-0 text-rose-600" />
+      <span className="min-w-0 flex-1">
+        Llegaron a cuarentena <b>{num(datos.skus)} SKU{datos.skus === 1 ? "" : "s"}</b>{" "}
+        (<b>{num(datos.piezas)} piezas</b>):{" "}
+        {muestra.map((p, i) => (
+          <span key={p.sku}>
+            {i > 0 && ", "}
+            <span className="font-mono font-semibold">{p.sku}</span> ({num(p.piezas)})
+          </span>
+        ))}
+        {resto > 0 && ` y ${resto} más`}
+      </span>
+      <span className="shrink-0 font-bold">Ver</span>
+    </button>
+  );
+}
+
+/** Frescura de la copia del historial: si se detuvo, los avisos dejan de llegar. */
+function FrescuraCopia({ copia }: { copia: CopiaOdoo[] }) {
+  if (!copia.length) return null;
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {copia.map((c) => (
+        <span key={c.almacen}
+              title={c.ultima_pasada_ok ? "Última copia del historial de Odoo"
+                : "La última pasada de la copia falló o no ha corrido"}
+              className={`rounded-md px-2 py-0.5 text-[11px] font-semibold ring-1 ${c.ultima_pasada_ok
+                ? "bg-slate-50 text-slate-600 ring-slate-200" : "bg-amber-50 text-amber-800 ring-amber-200"}`}>
+          {c.nombre}: {c.historial_hasta ? `al día ${haceCuanto(c.historial_hasta)}` : "sin copiar todavía"}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Todo lo que hay HOY en la cuarentena de Odoo, los nuevos arriba; cada SKU
+ * despliega su historial. Al abrirse deja como revisadas, PARA TODOS, las
+ * llegadas que enseñó (y solo esas: lo que llegue después sigue avisando).
+ */
+function CuarentenaPopup({ onCerrar, onRevisado }: { onCerrar: () => void; onRevisado: () => void }) {
+  const [datos, setDatos] = useState<CuarentenaResp | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [avisoRevisar, setAvisoRevisar] = useState<string | null>(null);
+  const [abierto, setAbierto] = useState<string | null>(null);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    cuarentenaPopup(ctrl.signal)
+      .then((d) => {
+        if (ctrl.signal.aborted) return;
+        setDatos(d);
+        const ids = d.pendientes.flatMap((p) => p.llegadas.map((l) => l.odoo_move_line_id));
+        if (ids.length) {
+          revisarCuarentena(ids)
+            .then(() => onRevisado())
+            .catch((e: unknown) => setAvisoRevisar(
+              mensajeDeError(e, "No se pudo marcar como revisado: el aviso sigue para los demás.")));
+        }
+      })
+      .catch((e: unknown) => {
+        if ((e as { name?: string })?.name === "AbortError") return;
+        setError(mensajeDeError(e, "No se pudo leer la cuarentena."));
+      });
+    return () => ctrl.abort();
+    // Una sola vez al abrir: marcar revisado dos veces no hace falta.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const tecla = (e: KeyboardEvent) => { if (e.key === "Escape") onCerrar(); };
+    window.addEventListener("keydown", tecla);
+    return () => window.removeEventListener("keydown", tecla);
+  }, [onCerrar]);
+
+  const lista = datos?.lista ?? [];
+  const piezas = lista.reduce((t, f) => t + f.piezas, 0);
+  const nuevos = lista.filter((f) => f.nuevo).length;
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/40 p-4 backdrop-blur-sm"
+         onClick={onCerrar}>
+      <div className="my-8 w-full max-w-5xl overflow-hidden rounded-2xl bg-white shadow-xl"
+           onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Cuarentena">
+        <div className="flex items-start justify-between gap-4 border-b border-slate-100 px-6 py-4">
+          <div className="min-w-0">
+            <h2 className="flex flex-wrap items-center gap-2 text-lg font-extrabold text-slate-900">
+              <ShieldAlert className="h-5 w-5 text-rose-600" />
+              Cuarentena
+              <span className="font-mono text-xs font-semibold text-slate-400">TEXCO/FERRAFORME/CUARENTENA</span>
+            </h2>
+            {datos && (
+              <p className="mt-0.5 text-sm text-slate-500">
+                {num(lista.length)} SKUs · {num(piezas)} piezas hoy en Odoo
+                {nuevos > 0 && <> · <b className="text-rose-700">{nuevos} nuevo{nuevos === 1 ? "" : "s"}</b></>}
+              </p>
+            )}
+            {datos && <div className="mt-2"><FrescuraCopia copia={datos.copia} /></div>}
+          </div>
+          <button type="button" onClick={onCerrar} title="Cerrar (Esc)"
+                  className="rounded-lg p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        {error && (
+          <div className="m-6 flex items-start gap-2 rounded-xl bg-rose-50 p-3 text-sm text-rose-700 ring-1 ring-rose-200">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" /><span>{error}</span>
+          </div>
+        )}
+        {!datos && !error && (
+          <div className="flex items-center justify-center gap-2 py-16 text-sm text-slate-400">
+            <Loader2 className="h-4 w-4 animate-spin" /> Leyendo Odoo y el historial…
+          </div>
+        )}
+        {datos && !datos.odoo.ok && (
+          <div className="mx-6 mt-4 flex items-start gap-2 rounded-xl bg-amber-50 p-3 text-sm text-amber-800 ring-1 ring-amber-200">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>No se pudo ver lo que hay hoy en cuarentena: {datos.odoo.motivo} Abajo solo van las
+              llegadas nuevas del historial.</span>
+          </div>
+        )}
+        {avisoRevisar && (
+          <div className="mx-6 mt-4 rounded-xl bg-amber-50 p-3 text-sm text-amber-800 ring-1 ring-amber-200">
+            {avisoRevisar}
+          </div>
+        )}
+        {datos && lista.length === 0 && (
+          <p className="py-16 text-center text-sm text-slate-400">No hay nada en cuarentena.</p>
+        )}
+        {datos && lista.length > 0 && (
+          <div className="mt-2 divide-y divide-slate-100">
+            {lista.map((f) => (
+              <RenglonCuar key={f.sku} f={f} abierto={abierto === f.sku}
+                           onToggle={() => setAbierto((a) => (a === f.sku ? null : f.sku))} />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function RenglonCuar({ f, abierto, onToggle }: { f: RenglonCuarentena; abierto: boolean; onToggle: () => void }) {
+  const l = f.llegada;
+  return (
+    <div className={f.nuevo ? "bg-rose-50/40" : ""}>
+      <button type="button" onClick={onToggle}
+              className="flex w-full items-center gap-3 px-6 py-3 text-left transition hover:bg-slate-50">
+        <ChevronRight className={`h-4 w-4 shrink-0 text-slate-400 transition ${abierto ? "rotate-90" : ""}`} />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-mono text-sm font-bold text-slate-900">{f.sku}</span>
+            {f.nuevo && (
+              <span className="rounded-full bg-rose-500 px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wide text-white">
+                Nuevo
+              </span>
+            )}
+            {f.nombre && <span className="truncate text-sm text-slate-500">{f.nombre}</span>}
+          </div>
+          <div className="mt-0.5 truncate text-xs text-slate-400">
+            {l ? <>Llegó {fechaCorta(l.fecha)} · {num(l.piezas)} pzs desde <span className="font-mono">{l.desde}</span>
+                   {l.documento && <> · <span className="font-mono">{l.documento}</span></>}
+                   {l.quien && <> · {l.quien}</>}
+                   {f.llegadas.length > 1 && <> · {f.llegadas.length} llegadas nuevas</>}</>
+              : "Sin llegada en el historial copiado (entró antes de la copia o desde fuera de los tres almacenes)"}
+          </div>
+        </div>
+        <span className={`w-24 shrink-0 text-right text-sm font-bold tabular-nums ${f.piezas ? "text-slate-800" : "text-slate-400"}`}
+              title={f.piezas ? "Piezas hoy en cuarentena (Odoo)" : "Llegó y ya no está en cuarentena"}>
+          {f.piezas ? `${num(f.piezas)} pzs` : "ya salió"}
+        </span>
+      </button>
+      {abierto && <HistorialCuar sku={f.sku} />}
+    </div>
+  );
+}
+
+function HistorialCuar({ sku }: { sku: string }) {
+  const [movs, setMovs] = useState<MovimientosResp | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    const ctrl = new AbortController();
+    movimientosInventario(sku, "reales", 200, null, ctrl.signal)
+      .then((d) => { if (!ctrl.signal.aborted) setMovs(d); })
+      .catch((e: unknown) => {
+        if ((e as { name?: string })?.name === "AbortError") return;
+        setError(mensajeDeError(e, "No se pudo leer el historial."));
+      });
+    return () => ctrl.abort();
+  }, [sku]);
+  if (error) return <p className="px-6 pb-4 text-sm text-rose-700">{error}</p>;
+  if (!movs) {
+    return (
+      <div className="flex items-center gap-2 px-6 pb-4 text-sm text-slate-400">
+        <Loader2 className="h-4 w-4 animate-spin" /> Leyendo el historial de Odoo…
+      </div>
+    );
+  }
+  if (!movs.movimientos.length) return <p className="px-6 pb-4 text-sm text-slate-400">Sin movimientos.</p>;
+  return (
+    <div className="max-h-96 overflow-y-auto border-t border-slate-100 bg-white">
+      {movs.movimientos.map((m, i) => <RenglonTraza key={`${m.documento}-${i}`} m={m} />)}
+    </div>
   );
 }
 
