@@ -1001,6 +1001,43 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.734.0 — ESTUDIO DE PRODUCTO más limpio: dos secciones principales, menos texto y «Guardar contenido» fijo abajo
+
+**Por qué (6-nov-2026, Brandon).** El Estudio se saturaba de texto. Brandon pidió que la ficha sea lo más minimalista y
+simple posible.
+
+**Las dos secciones de la familia principal (`ProductStudio.tsx`).**
+- **Sección 1: imágenes | título y categoría.**
+  - La columna derecha mide **lo mismo que la tarjeta de imágenes**. En pantallas `lg` va en `absolute inset-0`
+    dentro de su celda, así que el alto de la fila lo fija la galería.
+  - Lo que no quepa, sobre todo la revisión de la categoría, se desliza dentro de su propia columna.
+  - La tarjeta de categoría se estira hasta el borde de la de imágenes.
+  - Medido en local con OFI-0086-ROJ: tarjeta de imágenes 742 px, columna derecha 742 px.
+  - Las listas de los buscadores de categoría quedan dentro de esa columna y se desplazan con ella.
+  - En pantallas angostas las tarjetas vuelven a apilarse sin límite de alto.
+- **Sección 2: «Sugerir precio» | Precio.** Van a la par: Sugerir a la izquierda y el precio que se publica a la
+  derecha, en dos columnas del mismo alto.
+
+**Texto que se quitó.**
+- El párrafo bajo «Mejorar con IA» («Publicar envía lo que ves (lo revisas antes)…»).
+- La descripción de las familias. Quedan solo «Principal» y «Complementario».
+- El contador de la galería («1 de la variante · 3 del padre»).
+- La ayuda de Alibaba («Se agregan al final de la galería…»). Solo queda, mientras trae las fotos, el «tarda de 1 a 3
+  minutos».
+- La ayuda del GTIN («Solo si la categoría lo exige…»).
+
+**«Guardar contenido», fijo abajo y solo el botón.**
+- Antes había hasta tres botones de guardar: uno de General y otro de canal dentro del cuerpo, cada uno con su texto,
+  y además el pie del modo con variantes, con su frase y «Cancelar».
+- Ahora hay **un solo pie fuera del área que se desliza**, en los dos modos (con y sin variantes), siempre a la vista.
+- El botón decide como antes: General guarda en WooCommerce y los demás canales, su contenido en el servidor. En
+  agrupada sigue bloqueado.
+- El resultado lo dice el aviso flotante (v0.733.0), que ya repetía esos mensajes.
+- Se fueron también `noListasResumen` y `yaPublicadaAqui`, que solo usaba la frase del pie.
+
+**Verificado.** `tsc --noEmit` limpio. En local (backend sin scheduler ni tokens) se revisó OFI-0086-ROJ en General:
+las dos secciones, el pie fijo en todo el recorrido y los textos quitados.
+
 ### v0.733.0 — ESTUDIO DE PRODUCTO: familias principal y complementaria, sin Costos, fotos desde Alibaba y con movimiento
 
 **Por qué (6-nov-2026, Brandon).**
