@@ -43,8 +43,6 @@ pendientes. No hay más dependencias.
   - Anota en `almacen.copias_odoo`: `historial_hasta` (= instante en que leyó Odoo), `ultima_pasada_at`,
     `ultima_pasada_ok` y `ultimo_error` (clase y, solo si el mensaje es propio, el mensaje; nunca la URL de Odoo).
     No toca los campos de la foto.
-  - **Sigue apagada en Railway** (`ALMACEN_ODOO_ENABLED=false`). Encenderla es otro paso, con el dale de Brandon.
-    Al encenderla, la primera pasada carga la historia completa de TEXCO y DROP (del orden de 60 mil líneas) en
-    `almacen.historial_movimientos`.
+  - **ENCENDIDA el 6-nov-2026 a las 20:48 UTC (dale de Brandon). Primera pasada: TEXCO 58,347 líneas y DROP 382 (cuadre 94/94), TEX2 al día; las tres con `ultima_pasada_ok`. Freno sin deploy: `ALMACEN_ODOO_ENABLED=false`.**
 - Ojo con tu chequeo de `copias_odoo.foto_at` (más de 90 min = alerta): esta copia ya no llena la foto, así que
   ese aviso depende de tu copiador.

@@ -1062,8 +1062,11 @@ no tiene renglón y no avisa; sí sale en el popup.
   Sin eso, cada pasada habría fallado con 42501 desde el 28-oct.
 - Anota la frescura en `almacen.copias_odoo` (`historial_hasta`, `ultima_pasada_*`, `ultimo_error` sin la URL de
   Odoo). Dos pasadas no se enciman (candado por proceso).
-- **Sigue APAGADA en Railway** (`ALMACEN_ODOO_ENABLED=false`): encenderla es otro paso, con el dale de Brandon. La
-  primera pasada cargará la historia completa de TEXCO y DROP (del orden de 60 mil líneas).
+- **ENCENDIDA el 6-nov-2026 a las 20:48 UTC (dale de Brandon). Primera pasada: TEXCO 58,347 líneas y DROP 382 (cuadre 94/94), TEX2 al día; las tres con `ultima_pasada_ok`. Freno sin deploy: `ALMACEN_ODOO_ENABLED=false`.**
+- **Límite medido:** Odoo tiene 315 movimientos que tocan la cuarentena y la copia 310. Los 5 que faltan son AJUSTES de
+  inventario directos contra la cuarentena (`Virtual Locations/Inventory adjustment ↔ CUARENTENA`): la cuarentena no
+  es de ningún almacén, así que esa línea no toca a ninguno de los tres. Solo uno era una entrada (SIL-0019-NEG, 1 pza,
+  4-sep). Una llegada por ajuste no avisa; sí sale en el popup.
 
 **Pruebas.** 48 unitarias (copia 33, servicio 9, rutas 6). La 0083 corrió dos veces en una base local con sus candados
 (update, delete, truncate, sin usuario). Demo local de punta a punta (botón, franja, popup, historial, revisado) con la
