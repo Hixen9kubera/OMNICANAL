@@ -1479,7 +1479,9 @@ function Cajon({
     movimientosInventario(fila.sku, "reales", 6, null, ctrl.signal)
       .then(setMovs)
       .catch(() => { /* ver arriba: la fila trae el respaldo */ })
-      .finally(() => setCargando(false));
+      // Solo la petición vigente apaga «cargando»: la cancelada (otro SKU, otro filtro o el doble montaje de React)
+      // llegaba tarde y dejaba ver «No se alcanzó a cargar» mientras la nueva seguía en camino.
+      .finally(() => { if (!ctrl.signal.aborted) setCargando(false); });
     return () => ctrl.abort();
   }, [fila.sku]);
 
@@ -2138,7 +2140,9 @@ function EditorCanal({ sku, resumen }: { sku: string; resumen: SpecCanal }) {
         if ((e as { name?: string })?.name === "AbortError") return;
         setError(mensajeDeError(e, "No se pudieron leer los atributos."));
       })
-      .finally(() => setCargando(false));
+      // Solo la petición vigente apaga «cargando»: la cancelada (otro SKU, otro filtro o el doble montaje de React)
+      // llegaba tarde y dejaba ver «No se alcanzó a cargar» mientras la nueva seguía en camino.
+      .finally(() => { if (!ctrl.signal.aborted) setCargando(false); });
     return () => ctrl.abort();
   }, [sku, resumen.canal]);
 
@@ -2520,7 +2524,9 @@ function Trazabilidad({
         if ((e as { name?: string })?.name === "AbortError") return;
         setError(mensajeDeError(e, "No se pudo leer la trazabilidad."));
       })
-      .finally(() => setCargando(false));
+      // Solo la petición vigente apaga «cargando»: la cancelada (otro SKU, otro filtro o el doble montaje de React)
+      // llegaba tarde y dejaba ver «No se alcanzó a cargar» mientras la nueva seguía en camino.
+      .finally(() => { if (!ctrl.signal.aborted) setCargando(false); });
     return () => ctrl.abort();
   }, [fila.sku, causa, dias]);
 

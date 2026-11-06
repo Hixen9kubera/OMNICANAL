@@ -1001,6 +1001,26 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.736.0 — INVENTARIO: la trazabilidad ya no dice «No se alcanzó a cargar» mientras carga · RESERVAS al día (0080, 0082, 0084, 0085)
+
+MAESTRO, 6-nov-2026.
+
+- **El aviso falso de Movimientos.** En la pestaña Inventario, la ventana de Movimientos (`Trazabilidad`), el resumen del
+  cajón y los atributos de canal cancelan su petición anterior al cambiar de SKU o de filtro (y React monta dos veces
+  en desarrollo). El `finally` de la petición CANCELADA apagaba «cargando» mientras la nueva seguía en camino, y por unos
+  segundos se veía «No se alcanzó a cargar el historial» antes de llenarse. Se vio al capturar la pestaña con datos de
+  producción el 6-nov. Ahora solo la petición vigente apaga «cargando», el mismo molde que ya usaba el listado
+  (`if (!ctrl.signal.aborted)`). Tres lugares en `frontend/app/inventario/page.tsx`. Es un fix: no lleva variable.
+- **`supabase/migrations/RESERVAS.md`:**
+  - la **0080** ya está en producción (6-nov 16:42 UTC, `ops.migraciones` id 21, su acta `_paso_prod_catalogo_3_2`);
+  - la **0082** también (4-nov 22:13 UTC, id 20); su fila seguía diciendo «no»;
+  - se reservan la **0084** (`core_products_ciclo_reglas`, 3.3 fase B) y la **0085** (`ops_woo_copia_cola`, 3.3 fase C)
+    para WOO SALIDA: el status del producto en kubera, con las decisiones de Eduardo del 6-nov. Sin construir; número
+    por confirmar con Brandon. La **0083** es de Brandon (`almacen_cuarentena_revisadas`, v0.735.0);
+  - siguiente libre: **0086**.
+
+Solo documentación y un fix de pantalla: no cambia ningún flujo ni aplica migraciones.
+
 ### v0.735.0 — INVENTARIO: vigilante de cuarentena (botón, franja y popup) y la copia del historial de Odoo en los tres almacenes
 
 **Por qué (6-nov-2026, Brandon).** Cuando bodega mueve un producto a la cuarentena de Odoo
