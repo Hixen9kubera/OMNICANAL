@@ -1732,10 +1732,11 @@ class Settings(BaseSettings):
     # 1.9-c). Si siguen puestas en Railway no hacen nada (`extra="ignore"`): se
     # pueden borrar de ahí cuando convenga, sin prisa y sin deploy.
 
-    # Almacén · copia de Odoo (services/almacen_odoo.py). Cada 30 min deja en
-    # kubera la foto de ubicaciones (`almacen.locations`) y el historial de
-    # movimientos (`almacen.historial_movimientos`) de los cedis que todavía se
-    # operan en Odoo — hoy TEXCO II. Sólo lee Odoo y escribe esas dos tablas.
+    # Almacén · copia de Odoo (services/almacen_odoo.py). Cada hora deja en
+    # kubera el historial de movimientos (`almacen.historial_movimientos`) de los
+    # cedis que todavía se operan en Odoo — TEXCO II, TEXCO y DROP OFF (6-nov) —;
+    # de ahí lee el vigilante de cuarentena. Sólo lee Odoo y escribe el historial
+    # y `almacen.copias_odoo`; la foto de ubicaciones ya no (desde la 0076).
     # Encendido por instrucción de Brandon (9-oct-2026) y se detiene SOLO cuando
     # el catálogo de bodegas diga que el cedis ya no es de Odoo: ése es el
     # interruptor. Esta variable no hace falta en Railway; existe como freno de

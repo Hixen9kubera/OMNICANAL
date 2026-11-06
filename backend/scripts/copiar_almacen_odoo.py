@@ -1,31 +1,31 @@
 """
-copiar_almacen_odoo.py — La pasada del vigilante de almacén, a mano.
+copiar_almacen_odoo.py — La pasada de la copia del historial de Odoo, a mano.
 
-Copia de Odoo a kubera la foto de ubicaciones (`almacen.locations`, 0069) y el
-historial de movimientos (`almacen.historial_movimientos`, 0070) de un cedis.
-Hace EXACTAMENTE lo que `services/almacen_odoo.py` hace solo cada 30 minutos
-(mismas funciones), pero con ensayo por omisión y contra el destino que se le
-diga. Sirve para la carga inicial, para el sandbox y para forzar una pasada.
+Copia de Odoo a kubera el historial de movimientos
+(`almacen.historial_movimientos`, 0070) de un cedis. Hace EXACTAMENTE lo que
+`services/almacen_odoo.py` hace solo cada hora (mismas funciones), pero con
+ensayo por omisión y contra el destino que se le diga. Sirve para la carga
+inicial, para una base local y para forzar una pasada. Ya no copia la foto de
+ubicaciones (`almacen.locations`): desde la 0076 es de la copia de Eduardo.
 
 QUÉ TRAE Y QUÉ NO: ver el encabezado de `services/almacen_odoo.py`. En corto:
-todos los SKUs del cedis con su `cedis`, los negativos también, y NINGÚN producto
+todos los movimientos hechos del cedis con su `cedis`, y NINGÚN producto
 archivado en Odoo (regla de Brandon, 9-oct-2026).
 
 CANDADOS
   · Sin `--aplicar` no escribe: cada transacción se abre de sólo lectura (por
     transacción, nunca la sesión — regla 13) y sólo se cuenta lo que cambiaría.
-  · No corre si el cedis ya es de kubera (`almacenes.fuente <> 'odoo'`), y no
-    pisa la foto si alguien ya capturó renglones a mano en ese cedis.
-  · Si la foto o el historial llegan mucho más chicos que lo que ya hay, no toca
-    nada (lectura trunca). `--forzar` lo acepta, cuando de verdad encogió.
+  · No corre si el cedis ya es de kubera (`almacenes.fuente <> 'odoo'`).
+  · Si el historial llega mucho más chico que lo que ya hay, no toca nada
+    (lectura trunca). `--forzar` lo acepta, cuando de verdad encogió.
   · En Odoo sólo `search_read` y `read`.
   · No deja una transacción abierta mientras lee Odoo.
 
 Uso:
-  python backend/scripts/copiar_almacen_odoo.py                        # ensayo en el sandbox
-  python backend/scripts/copiar_almacen_odoo.py --aplicar              # escribe en el sandbox
-  python backend/scripts/copiar_almacen_odoo.py --destino prod --aplicar
-  python backend/scripts/copiar_almacen_odoo.py --destino prod --delta # sólo lo escrito desde la última línea vista
+  python backend/scripts/copiar_almacen_odoo.py --cedis TEXCO                      # ensayo en el sandbox
+  python backend/scripts/copiar_almacen_odoo.py --cedis TEXCO --medir-cuadre       # + Σ delta contra la existencia de Odoo
+  python backend/scripts/copiar_almacen_odoo.py --cedis DROP --destino local --aplicar
+  python backend/scripts/copiar_almacen_odoo.py --destino prod --delta             # sólo lo escrito desde la última línea vista
 """
 from __future__ import annotations
 
@@ -73,13 +73,16 @@ def _env_destino(destino: str) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--cedis", default="TEX2")
+    ap.add_argument("--cedis", default="TEX2", choices=["TEX2", "TEXCO", "DROP"])
     ap.add_argument("--aplicar", action="store_true", help="sin esto NO escribe")
     ap.add_argument("--destino", choices=["sandbox", "prod", "local"], default="sandbox")
     ap.add_argument("--delta", action="store_true",
                     help="sólo lo escrito en Odoo desde la última línea vista (por omisión: todo)")
     ap.add_argument("--forzar", action="store_true",
-                    help="acepta una foto o un historial que encogieron")
+                    help="acepta un historial que encogió")
+    ap.add_argument("--medir-cuadre", action="store_true",
+                    help="lee también la existencia de Odoo y mide Σ delta = Σ piezas por SKU "
+                         "(sólo con el historial completo, o sea sin --delta)")
     args = ap.parse_args()
 
     perro = threading.Timer(WATCHDOG_S, lambda: os._exit(3))
@@ -115,7 +118,8 @@ def main() -> int:
 
     try:
         r = ao.sincronizar(args.cedis, completo=not args.delta, abrir=abrir,
-                           aplicar=args.aplicar, forzar=args.forzar)
+                           aplicar=args.aplicar, forzar=args.forzar,
+                           medir_cuadre=args.medir_cuadre)
     except ao.NoAplica as exc:
         print(f"ABORT ({args.destino}): {exc}.")
         return 2
@@ -123,20 +127,10 @@ def main() -> int:
         print(f"ABORT ({args.destino}): {exc}")
         return 2
 
-    f, h, c = r["foto"], r["historial"], r["cuadre"]
+    h, c = r["historial"], r["cuadre"]
     print(f"Odoo · {r['nombre']} → {args.destino}"
           + ("" if r["completo"]
              else f" · delta desde {r['desde'].astimezone(timezone.utc):%Y-%m-%d %H:%M} UTC"))
-    print(f"  FOTO       {f.get('renglones', 0):,} renglones · {f.get('skus', 0):,} SKUs · "
-          f"{f.get('piezas', 0):,} piezas · en rack {f.get('en_rack', 0):,} · "
-          f"SIN UBICAR {f.get('sin_ubicar', 0):,} · negativos {f.get('negativos', 0)} · "
-          f"sin SKU en Odoo {f.get('sin_sku_en_odoo', 0)} · "
-          f"de producto archivado (no se traen) {f.get('archivados_omitidos', 0)}")
-    if f.get("omitida"):
-        print(f"             NO se toca: {f['omitida']}")
-    else:
-        print(f"             nuevos {f['nuevos']:,} · cambiados {f['cambiados']:,} · "
-              f"borrados {f['borrados']:,}")
     print(f"  HISTORIAL  {h.get('renglones', 0):,} líneas · {h.get('skus', 0):,} SKUs · "
           f"entran {h.get('entran', 0):,} · salen {h.get('salen', 0):,} · "
           f"adentro {h.get('adentro', 0):,} · "
@@ -146,7 +140,8 @@ def main() -> int:
           f"borradas {h['borrados']:,}")
     if c is not None:
         print(f"  CUADRE     {c['skus'] - c['descuadres']:,} de {c['skus']:,} SKUs: el historial "
-              f"reproduce la foto" + (f" · {c['descuadres']} NO cuadran" if c["descuadres"] else ""))
+              f"reproduce la existencia de Odoo"
+              + (f" · {c['descuadres']} NO cuadran" if c["descuadres"] else ""))
     print("LISTO." if args.aplicar else "ENSAYO: no se escribió nada (usa --aplicar).")
     return 0
 

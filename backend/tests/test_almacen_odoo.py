@@ -7,12 +7,12 @@ Qué fijan:
   3. El historial: el signo de `delta` sale de qué lado del movimiento está en el
      cedis; la causa es la del panel; tampoco trae archivados.
   4. El cuadre: Σ delta del historial = Σ piezas de la foto, por SKU.
-  5. La escritura va por DIFERENCIAS: borra lo que ya no está, escribe sólo lo que
-     cambió, no pisa lo capturado en kubera y no acepta una lectura trunca.
+  5. La escritura del historial va por DIFERENCIAS y no acepta una lectura trunca.
   6. Las guardas: el cedis que ya no es de Odoo no se copia.
-  7. El vigilante: primera pasada completa y luego delta, nunca lanza, sólo alarma
-     por un descuadre que se repite, y el scheduler lo registra cada 30 min y lo
-     corre en un hilo (regla 11).
+  7. La pasada: firma como copiador (0076), no toca `almacen.locations` y anota la
+     frescura en `almacen.copias_odoo`.
+  8. El vigilante: los tres almacenes, nunca lanza y anota la falla; el scheduler
+     lo corre cada hora y una completa a las 09:00 UTC, en un hilo (regla 11).
 """
 import asyncio
 import os
@@ -215,63 +215,6 @@ class Cursor:
         return [s for s, _ in self.hechas if not s.lower().startswith("select")]
 
 
-def _loc(id_, sku, ubicacion, piezas, quant, origen="odoo", bloque=None, fila=None, tarima=None):
-    return {"id": id_, "sku": sku, "ubicacion": ubicacion, "origen": origen, "bloque": bloque,
-            "fila": fila, "tarima": tarima, "piezas": piezas, "odoo_quant_id": quant,
-            "odoo_product_id": 10, "odoo_ubicacion": "TEX2/FERRAFORME", "entrada_at": None}
-
-
-class EscribirFoto(unittest.TestCase):
-    FRESCA = [("TEX2", "ACC-1", "SIN UBICAR", None, None, None, 5, 1, 10, "TEX2/FERRAFORME", None),
-              ("TEX2", "ACC-2", "SIN UBICAR", None, None, None, 9, 2, 10, "TEX2/FERRAFORME", None)]
-
-    def _correr(self, actuales, filas=None, **kw):
-        cur = Cursor([("from almacen.locations", actuales)])
-        with mock.patch.object(ao, "execute_values") as ev:
-            r = ao.escribir_locations(cur, "TEX2", self.FRESCA if filas is None else filas, **kw)
-        return cur, ev, r
-
-    def test_solo_escribe_lo_que_cambio_y_borra_lo_que_ya_no_esta(self):
-        actuales = [_loc(101, "ACC-1", "SIN UBICAR", 5, 1),      # igual: no se toca
-                    _loc(102, "ACC-2", "SIN UBICAR", 7, 2),      # cambió la cantidad
-                    _loc(103, "ACC-3", "SIN UBICAR", 4, 3)]      # ya no está en Odoo
-        cur, ev, r = self._correr(actuales, aplicar=True)
-        self.assertEqual(r, {"total": 2, "nuevos": 0, "cambiados": 1, "borrados": 1})
-        self.assertEqual([p for s, p in cur.hechas if s.startswith("delete")], [([103],)])
-        self.assertEqual(ev.call_args.args[2], [self.FRESCA[1]])
-
-    def test_un_sku_con_enie_no_se_reescribe_en_cada_pasada(self):
-        # La base, según su configuración, puede no pasar la Ñ a minúscula; Python sí.
-        fresca = [("TEX2", "MUE-0359-MUÑ-ROJ-BLN", "SIN UBICAR", None, None, None, 5, 1, 10,
-                   "TEX2/FERRAFORME", None)]
-        cur, ev, r = self._correr([_loc(101, "MUE-0359-MUÑ-ROJ-BLN", "SIN UBICAR", 5, 1)],
-                                  filas=fresca, aplicar=True)
-        self.assertEqual(r, {"total": 1, "nuevos": 0, "cambiados": 0, "borrados": 0})
-        self.assertEqual(cur.escrituras(), [])
-        ev.assert_not_called()
-
-    def test_el_ensayo_cuenta_y_no_escribe(self):
-        cur, ev, r = self._correr([], aplicar=False)
-        self.assertEqual((r["nuevos"], r["borrados"]), (2, 0))
-        self.assertEqual(cur.escrituras(), [])
-        ev.assert_not_called()
-
-    def test_no_pisa_lo_capturado_en_kubera(self):
-        cur, ev, r = self._correr([_loc(101, "ACC-1", "RACK A", 5, None, origen="kubera")], aplicar=True)
-        self.assertIn("omitida", r)
-        self.assertEqual(cur.escrituras(), [])
-        ev.assert_not_called()
-
-    def test_una_foto_vacia_o_trunca_no_se_acepta(self):
-        actuales = [_loc(100 + i, f"VIEJO-{i}", "SIN UBICAR", 1, 50 + i) for i in range(10)]
-        with self.assertRaises(RuntimeError):
-            self._correr(actuales, filas=[], aplicar=True)
-        with self.assertRaises(RuntimeError):
-            self._correr(actuales, aplicar=True)            # 2 contra 10: encogió más de la mitad
-        _, _, r = self._correr(actuales, aplicar=True, forzar=True)
-        self.assertEqual((r["nuevos"], r["borrados"]), (2, 10))
-
-
 class EscribirHistorial(unittest.TestCase):
     def _fila(self, linea, delta=5):
         ahora = datetime(2026, 10, 6, 21, 0, tzinfo=UTC)
@@ -322,7 +265,7 @@ class EscribirHistorial(unittest.TestCase):
 class Guardas(unittest.TestCase):
     def _cur(self, fuente="odoo", tablas=True):
         return Cursor([
-            ("to_regclass", [{"foto": tablas, "historial": tablas, "catalogo": "almacen.almacenes"}]),
+            ("to_regclass", [{"historial": tablas, "catalogo": "almacen.almacenes"}]),
             ("from almacen.almacenes", [{"nombre": "TEXCO II", "fuente": fuente, "odoo_warehouse_id": 150}]),
         ])
 
@@ -338,69 +281,119 @@ class Guardas(unittest.TestCase):
             ao.guardas(self._cur(tablas=False), "TEX2")
 
 
+class Pasada(unittest.TestCase):
+    """`sincronizar` contra una base y un Odoo de mentira."""
+
+    def _correr(self, aplicar=True):
+        cur = Cursor([
+            ("to_regclass", [{"historial": True, "catalogo": "almacen.almacenes"}]),
+            ("from almacen.almacenes", [{"nombre": "TEXCO", "fuente": "odoo", "odoo_warehouse_id": 135}]),
+            ("max(odoo_escrito_at)", [{"marca": None}]),
+        ])
+
+        class Abrir:
+            def __enter__(self_):
+                return cur
+
+            def __exit__(self_, *a):
+                return False
+
+        lineas = {"lineas": [_l(1, 10, 6, 5, 3.0)], "ubis": UBIS, "movs": {}, "picks": {},
+                  "productos": {10: ACTIVO}}
+        with mock.patch.object(ao, "leer_almacenes", return_value={"TEXCO": {"id": 135, "vista": 9}}), \
+                mock.patch.object(ao, "leer_movimientos", return_value=lineas), \
+                mock.patch.object(ao, "leer_foto") as foto, \
+                mock.patch.object(ao, "execute_values") as ev:
+            r = ao.sincronizar("TEXCO", completo=False, abrir=Abrir, aplicar=aplicar)
+        return cur, ev, foto, r
+
+    def test_observa_los_tres_almacenes(self):
+        self.assertEqual(ao.CEDIS_OBSERVADOS, ("TEX2", "TEXCO", "DROP"))
+
+    def test_firma_escribe_el_historial_y_anota_la_frescura(self):
+        cur, ev, foto, r = self._correr()
+        self.assertTrue(r["completo"])                       # sin renglones: carga completa
+        self.assertEqual(r["historial"]["nuevos"], 1)
+        textos = [t for t, _ in cur.hechas]
+        firma = next(i for i, t in enumerate(textos) if "app.almacen_escritor" in t)
+        self.assertIn("'copia_odoo:' || txid_current()", textos[firma])
+        self.assertIn(", true)", textos[firma])              # local a la transacción (regla 13)
+        anota = next(i for i, (t, _) in enumerate(cur.hechas) if t.startswith("update almacen.copias_odoo"))
+        self.assertGreater(anota, firma)
+        self.assertEqual(cur.hechas[anota][1][1:], (True, None, "TEXCO"))
+        ev.assert_called_once()
+
+    def test_no_toca_la_foto_de_ubicaciones(self):
+        cur, ev, foto, r = self._correr()
+        self.assertFalse([t for t, _ in cur.hechas if "almacen.locations" in t])
+        foto.assert_not_called()                             # ni la lee de Odoo
+        self.assertNotIn("foto", r)
+
+    def test_el_ensayo_no_firma_ni_escribe(self):
+        cur, ev, foto, r = self._correr(aplicar=False)
+        self.assertEqual(cur.escrituras(), [])
+        self.assertFalse([t for t, _ in cur.hechas if "almacen_escritor" in t])
+        ev.assert_not_called()
+
+    def test_la_falla_se_redacta(self):
+        self.assertEqual(ao.redactar(OSError("https://odoo.ejemplo/xmlrpc 401")), "OSError")
+        self.assertIn("encogió", ao.redactar(RuntimeError("el historial encogió")))
+
+
 class Vigilante(unittest.TestCase):
     def setUp(self):
-        ao._ultima_completa.clear()
         ao._callados.clear()
-        ao._sin_cuadrar.clear()
 
-    def _resultado(self, completo):
-        return {"cedis": "TEX2", "nombre": "TEXCO II", "completo": completo, "aplicado": True, "desde": None,
-                "foto": {"total": 1, "nuevos": 0, "cambiados": 0, "borrados": 0},
-                "historial": {"leidas": 0, "nuevos": 0, "cambiados": 0, "borrados": 0},
-                "cuadre": {"skus": 1, "descuadres": 0, "movimientos": 1, "ubicaciones": 1}}
+    def _resultado(self, cedis, completo):
+        return {"cedis": cedis, "nombre": cedis, "completo": completo, "aplicado": True, "desde": None,
+                "historial": {"leidas": 0, "nuevos": 0, "cambiados": 0, "borrados": 0}, "cuadre": None}
 
-    def test_la_primera_pasada_es_completa_y_las_siguientes_son_delta(self):
+    def test_pasa_por_los_tres_y_respeta_completo(self):
         pedidas = []
 
         def falso(cedis, *, completo, abrir):
-            pedidas.append(completo)
-            return self._resultado(completo)
+            pedidas.append((cedis, completo))
+            return self._resultado(cedis, completo)
 
         with mock.patch.object(ao, "sincronizar", falso), mock.patch.dict(sys.modules, {
                 "services.supabase_db": mock.MagicMock()}):
             ao.vigilar()
-            ao.vigilar()
-        self.assertEqual(pedidas, [True, False])
+            ao.vigilar(completo=True)
+        self.assertEqual(pedidas, [("TEX2", False), ("TEXCO", False), ("DROP", False),
+                                   ("TEX2", True), ("TEXCO", True), ("DROP", True)])
 
-    def test_nunca_lanza_y_una_completa_fallida_se_repite(self):
-        pedidas = []
+    def test_nunca_lanza_y_anota_la_falla_del_que_fallo(self):
+        def a_veces(cedis, *, completo, abrir):
+            if cedis == "TEXCO":
+                raise RuntimeError("Odoo no contesta")
+            return self._resultado(cedis, completo)
 
-        def truena(cedis, *, completo, abrir):
-            pedidas.append(completo)
-            raise RuntimeError("Odoo no contesta")
+        sdb = mock.MagicMock()      # en el paquete y en sys.modules: otra prueba pudo importar el de verdad
+        with mock.patch.object(ao, "sincronizar", a_veces), mock.patch.object(ao, "registrar_copia") as reg, \
+                mock.patch.dict(sys.modules, {"services.supabase_db": sdb}), \
+                mock.patch("services.supabase_db", sdb, create=True):
+            hechas = ao.vigilar()
+        self.assertEqual([r["cedis"] for r in hechas], ["TEX2", "DROP"])
+        reg.assert_called_once()
+        self.assertEqual(reg.call_args.args[1], "TEXCO")
+        self.assertEqual((reg.call_args.kwargs["ok"], reg.call_args.kwargs["error"]),
+                         (False, "RuntimeError: Odoo no contesta"))
 
-        with mock.patch.object(ao, "sincronizar", truena), mock.patch.dict(sys.modules, {
+    def test_no_se_enciman_dos_pasadas(self):
+        with ao._una_a_la_vez, mock.patch.object(ao, "sincronizar") as s, mock.patch.dict(sys.modules, {
                 "services.supabase_db": mock.MagicMock()}):
             self.assertEqual(ao.vigilar(), [])
-            self.assertEqual(ao.vigilar(), [])
-        self.assertEqual(pedidas, [True, True])
-
-    def test_un_descuadre_solo_alarma_si_se_repite(self):
-        # Un movimiento que cae entre las dos lecturas descuadra una pasada y se corrige solo.
-        def mal(cedis, *, completo, abrir):
-            r = self._resultado(completo)
-            r["cuadre"] = {"skus": 2, "descuadres": 1, "movimientos": 1, "ubicaciones": 1,
-                           "cuales": ["ACC-1"]}
-            return r
-
-        with mock.patch.object(ao, "sincronizar", mal), mock.patch.dict(sys.modules, {
-                "services.supabase_db": mock.MagicMock()}), self.assertLogs(ao.log, "INFO") as bitacora:
-            ao.vigilar()
-            ao.vigilar()
-        self.assertEqual([m.split(":")[0] for m in bitacora.output], ["INFO", "WARNING"])
-        self.assertIn("ACC-1", bitacora.output[1])
+        s.assert_not_called()
 
     def test_el_cedis_que_ya_no_aplica_se_dice_una_sola_vez(self):
         def no_aplica(cedis, *, completo, abrir):
-            raise ao.NoAplica("TEXCO II ya es de kubera")
+            raise ao.NoAplica(f"{cedis} ya es de kubera")
 
         with mock.patch.object(ao, "sincronizar", no_aplica), mock.patch.dict(sys.modules, {
                 "services.supabase_db": mock.MagicMock()}), self.assertLogs(ao.log, "INFO") as bitacora:
             ao.vigilar()
             ao.vigilar()
-            ao.log.info("fin")
-        self.assertEqual(sum("ya no se copia" in m for m in bitacora.output), 1)
+        self.assertEqual(sum("ya no se copia" in m for m in bitacora.output), 3)   # una por cedis
 
 
 class ProgramadorFalso:
@@ -436,21 +429,28 @@ class Programador(unittest.TestCase):
             finally:
                 scheduler.detener()
 
-    def test_se_registra_cada_30_minutos_y_sin_encimarse(self):
+    def test_se_registra_cada_hora_y_sin_encimarse(self):
         fn, trigger, kw = self.registrar(True)["almacen_odoo"]
         self.assertEqual((trigger, kw["minutes"], kw["max_instances"], kw["coalesce"]),
-                         ("interval", 30, 1, True))
+                         ("interval", 60, 1, True))
         self.assertIsNotNone(kw["next_run_time"].tzinfo)        # con zona: no depende de la del servidor
 
+    def test_la_completa_es_a_las_9_utc(self):
+        fn, trigger, kw = self.registrar(True)["almacen_odoo_completa"]
+        self.assertEqual(kw["kwargs"], {"completo": True})
+        campos = {f.name: str(f) for f in trigger.fields}
+        self.assertEqual((campos["hour"], campos["minute"], str(trigger.timezone)), ("9", "0", "UTC"))
+
     def test_el_freno_de_emergencia_y_sin_kubera_no_lo_registran(self):
-        self.assertNotIn("almacen_odoo", self.registrar(False))
-        self.assertNotIn("almacen_odoo", self.registrar(True, dsn=""))
+        for jobs in (self.registrar(False), self.registrar(True, dsn="")):
+            self.assertNotIn("almacen_odoo", jobs)
+            self.assertNotIn("almacen_odoo_completa", jobs)
 
     def test_corre_en_un_hilo_y_una_falla_no_sube_al_scheduler(self):
         fn = self.registrar(True)["almacen_odoo"][0]
         visto: dict = {}
 
-        def _vigilar():
+        def _vigilar(completo=False):
             visto["hilo"] = threading.get_ident()
             raise RuntimeError("Odoo no contesta")
 
