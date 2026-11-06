@@ -1001,6 +1001,54 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.735.0 — INVENTARIO: vigilante de cuarentena (botón, franja y popup) y la copia del historial de Odoo en los tres almacenes
+
+**Por qué (6-nov-2026, Brandon).** Cuando bodega mueve un producto a la cuarentena de Odoo
+(`TEXCO/FERRAFORME/CUARENTENA`, ubicación 470719) alguien tiene que enterarse y averiguar por qué: daño, devolución,
+faltante. Nadie se enteraba: el panel no avisaba y la copia del historial de Odoo estaba apagada desde el 15-oct.
+Diseño: `docs/superpowers/specs/2026-11-06-vigilante-cuarentena-design.md`.
+
+**Lo que se ve (solo en la pestaña Inventario).**
+- Botón **«Cuarentena»** dentro del recuadro morado, siempre visible, con globo rojo = SKUs que llegaron y nadie ha
+  visto.
+- **Franja** entre el recuadro y las tarjetas, solo con pendientes: «Llegaron a cuarentena N SKUs (P piezas): SKU (x)…
+  · Ver».
+- **Popup**: todo lo que hay HOY en cuarentena (Odoo en vivo), los nuevos arriba con la marca «Nuevo», la frescura de
+  la copia por almacén, y el historial de cada SKU al tocarlo (el mismo de «Historial»). Se cierra con Esc o con un
+  clic fuera. **Al abrirse deja revisadas, para todos, las llegadas que enseñó** (con usuario y hora); lo que llegue
+  después sigue avisando.
+- Si Odoo no contesta, el popup enseña los pendientes y dice que no pudo leer lo que hay hoy.
+- Arreglo de paso: el recuadro morado usaba `overflow-hidden` y su círculo decorativo se sale 64 px; al enfocar un
+  botón, el recuadro se recorría de lado. Ahora `overflow-clip`.
+
+**Qué es una llegada.** Renglón de `almacen.historial_movimientos` con destino la cuarentena y origen distinto, desde
+el **6-nov-2026 a las 12:00 p.m. CDMX**. Lo que entra a cuarentena desde fuera de los tres almacenes (un cliente)
+no tiene renglón y no avisa; sí sale en el popup.
+
+**Backend.**
+- `services/cuarentena.py` (nuevo): `pendientes`, `ultimas_llegadas`, `copia`, `en_cuarentena` (quants vivos de la
+  470719; si la ubicación cambió de nombre lo dice), `armar_popup`, `revisar`.
+- `routers/inventario.py`: `GET /api/inventario/cuarentena/pendientes` (solo kubera), `GET /api/inventario/cuarentena`
+  (popup) y `POST /api/inventario/cuarentena/revisar` (401 sin usuario de sesión). Antes del comodín `/{sku:path}`.
+- **Migración 0083 `almacen.cuarentena_revisadas` SUBIDA, NO APLICADA**: la aplica Eduardo con su acta
+  (`docs/MIGRACION_0083_NOTA_EDUARDO.md`). Hasta entonces las tres rutas responden **503 «Falta la migración 0083»** y
+  el botón sale sin globo.
+
+**La copia del historial de Odoo (`services/almacen_odoo.py`).**
+- **TEX2, TEXCO y DROP** (antes solo TEX2), **cada hora** (antes 30 min); conciliación completa una vez al día a las
+  **09:00 UTC** (antes en cada arranque, que con varios despliegues al día cargaba a Odoo de más).
+- **Ya no escribe la foto `almacen.locations`**: desde la 0076 es del copiador de Eduardo y su candado la rechazaba.
+- **Firma** cada transacción que escribe (`app.almacen_escritor = copia_odoo:<txid>`, local), como exige la 0076.
+  Sin eso, cada pasada habría fallado con 42501 desde el 28-oct.
+- Anota la frescura en `almacen.copias_odoo` (`historial_hasta`, `ultima_pasada_*`, `ultimo_error` sin la URL de
+  Odoo). Dos pasadas no se enciman (candado por proceso).
+- **Sigue APAGADA en Railway** (`ALMACEN_ODOO_ENABLED=false`): encenderla es otro paso, con el dale de Brandon. La
+  primera pasada cargará la historia completa de TEXCO y DROP (del orden de 60 mil líneas).
+
+**Pruebas.** 48 unitarias (copia 33, servicio 9, rutas 6). La 0083 corrió dos veces en una base local con sus candados
+(update, delete, truncate, sin usuario). Demo local de punta a punta (botón, franja, popup, historial, revisado) con la
+cuarentena del respaldo de Odoo del 15-oct: 196 SKUs, 17,697 piezas.
+
 ### v0.734.0 — ESTUDIO DE PRODUCTO más limpio: dos secciones principales, menos texto y «Guardar contenido» fijo abajo
 
 **Por qué (6-nov-2026, Brandon).** El Estudio se saturaba de texto. Brandon pidió que la ficha sea lo más minimalista y
